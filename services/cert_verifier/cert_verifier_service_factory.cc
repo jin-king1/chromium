@@ -15,10 +15,12 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_view_util.h"
 #include "base/task/thread_pool.h"
 #include "base/types/optional_util.h"
 #include "build/build_config.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
@@ -41,6 +43,7 @@
 
 #if BUILDFLAG(IS_CT_SUPPORTED)
 #include "components/certificate_transparency/chrome_ct_policy_enforcer.h"
+#include "components/certificate_transparency/chrome_require_ct_delegate.h"
 #include "services/network/public/mojom/ct_log_info.mojom.h"
 #endif
 
@@ -52,6 +55,7 @@
 #include "mojo/public/cpp/base/proto_wrapper.h"
 #include "net/cert/internal/trust_store_chrome.h"
 #include "net/cert/root_store_proto_lite/root_store.pb.h"
+#include "net/cert/root_store_proto_lite/signer_set.pb.h"
 #include "third_party/boringssl/src/pki/parse_name.h"
 #include "third_party/boringssl/src/pki/parsed_certificate.h"
 #endif
@@ -61,6 +65,15 @@ class ChromeRootStoreData;
 }
 namespace cert_verifier {
 namespace {
+
+// The maximum uncertainty for network time that is considered acceptable. This
+// value is used to determine whether the network time update should be used to
+// update the CertVerifierService's time tracker.
+//
+// This is derived from the 99th percentile of observed network time tracker
+// uncertainty in June 2026, plus a comfortable margin. It is still well below
+// the maximum uncertainty allowed by the network time service's timeout.
+constexpr base::TimeDelta kMaxUncertaintyForNetworkTime = base::Seconds(45);
 
 internal::CertVerifierServiceImpl* GetNewCertVerifierImpl(
     mojo::PendingReceiver<mojom::CertVerifierService> service_receiver,
@@ -84,10 +97,20 @@ internal::CertVerifierServiceImpl* GetNewCertVerifierImpl(
     UpdateCertVerifierInstanceParams(
         creation_params->initial_additional_certificates, &instance_params);
   }
+#if BUILDFLAG(IS_CT_SUPPORTED)
+  scoped_refptr<certificate_transparency::ChromeRequireCTDelegate>
+      require_ct_delegate = base::MakeRefCounted<
+          certificate_transparency::ChromeRequireCTDelegate>();
+  if (creation_params->ct_policy) {
+    require_ct_delegate->UpdateCTPolicies(
+        creation_params->ct_policy->excluded_hosts,
+        creation_params->ct_policy->excluded_spkis);
+  }
+  instance_params.require_ct_delegate = std::move(require_ct_delegate);
+#endif
 
   std::unique_ptr<net::CertVerifierWithUpdatableProc> cert_verifier =
-      CreateCertVerifier(creation_params.get(), cert_net_fetcher, impl_params,
-                         instance_params);
+      CreateCertVerifier(cert_net_fetcher, impl_params, instance_params);
 
   // As an optimization, if the CertNetFetcher isn't used by the CertVerifier,
   // shut it down immediately.
@@ -97,8 +120,9 @@ internal::CertVerifierServiceImpl* GetNewCertVerifierImpl(
   }
 
   // Return reference to cert_net_fetcher for testing purposes.
-  if (out_cert_net_fetcher)
+  if (out_cert_net_fetcher) {
     *out_cert_net_fetcher = cert_net_fetcher;
+  }
 
   // The service will delete itself upon disconnection.
   return new internal::CertVerifierServiceImpl(
@@ -112,7 +136,7 @@ internal::CertVerifierServiceImpl* GetNewCertVerifierImpl(
 std::string GetHash(const bssl::ParsedCertificate& cert) {
   net::SHA256HashValue hash =
       net::X509Certificate::CalculateFingerprint256(cert.cert_buffer());
-  return base::HexEncode(hash.data);
+  return base::HexEncode(hash);
 }
 
 bool IsVersionConstraintSatisified(
@@ -133,12 +157,12 @@ bool IsVersionConstraintSatisified(
 // we only check any version constraints, as we don't have a certificate here to
 // check any SCT constraints.
 bool IsAnchorTrustedOnThisChromeVersion(
-    const net::ChromeRootStoreData::Anchor& anchor) {
-  if (anchor.constraints.empty()) {
+    const std::vector<net::ChromeRootCertConstraints>& constraints) {
+  if (constraints.empty()) {
     return true;
   }
 
-  for (const auto& constraint : anchor.constraints) {
+  for (const auto& constraint : constraints) {
     if (IsVersionConstraintSatisified(constraint)) {
       return true;
     }
@@ -208,7 +232,8 @@ void ComputeCTLogInfo(
     std::vector<std::pair<std::string, base::Time>>* disqualified_logs,
     std::map<std::string, certificate_transparency::LogInfo>* log_info) {
   for (const auto& log : log_list) {
-    std::string log_id = crypto::SHA256HashString(log->public_key);
+    std::string log_id(
+        base::as_string_view(crypto::hash::Sha256(log->public_key)));
     if (log->disqualified_at) {
       disqualified_logs->emplace_back(log_id, log->disqualified_at.value());
     }
@@ -242,6 +267,7 @@ void CertVerifierServiceFactoryImpl::GetNewCertVerifier(
     mojo::PendingReceiver<mojom::CertVerifierServiceUpdater> updater_receiver,
     mojo::PendingRemote<mojom::CertVerifierServiceClient> client,
     mojom::CertVerifierCreationParamsPtr creation_params) {
+  InitializeRootStoreDataIfNecessary();
   internal::CertVerifierServiceImpl* service_impl = GetNewCertVerifierImpl(
       std::move(service_receiver), std::move(updater_receiver),
       std::move(client), std::move(creation_params), proc_params_,
@@ -257,6 +283,7 @@ void CertVerifierServiceFactoryImpl::GetNewCertVerifierForTesting(
     mojo::PendingRemote<mojom::CertVerifierServiceClient> client,
     mojom::CertVerifierCreationParamsPtr creation_params,
     scoped_refptr<CertNetFetcherURLLoader>* cert_net_fetcher_ptr) {
+  InitializeRootStoreDataIfNecessary();
   GetNewCertVerifierImpl(std::move(service_receiver),
                          std::move(updater_receiver), std::move(client),
                          std::move(creation_params), proc_params_,
@@ -308,13 +335,25 @@ void CertVerifierServiceFactoryImpl::UpdateCtLogList(
       base::MakeRefCounted<certificate_transparency::ChromeCTPolicyEnforcer>(
           update_time, std::move(disqualified_logs), std::move(log_info),
           base::FeatureList::IsEnabled(
-              net::features::kEnableStaticCTAPIEnforcement));
+              net::features::kEnforceOneRfc6962CtPolicy));
 
   UpdateVerifierServices();
 
   std::move(callback).Run();
 }
-#endif
+
+void CertVerifierServiceFactoryImpl::DisableCtEnforcement(
+    DisableCtEnforcementCallback callback) {
+  // Clear the ct_policy_enforcer, which will cause a DefaultCTPolicyEnforcer
+  // to be used, which disables CT enforcement. If UpdateCtLogList is called
+  // later, CT enforcement will be re-enabled.
+  proc_params_.ct_policy_enforcer.reset();
+
+  UpdateVerifierServices();
+
+  std::move(callback).Run();
+}
+#endif  // BUILDFLAG(IS_CT_SUPPORTED)
 
 void CertVerifierServiceFactoryImpl::OnCRLSetParsed(
     scoped_refptr<net::CRLSet> parsed_crl_set) {
@@ -336,39 +375,132 @@ void CertVerifierServiceFactoryImpl::OnCRLSetParsed(
 #if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 void CertVerifierServiceFactoryImpl::UpdateChromeRootStore(
     mojo_base::ProtoWrapper new_root_store,
+    std::optional<mojo_base::ProtoWrapper> new_mtc_config,
     UpdateChromeRootStoreCallback callback) {
   // Ensure the callback is run regardless which return path is used.
   base::ScopedClosureRunner scoped_callback_runner(std::move(callback));
 
-  auto message = new_root_store.As<chrome_root_store::RootStore>();
-  if (!message.has_value()) {
-    LOG(ERROR) << "error parsing proto for Chrome Root Store";
+  std::optional<net::ChromeRootStoreData> new_crs_data =
+      ParseChromeRootStoreProto(new_root_store);
+  std::optional<chrome_root_store::MtcConfig> mtc_config_data =
+      ParseMtcConfigProto(new_mtc_config);
+
+  if (!new_crs_data && !mtc_config_data) {
     return;
   }
 
-  // We only check against the compiled version to allow for us to to use
+  InitializeRootStoreDataIfNecessary();
+
+  net::ChromeRootStoreData root_store_data =
+      new_crs_data ? std::move(*new_crs_data) : *proc_params_.root_store_data;
+
+  std::optional<net::ChromeRootStoreSignerSet> signer_set;
+  bool disable_mtc =
+      proc_params_.root_store_data->disable_mtc_mirroring_requirements();
+
+  if (new_mtc_config && mtc_config_data) {
+    if (mtc_config_data->has_signer_set() &&
+        mtc_config_data->signer_set().timestamp().seconds() >
+            net::CompiledSignerSetTimestampSeconds()) {
+      signer_set = net::ChromeRootStoreSignerSet::CreateFromProto(
+          mtc_config_data->signer_set());
+      if (!signer_set) {
+        signer_set = proc_params_.root_store_data->signer_set();
+      }
+    } else {
+      signer_set = proc_params_.root_store_data->signer_set();
+    }
+    disable_mtc = mtc_config_data->disable_mtc_mirroring_requirements();
+  } else {
+    signer_set = proc_params_.root_store_data->signer_set();
+  }
+
+  if (signer_set) {
+    root_store_data.SetSignerSet(std::move(*signer_set));
+  }
+  root_store_data.SetDisableMtcMirroringRequirements(disable_mtc);
+
+  proc_params_.root_store_data = std::move(root_store_data);
+  UpdateVerifierServices();
+}
+
+// static
+std::optional<net::ChromeRootStoreData>
+CertVerifierServiceFactoryImpl::ParseChromeRootStoreProto(
+    const mojo_base::ProtoWrapper& new_root_store) {
+  auto crs_message = new_root_store.As<chrome_root_store::RootStore>();
+  if (!crs_message.has_value()) {
+    LOG(ERROR) << "error parsing proto for Chrome Root Store";
+    return std::nullopt;
+  }
+
+  // We only check against the compiled version to allow for us to use
   // Component Updater to revert to older versions. Check is left in
   // to guard against Component updater being stuck on older versions due
   // to daily updates of the PKI Metadata component being broken.
-  if (message->version_major() <= net::CompiledChromeRootStoreVersion()) {
-    return;
+  if (crs_message->version_major() <= net::CompiledChromeRootStoreVersion()) {
+    return std::nullopt;
   }
 
   std::optional<net::ChromeRootStoreData> root_store_data =
-      net::ChromeRootStoreData::CreateChromeRootStoreData(message.value());
+      net::ChromeRootStoreData::CreateFromRootStoreProto(crs_message.value());
   if (!root_store_data) {
     LOG(ERROR) << "error interpreting proto for Chrome Root Store";
-    return;
+    return std::nullopt;
   }
 
-  if (root_store_data->anchors().empty()) {
+  if (root_store_data->trust_anchors().empty()) {
     LOG(ERROR) << "parsed root store contained no anchors";
+    return std::nullopt;
+  }
+
+  return root_store_data;
+}
+
+// static
+std::optional<chrome_root_store::MtcConfig>
+CertVerifierServiceFactoryImpl::ParseMtcConfigProto(
+    const std::optional<mojo_base::ProtoWrapper>& new_mtc_config) {
+  if (!new_mtc_config.has_value() ||
+      !base::FeatureList::IsEnabled(net::features::kVerifyMTCs)) {
+    return std::nullopt;
+  }
+
+  std::optional<chrome_root_store::MtcConfig> mtc_config_message =
+      new_mtc_config->As<chrome_root_store::MtcConfig>();
+  if (!mtc_config_message.has_value()) {
+    LOG(ERROR) << "error parsing proto for MtcConfig";
+    return std::nullopt;
+  }
+
+  return mtc_config_message;
+}
+
+void CertVerifierServiceFactoryImpl::UpdateMtcMetadata(
+    mojo_base::ProtoWrapper new_mtc_metadata,
+    UpdateMtcMetadataCallback callback) {
+  // Ensure the callback is run regardless which return path is used.
+  base::ScopedClosureRunner scoped_callback_runner(std::move(callback));
+
+  auto message = new_mtc_metadata.As<chrome_root_store::MtcMetadata>();
+  if (!message.has_value()) {
+    LOG(ERROR) << "error parsing proto for MTC Metadata";
     return;
   }
 
-  // Update the stored Chrome Root Store so that new CertVerifierService
-  // instances will start with the updated store.
-  proc_params_.root_store_data = std::move(root_store_data);
+  // The message->update_time() is not checked here, as it is expected the
+  // PKIMetadataComponentInstallerService will check it and not send the data
+  // if it is out of date.
+
+  std::optional<net::ChromeRootStoreMtcMetadata> mtc_metadata =
+      net::ChromeRootStoreMtcMetadata::CreateFromMtcMetadataProto(
+          message.value());
+  if (!mtc_metadata) {
+    LOG(ERROR) << "error interpreting proto for MtcMetadata";
+    return;
+  }
+
+  proc_params_.root_store_mtc_metadata = std::move(mtc_metadata);
 
   UpdateVerifierServices();
 }
@@ -377,17 +509,11 @@ void CertVerifierServiceFactoryImpl::GetChromeRootStoreInfo(
     GetChromeRootStoreInfoCallback callback) {
   mojom::ChromeRootStoreInfoPtr info_ptr = mojom::ChromeRootStoreInfo::New();
 
-  std::vector<net::ChromeRootStoreData::Anchor> anchors;
-  if (proc_params_.root_store_data) {
-    info_ptr->version = proc_params_.root_store_data->version();
-    anchors = proc_params_.root_store_data->anchors();
-  } else {
-    info_ptr->version = net::CompiledChromeRootStoreVersion();
-    anchors = net::CompiledChromeRootStoreAnchors();
-  }
+  InitializeRootStoreDataIfNecessary();
+  info_ptr->version = proc_params_.root_store_data->version();
 
-  for (const auto& anchor : anchors) {
-    if (!IsAnchorTrustedOnThisChromeVersion(anchor)) {
+  for (const auto& anchor : proc_params_.root_store_data->trust_anchors()) {
+    if (!IsAnchorTrustedOnThisChromeVersion(anchor.constraints)) {
       continue;
     }
     const bssl::ParsedCertificate* cert = anchor.certificate.get();
@@ -396,6 +522,42 @@ void CertVerifierServiceFactoryImpl::GetChromeRootStoreInfo(
     info_ptr->root_cert_info.push_back(mojom::ChromeRootCertInfo::New(
         GetHash(*cert),
         std::vector<uint8_t>(cert_bytes.begin(), cert_bytes.end())));
+  }
+
+  if (proc_params_.root_store_mtc_metadata) {
+    info_ptr->mtc_metadata_update_time =
+        proc_params_.root_store_mtc_metadata->update_time();
+
+    // TODO(crbug.com/452983502): when full MTCs are supported, populating
+    // `root_mtc_info` should be moved outside the
+    // `if (proc_params_.root_store_mtc_metadata)` so that we report MTC anchor
+    // info even when the metadata hasn't been loaded yet.
+    for (const auto& anchor :
+         proc_params_.root_store_data->mtc_trust_anchors()) {
+      if (!IsAnchorTrustedOnThisChromeVersion(anchor.constraints)) {
+        continue;
+      }
+      auto it = proc_params_.root_store_mtc_metadata->mtc_anchor_data().find(
+          anchor.log_id);
+      if (it == proc_params_.root_store_mtc_metadata->mtc_anchor_data().end()) {
+        continue;
+      }
+
+      const net::ChromeRootStoreMtcMetadata::MtcAnchorData& anchor_data =
+          it->second;
+
+      info_ptr->root_mtc_info.push_back(
+          mojom::ChromeRootMerkleTreeCertInfo::New(
+              net::x509_util::RelativeOidToString(anchor.log_id),
+              net::x509_util::RelativeOidToString(
+                  net::x509_util::AppendOidComponent(
+                      anchor_data.landmark_base_id,
+                      anchor_data.landmark_min_inclusive)),
+              net::x509_util::RelativeOidToString(
+                  net::x509_util::AppendOidComponent(
+                      anchor_data.landmark_base_id,
+                      anchor_data.landmark_max_inclusive))));
+    }
   }
 
   std::move(callback).Run(std::move(info_ptr));
@@ -423,9 +585,14 @@ void CertVerifierServiceFactoryImpl::GetPlatformRootStoreInfo(
 void CertVerifierServiceFactoryImpl::UpdateNetworkTime(
     base::Time system_time,
     base::TimeTicks system_ticks,
-    base::Time current_time) {
+    base::Time current_time,
+    base::TimeDelta uncertainty) {
+  // Ignore network time updates having excessive uncertainty.
+  if (uncertainty > kMaxUncertaintyForNetworkTime) {
+    return;
+  }
   proc_params_.time_tracker.emplace(system_time, system_ticks, current_time,
-                                    base::TimeDelta());
+                                    uncertainty);
   UpdateVerifierServices();
 }
 
@@ -435,6 +602,7 @@ void CertVerifierServiceFactoryImpl::SetUseChromeRootStore(
     SetUseChromeRootStoreCallback callback) {
   if (use_crs != proc_params_.use_chrome_root_store) {
     proc_params_.use_chrome_root_store = use_crs;
+    InitializeRootStoreDataIfNecessary();
     UpdateVerifierServices();
   }
   std::move(callback).Run();
@@ -444,6 +612,21 @@ void CertVerifierServiceFactoryImpl::SetUseChromeRootStore(
 void CertVerifierServiceFactoryImpl::RemoveService(
     internal::CertVerifierServiceImpl* service_impl) {
   verifier_services_.erase(service_impl);
+}
+
+void CertVerifierServiceFactoryImpl::InitializeRootStoreDataIfNecessary() {
+#if BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
+#if BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
+  if (!proc_params_.use_chrome_root_store) {
+    return;
+  }
+#endif  // BUILDFLAG(CHROME_ROOT_STORE_OPTIONAL)
+
+  if (!proc_params_.root_store_data) {
+    proc_params_.root_store_data =
+        net::ChromeRootStoreData::CreateFromCompiledRootStore();
+  }
+#endif  // BUILDFLAG(CHROME_ROOT_STORE_SUPPORTED)
 }
 
 void CertVerifierServiceFactoryImpl::UpdateVerifierServices() {

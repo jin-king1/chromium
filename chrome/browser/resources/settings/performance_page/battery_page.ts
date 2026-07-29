@@ -8,9 +8,12 @@ import 'chrome://resources/cr_elements/cr_link_row/cr_link_row.js';
 import '../controls/controlled_radio_button.js';
 import '../controls/settings_radio_group.js';
 import '../controls/settings_toggle_button.js';
+import '../settings_page/settings_section.js';
 import '../settings_shared.css.js';
 
-import {PrefsMixin} from '/shared/settings/prefs/prefs_mixin.js';
+import {PrefService} from '/shared/settings/prefs2/pref_service.js';
+import {PrefServiceObserverMixin} from '/shared/settings/prefs2/pref_service_observer_mixin.js';
+import {assert} from 'chrome://resources/js/assert.js';
 import {OpenWindowProxyImpl} from 'chrome://resources/js/open_window_proxy.js';
 import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bundled.min.js';
 
@@ -20,6 +23,7 @@ import type {SettingsToggleButtonElement} from '../controls/settings_toggle_butt
 import {loadTimeData} from '../i18n_setup.js';
 
 import {getTemplate} from './battery_page.html.js';
+import {PerformanceBrowserProxyImpl, PerformanceFeedbackCategory} from './performance_browser_proxy.js';
 import type {PerformanceMetricsProxy} from './performance_metrics_proxy.js';
 import {BatterySaverModeState, PerformanceMetricsProxyImpl} from './performance_metrics_proxy.js';
 
@@ -34,7 +38,7 @@ export interface SettingsBatteryPageElement {
   };
 }
 
-const SettingsBatteryPageElementBase = PrefsMixin(PolymerElement);
+const SettingsBatteryPageElementBase = PrefServiceObserverMixin(PolymerElement);
 
 export class SettingsBatteryPageElement extends SettingsBatteryPageElementBase {
   static get is() {
@@ -53,7 +57,7 @@ export class SettingsBatteryPageElement extends SettingsBatteryPageElementBase {
         value: BatterySaverModeState,
       },
 
-      isBatterySaverModeManagedByOS_: {
+      isBatterySaverModeManagedByOs_: {
         type: Boolean,
         value() {
           return loadTimeData.getBoolean('isBatterySaverModeManagedByOS');
@@ -64,20 +68,34 @@ export class SettingsBatteryPageElement extends SettingsBatteryPageElementBase {
         type: Array,
         value: () => [BatterySaverModeState.DISABLED],
       },
+
+      batterySaverStatePref_: {type: Object},
     };
   }
 
-  private numericUncheckedValues_: BatterySaverModeState[];
+  declare private isBatterySaverModeManagedByOs_: boolean;
+  declare private numericUncheckedValues_: BatterySaverModeState[];
+  declare private batterySaverStatePref_: chrome.settingsPrivate.PrefObject|
+      undefined;
+
   private metricsProxy_: PerformanceMetricsProxy =
       PerformanceMetricsProxyImpl.getInstance();
 
-  private isBatterySaverModeEnabled_(value: number): boolean {
-    return value !== BatterySaverModeState.DISABLED;
+  override connectedCallback() {
+    super.connectedCallback();
+    this.mirrorPref(BATTERY_SAVER_MODE_PREF, 'batterySaverStatePref_');
+  }
+
+  private isBatterySaverModeEnabled_(): boolean {
+    assert(this.batterySaverStatePref_);
+    return this.batterySaverStatePref_.value !== BatterySaverModeState.DISABLED;
   }
 
   private onChange_() {
     this.metricsProxy_.recordBatterySaverModeChanged(
-        this.getPref<number>(BATTERY_SAVER_MODE_PREF).value);
+        PrefService.getInstance()
+            .getPref<number>(BATTERY_SAVER_MODE_PREF)
+            .value);
   }
 
   private onBatterySaverLearnMoreLinkClick_() {
@@ -89,6 +107,14 @@ export class SettingsBatteryPageElement extends SettingsBatteryPageElementBase {
   private openOsPowerSettings_() {
     OpenWindowProxyImpl.getInstance().openUrl(
         loadTimeData.getString('osPowerSettingsUrl'));
+  }
+  // </if>
+
+  // <if expr="_google_chrome">
+  private onSendFeedbackClick_(e: Event) {
+    e.stopPropagation();
+    PerformanceBrowserProxyImpl.getInstance().openFeedbackDialog(
+        PerformanceFeedbackCategory.BATTERY);
   }
   // </if>
 }

@@ -8,6 +8,7 @@
 
 #include "base/auto_reset.h"
 #include "base/feature_list.h"
+#include "base/trace_event/trace_event.h"
 #include "cc/trees/layer_tree_host.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/web/web_content_capture_client.h"
@@ -61,9 +62,9 @@ ContentCaptureTask::ContentCaptureTask(LocalFrame& local_frame_root,
     histogram_reporter_ =
         base::MakeRefCounted<ContentCaptureTaskHistogramReporter>();
     task_session_->SetSentNodeCountCallback(
-        WTF::BindRepeating(&ContentCaptureTaskHistogramReporter::
-                               RecordsSentContentCountPerDocument,
-                           histogram_reporter_));
+        blink::BindRepeating(&ContentCaptureTaskHistogramReporter::
+                                 RecordsSentContentCountPerDocument,
+                             histogram_reporter_));
   }
 }
 
@@ -271,8 +272,7 @@ void ContentCaptureTask::ScheduleInternal(ScheduleReason reason) {
     delay_task_.Stop();
 
   delay_task_.StartOneShot(delay, FROM_HERE);
-  TRACE_EVENT_INSTANT1("content_capture", "ScheduleTask",
-                       TRACE_EVENT_SCOPE_THREAD, "reason", reason);
+  TRACE_EVENT_INSTANT("content_capture", "ScheduleTask", "reason", reason);
 }
 
 void ContentCaptureTask::Schedule(ScheduleReason reason) {

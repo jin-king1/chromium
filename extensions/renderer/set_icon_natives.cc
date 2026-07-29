@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "extensions/renderer/set_icon_natives.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <limits>
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/numerics/safe_conversions.h"
@@ -53,7 +49,7 @@ int GetIntPropertyFromV8Object(v8::Local<v8::Object> v8_object,
   v8::Local<v8::Value> v8_property_value;
   if (!v8_object
            ->Get(v8_context, v8::String::NewFromUtf8(
-                                 v8_context->GetIsolate(), property_name,
+                                 v8::Isolate::GetCurrent(), property_name,
                                  v8::NewStringType::kInternalized)
                                  .ToLocalChecked())
            .ToLocal(&v8_property_value)) {
@@ -67,7 +63,7 @@ int GetIntPropertyFromV8Object(v8::Local<v8::Object> v8_object,
                                int index) {
   v8::Local<v8::Value> v8_property_value;
   if (!v8_object
-           ->Get(v8_context, v8::Integer::New(v8_context->GetIsolate(), index))
+           ->Get(v8_context, v8::Integer::New(v8::Isolate::GetCurrent(), index))
            .ToLocal(&v8_property_value)) {
     return 0;
   }
@@ -91,7 +87,7 @@ bool SetIconNatives::ConvertImageDataToBitmapValue(
     const v8::Local<v8::Object> image_data,
     v8::Local<v8::Value>* image_data_bitmap) {
   v8::Local<v8::Context> v8_context = context()->v8_context();
-  v8::Isolate* isolate = v8_context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::Local<v8::Value> value;
   if (!image_data
            ->Get(v8_context,
@@ -137,8 +133,8 @@ bool SetIconNatives::ConvertImageDataToBitmapValue(
   }
   bitmap.eraseARGB(0, 0, 0, 0);
 
-  base::span pixels(bitmap.getAddr32(0, 0),
-                    base::checked_cast<uint32_t>(width * height));
+  base::span UNSAFE_TODO(pixels(bitmap.getAddr32(0, 0),
+                                base::checked_cast<uint32_t>(width * height)));
   auto image_data_bytes = [&](size_t index) {
     return GetIntPropertyFromV8Object(data, v8_context, index) & 0xFF;
   };
@@ -153,7 +149,8 @@ bool SetIconNatives::ConvertImageDataToBitmapValue(
   // Construct the Value object.
   std::vector<uint8_t> s = skia::mojom::InlineBitmap::Serialize(&bitmap);
   blink::WebArrayBuffer buffer = blink::WebArrayBuffer::Create(s.size(), 1);
-  memcpy(buffer.Data(), s.data(), s.size());
+  buffer.ByteSpan().copy_from(s);
+
   *image_data_bitmap =
       blink::WebArrayBufferConverter::ToV8Value(&buffer, isolate);
 
@@ -164,7 +161,7 @@ bool SetIconNatives::ConvertImageDataSetToBitmapValueSet(
     v8::Local<v8::Object>& details,
     v8::Local<v8::Object>* bitmap_set_value) {
   v8::Local<v8::Context> v8_context = context()->v8_context();
-  v8::Isolate* isolate = v8_context->GetIsolate();
+  v8::Isolate* isolate = v8::Isolate::GetCurrent();
   v8::Local<v8::Value> v8_value;
   if (!details
            ->Get(v8_context,
@@ -189,8 +186,9 @@ bool SetIconNatives::ConvertImageDataSetToBitmapValueSet(
         property_names->Get(v8_context, i).ToLocalChecked();
     v8::String::Utf8Value utf8_key(isolate, key);
     int size;
-    if (!base::StringToInt(std::string(*utf8_key), &size))
+    if (!base::StringToInt(*utf8_key, &size)) {
       continue;
+    }
     v8::Local<v8::Value> v8_image_value;
     if (!image_data_set->Get(v8_context, key).ToLocal(&v8_image_value)) {
       return false;

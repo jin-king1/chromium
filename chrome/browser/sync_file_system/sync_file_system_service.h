@@ -5,7 +5,6 @@
 #ifndef CHROME_BROWSER_SYNC_FILE_SYSTEM_SYNC_FILE_SYSTEM_SERVICE_H_
 #define CHROME_BROWSER_SYNC_FILE_SYSTEM_SYNC_FILE_SYSTEM_SERVICE_H_
 
-#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -16,7 +15,6 @@
 #include "base/observer_list.h"
 #include "base/values.h"
 #include "chrome/browser/sync_file_system/conflict_resolution_policy.h"
-#include "chrome/browser/sync_file_system/file_status_observer.h"
 #include "chrome/browser/sync_file_system/remote_file_sync_service.h"
 #include "chrome/browser/sync_file_system/sync_callbacks.h"
 #include "chrome/browser/sync_file_system/sync_process_runner.h"
@@ -42,7 +40,6 @@ namespace sync_file_system {
 class LocalFileSyncService;
 class LocalSyncRunner;
 class RemoteSyncRunner;
-class SyncEventObserver;
 
 // Service implementing the chrome.syncFileSystem() API for the deprecated
 // Chrome Apps platform.
@@ -51,7 +48,6 @@ class SyncFileSystemService final
     : public KeyedService,
       public SyncProcessRunner::Client,
       public syncer::SyncServiceObserver,
-      public FileStatusObserver,
       public extensions::ExtensionRegistryObserver {
  public:
   // Uses SyncFileSystemServiceFactory instead.
@@ -70,9 +66,6 @@ class SyncFileSystemService final
   // Returns the file |url|'s sync status.
   void GetFileSyncStatus(const storage::FileSystemURL& url,
                          SyncFileStatusCallback callback);
-
-  void AddSyncEventObserver(SyncEventObserver* observer);
-  void RemoveSyncEventObserver(SyncEventObserver* observer);
 
   LocalChangeProcessor* GetLocalChangeProcessor(const GURL& origin);
 
@@ -132,13 +125,7 @@ class SyncFileSystemService final
 
   // syncer::SyncServiceObserver implementation.
   void OnStateChanged(syncer::SyncService* sync) override;
-
-  // SyncFileStatusObserver implementation.
-  void OnFileStatusChanged(const storage::FileSystemURL& url,
-                           SyncFileType file_type,
-                           SyncFileStatus sync_status,
-                           SyncAction action_taken,
-                           SyncDirection direction) override;
+  void OnSyncShutdown(syncer::SyncService* sync) override;
 
   // Check the profile's sync preference settings and call
   // remote_file_service_->SetSyncEnabled() to update the status.
@@ -162,7 +149,6 @@ class SyncFileSystemService final
   bool sync_enabled_;
 
   TaskLogger task_logger_;
-  base::ObserverList<SyncEventObserver>::Unchecked observers_;
 
   bool promoting_demoted_changes_;
   base::OnceClosure idle_callback_;

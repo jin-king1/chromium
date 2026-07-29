@@ -27,29 +27,35 @@ namespace controlled_frame {
 
 namespace {
 
-// TODO(crbug.com/383348612): Re-enable webrequest_event_handlers_part_1 once
-// they no longer timeout on Windows ASN bots.
-const auto kTestFiles =
-    testing::Values("add_content_scripts.window.js",
-                    "camera.window.js",
-                    "client_hints_user_agent.window.js",
-                    "frame_event_handlers_part_1.window.js",
-                    "frame_event_handlers_part_2.window.js",
-                    "geolocation.window.js",
-                    "new_window.window.js",
-                    "no_callback.window.js",
-                    "scheme.window.js",
-                    "user_agent_override.window.js",
-#if !(BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER))
-                    "webrequest_event_handlers_part_1.window.js",
+#define IS_LINUX_OR_CROS (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS))
+
+// TODO(crbug.com/423697478): frame_event_handlers_part_1 and webrequest_auth
+// times out on win-asan bots and linux / chromeos bots.
+const auto kTestFiles = testing::Values("add_content_scripts.window.js",
+                                        "camera.window.js",
+                                        "client_hints_user_agent.window.js",
+#if !(BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER)) && !IS_LINUX_OR_CROS
+                                        "frame_event_handlers_part_1.window.js",
 #endif
-                    "webrequest_event_handlers_part_2.window.js");
+                                        "frame_event_handlers_part_2.window.js",
+                                        "geolocation.window.js",
+                                        "navigation.window.js",
+                                        "new_window.window.js",
+                                        "no_callback.window.js",
+                                        "scheme.window.js",
+                                        "user_agent_override.window.js",
+#if !(BUILDFLAG(IS_WIN) && defined(ADDRESS_SANITIZER)) && !IS_LINUX_OR_CROS
+                                        "webrequest_auth.window.js",
+#endif
+                                        "webrequest_core.window.js",
+                                        "webrequest_modify.window.js",
+                                        "webrequest_read.window.js");
 
 constexpr char kTestDirectory[] = "chrome/test/data/controlled_frame";
 constexpr char kTestHarnessPath[] =
     "third_party/blink/web_tests/external/wpt/resources/testharness.js";
 constexpr char kTestDriverPath[] =
-    "third_party/blink/web_tests/external/wpt/resources/testdriver.js";
+    "third_party/wpt_tools/wpt/resources/testdriver.js";
 
 constexpr char kHtmlWrapperSrc[] = R"(
   <!doctype html>
@@ -137,7 +143,14 @@ class ControlledFrameWptBrowserTest
 //   * Put the results in a top-level window.results promise that will contain
 //     the list of passed tests if there were no failures, or reject the promise
 //     with error information for failing tests otherwise.
-IN_PROC_BROWSER_TEST_P(ControlledFrameWptBrowserTest, Run) {
+
+// TODO(crbug.com/502734623): Re-enable this test on Linux.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_Run DISABLED_Run
+#else
+#define MAYBE_Run Run
+#endif
+IN_PROC_BROWSER_TEST_P(ControlledFrameWptBrowserTest, MAYBE_Run) {
   device::ScopedGeolocationOverrider overrider(/*latitude=*/1, /*longitude=*/2);
 
   base::FilePath test_data_dir;
@@ -172,16 +185,12 @@ IN_PROC_BROWSER_TEST_P(ControlledFrameWptBrowserTest, Run) {
                        app->Install(profile()));
 
   std::string test_params = "?test=" + GetParam() + "&https_origin=" +
-                            https_server()->base_url().spec();
+                            embedded_https_test_server().base_url().spec();
   content::RenderFrameHost* app_frame = OpenApp(url_info.app_id(), test_params);
   ScopedTestDriverProxy scoped_test_driver_proxy(app_frame);
 
-  content::EvalJsResult results = content::EvalJs(app_frame, "window.results");
-  if (!results.value.is_none()) {
-    CHECK(results.value.is_string());
-    LOG(INFO) << "Results:\n" << results.value.GetString();
-  }
-  ASSERT_THAT(results, content::EvalJsResult::IsOk());
+  LOG(INFO) << "Results:\n"
+            << content::EvalJs(app_frame, "window.results").ExtractString();
 }
 
 INSTANTIATE_TEST_SUITE_P(

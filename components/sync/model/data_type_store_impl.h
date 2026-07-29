@@ -7,7 +7,7 @@
 
 #include <memory>
 
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/task/sequenced_task_runner.h"
@@ -47,9 +47,13 @@ class DataTypeStoreImpl : public DataTypeStore {
       PreprocessCallback preprocess_on_backend_sequence_callback,
       CallbackWithResult completion_on_frontend_sequence_callback) override;
   std::unique_ptr<WriteBatch> CreateWriteBatch() override;
+  std::unique_ptr<WriteBatch> CreateWriteBatch(
+      std::unique_ptr<MetadataChangeList> metadata_change_list) override;
   void CommitWriteBatch(std::unique_ptr<WriteBatch> write_batch,
                         CallbackWithResult callback) override;
-  void DeleteAllDataAndMetadata(CallbackWithResult callback) override;
+  void DeleteAllDataAndMetadata(
+      std::unique_ptr<MetadataChangeList> metadata_change_list,
+      CallbackWithResult callback) override;
 
  private:
   // Callbacks for different calls to DataTypeStoreBackend.

@@ -4,6 +4,7 @@
 
 #include "chrome/browser/ui/global_media_controls/cast_media_notification_producer.h"
 
+#include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/test/base/testing_profile.h"
@@ -14,7 +15,6 @@
 #include "components/media_router/common/pref_names.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
 #include "content/public/test/browser_task_environment.h"
-#include "media/base/media_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/gfx/vector_icon_types.h"
 
@@ -40,9 +40,6 @@ MediaRoute CreateRoute(const std::string& route_id,
 class CastMediaNotificationProducerTest : public testing::Test {
  public:
   void SetUp() override {
-#if !BUILDFLAG(IS_CHROMEOS)
-    feature_list_.InitAndEnableFeature(media::kGlobalMediaControlsUpdatedUI);
-#endif
     notification_producer_ = std::make_unique<CastMediaNotificationProducer>(
         &profile_, &router_, &item_manager_);
   }

@@ -5,7 +5,6 @@
 #ifndef COMPONENTS_SIGNIN_INTERNAL_IDENTITY_MANAGER_OAUTH_MULTILOGIN_TOKEN_FETCHER_H_
 #define COMPONENTS_SIGNIN_INTERNAL_IDENTITY_MANAGER_OAUTH_MULTILOGIN_TOKEN_FETCHER_H_
 
-#include <map>
 #include <memory>
 #include <set>
 #include <string>
@@ -40,19 +39,16 @@ class OAuthMultiloginTokenFetcher {
 
   struct AccountParams {
     CoreAccountId account_id;
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
     std::string token_binding_challenge;
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   };
 
   OAuthMultiloginTokenFetcher(SigninClient* signin_client,
                               ProfileOAuth2TokenService* token_service,
                               std::vector<AccountParams> account_params,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
                               std::string ephemeral_public_key,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
                               SuccessCallback success_callback,
-                              FailureCallback failure_callback);
+                              FailureCallback failure_callback,
+                              bool retry_waits_on_connectivity = true);
 
   OAuthMultiloginTokenFetcher(const OAuthMultiloginTokenFetcher&) = delete;
   OAuthMultiloginTokenFetcher& operator=(const OAuthMultiloginTokenFetcher&) =
@@ -74,9 +70,7 @@ class OAuthMultiloginTokenFetcher {
   raw_ptr<SigninClient> signin_client_;
   raw_ptr<ProfileOAuth2TokenService> token_service_;
   const std::vector<AccountParams> account_params_;
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   const std::string ephemeral_public_key_;
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 
   SuccessCallback success_callback_;
   FailureCallback failure_callback_;
@@ -84,6 +78,7 @@ class OAuthMultiloginTokenFetcher {
   std::vector<std::unique_ptr<OAuthMultiloginTokenRequest>> token_requests_;
   base::flat_map<CoreAccountId, OAuthMultiloginTokenResponse> token_responses_;
   std::set<CoreAccountId> retried_requests_;  // Requests are retried once.
+  const bool retry_waits_on_connectivity_ = true;
 
   base::WeakPtrFactory<OAuthMultiloginTokenFetcher> weak_ptr_factory_{this};
 };

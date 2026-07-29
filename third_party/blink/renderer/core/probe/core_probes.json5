@@ -16,12 +16,13 @@
       "third_party/blink/renderer/core/loader/frame_loader_types.h",
       "third_party/blink/renderer/core/page/chrome_client.h",
       "third_party/blink/renderer/core/probe/core_probes.h",
+      "third_party/blink/renderer/core/inspector/inspector_media_context_impl.h",
       "third_party/blink/renderer/core/speculation_rules/speculation_rule_set.h",
     ],
   },
   observers: {
-    AdTracker: {
-      include_path: "third_party/blink/renderer/core/frame",
+    ScriptInitiationMonitor: {
+      include_path: "third_party/blink/renderer/core/ad_tracker",
       probes: [
         "CallFunction",
         "ExecuteScript",
@@ -72,6 +73,7 @@
       probes: [
         "ActiveStyleSheetsUpdated",
         "DidMutateStyleSheet",
+        "DidInvalidateStyleAttr",
         "GetTextPosition",
         "DocumentDetached",
         "FontsUpdated",
@@ -89,9 +91,10 @@
       probes: [
         "CharacterDataModified",
         "DidCommitLoad",
-        'DidRestoreFromBackForwardCache',
+        "DidRestoreFromBackForwardCache",
         "DidInsertDOMNode",
         "DidInvalidateStyleAttr",
+        "DidModifyAdoptedStyleSheets",
         "DidModifyDOMAttr",
         "DidPerformSlotDistribution",
         "DidPushShadowRoot",
@@ -101,9 +104,12 @@
         "FrameOwnerContentUpdated",
         "NodeCreated",
         "UpdateScrollableFlag",
+        "UpdateAdRelatedState",
+        "UpdateAffectedByStartingStylesFlag",
         "PseudoElementCreated",
         "TopLayerElementsChanged",
         "PseudoElementDestroyed",
+        "WillHidePopover",
         "WillModifyDOMAttr",
         "WillPopShadowRoot",
         "WillRemoveDOMNode",
@@ -148,6 +154,7 @@
     InspectorEmulationAgent: {
       probes: [
         "ApplyAcceptLanguageOverride",
+        "ApplyDataSaverOverride",
         "ApplyHardwareConcurrencyOverride",
         "ApplyUserAgentOverride",
         "ApplyUserAgentMetadataOverride",
@@ -176,11 +183,11 @@
     },
     InspectorMediaAgent: {
       probes: [
+        "PlayerCreated",
         "PlayerErrorsRaised",
         "PlayerEventsAdded",
         "PlayerMessagesLogged",
         "PlayerPropertiesChanged",
-        "PlayersCreated"
       ]
     },
     InspectorNetworkAgent: {
@@ -213,6 +220,20 @@
         "WebTransportCreated",
         "WebTransportConnectionEstablished",
         "WebTransportClosed",
+        "DirectTCPSocketCreated",
+        "DirectTCPSocketOpened",
+        "DirectTCPSocketAborted",
+        "DirectTCPSocketClosed",
+        "DirectTCPSocketChunkSent",
+        "DirectTCPSocketChunkReceived",
+        "DirectUDPSocketCreated",
+        "DirectUDPSocketOpened",
+        "DirectUDPSocketAborted",
+        "DirectUDPSocketClosed",
+        "DirectUDPSocketChunkSent",
+        "DirectUDPSocketChunkReceived",
+        "DirectUDPSocketJoinedMulticastGroup",
+        "DirectUDPSocketLeftMulticastGroup",
         "WillCreateP2PSocketUdp",
         "WillCreateWebSocket",
         "WillDispatchEventSourceEvent",
@@ -291,6 +312,15 @@
         "DidAddSpeculationRuleSet",
         "DidRemoveSpeculationRuleSet",
         "SpeculationCandidatesUpdated",
+      ]
+    },
+    InspectorWebMCPAgent: {
+      probes: [
+        "WebMCPToolAdded",
+        "WebMCPToolRemoved",
+        "WebMCPToolExecuted",
+        "WebMCPToolResponded",
+        "WebMCPToolFailed",
       ]
     },
     InspectorTraceEvents: {

@@ -86,8 +86,6 @@ enum CreateImageBitmapSource {
   kMaxValue = kCreateImageBitmapSourceVideoFrame,
 };
 
-constexpr const char* kImageBitmapOptionNone = "none";
-
 gfx::Rect NormalizedCropRect(int x, int y, int width, int height) {
   if (width < 0) {
     x = base::ClampAdd(x, width);
@@ -179,6 +177,7 @@ inline ImageBitmapSource* ToImageBitmapSourceInternal(
   NOTREACHED();
 }
 
+// static
 ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmapFromBlob(
     ScriptState* script_state,
     ImageBitmapSource* bitmap_source,
@@ -191,7 +190,7 @@ ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmapFromBlob(
   // imageOrientation: 'from-image' will be used to replace imageOrientation:
   // 'none'. Adding a deprecation warning when 'none' is called in
   // createImageBitmap.
-  if (options->imageOrientation() == kImageBitmapOptionNone) {
+  if (options->imageOrientation() == V8ImageOrientation::Enum::kNone) {
     auto* execution_context =
         ExecutionContext::From(script_state->GetContext());
     Deprecation::CountDeprecation(
@@ -222,6 +221,24 @@ ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
                            options, exception_state);
 }
 
+// static
+ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
+    ScriptState* script_state,
+    const DOMDataView* data_view,
+    const ImageBitmapOptions* options,
+    ExceptionState&) {
+  if (!script_state->ContextIsValid()) {
+    return EmptyPromise();
+  }
+
+  ImageBitmapFactories& factory = From(*ExecutionContext::From(script_state));
+  ImageBitmapLoader* loader = ImageBitmapFactories::ImageBitmapLoader::Create(
+      factory, std::nullopt, options, script_state);
+  factory.AddLoader(loader);
+  loader->LoadDataViewAsync(data_view);
+  return loader->Promise();
+}
+
 ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
     ScriptState* script_state,
     const V8ImageBitmapSource* bitmap_source,
@@ -249,8 +266,16 @@ ScriptPromise<ImageBitmap> ImageBitmapFactories::CreateImageBitmap(
     const ImageBitmapOptions* options,
     ExceptionState& exception_state) {
   if (crop_rect && (crop_rect->width() == 0 || crop_rect->height() == 0)) {
-    exception_state.ThrowRangeError(String::Format(
-        "The crop rect %s is 0.", crop_rect->width() ? "height" : "width"));
+    exception_state.ThrowRangeError(UNSAFE_TODO(String::Format(
+        "The crop rect %s is 0.", crop_rect->width() ? "height" : "width")));
+    return EmptyPromise();
+  }
+
+  if ((options->hasResizeWidth() && options->resizeWidth() == 0) ||
+      (options->hasResizeHeight() && options->resizeHeight() == 0)) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      "The options's resizeWidth or "
+                                      "resizeHeight is 0.");
     return EmptyPromise();
   }
 
@@ -304,9 +329,6 @@ ImageBitmapFactories::ImageBitmapLoader::ImageBitmapLoader(
     ScriptState* script_state,
     const ImageBitmapOptions* options)
     : ExecutionContextLifecycleObserver(ExecutionContext::From(script_state)),
-      loader_(MakeGarbageCollected<FileReaderLoader>(
-          this,
-          GetExecutionContext()->GetTaskRunner(TaskType::kFileReading))),
       factory_(&factory),
       resolver_(MakeGarbageCollected<ScriptPromiseResolver<ImageBitmap>>(
           script_state)),
@@ -314,7 +336,17 @@ ImageBitmapFactories::ImageBitmapLoader::ImageBitmapLoader(
       options_(options) {}
 
 void ImageBitmapFactories::ImageBitmapLoader::LoadBlobAsync(Blob* blob) {
+  DCHECK(!loader_);
+  loader_ = MakeGarbageCollected<FileReaderLoader>(
+      this, GetExecutionContext()->GetTaskRunner(TaskType::kFileReading));
   loader_->Start(blob->GetBlobDataHandle());
+}
+
+void ImageBitmapFactories::ImageBitmapLoader::LoadDataViewAsync(
+    const DOMDataView* data_view) {
+  // Make a copy since the data view could be mutated during async decoding.
+  ScheduleAsyncImageBitmapDecoding(
+      std::move(*DOMArrayBuffer::Create(data_view->ByteSpan())->Content()));
 }
 
 ImageBitmapFactories::ImageBitmapLoader::~ImageBitmapLoader() {
@@ -389,8 +421,8 @@ void DecodeImageOnDecoderThread(
     ArrayBufferContents contents,
     ImageDecoder::AlphaOption alpha_option,
     ColorBehavior color_behavior,
-    WTF::CrossThreadOnceFunction<
-        void(sk_sp<SkImage>, const ImageOrientationEnum)> result_callback) {
+    CrossThreadOnceFunction<void(sk_sp<SkImage>, const ImageOrientationEnum)>
+        result_callback) {
   const bool data_complete = true;
   std::unique_ptr<ImageDecoder> decoder = ImageDecoder::Create(
       SegmentReader::CreateFromSkData(
@@ -416,12 +448,13 @@ void ImageBitmapFactories::ImageBitmapLoader::ScheduleAsyncImageBitmapDecoding(
   scoped_refptr<base::SingleThreadTaskRunner> task_runner =
       GetExecutionContext()->GetTaskRunner(TaskType::kNetworking);
   ImageDecoder::AlphaOption alpha_option =
-      options_->premultiplyAlpha() != "none"
+      options_->premultiplyAlpha() != V8PremultiplyAlpha::Enum::kNone
           ? ImageDecoder::AlphaOption::kAlphaPremultiplied
           : ImageDecoder::AlphaOption::kAlphaNotPremultiplied;
-  ColorBehavior color_behavior = options_->colorSpaceConversion() == "none"
-                                     ? ColorBehavior::kIgnore
-                                     : ColorBehavior::kTag;
+  ColorBehavior color_behavior =
+      options_->colorSpaceConversion() == V8ColorSpaceConversion::Enum::kNone
+          ? ColorBehavior::kIgnore
+          : ColorBehavior::kTag;
   worker_pool::PostTask(
       FROM_HERE,
       CrossThreadBindOnce(

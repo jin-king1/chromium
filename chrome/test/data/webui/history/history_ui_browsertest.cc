@@ -5,10 +5,10 @@
 #include "base/strings/stringprintf.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/web_ui_mocha_browser_test.h"
-#include "components/commerce/core/commerce_constants.h"
-#include "components/commerce/core/commerce_feature_list.h"
 #include "components/history_clusters/core/features.h"
-#include "components/history_embeddings/history_embeddings_features.h"
+#include "components/history_embeddings/core/history_embeddings_features.h"
+#include "components/signin/public/base/signin_buildflags.h"
+#include "components/sync/base/features.h"
 #include "content/public/test/browser_test.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -66,6 +66,29 @@ IN_PROC_BROWSER_TEST_F(HistoryTest, SearchedLabel) {
 
 IN_PROC_BROWSER_TEST_F(HistoryTest, HistoryEmbeddingsPromo) {
   RunTest("history/history_embeddings_promo_test.js", "mocha.run()");
+}
+
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+IN_PROC_BROWSER_TEST_F(HistoryTest, HistoryCrossDeviceSigninPromo) {
+  RunTest("history/history_cross_device_signin_promo_test.js", "mocha.run()");
+}
+#endif
+
+IN_PROC_BROWSER_TEST_F(HistoryTest, HistorySideBarFooter) {
+  RunTest("history/history_side_bar_footer_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryTest, HistoryFilterChipsVisibility) {
+  RunTest("history/history_app_test.js",
+          "runMochaSuite('HistoryFilterChipsVisibility')");
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryTest, HistoryFilterChip) {
+  RunTest("history/history_filter_chips_test.js", "mocha.run()");
+}
+
+IN_PROC_BROWSER_TEST_F(HistoryTest, WebuiRefresh2026) {
+  RunTest("history/history_app_test.js", "runMochaSuite('WebuiRefresh2026')");
 }
 
 class HistoryListTest : public HistoryUIBrowserTest {
@@ -146,7 +169,16 @@ IN_PROC_BROWSER_TEST_F(HistoryListTest, DeletingItemsUsingShortcuts) {
   RunTestCase("DeletingItemsUsingShortcuts");
 }
 
-IN_PROC_BROWSER_TEST_F(HistoryListTest, DeleteDialogClosedOnBackNavigation) {
+// TODO(crbug.com/421264968): Re-enable flaky test
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+#define MAYBE_DeleteDialogClosedOnBackNavigation \
+  DISABLED_DeleteDialogClosedOnBackNavigation
+#else
+#define MAYBE_DeleteDialogClosedOnBackNavigation \
+  DeleteDialogClosedOnBackNavigation
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_WIN)
+IN_PROC_BROWSER_TEST_F(HistoryListTest,
+                       MAYBE_DeleteDialogClosedOnBackNavigation) {
   RunTestCase("DeleteDialogClosedOnBackNavigation");
 }
 
@@ -179,36 +211,8 @@ IN_PROC_BROWSER_TEST_F(HistoryListTest, ResizingLoadsMore) {
   RunTestCase("ResizingLoadsMore");
 }
 
-class HistoryProductSpecificationsListTest : public WebUIMochaBrowserTest {
- protected:
-  HistoryProductSpecificationsListTest() {
-    set_test_loader_host(chrome::kChromeUIHistoryHost);
-    scoped_feature_list_.InitWithFeatures({commerce::kProductSpecifications},
-                                          {});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(HistoryProductSpecificationsListTest, Load) {
-  RunTest("history/history_product_specifications_list_test.js", "mocha.run()");
-}
-
-class HistoryProductSpecificationsItemTest : public WebUIMochaBrowserTest {
- protected:
-  HistoryProductSpecificationsItemTest() {
-    set_test_loader_host(chrome::kChromeUIHistoryHost);
-    scoped_feature_list_.InitWithFeatures({commerce::kProductSpecifications},
-                                          {});
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-IN_PROC_BROWSER_TEST_F(HistoryProductSpecificationsItemTest, Load) {
-  RunTest("history/history_product_specifications_item_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(HistoryListTest, SharedMenuClosesOnFocusout) {
+  RunTestCase("SharedMenuClosesOnFocusout");
 }
 
 class HistoryWithHistoryEmbeddingsTest : public WebUIMochaBrowserTest {
@@ -229,6 +233,22 @@ class HistoryWithHistoryEmbeddingsTest : public WebUIMochaBrowserTest {
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(HistoryWithHistoryEmbeddingsTest, App) {
-  RunTest("history/history_app_test.js", "mocha.run()");
+IN_PROC_BROWSER_TEST_F(HistoryWithHistoryEmbeddingsTest, HistoryAppTest) {
+  RunTest("history/history_app_test.js", "runMochaSuite('HistoryAppTest')");
 }
+
+// HistoryAppUnoPhase2FollowUpTest is only available outside CrOS.
+#if !BUILDFLAG(IS_CHROMEOS)
+// TODO(crbug.com/458161947): Re-enable flaky test
+#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+#define MAYBE_HistoryAppUnoPhase2FollowUpTest \
+  DISABLED_HistoryAppUnoPhase2FollowUpTest
+#else
+#define MAYBE_HistoryAppUnoPhase2FollowUpTest HistoryAppUnoPhase2FollowUpTest
+#endif  // BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+IN_PROC_BROWSER_TEST_F(HistoryWithHistoryEmbeddingsTest,
+                       MAYBE_HistoryAppUnoPhase2FollowUpTest) {
+  RunTest("history/history_app_test.js",
+          "runMochaSuite('HistoryAppUnoPhase2FollowUpTest')");
+}
+#endif  // !BUILDFLAG(IS_CHROMEOS)

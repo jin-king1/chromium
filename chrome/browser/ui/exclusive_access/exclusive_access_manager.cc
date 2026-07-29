@@ -11,14 +11,13 @@
 #include "base/metrics/histogram_functions.h"
 #include "build/build_config.h"
 #include "chrome/browser/app_mode/app_mode_utils.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_context.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/exclusive_access/pointer_lock_controller.h"
 #include "chrome/browser/ui/ui_features.h"
-#include "chrome/common/chrome_switches.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "content/public/browser/web_contents.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "ui/events/keycodes/keyboard_codes.h"
@@ -34,27 +33,14 @@ constexpr base::TimeDelta kHoldEscapeTime = base::Milliseconds(1500);
 // showing up.
 constexpr base::TimeDelta kShowExitBubbleTime = base::Milliseconds(500);
 
-constexpr char kHistogramFullscreenLockStateAtEntryViaApi[] =
-    "WebCore.Fullscreen.LockStateAtEntryViaApi";
-constexpr char kHistogramFullscreenLockStateAtEntryViaBrowserUi[] =
-    "WebCore.Fullscreen.LockStateAtEntryViaBrowserUi";
 constexpr char kHistogramEscKeyPressedDownWithModifier[] =
     "Browser.EscKeyPressedDownWithModifier";
 
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class LockState {
-  kUnlocked = 0,
-  kKeyboardLocked = 1,
-  kPointerLocked = 2,
-  kKeyboardAndPointerLocked = 3,
-  kMaxValue = kKeyboardAndPointerLocked,
-};
-
-// Check whether `event` is a kRawKeyDown type and doesn't have non-stateful
-// modifiers (i.e. shift, ctrl etc.).
+// Check whether `event` is a kKeyDown or kRawKeyDown type and doesn't have
+// non-stateful modifiers (i.e. shift, ctrl etc.).
 bool IsUnmodifiedEscKeyDownEvent(const input::NativeWebKeyboardEvent& event) {
-  if (event.GetType() != input::NativeWebKeyboardEvent::Type::kRawKeyDown) {
+  if (event.GetType() != input::NativeWebKeyboardEvent::Type::kRawKeyDown &&
+      event.GetType() != input::NativeWebKeyboardEvent::Type::kKeyDown) {
     return false;
   }
   if (event.GetModifiers() & blink::WebInputEvent::kKeyModifiers) {
@@ -65,7 +51,22 @@ bool IsUnmodifiedEscKeyDownEvent(const input::NativeWebKeyboardEvent& event) {
 
 }  // namespace
 
+DEFINE_USER_DATA(ExclusiveAccessManager);
+
+// static
+ExclusiveAccessManager* ExclusiveAccessManager::From(
+    BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
+
+// static
+const ExclusiveAccessManager* ExclusiveAccessManager::From(
+    const BrowserWindowInterface* browser) {
+  return Get(browser->GetUnownedUserDataHost());
+}
+
 ExclusiveAccessManager::ExclusiveAccessManager(
+    BrowserWindowInterface* browser,
     ExclusiveAccessContext* exclusive_access_context)
     : exclusive_access_context_(exclusive_access_context),
       fullscreen_controller_(this),
@@ -74,7 +75,15 @@ ExclusiveAccessManager::ExclusiveAccessManager(
       exclusive_access_controllers_({&fullscreen_controller_,
                                      &keyboard_lock_controller_,
                                      &pointer_lock_controller_}),
-      permission_manager_(exclusive_access_context) {}
+      permission_manager_(exclusive_access_context) {
+  if (browser) {
+    scoped_unowned_user_data_.emplace(browser->GetUnownedUserDataHost(), *this);
+  }
+}
+
+ExclusiveAccessManager::ExclusiveAccessManager(
+    ExclusiveAccessContext* exclusive_access_context)
+    : ExclusiveAccessManager(nullptr, exclusive_access_context) {}
 
 ExclusiveAccessManager::~ExclusiveAccessManager() = default;
 
@@ -130,46 +139,50 @@ void ExclusiveAccessManager::UpdateBubble(
     ExclusiveAccessBubbleHideCallback first_hide_callback,
     bool force_update) {
   exclusive_access_context_->UpdateExclusiveAccessBubble(
-      {.url = GetExclusiveAccessBubbleURL(),
+      {.origin = GetExclusiveAccessBubbleOrigin(),
        .type = GetExclusiveAccessExitBubbleType(),
        .force_update = force_update},
       std::move(first_hide_callback));
 }
 
-GURL ExclusiveAccessManager::GetExclusiveAccessBubbleURL() const {
-  GURL result = fullscreen_controller_.GetURLForExclusiveAccessBubble();
-  if (!result.is_valid()) {
-    result = pointer_lock_controller_.GetURLForExclusiveAccessBubble();
+url::Origin ExclusiveAccessManager::GetExclusiveAccessBubbleOrigin() const {
+  url::Origin result =
+      fullscreen_controller_.GetOriginForExclusiveAccessBubble();
+  if (result.opaque()) {
+    result = pointer_lock_controller_.GetOriginForExclusiveAccessBubble();
   }
   return result;
 }
 
-void ExclusiveAccessManager::RecordLockStateOnEnteringApiFullscreen() const {
-  RecordLockStateOnEnteringFullscreen(
-      kHistogramFullscreenLockStateAtEntryViaApi);
-}
 
-void ExclusiveAccessManager::RecordLockStateOnEnteringBrowserFullscreen()
-    const {
-  RecordLockStateOnEnteringFullscreen(
-      kHistogramFullscreenLockStateAtEntryViaBrowserUi);
-}
 
 void ExclusiveAccessManager::OnTabDeactivated(WebContents* web_contents) {
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto controller : exclusive_access_controllers_) {
     controller->OnTabDeactivated(web_contents);
+    if (!weak_ptr) {
+      return;
+    }
   }
 }
 
 void ExclusiveAccessManager::OnTabDetachedFromView(WebContents* web_contents) {
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto controller : exclusive_access_controllers_) {
     controller->OnTabDetachedFromView(web_contents);
+    if (!weak_ptr) {
+      return;
+    }
   }
 }
 
 void ExclusiveAccessManager::OnTabClosing(WebContents* web_contents) {
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto controller : exclusive_access_controllers_) {
     controller->OnTabClosing(web_contents);
+    if (!weak_ptr) {
+      return;
+    }
   }
 }
 
@@ -180,6 +193,7 @@ bool ExclusiveAccessManager::HandleUserKeyEvent(
     return false;
   }
 
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   // When `features::kPressAndHoldEscToExitBrowserFullscreen` is enabled, the
   // `esc_key_hold_timer_` starts on `kRawKeyDown` events, unless the key press
   // event comes with a modifier key. This metrics records how often the timer
@@ -198,6 +212,9 @@ bool ExclusiveAccessManager::HandleUserKeyEvent(
       show_exit_bubble_timer_.Stop();
       for (auto controller : exclusive_access_controllers_) {
         controller->HandleUserReleasedEscapeEarly();
+        if (!weak_ptr) {
+          return false;
+        }
       }
     } else if (IsUnmodifiedEscKeyDownEvent(event) &&
                !esc_key_hold_timer_.IsRunning()) {
@@ -232,6 +249,9 @@ bool ExclusiveAccessManager::HandleUserKeyEvent(
     if (controller->HandleUserPressedEscape()) {
       handled = true;
     }
+    if (!weak_ptr) {
+      return handled;
+    }
   }
   return handled;
 }
@@ -241,36 +261,21 @@ void ExclusiveAccessManager::OnUserInput() {
 }
 
 void ExclusiveAccessManager::ExitExclusiveAccess() {
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto controller : exclusive_access_controllers_) {
     controller->ExitExclusiveAccessToPreviousState();
+    if (!weak_ptr) {
+      return;
+    }
   }
 }
 
 void ExclusiveAccessManager::HandleUserHeldEscape() {
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   for (auto controller : exclusive_access_controllers_) {
     controller->HandleUserHeldEscape();
-  }
-}
-
-void ExclusiveAccessManager::RecordLockStateOnEnteringFullscreen(
-    const char histogram_name[]) const {
-  LockState lock_state = LockState::kUnlocked;
-  if (keyboard_lock_controller_.IsKeyboardLockActive()) {
-    if (pointer_lock_controller_.IsPointerLocked()) {
-      lock_state = LockState::kKeyboardAndPointerLocked;
-    } else {
-      lock_state = LockState::kKeyboardLocked;
+    if (!weak_ptr) {
+      return;
     }
-  } else if (pointer_lock_controller_.IsPointerLocked()) {
-    lock_state = LockState::kPointerLocked;
-  }
-  base::UmaHistogramEnumeration(histogram_name, lock_state);
-  if (fullscreen_controller_.exclusive_access_tab()) {
-    ukm::SourceId source_id = fullscreen_controller_.exclusive_access_tab()
-                                  ->GetPrimaryMainFrame()
-                                  ->GetPageUkmSourceId();
-    ukm::builders::Fullscreen_Enter(source_id)
-        .SetLockState(static_cast<int64_t>(lock_state))
-        .Record(ukm::UkmRecorder::Get());
   }
 }

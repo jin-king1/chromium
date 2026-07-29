@@ -7,7 +7,7 @@
 #include <cmath>
 #include <memory>
 
-#include "base/android/build_info.h"
+#include "base/android/android_info.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
@@ -71,6 +71,7 @@ void MediaCodecAudioDecoder::Initialize(const AudioDecoderConfig& config,
   // decode.
   DCHECK(input_queue_.empty());
   ClearInputQueue(DecoderStatus::Codes::kAborted);
+  codec_loop_.reset();
 
   if (state_ == STATE_ERROR) {
     DVLOG(1) << "Decoder is in error state.";
@@ -176,11 +177,9 @@ bool MediaCodecAudioDecoder::CreateMediaCodecLoop() {
   DVLOG(1) << __func__ << ": config:" << config_.AsHumanReadableString();
 
   codec_loop_.reset();
-  const base::android::JavaRef<jobject>& media_crypto =
-      media_crypto_ ? *media_crypto_ : nullptr;
   std::unique_ptr<MediaCodecBridge> audio_codec_bridge(
       MediaCodecBridgeImpl::CreateAudioDecoder(
-          config_, media_crypto,
+          config_, media_crypto_,
           base::BindPostTaskToCurrentDefault(
               base::BindRepeating(&MediaCodecAudioDecoder::PumpMediaCodecLoop,
                                   weak_factory_.GetWeakPtr()))));
@@ -190,7 +189,7 @@ bool MediaCodecAudioDecoder::CreateMediaCodecLoop() {
   }
 
   codec_loop_ = std::make_unique<MediaCodecLoop>(
-      base::android::BuildInfo::GetInstance()->sdk_int(), this,
+      base::android::android_info::sdk_int(), this,
       std::move(audio_codec_bridge),
       scoped_refptr<base::SingleThreadTaskRunner>());
 
@@ -199,6 +198,8 @@ bool MediaCodecAudioDecoder::CreateMediaCodecLoop() {
 
 void MediaCodecAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
                                     DecodeCB decode_cb) {
+  CHECK(codec_loop_);
+
   DecodeCB bound_decode_cb =
       base::BindPostTaskToCurrentDefault(std::move(decode_cb));
 
@@ -224,8 +225,6 @@ void MediaCodecAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
     return;
   }
 
-  DCHECK(codec_loop_);
-
   DVLOG(3) << __func__ << " " << buffer->AsHumanReadableString();
 
   DCHECK_EQ(state_, STATE_READY) << " unexpected state " << AsString(state_);
@@ -242,6 +241,7 @@ void MediaCodecAudioDecoder::Decode(scoped_refptr<DecoderBuffer> buffer,
 
 void MediaCodecAudioDecoder::Reset(base::OnceClosure closure) {
   DVLOG(2) << __func__;
+  CHECK(codec_loop_);
 
   ClearInputQueue(DecoderStatus::Codes::kAborted);
 
@@ -298,14 +298,14 @@ void MediaCodecAudioDecoder::OnCdmContextEvent(CdmContext::Event event) {
 
 void MediaCodecAudioDecoder::OnMediaCryptoReady(
     InitCB init_cb,
-    JavaObjectPtr media_crypto,
+    base::android::ScopedJavaGlobalRef<jobject> media_crypto,
     bool /*requires_secure_video_codec*/) {
   DVLOG(1) << __func__;
 
   DCHECK(state_ == STATE_WAITING_FOR_MEDIA_CRYPTO);
   DCHECK(media_crypto);
 
-  if (media_crypto->is_null()) {
+  if (!media_crypto) {
     LOG(ERROR) << "MediaCrypto is not available, can't play encrypted stream.";
     SetState(STATE_UNINITIALIZED);
     std::move(init_cb).Run(DecoderStatus::Codes::kUnsupportedEncryptionMode);
@@ -422,13 +422,10 @@ bool MediaCodecAudioDecoder::OnDecodedFrame(
         sample_format_, channel_layout_, channel_count_, sample_rate_,
         frame_count, out.size, pool_);
 
-    // TODO(crbug.com/373960632): Use spans from AudioBuffer directly once that
-    // class is spanified.
-    auto dst = UNSAFE_TODO(
-        base::span<uint8_t>(audio_buffer->channel_data()[0], out.size));
-
-    MediaCodecResult result =
-        media_codec->CopyFromOutputBuffer(out.index, out.offset, dst);
+    const auto channels = audio_buffer->channels();
+    CHECK(!channels.empty());
+    MediaCodecResult result = media_codec->CopyFromOutputBuffer(
+        out.index, out.offset, channels.front());
 
     if (!result.is_ok()) {
       media_codec->ReleaseOutputBuffer(out.index, false);
@@ -436,15 +433,13 @@ bool MediaCodecAudioDecoder::OnDecodedFrame(
     }
 
     if (config_.codec() == AudioCodec::kAC3) {
-      frame_count = Ac3Util::ParseTotalAc3SampleCount(
-          audio_buffer->channel_data()[0], out.size);
+      frame_count = Ac3Util::ParseTotalAc3SampleCount(channels.front());
     } else if (config_.codec() == AudioCodec::kEAC3) {
-      frame_count = Ac3Util::ParseTotalEac3SampleCount(
-          audio_buffer->channel_data()[0], out.size);
+      frame_count = Ac3Util::ParseTotalEac3SampleCount(channels.front());
 #if BUILDFLAG(ENABLE_PLATFORM_DTS_AUDIO)
     } else if (config_.codec() == AudioCodec::kDTS) {
-      frame_count = media::dts::ParseTotalSampleCount(
-          audio_buffer->channel_data()[0], out.size, AudioCodec::kDTS);
+      frame_count =
+          media::dts::ParseTotalSampleCount(channels.front(), AudioCodec::kDTS);
       DVLOG(2) << ": DTS Frame Count = " << frame_count;
 #endif  // BUILDFLAG(ENABLE_PLATFORM_DTS_AUDIO)
     } else {
@@ -469,13 +464,10 @@ bool MediaCodecAudioDecoder::OnDecodedFrame(
   // Copy data into AudioBuffer.
   CHECK_LE(out.size, audio_buffer->data_size());
 
-  // TODO(crbug.com/373960632): Use spans from AudioBuffer directly once that
-  // class is spanified.
-  auto dst = UNSAFE_TODO(
-      base::span<uint8_t>(audio_buffer->channel_data()[0], out.size));
-
-  MediaCodecResult result =
-      media_codec->CopyFromOutputBuffer(out.index, out.offset, dst);
+  const auto channels = audio_buffer->channels();
+  CHECK(!channels.empty());
+  MediaCodecResult result = media_codec->CopyFromOutputBuffer(
+      out.index, out.offset, channels.front());
 
   // Release MediaCodec output buffer.
   media_codec->ReleaseOutputBuffer(out.index, false);
@@ -553,12 +545,8 @@ bool MediaCodecAudioDecoder::OnOutputFormatChanged() {
 }
 
 void MediaCodecAudioDecoder::SetInitialConfiguration() {
-  // Guess the channel count from |config_| in case OnOutputFormatChanged
-  // that delivers the true count is not called before the first data arrives.
-  // It seems upon certain input errors a codec may substitute silence and
-  // not call OnOutputFormatChanged in this case.
   channel_layout_ = config_.channel_layout();
-  channel_count_ = ChannelLayoutToChannelCount(channel_layout_);
+  channel_count_ = config_.channels();
 
   sample_rate_ = config_.samples_per_second();
   timestamp_helper_ = std::make_unique<AudioTimestampHelper>(sample_rate_);

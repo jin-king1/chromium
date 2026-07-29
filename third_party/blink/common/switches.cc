@@ -43,11 +43,6 @@ const char kDefaultTileHeight[] = "default-tile-height";
 // many frames. Only effective if compositor image animations are enabled.
 const char kDisableImageAnimationResync[] = "disable-image-animation-resync";
 
-// When using CPU rasterizing disable low resolution tiling. This uses
-// less power, particularly during animations, but more white may be seen
-// during fast scrolling especially on slower devices.
-const char kDisableLowResTiling[] = "disable-low-res-tiling";
-
 // Disable partial raster in the renderer. Disabling this switch also disables
 // the use of persistent gpu memory buffers.
 const char kDisablePartialRaster[] = "disable-partial-raster";
@@ -66,6 +61,10 @@ const char kDisableZeroCopy[] = "disable-zero-copy";
 // this for the stats to be logged.
 const char kDumpRuntimeCallStats[] = "dump-blink-runtime-call-stats";
 
+// Enable desktop Android scrollbars.
+const char kEnableDesktopAndroidScrollbars[] =
+    "enable-desktop-android-scrollbars";
+
 // Specify that all compositor resources should be backed by GPU memory buffers.
 const char kEnableGpuMemoryBufferCompositorResources[] =
     "enable-gpu-memory-buffer-compositor-resources";
@@ -74,10 +73,6 @@ const char kEnableGpuMemoryBufferCompositorResources[] =
 // detection.
 const char kEnableLeakDetectionHeapSnapshot[] =
     "enable-leak-detection-heap-snapshot";
-
-// When using CPU rasterizing generate low resolution tiling. Low res
-// tiles may be displayed during fast scrolls especially on slower devices.
-const char kEnableLowResTiling[] = "enable-low-res-tiling";
 
 // Enable the creation of compositing layers when it would prevent LCD text.
 const char kEnablePreferCompositingToLCDText[] =
@@ -90,8 +85,28 @@ const char kEnableRGBA4444Textures[] = "enable-rgba-4444-textures";
 const char kEnableRasterSideDarkModeForImages[] =
     "enable-raster-side-dark-mode-for-images";
 
+#if BUILDFLAG(IS_CHROMEOS)
+// Enables placing WebGL textures into overlays and giving them low-latency
+// usages. Restricted to ChromeOS, where this functionality is enabled on a
+// per-board basis. NOTE: The value for the switch name should not be renamed
+// for historical reasons (i.e., doing so would require updating this as well
+// and coordinating rollout:
+// https://source.chromium.org/chromiumos/chromiumos/codesearch/+/main:src/platform2/login_manager/chromium_command_builder.cc;drc=ed9561e7ab8a71fe4a9d9946cea99df8ebfc9449;l=558).
+const char kEnableOverlaysAndLowLatencyUsageForWebGL[] =
+    "enable-webgl-image-chromium";
+#endif
+
 // Enable rasterizer that writes directly to GPU memory associated with tiles.
 const char kEnableZeroCopy[] = "enable-zero-copy";
+
+// Sets the total amount of memory that may be allocated for GPU resources in
+// cc.
+const char kForceGpuMemAvailableMb[] = "force-gpu-mem-available-mb";
+
+// Disables the GpuMemoryBufferReadbackFromTexture codepath for debugging
+// purposes.
+const char kGpuMemoryBufferReadbackFromTextureForceDisabledForDebugging[] =
+    "gmb-readback-from-texture-disabled-for-debugging";
 
 // The number of multisample antialiasing samples for GPU rasterization.
 // Requires MSAA support on GPU to have an effect. 0 disables MSAA.
@@ -108,14 +123,6 @@ extern const char kIntensiveWakeUpThrottlingPolicy[] =
 extern const char kIntensiveWakeUpThrottlingPolicy_ForceDisable[] = "0";
 extern const char kIntensiveWakeUpThrottlingPolicy_ForceEnable[] = "1";
 
-// Used to communicate managed policy for KeyboardFocusableScrollers feature.
-// This feature is typically controlled by a RuntimeEnabledFeature, but requires
-// an enterprise policy override.
-extern const char kKeyboardFocusableScrollersEnabled[] =
-    "keyboard-focusable-scrollers-enabled";
-extern const char kKeyboardFocusableScrollersOptOut[] =
-    "keyboard-focusable-scrollers-opt-out";
-
 // A command line to indicate if there ia any legacy tech report urls being set.
 // If so, we will send report from blink to browser process.
 extern const char kLegacyTechReportPolicyEnabled[] =
@@ -128,23 +135,11 @@ const char kMaxUntiledLayerWidth[] = "max-untiled-layer-width";
 // Sets the min tile height for GPU raster.
 const char kMinHeightForGpuRasterTile[] = "min-height-for-gpu-raster-tile";
 
-// Used to communicate managed policy for MutationEvents feature. This feature
-// is typically controlled by a RuntimeEnabledFeature, but requires an
-// enterprise policy override.
-extern const char kMutationEventsEnabled[] =
-    "deprecated-mutation-events-enabled";
-
 // Used to communicate managed policy for CSSCustomStateDeprecatedSyntax. This
 // feature is typically controlled by a RuntimeEnabledFeature, but requires an
 // enterprise policy override.
 extern const char kCSSCustomStateDeprecatedSyntaxEnabled[] =
     "css-custom-state-deprecated-syntax-enabled";
-
-// Used to communicate managed policy for SelectParserRelaxation. This feature
-// is typically controlled by a RuntimeEnabledFeature, but requires an
-// enterprise policy override.
-extern const char kDisableSelectParserRelaxation[] =
-    "disable-select-parser-relaxation";
 
 // Sets the timeout seconds of the network-quiet timers in IdlenessDetector.
 // Used by embedders who want to change the timeout time in order to run web
@@ -152,6 +147,11 @@ extern const char kDisableSelectParserRelaxation[] =
 // different regions. For example, it's useful when using FirstMeaningfulPaint
 // signal to dismiss a splash screen.
 const char kNetworkQuietTimeout[] = "network-quiet-timeout";
+
+// Visibly render a border around paint rects in the web page to help debug
+// and study painting behavior.  Unlike "show-paint-rects", this only visualizes
+// new contentful paints for each element (e.g. for LCP).
+const char kShowContentfulPaintRects[] = "show-contentful-paint-rects";
 
 // Visibly render a border around layout shift rects in the web page to help
 // debug and study layout shifts.
@@ -172,11 +172,6 @@ const char kTouchTextSelectionStrategy_Direction[] = "direction";
 const char kDisableStandardizedBrowserZoom[] =
     "disable-standardized-browser-zoom";
 
-// Comma-separated list of origins that can use SharedArrayBuffer without
-// enabling cross-origin isolation.
-const char kSharedArrayBufferAllowedOrigins[] =
-    "shared-array-buffer-allowed-origins";
-
 // Specifies the flags passed to JS engine.
 const char kJavaScriptFlags[] = "js-flags";
 
@@ -185,6 +180,21 @@ const char kJavaScriptFlags[] = "js-flags";
 // enterprise policy override.
 const char kWebAudioBypassOutputBufferingOptOut[] =
     "web-audio-bypass-output-buffering-opt-out";
+
+const char kDisableBackForwardCacheForWebSockets[] =
+    "disable-back-forward-cache-for-web-sockets";
+
+// Override mechanism for ReduceAcceptLanguage. This feature is typically
+// controlled by base features, but requires an enterprise policy override.
+const char kDisableReduceAcceptLanguage[] = "disable-reduce-accept-language";
+
+// A switch that controls XSLT availability via enterprise policy.
+const char kXSLTEnabledPolicy[] = "xslt-enabled-policy";
+
+// A switch that controls RestrictBackgroundFetchFromServiceWorker availability
+// via enterprise policy.
+const char kRestrictBackgroundFetchFromServiceWorker[] =
+    "restrict-background-fetch-from-service-worker";
 
 }  // namespace switches
 }  // namespace blink

@@ -9,11 +9,13 @@
 
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/webui_url_constants.h"
-#include "content/public/browser/web_ui_controller.h"
+#include "components/prefs/pref_registry_simple.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "ui/base/resource/resource_scale_factor.h"
 #include "ui/base/webui/web_ui_util.h"
+#include "ui/webui/mojo_web_ui_controller.h"
+#include "extensions/buildflags/buildflags.h"
 
 namespace base {
 class RefCountedMemory;
@@ -30,10 +32,13 @@ class ManagementUIConfig : public content::DefaultWebUIConfig<ManagementUI> {
   ManagementUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
                            chrome::kChromeUIManagementHost) {}
+#if !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
+#endif
 };
 
 // The Web UI controller for the chrome://management page.
-class ManagementUI : public content::WebUIController {
+class ManagementUI : public ui::MojoWebUIController {
  public:
   explicit ManagementUI(content::WebUI* web_ui);
 
@@ -53,6 +58,7 @@ class ManagementUI : public content::WebUIController {
   // dialog.
   static void GetLocalizedStrings(std::vector<webui::LocalizedString>& strings,
                                   bool remove_links);
+  static void RegisterProfilePrefs(PrefRegistrySimple* registry);
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_MANAGEMENT_MANAGEMENT_UI_H_

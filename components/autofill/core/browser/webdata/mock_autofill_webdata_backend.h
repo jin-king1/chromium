@@ -64,6 +64,18 @@ class MockAutofillWebDataBackend : public AutofillWebDataBackend {
               NotifyOnServerCvcChanged,
               (const ServerCvcChange& change),
               (override));
+  MOCK_METHOD(void,
+              NotifyOnEntityInstanceChanged,
+              (const EntityInstanceChange& change),
+              (override));
+  MOCK_METHOD(void,
+              NotifyOnServerEntityMetadataChanged,
+              (const EntityInstanceMetadataChange& change),
+              (override));
+  MOCK_METHOD(void,
+              NotifyOnValuableMetadataChanged,
+              (const ValuableMetadataChange& change),
+              (override));
 };
 
 }  // namespace autofill

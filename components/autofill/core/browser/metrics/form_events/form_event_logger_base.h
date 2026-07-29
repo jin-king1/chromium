@@ -5,19 +5,30 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FORM_EVENTS_FORM_EVENT_LOGGER_BASE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_FORM_EVENTS_FORM_EVENT_LOGGER_BASE_H_
 
-#include <string>
+#include <stdint.h>
 
-#include "base/memory/raw_ptr.h"
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "base/containers/span.h"
+#include "base/memory/raw_ref.h"
 #include "base/time/time.h"
 #include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/form_structure.h"
+#include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 #include "components/autofill/core/browser/metrics/form_events/form_events.h"
 #include "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #include "components/autofill/core/browser/studies/autofill_ablation_study.h"
+#include "components/autofill/core/browser/suggestions/suggestion.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
+#include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/form_field_data.h"
-#include "components/autofill/core/common/form_interactions_flow.h"
+#include "components/autofill/core/common/signatures.h"
 #include "components/autofill/core/common/unique_ids.h"
 
 namespace autofill {
@@ -28,23 +39,40 @@ class BrowserAutofillManager;
 
 namespace autofill::autofill_metrics {
 
+// Counts of user interactions with forms.
+struct FormInteractionCounts {
+  int64_t form_element_user_modifications = 0;
+  int64_t autofill_fills = 0;
+};
+
 // Utility to log autofill form events in the relevant histograms depending on
 // the presence of server and/or local data.
 class FormEventLoggerBase {
  public:
+  enum class FormIdentificationTime {
+    // After local heuristics (regexes, autocomplete attribute, ML model).
+    kAfterLocalHeuristics = 0,
+    // After loading server predictions.
+    kAfterServerPredictions = 1,
+    kMaxValue = kAfterServerPredictions
+  };
+
   FormEventLoggerBase(std::string form_type_name,
                       BrowserAutofillManager* owner);
 
   void OnDidInteractWithAutofillableForm(const FormStructure& form);
 
-  void OnDidPollSuggestions(FieldGlobalId field_id);
+  void OnDidIdentifyForm(const FormStructure& form,
+                         FormIdentificationTime identification_time);
 
-  void OnDidParseForm(const FormStructure& form);
-
-  virtual void OnDidShowSuggestions(const FormStructure& form,
-                                    const AutofillField& field,
-                                    base::TimeTicks form_parsed_timestamp,
-                                    bool off_the_record);
+  // Derived classes should call the protected overload of
+  // OnDidShowSuggestions().
+  virtual void OnDidShowSuggestions(
+      const FormStructure& form,
+      const AutofillField& field,
+      base::TimeTicks form_parsed_timestamp,
+      bool off_the_record,
+      base::span<const Suggestion> suggestions) = 0;
 
   void OnDidRefill(const FormStructure& form);
 
@@ -67,13 +95,8 @@ class FormEventLoggerBase {
   // logging of funnel and key metrics.
   // The function must not be called from the destructor, since this makes it
   // impossible to dispatch virtual functions into the derived classes.
-  void OnDestroyed();
+  virtual void OnDestroyed();
 
-  // Adds the appropriate form types based on `type` to
-  // `field_by_field_filled_form_types_` after a filling operation.
-  void OnFilledByFieldByFieldFilling(SuggestionType type);
-
-  // See BrowserAutofillManager::SuggestionContext for the definitions of the
   // AblationGroup parameters.
   void SetAblationStatus(AblationGroup ablation_group,
                          AblationGroup conditional_ablation_group);
@@ -85,18 +108,12 @@ class FormEventLoggerBase {
 
   virtual void Log(FormEvent event, const FormStructure& form);
 
-  void SetFastCheckoutRunId(int64_t run_id) { fast_checkout_run_id_ = run_id; }
-
   FormInteractionsUkmLogger::FormEventSet GetFormEvents(
       FormGlobalId form_global_id);
 
-  const FormInteractionsFlowId& form_interactions_flow_id_for_test() const {
-    return flow_id_;
-  }
-
-  const std::optional<int64_t> fast_checkout_run_id_for_test() const {
-    return fast_checkout_run_id_;
-  }
+  // Used for testing purposes to help verify that the correct subclass is
+  // constructed.
+  std::string GetFormTypeNameForTesting() const { return form_type_name_; }
 
  protected:
   virtual ~FormEventLoggerBase();
@@ -104,9 +121,18 @@ class FormEventLoggerBase {
   AutofillClient& client();
   AutofillDriver& driver();
 
-  virtual void RecordPollSuggestions() = 0;
   virtual void RecordParseForm() = 0;
   virtual void RecordShowSuggestions() = 0;
+
+  // Overload of the public OnDidShowSuggestions() that additionally takes the
+  // relevant `field_type` of `field`. To be called by derived class's
+  // implementation of the pure virtual overload of OnDidShowSuggestions().
+  void OnDidShowSuggestions(const FormStructure& form,
+                            const AutofillField& field,
+                            FieldType field_type,
+                            base::TimeTicks form_parsed_timestamp,
+                            bool off_the_record,
+                            base::span<const Suggestion> suggestions);
 
   // Shared logic of `OnEdited[NonFilled|Autofilled]Field`, called irrespective
   // of the autofill state of the field represented by `field_global_id`.
@@ -116,8 +142,6 @@ class FormEventLoggerBase {
   virtual void LogFormSubmitted(const FormStructure& form);
 
   // Only used for UKM backward compatibility since it depends on IsCreditCard.
-  // TODO (crbug.com/925913): Remove IsCreditCard from UKM logs amd replace with
-  // |form_type_name_|.
   virtual void LogUkmInteractedWithForm(FormSignature form_signature) = 0;
 
   virtual void OnSuggestionsShownOnce(const FormStructure& form) {}
@@ -153,7 +177,7 @@ class FormEventLoggerBase {
 
   // Whether a user accepted a filling suggestion they saw for a form that
   // was later submitted.
-  void RecordFillingAcceptance(LogBuffer& logs) const;
+  virtual void RecordFillingAcceptance(LogBuffer& logs) const;
 
   // Whether a filled form and submitted form required no fixes to filled
   // fields.
@@ -173,8 +197,6 @@ class FormEventLoggerBase {
   // Records UMA metrics related to the Undo Autofill feature.
   void RecordUndoMetrics() const;
 
-  void UpdateFlowId();
-
   // Returns whether the logger was notified that any data to fill is available.
   // This is used to emit the readiness key metric.
   virtual bool HasLoggedDataToFillAvailable() const = 0;
@@ -188,20 +210,16 @@ class FormEventLoggerBase {
   // Returns the set of all form types the form event logger should log for
   // `form.`
   virtual DenseSet<FormTypeNameForLogging> GetFormTypesForLogging(
-      const FormStructure& form) const = 0;
+      const FormStructure& form,
+      AutocompleteUnrecognizedBehavior ac_unrecognized_behavior) const = 0;
 
   // Returns a vector of strings for all parsed form types.
   std::vector<std::string_view> GetParsedFormTypesAsStringViews() const;
-
-  // Returns a set of all parsed form types and form types of field-by-field
-  // filling operations.
-  DenseSet<FormTypeNameForLogging> GetParsedAndFieldByFieldFormTypes() const;
 
   // Constructor parameters.
   std::string form_type_name_;
 
   // State variables.
-  bool has_parsed_form_ = false;
   bool has_logged_interacted_ = false;
   bool has_logged_user_hide_suggestions_ = false;
   bool has_logged_suggestions_shown_ = false;
@@ -220,28 +238,17 @@ class FormEventLoggerBase {
   AblationGroup conditional_ablation_group_ = AblationGroup::kDefault;
   std::optional<base::TimeDelta> time_from_interaction_to_submission_;
 
-  // The ID of the last field that was polled for suggestions.
-  FieldGlobalId last_polled_field_id_;
-
   // Used to count consecutive modifications on the same field as one change.
   FieldGlobalId last_field_global_id_modified_by_user_;
   // Keeps counts of Autofill fills and form elements that were modified by the
   // user.
   FormInteractionCounts form_interaction_counts_ = {};
-  // Unique random id that is set on the first form interaction and identical
-  // during the flow.
-  FormInteractionsFlowId flow_id_;
-  // Unique ID of a Fast Checkout run. Used for metrics.
-  std::optional<int64_t> fast_checkout_run_id_;
 
-  // Form types of the parsed forms for logging purposes.
-  DenseSet<FormTypeNameForLogging> parsed_form_types_;
+  // Form types of the identified forms, for logging purposes.
+  DenseSet<FormTypeNameForLogging> identified_form_types_;
 
   // Form types of the submitted form.
   DenseSet<FormTypeNameForLogging> submitted_form_types_;
-
-  // Form types of field-by-field filling operations.
-  DenseSet<FormTypeNameForLogging> field_by_field_filled_form_types_;
 
   // A list of field types for which suggestions were shown and not accepted so
   // far. At any time, no field should be in both

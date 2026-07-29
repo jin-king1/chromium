@@ -39,7 +39,7 @@ class WebAppIconHealthChecksBrowserTest : public WebAppBrowserTestBase {
     ASSERT_TRUE(embedded_test_server()->Start());
   }
 
-  Profile* profile() { return browser()->profile(); }
+  Profile* profile() { return browser()->GetProfile(); }
 
   ScopedRegistryUpdate CreateUpdateScope() {
     return WebAppProvider::GetForTest(profile())
@@ -128,7 +128,7 @@ IN_PROC_BROWSER_TEST_F(WebAppIconHealthChecksBrowserTest,
                        GeneratedIconFlagFalseNegative) {
   webapps::AppId app_id = InstallWebAppAndAwaitAppService(
       "/web_apps/get_manifest.html?no_icons.json");
-  // In https://crbug.com/1317922 manifest update erroneously set
+  // In https://crbug.com/40835055 manifest update erroneously set
   // is_generated_icon to false.
   CreateUpdateScope()->UpdateApp(app_id)->SetIsGeneratedIcon(false);
   RunIconChecksWithMetricExpectations(
@@ -166,6 +166,7 @@ IN_PROC_BROWSER_TEST_F(WebAppIconHealthChecksBrowserTest, PRE_EmptyIconFile) {
       WebAppProvider::GetForTest(profile())
           ->icon_manager()
           .GetIconFilePathForTesting(app_id, IconPurpose::ANY, 32);
+  ASSERT_FALSE(icon_path.empty());
   base::RunLoop run_loop;
   base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
@@ -193,6 +194,7 @@ IN_PROC_BROWSER_TEST_F(WebAppIconHealthChecksBrowserTest, PRE_CorruptIconFile) {
       WebAppProvider::GetForTest(profile())
           ->icon_manager()
           .GetIconFilePathForTesting(app_id, IconPurpose::ANY, 32);
+  ASSERT_FALSE(icon_path.empty());
   base::RunLoop run_loop;
   base::ThreadPool::CreateSequencedTaskRunner(
       {base::MayBlock(), base::TaskPriority::USER_VISIBLE,

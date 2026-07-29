@@ -24,7 +24,7 @@
 #include "ui/display/tablet_state.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/widget/widget.h"
-#include "ui/views/window/non_client_view.h"
+#include "ui/views/window/frame_view.h"
 
 namespace chromeos {
 
@@ -70,7 +70,7 @@ BEGIN_METADATA(HeaderView, HeaderContentView)
 END_METADATA
 
 HeaderView::HeaderView(views::Widget* target_widget,
-                       views::NonClientFrameView* frame_view)
+                       views::FrameView* frame_view)
     : target_widget_(target_widget) {
   header_content_view_ =
       AddChildView(std::make_unique<HeaderContentView>(this));
@@ -156,12 +156,12 @@ void HeaderView::UpdateCaptionButtons() {
   DeprecatedLayoutImmediately();
 }
 
-void HeaderView::SetWidthInPixels(int width_in_pixels) {
+void HeaderView::SetWidthInPixels(std::optional<int> width_in_pixels) {
   frame_header_->SetWidthInPixels(width_in_pixels);
   // If the width is given in pixels, use uniform scaling
   // so that UndoDeviceScaleFactor can correctly undo the scaling.
   header_content_view_->SetScaleType(
-      width_in_pixels > 0
+      width_in_pixels.has_value()
           ? views::PaintInfo::ScaleType::kUniformScaling
           : views::PaintInfo::ScaleType::kScaleWithEdgeSnapping);
 }

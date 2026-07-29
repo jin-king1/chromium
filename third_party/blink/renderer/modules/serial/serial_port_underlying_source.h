@@ -51,14 +51,12 @@ class SerialPortUnderlyingSource : public UnderlyingByteSourceBase,
   void Close();
   void Dispose();
 
-  // TODO(crbug.com/1457493) : Remove when debugging is done.
-  MojoResult invalid_data_pipe_read_result_ = MOJO_RESULT_OK;
-
   mojo::ScopedDataPipeConsumerHandle data_pipe_;
   mojo::SimpleWatcher watcher_;
   const Member<ScriptState> script_state_;
   const Member<SerialPort> serial_port_;
   Member<ReadableByteStreamController> controller_;
+  Member<ScriptPromiseResolver<IDLUndefined>> pending_pull_;
   ScriptValue pending_exception_;
 };
 

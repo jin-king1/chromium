@@ -5,11 +5,13 @@
 #include "cc/mojo_embedder/async_layer_tree_frame_sink.h"
 
 #include <utility>
+#include <variant>
 
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/task/common/task_annotator.h"
 #include "base/task/current_thread.h"
 #include "base/threading/platform_thread.h"
 #include "base/trace_event/trace_event.h"
@@ -20,9 +22,12 @@
 #include "cc/trees/layer_tree_frame_sink_client.h"
 #include "components/viz/common/features.h"
 #include "components/viz/common/frame_sinks/begin_frame_args.h"
+#include "components/viz/common/gpu/raster_context_provider.h"
 #include "components/viz/common/hit_test/hit_test_region_list.h"
 #include "components/viz/common/quads/compositor_frame.h"
 #include "services/viz/public/mojom/compositing/thread.mojom.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
+#include "third_party/perfetto/include/perfetto/tracing/track_event_args.h"
 
 namespace cc {
 namespace mojo_embedder {
@@ -62,11 +67,11 @@ AsyncLayerTreeFrameSink::UnboundMessagePipes::UnboundMessagePipes(
 
 AsyncLayerTreeFrameSink::AsyncLayerTreeFrameSink(
     scoped_refptr<viz::RasterContextProvider> context_provider,
-    scoped_refptr<RasterContextProviderWrapper> worker_context_provider_wrapper,
-    scoped_refptr<gpu::ClientSharedImageInterface> shared_image_interface,
+    scoped_refptr<viz::RasterContextProvider> worker_context_provider,
+    scoped_refptr<gpu::SharedImageInterface> shared_image_interface,
     InitParams* params)
     : LayerTreeFrameSink(std::move(context_provider),
-                         std::move(worker_context_provider_wrapper),
+                         std::move(worker_context_provider),
                          std::move(params->compositor_task_runner),
                          std::move(shared_image_interface)),
       use_direct_client_receiver_(params->use_direct_client_receiver),
@@ -79,10 +84,12 @@ AsyncLayerTreeFrameSink::AsyncLayerTreeFrameSink(
       pipes_(std::move(params->pipes)),
       wants_animate_only_begin_frames_(params->wants_animate_only_begin_frames),
       auto_needs_begin_frame_(params->auto_needs_begin_frame),
-      wants_begin_frame_acks_(params->wants_begin_frame_acks),
+      no_compositor_frame_acks_(params->no_compositor_frame_acks),
+      manual_begin_frame_(params->manual_begin_frame),
       use_begin_frame_presentation_feedback_(
           params->use_begin_frame_presentation_feedback) {
   DETACH_FROM_THREAD(thread_checker_);
+  CHECK(manual_begin_frame_ && auto_needs_begin_frame_ || !manual_begin_frame_);
 }
 
 AsyncLayerTreeFrameSink::~AsyncLayerTreeFrameSink() {}
@@ -126,18 +133,14 @@ bool AsyncLayerTreeFrameSink::BindToClient(LayerTreeFrameSinkClient* client) {
     client->SetBeginFrameSource(begin_frame_source_.get());
   }
 
-  if (wants_animate_only_begin_frames_) {
-    compositor_frame_sink_->SetWantsAnimateOnlyBeginFrames();
+  if (wants_animate_only_begin_frames_ || auto_needs_begin_frame_ ||
+      no_compositor_frame_acks_) {
+    auto params = viz::mojom::CompositorFrameSinkParams::New();
+    params->wants_animate_only_begin_frames = wants_animate_only_begin_frames_;
+    params->auto_needs_begin_frame = auto_needs_begin_frame_;
+    params->no_compositor_frame_acks = no_compositor_frame_acks_;
+    compositor_frame_sink_ptr_->SetParams(std::move(params));
   }
-  if (wants_begin_frame_acks_) {
-    compositor_frame_sink_ptr_->SetWantsBeginFrameAcks();
-  }
-  if (auto_needs_begin_frame_) {
-    compositor_frame_sink_ptr_->SetAutoNeedsBeginFrame();
-  }
-
-  compositor_frame_sink_ptr_->InitializeCompositorFrameSinkType(
-      viz::mojom::CompositorFrameSinkType::kLayerTree);
 
 #if BUILDFLAG(IS_ANDROID)
   std::vector<viz::Thread> threads;
@@ -159,13 +162,14 @@ void AsyncLayerTreeFrameSink::DetachFromClient() {
   client_->SetBeginFrameSource(nullptr);
   begin_frame_source_.reset();
   synthetic_begin_frame_source_.reset();
-  client_receiver_ = absl::monostate{};
+  client_receiver_ = std::monostate{};
   // `compositor_frame_sink_ptr_` points to either `compositor_frame_sink_` or
   // `compositor_frame_sink_associated_`, so it must be set to nullptr first.
   compositor_frame_sink_ptr_ = nullptr;
   compositor_frame_sink_.reset();
   compositor_frame_sink_associated_.reset();
   LayerTreeFrameSink::DetachFromClient();
+  weak_factory_.InvalidateWeakPtrs();
 }
 
 void AsyncLayerTreeFrameSink::SetLocalSurfaceId(
@@ -183,7 +187,8 @@ void AsyncLayerTreeFrameSink::SubmitCompositorFrame(
   DCHECK(frame.metadata.begin_frame_ack.has_damage);
   DCHECK(frame.metadata.begin_frame_ack.frame_id.IsSequenceValid());
 
-  if (auto_needs_begin_frame_ && !needs_begin_frames_) {
+  if (auto_needs_begin_frame_ && !needs_begin_frames_ &&
+      !manual_begin_frame_) {
     UpdateNeedsBeginFramesInternal(/*needs_begin_frames=*/true);
   }
 
@@ -226,28 +231,26 @@ void AsyncLayerTreeFrameSink::SubmitCompositorFrame(
     // TRACE_ID_LOCAL, and the outgoing flow using TRACE_ID_GLOBAL. This is
     // needed to ensure the incoming flow is not messed up. The outgoing flow is
     // going to a different process.
-    TRACE_EVENT_WITH_FLOW2(
-        TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
-        "LocalSurfaceId.Submission.Flow",
-        TRACE_ID_LOCAL(local_surface_id_.submission_trace_id()),
-        TRACE_EVENT_FLAG_FLOW_IN, "step", "SubmitCompositorFrame", "surface_id",
-        local_surface_id_.ToString());
-    TRACE_EVENT_WITH_FLOW2(
-        TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
-        "LocalSurfaceId.Submission.Flow",
-        TRACE_ID_GLOBAL(local_surface_id_.submission_trace_id()),
-        TRACE_EVENT_FLAG_FLOW_OUT, "step", "SubmitCompositorFrame",
-        "surface_id", local_surface_id_.ToString());
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+                "LocalSurfaceId.Submission.Flow",
+                perfetto::TerminatingFlow::ProcessScoped(
+                    local_surface_id_.submission_trace_id()),
+                "step", "SubmitCompositorFrame", "surface_id",
+                local_surface_id_.ToString());
+    TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.surface_id_flow"),
+                "LocalSurfaceId.Submission.Flow",
+                perfetto::Flow::Global(local_surface_id_.submission_trace_id()),
+                "step", "SubmitCompositorFrame", "surface_id",
+                local_surface_id_.ToString());
   }
 
   // The trace_id is negated in order to keep the Graphics.Pipeline and
   // Event.Pipeline flows separated.
   const int64_t trace_id = frame.metadata.begin_frame_ack.trace_id;
   const int64_t negated_trace_id = ~trace_id;
-  TRACE_EVENT_WITH_FLOW1(TRACE_DISABLED_BY_DEFAULT("viz.hit_testing_flow"),
-                         "Event.Pipeline", TRACE_ID_GLOBAL(negated_trace_id),
-                         TRACE_EVENT_FLAG_FLOW_OUT, "step",
-                         "SubmitHitTestData");
+  TRACE_EVENT(TRACE_DISABLED_BY_DEFAULT("viz.hit_testing_flow"),
+              "Event.Pipeline", perfetto::Flow::Global(negated_trace_id),
+              "step", "SubmitHitTestData");
 
   TRACE_EVENT(
       "graphics.pipeline", "Graphics.Pipeline",
@@ -259,8 +262,11 @@ void AsyncLayerTreeFrameSink::SubmitCompositorFrame(
                 STEP_SEND_SUBMIT_COMPOSITOR_FRAME_MOJO_MESSAGE);
         data->set_surface_frame_trace_id(trace_id);
       });
+
   compositor_frame_sink_ptr_->SubmitCompositorFrame(
       local_surface_id_, std::move(frame), std::move(hit_test_region_list), 0);
+
+  ExportFrameTiming();
 }
 
 void AsyncLayerTreeFrameSink::DidNotProduceFrame(const viz::BeginFrameAck& ack,
@@ -279,7 +285,27 @@ void AsyncLayerTreeFrameSink::DidNotProduceFrame(const viz::BeginFrameAck& ack,
         data->set_frame_skipped_reason(to_proto_enum(reason));
         data->set_surface_frame_trace_id(ack.trace_id);
       });
+
+  ExportFrameTiming();
+
+  // TODO(crbug.com/40900977): Once we validate
+  // `features::kInternalBeginFrameSourceOnManyDidNotProduceFrame` we can use
+  // the `internal_begin_frame_source_` for all begin frames until we actually
+  // produce damage.
+  if (auto_needs_begin_frame_ &&
+      ack.frame_id.source_id == viz::BeginFrameArgs::kManualSourceId) {
+    compositor_frame_sink_ptr_->SetNeedsBeginFrame(needs_begin_frames_);
+    return;
+  }
+
   compositor_frame_sink_ptr_->DidNotProduceFrame(ack);
+}
+
+void AsyncLayerTreeFrameSink::ExportFrameTiming() {
+  for (const auto& pair : timing_details_) {
+    client_->DidPresentCompositorFrame(pair.first, pair.second);
+  }
+  timing_details_.clear();
 }
 
 std::unique_ptr<LayerContext> AsyncLayerTreeFrameSink::CreateLayerContext(
@@ -293,13 +319,15 @@ void AsyncLayerTreeFrameSink::DidReceiveCompositorFrameAck(
     std::vector<viz::ReturnedResource> resources) {
   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
   client_->ReclaimResources(std::move(resources));
-  client_->DidReceiveCompositorFrameAck();
+  if (!no_compositor_frame_acks_ &&
+      !base::FeatureList::IsEnabled(features::kNoCompositorFrameAcks)) {
+    client_->DidReceiveCompositorFrameAck();
+  }
 }
 
 void AsyncLayerTreeFrameSink::OnBeginFrame(
     const viz::BeginFrameArgs& args,
     const viz::FrameTimingDetailsMap& timing_details,
-    bool frame_ack,
     std::vector<viz::ReturnedResource> resources) {
   viz::BeginFrameArgs adjusted_args = args;
   adjusted_args.client_arrival_time = base::TimeTicks::Now();
@@ -322,16 +350,13 @@ void AsyncLayerTreeFrameSink::OnBeginFrame(
         data->set_surface_frame_trace_id(adjusted_args.trace_id);
       });
 
-  if (features::IsOnBeginFrameAcksEnabled()) {
-    if (frame_ack) {
-      DidReceiveCompositorFrameAck(std::move(resources));
-    } else if (!resources.empty()) {
-      ReclaimResources(std::move(resources));
-    }
+  if (!resources.empty()) {
+    ReclaimResources(std::move(resources));
   }
 
+  timing_details_.insert(timing_details.begin(), timing_details.end());
+
   for (const auto& pair : timing_details) {
-    client_->DidPresentCompositorFrame(pair.first, pair.second);
     if (synthetic_begin_frame_source_ &&
         use_begin_frame_presentation_feedback_) {
       const auto& feedback = pair.second.presentation_feedback;
@@ -348,6 +373,7 @@ void AsyncLayerTreeFrameSink::OnBeginFrame(
                        FrameSkippedReason::kNoDamage);
     return;
   }
+
 
   if (begin_frame_source_)
     begin_frame_source_->OnBeginFrame(adjusted_args);
@@ -375,13 +401,30 @@ void AsyncLayerTreeFrameSink::OnSurfaceEvicted(
   client_->OnSurfaceEvicted(local_surface_id);
 }
 
+void AsyncLayerTreeFrameSink::NotifyNewLocalSurfaceIdExpectedWhilePaused() {
+  DCHECK(compositor_frame_sink_ptr_);
+  compositor_frame_sink_ptr_->NotifyNewLocalSurfaceIdExpectedWhilePaused();
+}
+
 void AsyncLayerTreeFrameSink::OnNeedsBeginFrames(bool needs_begin_frames) {
   DCHECK(compositor_frame_sink_ptr_);
 
-  // If `auto_needs_begin_frame_` is set to true, rely on unsolicited frames
+  //  If `auto_needs_begin_frame_` is set to true, rely on unsolicited frames
   // instead of SetNeedsBeginFrame(true) to indicate that the client needs
   // BeginFrame requests.
   if (auto_needs_begin_frame_ && needs_begin_frames) {
+    if (manual_begin_frame_) {
+      UpdateNeedsBeginFramesInternal(needs_begin_frames);
+      // This needs to be a `PostTask`. `OnNeedsBeginFrames` is called by the
+      // `ExternalBeginFrameSource` for which we are a client. This is called
+      // when a new `BeginFrameObserver` is being added, but before it is
+      // actually added. Due to this calling `OnBeginFrame` here would fail to
+      // notify the new observer.
+      compositor_task_runner_->PostTask(
+          FROM_HERE,
+          base::BindOnce(&AsyncLayerTreeFrameSink::SendManualBeginFrame,
+                         weak_factory_.GetWeakPtr()));
+    }
     return;
   }
 
@@ -390,12 +433,29 @@ void AsyncLayerTreeFrameSink::OnNeedsBeginFrames(bool needs_begin_frames) {
   compositor_frame_sink_ptr_->SetNeedsBeginFrame(needs_begin_frames);
 }
 
+void AsyncLayerTreeFrameSink::SendManualBeginFrame() {
+  // It is possible that we were disconnected from `compositor_frame_sink_ptr_`
+  // by the time this task was posted. Or that a subsequent update turns off
+  // `needs_begin_frames_`. In these cases do not send the `OnBeginFrame`.
+  if (!compositor_frame_sink_ptr_ || !needs_begin_frames_) {
+    return;
+  }
+  base::TimeTicks frame_time = base::TimeTicks::Now();
+  base::TimeDelta interval = viz::BeginFrameArgs::DefaultInterval();
+  viz::BeginFrameArgs args = viz::BeginFrameArgs::Create(
+      BEGINFRAME_FROM_HERE, viz::BeginFrameArgs::kManualSourceId,
+      ++manual_sequence_number_, frame_time, frame_time + interval, interval,
+      viz::BeginFrameArgs::NORMAL);
+  OnBeginFrame(args, {}, {});
+}
+
 void AsyncLayerTreeFrameSink::OnMojoConnectionError(
     uint32_t custom_reason,
     const std::string& description) {
   // TODO(rivr): Use DLOG(FATAL) once crbug.com/1043899 is resolved.
   if (custom_reason)
     DLOG(ERROR) << description;
+
   if (client_)
     client_->DidLoseLayerTreeFrameSink();
 }
@@ -406,13 +466,17 @@ void AsyncLayerTreeFrameSink::UpdateNeedsBeginFramesInternal(
     return;
   }
 
+  const auto track =
+      perfetto::NamedTrack::FromPointer("NeedsBeginFrames", this);
   if (needs_begin_frames) {
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("cc,benchmark", "NeedsBeginFrames", this);
+    TRACE_EVENT_BEGIN("cc,benchmark", "NeedsBeginFrames", track);
   } else {
-    TRACE_EVENT_NESTABLE_ASYNC_END0("cc,benchmark", "NeedsBeginFrames", this);
+    TRACE_EVENT_END("cc,benchmark", track);
   }
   needs_begin_frames_ = needs_begin_frames;
 }
+
+
 
 }  // namespace mojo_embedder
 }  // namespace cc

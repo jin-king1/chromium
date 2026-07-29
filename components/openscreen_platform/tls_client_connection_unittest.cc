@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/openscreen_platform/tls_client_connection.h"
 
 #include <cstring>
@@ -15,12 +10,14 @@
 #include <utility>
 #include <vector>
 
+#include "base/compiler_specific.h"
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/openscreen/src/platform/api/connection.h"
 
 using ::testing::_;
 using ::testing::Mock;
@@ -28,6 +25,7 @@ using ::testing::StrictMock;
 
 namespace openscreen_platform {
 
+using openscreen::Connection;
 using openscreen::Error;
 using openscreen::TlsConnection;
 
@@ -133,10 +131,10 @@ class FakeSocketStreams {
   std::vector<uint8_t> outbound_data_;
 };
 
-class MockTlsConnectionClient : public TlsConnection::Client {
+class MockConnectionClient : public Connection::Client {
  public:
-  MOCK_METHOD(void, OnError, (TlsConnection*, const Error&), (override));
-  MOCK_METHOD(void, OnRead, (TlsConnection*, std::vector<uint8_t>), (override));
+  MOCK_METHOD(void, OnError, (Connection*, const Error&), (override));
+  MOCK_METHOD(void, OnRead, (Connection*, std::vector<uint8_t>), (override));
 };
 
 }  // namespace
@@ -147,7 +145,7 @@ class TlsClientConnectionTest : public ::testing::Test {
   ~TlsClientConnectionTest() override = default;
 
   void SetUp() override {
-    client_ = std::make_unique<StrictMock<MockTlsConnectionClient>>();
+    client_ = std::make_unique<StrictMock<MockConnectionClient>>();
     socket_streams_ = std::make_unique<FakeSocketStreams>();
     connection_ = std::make_unique<TlsClientConnection>(
         kValidEndpointOne, kValidEndpointTwo,
@@ -163,13 +161,13 @@ class TlsClientConnectionTest : public ::testing::Test {
     base::RunLoop().RunUntilIdle();
   }
 
-  StrictMock<MockTlsConnectionClient>* client() const { return client_.get(); }
+  StrictMock<MockConnectionClient>* client() const { return client_.get(); }
   FakeSocketStreams* socket_streams() const { return socket_streams_.get(); }
   TlsClientConnection* connection() const { return connection_.get(); }
 
  private:
   base::test::TaskEnvironment task_environment_;
-  std::unique_ptr<StrictMock<MockTlsConnectionClient>> client_;
+  std::unique_ptr<StrictMock<MockConnectionClient>> client_;
   std::unique_ptr<FakeSocketStreams> socket_streams_;
   std::unique_ptr<TlsClientConnection> connection_;
 };
@@ -226,9 +224,11 @@ TEST_F(TlsClientConnectionTest, SendsUntilBlocked) {
   std::vector<uint8_t> accumulated_data =
       socket_streams()->TakeAccumulatedOutboundData();
   ASSERT_EQ(message.size() * 2, accumulated_data.size());
-  EXPECT_EQ(0, memcmp(message.data(), accumulated_data.data(), message.size()));
-  EXPECT_EQ(0, memcmp(message.data(), accumulated_data.data() + message.size(),
-                      message.size()));
+  UNSAFE_TODO(EXPECT_EQ(
+      0, memcmp(message.data(), accumulated_data.data(), message.size())));
+  UNSAFE_TODO(EXPECT_EQ(
+      0, memcmp(message.data(), accumulated_data.data() + message.size(),
+                message.size())));
 
   // Attempt to send three messages, but expect the third to fail.
   EXPECT_TRUE(connection()->Send(message));
@@ -237,9 +237,11 @@ TEST_F(TlsClientConnectionTest, SendsUntilBlocked) {
   base::RunLoop().RunUntilIdle();
   accumulated_data = socket_streams()->TakeAccumulatedOutboundData();
   ASSERT_EQ(message.size() * 2, accumulated_data.size());
-  EXPECT_EQ(0, memcmp(message.data(), accumulated_data.data(), message.size()));
-  EXPECT_EQ(0, memcmp(message.data(), accumulated_data.data() + message.size(),
-                      message.size()));
+  UNSAFE_TODO(EXPECT_EQ(
+      0, memcmp(message.data(), accumulated_data.data(), message.size())));
+  UNSAFE_TODO(EXPECT_EQ(
+      0, memcmp(message.data(), accumulated_data.data() + message.size(),
+                message.size())));
 
   // Sending should resume when there is capacity available again.
   EXPECT_TRUE(connection()->Send(message));

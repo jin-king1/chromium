@@ -44,13 +44,24 @@ std::unique_ptr<DataBatch> StubDataTypeSyncBridge::GetAllDataForDebugging() {
 }
 
 std::string StubDataTypeSyncBridge::GetClientTag(
-    const EntityData& entity_data) {
+    const EntityData& entity_data) const {
   return std::string();
 }
 
 std::string StubDataTypeSyncBridge::GetStorageKey(
-    const EntityData& entity_data) {
+    const EntityData& entity_data) const {
   return std::string();
+}
+
+sync_pb::EntitySpecifics
+StubDataTypeSyncBridge::TrimAllSupportedFieldsFromRemoteSpecifics(
+    const sync_pb::EntitySpecifics& entity_specifics) const {
+  return sync_pb::EntitySpecifics();
+}
+
+bool StubDataTypeSyncBridge::IsEntityDataValid(
+    const EntityData& entity_data) const {
+  return true;
 }
 
 }  // namespace syncer

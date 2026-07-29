@@ -4,12 +4,13 @@
 
 #include "components/autofill/core/browser/studies/autofill_ablation_study.h"
 
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
-#include "components/autofill/core/browser/integrators/autofill_optimization_guide.h"
+#include "components/autofill/core/browser/integrators/optimization_guide/autofill_optimization_guide_decider.h"
 #include "components/autofill/core/common/autofill_features.h"
-#include "components/optimization_guide/core/test_optimization_guide_decider.h"
+#include "components/optimization_guide/core/hints/test_optimization_guide_decider.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/icu/source/common/unicode/unistr.h"
 #include "third_party/icu/source/i18n/unicode/timezone.h"
@@ -37,7 +38,7 @@ std::map<AblationGroup, int> RunNIterations(
     const AutofillAblationStudy& study,
     int n,
     FormTypeForAblationStudy form_type,
-    AutofillOptimizationGuide* autofill_optimization_guide) {
+    AutofillOptimizationGuideDecider* autofill_optimization_guide) {
   std::map<AblationGroup, int> result;
   for (int i = 0; i < n; ++i) {
     GURL url(base::StringPrintf("https://www.example%d.com", i));
@@ -375,7 +376,7 @@ TEST_F(AutofillAblationStudyTestInUTC, IntegrationTestForOptimizationGuide) {
   // This is configured to have www.example[1-4].com in
   // AUTOFILL_ABLATION_SITES_LIST[1-4].
   TestOptimizationGuideDeciderForAblationTest guide;
-  AutofillOptimizationGuide autofill_optimization_guide(&guide);
+  AutofillOptimizationGuideDecider autofill_optimization_guide(&guide);
   std::array<int, 5> times_in_ablation_group{0};
   std::array<int, 5> times_in_control{0};
   std::map<AblationGroup, int> result;

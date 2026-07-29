@@ -7,20 +7,17 @@
 #include <string_view>
 
 #include "base/time/time.h"
-#include "chrome/browser/download/bubble/download_bubble_prefs.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
-#include "chrome/browser/ui/download/download_bubble_info.h"
 #include "chrome/browser/ui/layout_constants.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_list_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_view.h"
 #include "chrome/grit/generated_resources.h"
-#include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
-#include "ui/color/color_provider.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/image_view.h"
@@ -37,10 +34,10 @@ namespace {
 constexpr int kMaxHeightForRowList = 450;
 
 bool IsOtrInfoRowEnabled(Browser* browser) {
-  if (!browser || !browser->profile()) {
+  if (!browser || !browser->GetProfile()) {
     return false;
   }
-  return browser->profile()->IsOffTheRecord();
+  return browser->GetProfile()->IsOffTheRecord();
 }
 
 }  // namespace
@@ -93,8 +90,10 @@ void DownloadBubblePrimaryView::MaybeAddOtrInfoRow(Browser* browser) {
   info_icon->SetBorder(
       views::CreateEmptyBorder(GetLayoutInsets(DOWNLOAD_ICON)));
   info_icon->SetImage(ui::ImageModel::FromVectorIcon(
-      views::kInfoIcon, kColorDownloadBubbleInfoIcon,
-      GetLayoutConstant(DOWNLOAD_ICON_SIZE)));
+      features::IsRoundedIconsEnabled() ? views::kInfoIcon
+                                        : views::kInfoOldIcon,
+      kColorDownloadBubbleInfoIcon,
+      GetLayoutConstant(LayoutConstant::kDownloadIconSize)));
 
   auto* info_label =
       header_info_row->AddChildView(std::make_unique<views::Label>(
@@ -104,7 +103,7 @@ void DownloadBubblePrimaryView::MaybeAddOtrInfoRow(Browser* browser) {
   info_label->SetHorizontalAlignment(gfx::HorizontalAlignment::ALIGN_LEFT);
   info_label->SetMultiLine(true);
 
-  // As noted in https://crbug.com/1340937#c3, the layout
+  // As noted in https://crbug.com/40230500#comment4, the layout
   // seems to have an issue with multi-line labels. As a workaround, give the
   // label the fixed size width.
   const int side_margin = GetLayoutInsets(DOWNLOAD_ROW).width();
@@ -113,7 +112,8 @@ void DownloadBubblePrimaryView::MaybeAddOtrInfoRow(Browser* browser) {
   const int bubble_width = ChromeLayoutProvider::Get()->GetDistanceMetric(
       views::DISTANCE_BUBBLE_PREFERRED_WIDTH);
   const int min_label_width =
-      bubble_width - side_margin - GetLayoutConstant(DOWNLOAD_ICON_SIZE) -
+      bubble_width - side_margin -
+      GetLayoutConstant(LayoutConstant::kDownloadIconSize) -
       GetLayoutInsets(DOWNLOAD_ICON).width() - icon_label_spacing;
   info_label->SizeToFit(min_label_width);
 }

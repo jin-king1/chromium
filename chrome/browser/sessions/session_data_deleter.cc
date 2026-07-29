@@ -108,17 +108,16 @@ void SessionDataDeleterInternal::Run(
         ~content::StoragePartition::REMOVE_DATA_MASK_COOKIES;
     // Clear storage and keep this object alive until deletion is done.
     storage_partition->ClearData(
-        removal_mask, content::StoragePartition::QUOTA_MANAGED_STORAGE_MASK_ALL,
+        removal_mask,
         /*filter_builder=*/nullptr, base::BindRepeating(&OriginMatcher),
         /*cookie_deletion_filter=*/nullptr,
         /*perform_storage_cleanup=*/false, base::Time(), base::Time::Max(),
         base::BindOnce(&SessionDataDeleterInternal::OnStorageDeletionDone,
                        this));
-    // The const_cast here is safe, as the profile received in the constructor
-    // is not const. It is just that ScopedProfileKeepAlive wraps it as const.
+
     if (auto* media_device_salt_service =
             MediaDeviceSaltServiceFactory::GetInstance()->GetForBrowserContext(
-                const_cast<Profile*>(profile_keep_alive_->profile()))) {
+                profile_keep_alive_->profile())) {
       media_device_salt_service->DeleteSalts(
           base::Time(), base::Time::Max(),
           base::BindRepeating(&StorageKeyMatcher, storage_policy_),

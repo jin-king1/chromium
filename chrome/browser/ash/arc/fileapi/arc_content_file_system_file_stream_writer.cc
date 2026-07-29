@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ash/arc/fileapi/arc_content_file_system_file_stream_writer.h"
 
@@ -36,7 +32,7 @@ std::optional<size_t> WriteFile(base::File* file,
                                 scoped_refptr<net::IOBuffer> buffer,
                                 int buffer_length) {
   return file->WriteAtCurrentPosNoBestEffort(
-      buffer->span().first(base::checked_cast<size_t>(buffer_length)));
+      buffer->first(base::checked_cast<size_t>(buffer_length)));
 }
 
 // Seeks the file, returns 0 on success, or errno on an error.

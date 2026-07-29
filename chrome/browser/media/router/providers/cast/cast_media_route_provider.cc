@@ -9,9 +9,9 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_split.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -190,8 +190,6 @@ void CastMediaRouteProvider::CreateRoute(const std::string& source_id,
                                          CreateRouteCallback callback) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  // TODO(crbug.com/40561499): Handle mirroring routes, including
-  // mirror-to-Cast transitions.
   const MediaSinkInternal* sink = media_sink_service_->GetSinkById(sink_id);
   if (!sink) {
     logger_->LogError(mojom::LogCategory::kRoute, kLoggerComponent,
@@ -239,7 +237,7 @@ void CastMediaRouteProvider::JoinRoute(const std::string& media_source,
 
   if (!activity_manager_) {
     // This should never happen, but it looks like maybe it does.  See
-    // crbug.com/1114067.
+    // crbug.com/40710607.
     NOTREACHED();
   }
   activity_manager_->JoinSession(*cast_source, presentation_id, origin,
@@ -267,7 +265,7 @@ void CastMediaRouteProvider::SendRouteBinaryMessage(
 void CastMediaRouteProvider::StartObservingMediaSinks(
     const std::string& media_source) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  if (base::Contains(sink_queries_, media_source)) {
+  if (sink_queries_.contains(media_source)) {
     return;
   }
 

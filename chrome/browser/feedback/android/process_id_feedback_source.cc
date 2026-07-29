@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/feedback/android/process_id_feedback_source.h"
 
@@ -22,7 +18,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "chrome/browser/feedback/android/jni_headers/ProcessIdFeedbackSource_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using content::BrowserThread;
 using jni_zero::AttachCurrentThread;
@@ -30,20 +26,19 @@ using jni_zero::AttachCurrentThread;
 namespace chrome {
 namespace android {
 
-int64_t JNI_ProcessIdFeedbackSource_GetCurrentPid(JNIEnv* env) {
+static int64_t JNI_ProcessIdFeedbackSource_GetCurrentPid(JNIEnv* env) {
   return base::GetCurrentProcId();
 }
 
-void JNI_ProcessIdFeedbackSource_Start(JNIEnv* env,
-                                       const JavaParamRef<jobject>& obj) {
+static void JNI_ProcessIdFeedbackSource_Start(JNIEnv* env,
+                                              const JavaRef<jobject>& obj) {
   scoped_refptr<ProcessIdFeedbackSource> source =
       new ProcessIdFeedbackSource(env, obj);
   source->PrepareProcessIds();
 }
 
-ProcessIdFeedbackSource::ProcessIdFeedbackSource(
-    JNIEnv* env,
-    const JavaParamRef<jobject>& obj)
+ProcessIdFeedbackSource::ProcessIdFeedbackSource(JNIEnv* env,
+                                                 const JavaRef<jobject>& obj)
     : java_ref_(env, obj) {}
 
 ProcessIdFeedbackSource::~ProcessIdFeedbackSource() = default;
@@ -57,13 +52,18 @@ void ProcessIdFeedbackSource::PrepareProcessIds() {
            content::RenderProcessHost::AllHostsIterator());
        !it.IsAtEnd(); it.Advance()) {
     content::RenderProcessHost* host = it.GetCurrentValue();
-    process_ids_[content::PROCESS_TYPE_RENDERER].push_back(
-        host->GetProcess().Pid());
+    const base::Process& process = host->GetProcess();
+    if (process.IsValid()) {
+      process_ids_[content::PROCESS_TYPE_RENDERER].push_back(process.Pid());
+    }
   }
 
-  for (content::BrowserChildProcessHostIterator iter; !iter.Done(); ++iter)
-    process_ids_[iter.GetData().process_type].push_back(
-        iter.GetData().GetProcess().Handle());
+  for (content::BrowserChildProcessHostIterator iter; !iter.Done(); ++iter) {
+    const base::Process& process = iter.GetData().GetProcess();
+    if (process.IsValid()) {
+      process_ids_[iter.GetData().process_type].push_back(process.Handle());
+    }
+  }
 
   JNIEnv* env = AttachCurrentThread();
   ScopedJavaLocalRef<jobject> obj = java_ref_.get(env);
@@ -74,8 +74,7 @@ void ProcessIdFeedbackSource::PrepareProcessIds() {
 
 ScopedJavaLocalRef<jlongArray> ProcessIdFeedbackSource::GetProcessIdsForType(
     JNIEnv* env,
-    const JavaParamRef<jobject>& obj,
-    jint process_type) {
+    int32_t process_type) {
   switch (process_type) {
     case content::PROCESS_TYPE_RENDERER:
     case content::PROCESS_TYPE_UTILITY:
@@ -86,7 +85,7 @@ ScopedJavaLocalRef<jlongArray> ProcessIdFeedbackSource::GetProcessIdsForType(
   }
   size_t size = process_ids_[process_type].size();
 
-  base::FixedArray<jlong> pids(size);
+  base::FixedArray<int64_t> pids(size);
   for (size_t i = 0; i < size; i++)
     pids[i] = process_ids_[process_type][i];
 
@@ -95,3 +94,5 @@ ScopedJavaLocalRef<jlongArray> ProcessIdFeedbackSource::GetProcessIdsForType(
 
 }  // namespace android
 }  // namespace chrome
+
+DEFINE_JNI(ProcessIdFeedbackSource)

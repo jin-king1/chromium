@@ -7,8 +7,7 @@
 
 #include <cstdint>
 #include <string>
-
-#include "base/types/cxx23_to_underlying.h"
+#include <utility>
 
 namespace cast_channel {
 
@@ -16,14 +15,13 @@ namespace cast_channel {
 // with ostreams.
 template <typename Enumeration>
 auto AsInteger(Enumeration const value) {
-  return base::to_underlying(value);
+  return std::to_underlying(value);
 }
 
 enum class ReadyState {
   NONE,
   CONNECTING,
   OPEN,
-  CLOSING,  // TODO(zhaobin): Remove this value because it is unused.
   CLOSED,
 };
 

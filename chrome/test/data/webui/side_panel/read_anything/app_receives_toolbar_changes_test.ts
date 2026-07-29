@@ -4,19 +4,26 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {BrowserProxy} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 import type {AppElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {ToolbarEvent, VoiceClientSideStatusCode, WordBoundaryMode} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
-import {hasStyle, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
+import {BrowserProxy, LineFocusController, LineFocusMovement, LineFocusStyle, setInstance, SpeechBrowserProxyImpl, SpeechController, ToolbarEvent, VoiceLanguageController} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertArrayEquals, assertEquals, assertFalse, assertLT, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {hasStyle, microtasksFinished, whenCheck} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {createApp, emitEvent} from './common.js';
+import {createApp, createSpeechSynthesisVoice, emitEvent, mockMetrics, setContent, setupBasicSpeech} from './common.js';
 import {FakeReadingMode} from './fake_reading_mode.js';
-import {FakeSpeechSynthesis} from './fake_speech_synthesis.js';
 import {TestColorUpdaterBrowserProxy} from './test_color_updater_browser_proxy.js';
+import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import {TestReadAloudModelBrowserProxy} from './test_read_aloud_browser_proxy.js';
+import {TestSpeechBrowserProxy} from './test_speech_browser_proxy.js';
 
 suite('AppReceivesToolbarChanges', () => {
   let app: AppElement;
+  let speech: TestSpeechBrowserProxy;
+  let metrics: TestMetricsBrowserProxy;
+  let voiceLanguageController: VoiceLanguageController;
+  let speechController: SpeechController;
+  let lineFocusController: LineFocusController;
+  let readAloudModel: TestReadAloudModelBrowserProxy;
 
   function containerLetterSpacing(): number {
     return +window.getComputedStyle(app.$.container)
@@ -71,12 +78,28 @@ suite('AppReceivesToolbarChanges', () => {
     emitEvent(app, ToolbarEvent.THEME);
   }
 
+  function emitPlayPause(): Promise<void> {
+    emitEvent(app, ToolbarEvent.PLAY_PAUSE);
+    return microtasksFinished();
+  }
+
   setup(async () => {
     // Clearing the DOM should always be done first.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     BrowserProxy.setInstance(new TestColorUpdaterBrowserProxy());
+    speech = new TestSpeechBrowserProxy();
+    SpeechBrowserProxyImpl.setInstance(speech);
     const readingMode = new FakeReadingMode();
     chrome.readingMode = readingMode as unknown as typeof chrome.readingMode;
+    metrics = mockMetrics();
+    readAloudModel = new TestReadAloudModelBrowserProxy();
+    setInstance(readAloudModel);
+    voiceLanguageController = new VoiceLanguageController();
+    VoiceLanguageController.setInstance(voiceLanguageController);
+    speechController = new SpeechController();
+    SpeechController.setInstance(speechController);
+    lineFocusController = new LineFocusController();
+    LineFocusController.setInstance(lineFocusController);
     app = await createApp();
   });
 
@@ -91,7 +114,9 @@ suite('AppReceivesToolbarChanges', () => {
   test('on line spacing change container line spacing updated', () => {
     for (let lineSpacingEnum = 0; lineSpacingEnum < 4; lineSpacingEnum++) {
       emitLineSpacing(lineSpacingEnum);
-      assertEquals(lineSpacingEnum, containerLineSpacing());
+      assertEquals(
+          chrome.readingMode.getLineSpacingValue(lineSpacingEnum),
+          containerLineSpacing());
     }
   });
 
@@ -120,6 +145,14 @@ suite('AppReceivesToolbarChanges', () => {
       app.style.setProperty(
           '--color-read-anything-background-yellow', 'yellow');
       app.style.setProperty('--color-read-anything-background-blue', 'blue');
+      app.style.setProperty(
+          '--color-read-anything-background-high-contrast', 'HighContrast');
+      app.style.setProperty(
+          '--color-read-anything-background-low-contrast-light',
+          'LowContrastLight');
+      app.style.setProperty(
+          '--color-read-anything-background-low-contrast-dark',
+          'LowContrastDark');
 
       emitColorTheme(chrome.readingMode.darkTheme);
       assertTrue(
@@ -133,6 +166,18 @@ suite('AppReceivesToolbarChanges', () => {
 
       emitColorTheme(chrome.readingMode.blueTheme);
       assertTrue(hasStyle(app.$.container, '--background-color', 'blue'));
+
+      emitColorTheme(chrome.readingMode.highContrastTheme);
+      assertTrue(
+          hasStyle(app.$.container, '--background-color', 'HighContrast'));
+
+      emitColorTheme(chrome.readingMode.lowContrastLightTheme);
+      assertTrue(
+          hasStyle(app.$.container, '--background-color', 'LowContrastLight'));
+
+      emitColorTheme(chrome.readingMode.lowContrastDarkTheme);
+      assertTrue(
+          hasStyle(app.$.container, '--background-color', 'LowContrastDark'));
     });
 
     test('default theme uses default colors', () => {
@@ -155,6 +200,229 @@ suite('AppReceivesToolbarChanges', () => {
     assertFontsEqual(containerFont(), font2);
   });
 
+  test('line focus style change updates line focus', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    app.updateContent();
+    await microtasksFinished();
+    const lineFocus = app.$.lineFocus;
+    assertTrue(!!lineFocus);
+
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    await microtasksFinished();
+
+    const expectedData = LineFocusStyle.UNDERLINE;
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE, {detail: {data: expectedData}});
+    await microtasksFinished();
+    assertEquals('block', window.getComputedStyle(lineFocus).display);
+    assertEquals(expectedData, lineFocusController.getCurrentLineFocusStyle());
+
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: false}});
+    await microtasksFinished();
+    assertEquals('none', window.getComputedStyle(lineFocus).display);
+    assertFalse(lineFocusController.isEnabled());
+  });
+
+  test('line focus style change updates padding', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    app.connectedCallback();
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+        {detail: {data: LineFocusMovement.STATIC}});
+    // The app needs content so it has a non-zero height.
+    app.updateContent();
+    await microtasksFinished();
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await whenCheck(
+        app, () => window.getComputedStyle(app.$.container).paddingTop !== '');
+    const padding =
+        +window.getComputedStyle(app.$.container).paddingTop.replace('px', '');
+    assertLT(0, padding);
+
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: false}});
+    await microtasksFinished();
+    assertEquals('0px', window.getComputedStyle(app.$.container).paddingTop);
+  });
+
+  test('line focus movement change updates line focus', () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+        {detail: {data: LineFocusMovement.CURSOR}});
+    assertEquals(
+        LineFocusMovement.CURSOR,
+        lineFocusController.getCurrentLineFocusMovement());
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+        {detail: {data: LineFocusMovement.STATIC}});
+    assertEquals(
+        LineFocusMovement.STATIC,
+        lineFocusController.getCurrentLineFocusMovement());
+  });
+
+  test('line focus movement change updates padding', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    app.connectedCallback();
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    // The app needs content so it has a non-zero height.
+    app.updateContent();
+
+    let expectedData = LineFocusMovement.CURSOR;
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT, {detail: {data: expectedData}});
+    await microtasksFinished();
+    assertEquals('', app.$.container.style.paddingTop);
+
+    expectedData = LineFocusMovement.STATIC;
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_MOVEMENT, {detail: {data: expectedData}});
+    await microtasksFinished();
+    const padding =
+        +window.getComputedStyle(app.$.container).paddingTop.replace('px', '');
+    assertLT(0, padding);
+  });
+
+  test('line focus classes update line focus padding', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    app.updateContent();
+    await microtasksFinished();
+    const lineFocus = app.$.lineFocus;
+    assertTrue(!!lineFocus);
+
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    await microtasksFinished();
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    assertTrue(lineFocus.classList.contains('line-mode'));
+    assertEquals('8px', window.getComputedStyle(lineFocus).left);
+    assertEquals('8px', window.getComputedStyle(lineFocus).right);
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.SMALL_WINDOW}});
+    await microtasksFinished();
+    assertTrue(lineFocus.classList.contains('window-mode'));
+    assertEquals('0px', window.getComputedStyle(lineFocus).left);
+    assertEquals('0px', window.getComputedStyle(lineFocus).right);
+  });
+
+  test('immersive view updates line focus padding', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    chrome.readingMode.isImmersiveEnabled = true;
+    app = await createApp();
+    app.isImmersiveMode = () => true;
+    app.updateContent();
+    await microtasksFinished();
+    const lineFocus = app.$.lineFocus;
+    assertTrue(!!lineFocus);
+
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    await microtasksFinished();
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    assertTrue(lineFocus.classList.contains('line-mode'));
+    assertEquals('8px', window.getComputedStyle(lineFocus).left);
+    assertEquals('14px', window.getComputedStyle(lineFocus).right);
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.SMALL_WINDOW}});
+    await microtasksFinished();
+    assertTrue(lineFocus.classList.contains('window-mode'));
+    assertEquals('0px', window.getComputedStyle(lineFocus).left);
+    assertEquals('0px', window.getComputedStyle(lineFocus).right);
+  });
+
+  test(
+      'line focus movement change does nothing with line focus off',
+      async () => {
+        chrome.readingMode.isLineFocusEnabled = true;
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: false}});
+        // The app needs content so it has a non-zero height.
+        app.updateContent();
+
+        let expectedData = LineFocusMovement.CURSOR;
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+            {detail: {data: expectedData}});
+        await microtasksFinished();
+        assertEquals('', app.$.container.style.paddingTop);
+
+        expectedData = LineFocusMovement.STATIC;
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_MOVEMENT,
+            {detail: {data: expectedData}});
+        await microtasksFinished();
+        assertEquals('', app.$.container.style.paddingTop);
+      });
+
+  test('line focus change does nothing with flag disabled', async () => {
+    chrome.readingMode.isLineFocusEnabled = false;
+    const lineFocus = app.$.lineFocus;
+    assertTrue(!!lineFocus);
+
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    assertEquals(
+        '',
+        window.getComputedStyle(lineFocus).getPropertyValue(
+            '--line-focus-display'));
+  });
+
+  test('font size change updates line focus line height', async () => {
+    chrome.readingMode.isLineFocusEnabled = true;
+    emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+    emitEvent(
+        app, ToolbarEvent.LINE_FOCUS_STYLE,
+        {detail: {data: LineFocusStyle.UNDERLINE}});
+    await microtasksFinished();
+    const startingHeight = app.style.getPropertyValue('--line-focus-height');
+
+    chrome.readingMode.fontSize = 4;
+    emitEvent(app, ToolbarEvent.FONT_SIZE);
+    await microtasksFinished();
+
+    const newHeight = app.style.getPropertyValue('--line-focus-height');
+    assertEquals('8px', newHeight);
+    assertNotEquals(startingHeight, newHeight);
+  });
+
+  test(
+      'font size change does not change line focus window height', async () => {
+        chrome.readingMode.isLineFocusEnabled = true;
+        emitEvent(app, ToolbarEvent.LINE_FOCUS_TOGGLE, {detail: {data: true}});
+        emitEvent(
+            app, ToolbarEvent.LINE_FOCUS_STYLE,
+            {detail: {data: LineFocusStyle.SMALL_WINDOW}});
+        await microtasksFinished();
+        const startingHeight =
+            app.style.getPropertyValue('--line-focus-height');
+
+        chrome.readingMode.fontSize = 4;
+        emitEvent(app, ToolbarEvent.FONT_SIZE);
+        await microtasksFinished();
+
+        const newHeight = app.style.getPropertyValue('--line-focus-height');
+        assertEquals(startingHeight, newHeight);
+      });
+
   suite('on language toggle', () => {
     function emitLanguageToggle(lang: string) {
       emitEvent(app, ToolbarEvent.LANGUAGE_TOGGLE, {detail: {language: lang}});
@@ -163,148 +431,95 @@ suite('AppReceivesToolbarChanges', () => {
     test('enabled languages are added', () => {
       const firstLanguage = 'en-us';
       emitLanguageToggle(firstLanguage);
-      assertTrue(app.enabledLangs.includes(firstLanguage));
-      assertTrue(chrome.readingMode.getLanguagesEnabledInPref()
-        .includes(firstLanguage));
+      assertTrue(voiceLanguageController.isLangEnabled(firstLanguage));
+      assertTrue(chrome.readingMode.getLanguagesEnabledInPref().includes(
+          firstLanguage));
 
       const secondLanguage = 'fr';
       emitLanguageToggle(secondLanguage);
-      assertTrue(app.enabledLangs.includes(secondLanguage));
-      assertTrue(chrome.readingMode.getLanguagesEnabledInPref()
-        .includes(secondLanguage));
+      assertTrue(voiceLanguageController.isLangEnabled(secondLanguage));
+      assertTrue(chrome.readingMode.getLanguagesEnabledInPref().includes(
+          secondLanguage));
     });
 
     test('disabled languages are removed', () => {
       const firstLanguage = 'en-us';
       emitLanguageToggle(firstLanguage);
-      assertTrue(app.enabledLangs.includes(firstLanguage));
-      assertTrue(chrome.readingMode.getLanguagesEnabledInPref()
-        .includes(firstLanguage));
+      assertTrue(voiceLanguageController.isLangEnabled(firstLanguage));
+      assertTrue(chrome.readingMode.getLanguagesEnabledInPref().includes(
+          firstLanguage));
 
       emitLanguageToggle(firstLanguage);
-      assertFalse(app.enabledLangs.includes(firstLanguage));
-      assertFalse(chrome.readingMode.getLanguagesEnabledInPref()
-        .includes(firstLanguage));
+      assertFalse(voiceLanguageController.isLangEnabled(firstLanguage));
+      assertFalse(chrome.readingMode.getLanguagesEnabledInPref().includes(
+          firstLanguage));
     });
-
-    suite('with language downloading enabled', () => {
-      let sentInstallRequestFor: string;
-
-      setup(() => {
-        sentInstallRequestFor = '';
-        // Monkey patch sendInstallVoicePackRequest() to spy on the method
-        chrome.readingMode.sendInstallVoicePackRequest = (language) => {
-          sentInstallRequestFor = language;
-        };
-      });
-
-      test(
-          'when previous language install failed, directly installs lang ' +
-              'without usual protocol of sending status request first',
-          () => {
-            const lang = 'en-us';
-            app.updateVoicePackStatus(lang, 'kOther');
-            emitLanguageToggle(lang);
-
-            assertEquals(lang, sentInstallRequestFor);
-            assertEquals(
-                app.getVoicePackStatusForTesting(lang).client,
-                VoiceClientSideStatusCode.SENT_INSTALL_REQUEST_ERROR_RETRY);
-          });
-
-      test(
-          'when there is no status for lang, directly sends install request',
-          () => {
-            emitLanguageToggle('en-us');
-
-            assertEquals('en-us', sentInstallRequestFor);
-          });
-
-
-      test(
-          'when language status is uninstalled, does not directly install lang',
-          () => {
-            const lang = 'en-us';
-            app.updateVoicePackStatus(lang, 'kNotInstalled');
-            emitLanguageToggle(lang);
-
-            assertEquals('', sentInstallRequestFor);
-          });
-      });
   });
 
-  suite('on speech rate change', () => {
-    function emitRate() {
-      emitEvent(app, ToolbarEvent.RATE);
-    }
+  test('on speech rate change speech rate updated', async () => {
+    setupBasicSpeech(speech);
+    readAloudModel.setInitialized(true);
+    const node = setContent('we mean no harm', readAloudModel);
+    app.updateContent();
+    app.$.container.appendChild(node);
+    await emitPlayPause();
 
-    test('speech rate updated', () => {
-      const speechSynthesis = new FakeSpeechSynthesis();
-      app.synth = speechSynthesis;
-      app.playSpeech();
+    const speechRate1 = 2;
+    chrome.readingMode.speechRate = speechRate1;
+    emitEvent(app, ToolbarEvent.RATE);
+    assertEquals(2, speech.getCallCount('speak'));
 
-      const speechRate1 = 2;
-      chrome.readingMode.speechRate = speechRate1;
-      emitRate();
-      assertTrue(speechSynthesis.spokenUtterances.every(
-          utterance => utterance.rate === speechRate1));
+    const speechRate2 = 0.5;
+    chrome.readingMode.speechRate = speechRate2;
+    emitEvent(app, ToolbarEvent.RATE);
+    assertEquals(3, speech.getCallCount('speak'));
 
-      const speechRate2 = 0.5;
-      chrome.readingMode.speechRate = speechRate2;
-      emitRate();
-      assertTrue(speechSynthesis.spokenUtterances.every(
-          utterance => utterance.rate === speechRate2));
+    const speechRate3 = 4;
+    chrome.readingMode.speechRate = speechRate3;
+    emitEvent(app, ToolbarEvent.RATE);
+    assertEquals(4, speech.getCallCount('speak'));
 
-      const speechRate3 = 4;
-      chrome.readingMode.speechRate = speechRate3;
-      emitRate();
-      assertTrue(speechSynthesis.spokenUtterances.every(
-          utterance => utterance.rate === speechRate3));
-    });
+    const speechRates =
+        speech.getArgs('speak').map(utterance => utterance.rate);
+
+    // The 4x speech rate is capped on non-ChromeOS
+
+    // <if expr="not is_chromeos">
+    assertArrayEquals([1, 2, 0.5, 2], speechRates);
+    // </if>
+
+    // <if expr="is_chromeos">
+    assertArrayEquals([1, 2, 0.5, 4], speechRates);
+    // </if>
+  });
+
+  test('on voice selected, current voice updated', () => {
+    const voice = createSpeechSynthesisVoice({lang: 'es-us', name: 'Poodle'});
+    emitEvent(app, ToolbarEvent.VOICE, {detail: {selectedVoice: voice}});
+    assertEquals(voice, voiceLanguageController.getCurrentVoice());
   });
 
   suite('play/pause', () => {
-    let propagatedActiveState: boolean;
-
     setup(() => {
-      chrome.readingMode.onSpeechPlayingStateChanged = isSpeechActive => {
-        propagatedActiveState = isSpeechActive;
-      };
-      app.updateContent();
-      return microtasksFinished();
+      readAloudModel.setInitialized(true);
+      const node = setContent('We come in peace', readAloudModel);
+      app.$.container.appendChild(node);
     });
-
-    function emitPlayPause(): Promise<void> {
-      emitEvent(app, ToolbarEvent.PLAY_PAUSE);
-      return microtasksFinished();
-    }
-
-    test('by default is paused', () => {
-      assertFalse(app.speechPlayingState.isSpeechActive);
-      assertFalse(propagatedActiveState);
-      assertFalse(app.speechPlayingState.hasSpeechBeenTriggered);
-
-      // isSpeechTreeInitialized is set in updateContent
-      assertTrue(app.speechPlayingState.isSpeechTreeInitialized);
-    });
-
 
     test('on first click starts speech', async () => {
       await emitPlayPause();
-      assertTrue(app.speechPlayingState.isSpeechActive);
-      assertTrue(app.speechPlayingState.isSpeechTreeInitialized);
-      assertTrue(app.speechPlayingState.hasSpeechBeenTriggered);
-      assertTrue(propagatedActiveState);
+      assertTrue(speechController.isSpeechActive());
+      assertTrue(speechController.isSpeechTreeInitialized());
+      assertTrue(speechController.hasSpeechBeenTriggered());
     });
 
     test('on second click stops speech', async () => {
       await emitPlayPause();
       await emitPlayPause();
 
-      assertFalse(app.speechPlayingState.isSpeechActive);
-      assertTrue(app.speechPlayingState.isSpeechTreeInitialized);
-      assertTrue(app.speechPlayingState.hasSpeechBeenTriggered);
-      assertFalse(propagatedActiveState);
+      assertFalse(speechController.isSpeechActive());
+      assertTrue(speechController.isSpeechTreeInitialized());
+      assertTrue(speechController.hasSpeechBeenTriggered());
     });
 
     suite('on keyboard k pressed', () => {
@@ -315,65 +530,32 @@ suite('AppReceivesToolbarChanges', () => {
       });
 
       test('first press plays', async () => {
-        app.$.appFlexParent.dispatchEvent(kPress);
+        document.dispatchEvent(kPress);
         await microtasksFinished();
 
-        assertTrue(app.speechPlayingState.isSpeechActive);
-        assertTrue(propagatedActiveState);
+        assertTrue(speechController.isSpeechActive());
+        assertEquals(0, metrics.getCallCount('recordSpeechStopSource'));
       });
 
       test('second press pauses', async () => {
-        app.$.appFlexParent.dispatchEvent(kPress);
-        app.$.appFlexParent.dispatchEvent(kPress);
+        document.dispatchEvent(kPress);
+        document.dispatchEvent(kPress);
         await microtasksFinished();
 
-        assertFalse(app.speechPlayingState.isSpeechActive);
-        assertFalse(propagatedActiveState);
+        assertFalse(speechController.isSpeechActive());
+        assertEquals(
+            chrome.readingMode.keyboardShortcutStopSource,
+            await metrics.whenCalled('recordSpeechStopSource'));
       });
-    });
-  });
 
-  suite('on highlight toggle', () => {
-    function highlightColor(): string {
-      return window.getComputedStyle(app.$.container)
-          .getPropertyValue('--current-highlight-bg-color');
-    }
+      test('other key presses do not play', async () => {
+        const fPress = new KeyboardEvent('keydown', {key: 'f'});
+        document.dispatchEvent(fPress);
+        await microtasksFinished();
 
-    function emitHighlight(highlightOn: boolean) {
-      const highlightValue = highlightOn ? chrome.readingMode.autoHighlighting :
-                                           chrome.readingMode.noHighlighting;
-      chrome.readingMode.onHighlightGranularityChanged(highlightValue);
-      emitEvent(app, ToolbarEvent.HIGHLIGHT_CHANGE, {
-        detail: {data: highlightValue},
+        assertFalse(speechController.isSpeechActive());
+        assertEquals(0, metrics.getCallCount('recordSpeechStopSource'));
       });
-    }
-
-    setup(() => {
-      emitColorTheme(chrome.readingMode.defaultTheme);
-      app.updateContent();
-      app.playSpeech();
-    });
-
-    test('on hide, uses transparent highlight', () => {
-      emitHighlight(false);
-      assertEquals('transparent', highlightColor());
-    });
-
-    test('on show, uses colored highlight', () => {
-      emitHighlight(true);
-      assertNotEquals('transparent', highlightColor());
-    });
-
-    test('new theme uses colored highlight with highlights on', () => {
-      emitHighlight(true);
-      emitColorTheme(chrome.readingMode.blueTheme);
-      assertNotEquals('transparent', highlightColor());
-    });
-
-    test('new theme uses transparent highlight with highlights off', () => {
-      emitHighlight(false);
-      emitColorTheme(chrome.readingMode.yellowTheme);
-      assertEquals('transparent', highlightColor());
     });
   });
 
@@ -390,63 +572,12 @@ suite('AppReceivesToolbarChanges', () => {
       });
     }
 
-    let highlightedWord: boolean;
-    let highlightedSentence: boolean;
-    let highlightedPhrase: boolean;
-
     setup(() => {
-      chrome.readingMode.isPhraseHighlightingEnabled = true;
-      highlightedWord = false;
-      highlightedSentence = false;
-      highlightedPhrase = false;
-      app.highlightCurrentSentence = () => highlightedSentence = true;
-      app.highlightCurrentWord = () => highlightedWord = true;
-      app.highlightCurrentPhrase = () => highlightedPhrase = true;
-      app.wordBoundaryState.mode = WordBoundaryMode.BOUNDARY_DETECTED;
       app.updateContent();
     });
 
-    test('updates highlight', () => {
-      const wordHighlighting = chrome.readingMode.wordHighlighting;
-      emitHighlight(wordHighlighting);
-
-      app.playSpeech();
-
-      assertTrue(highlightedWord);
-      assertFalse(highlightedSentence);
-      assertFalse(highlightedPhrase);
-      assertEquals(wordHighlighting, chrome.readingMode.highlightGranularity);
-    });
-
-    test('multiple changes, uses latest granularity', () => {
-      const phraseHighlighting = chrome.readingMode.phraseHighlighting;
-      emitHighlight(chrome.readingMode.wordHighlighting);
-      emitHighlight(phraseHighlighting);
-
-      app.playSpeech();
-
-      assertTrue(highlightedWord, 'word');
-      assertFalse(highlightedSentence, 'sentence');
-      assertTrue(highlightedPhrase, 'phrase');
-      assertEquals(phraseHighlighting, chrome.readingMode.highlightGranularity);
-    });
-
-    test('on switch granularity after speech start, updates highlight', () => {
-      emitHighlight(chrome.readingMode.wordHighlighting);
-      const sentenceHighlighting = chrome.readingMode.sentenceHighlighting;
-
-      app.playSpeech();
-      emitHighlight(sentenceHighlighting);
-
-      assertTrue(highlightedWord, 'word');
-      assertTrue(highlightedSentence, 'sentence');
-      assertFalse(highlightedPhrase);
-      assertEquals(
-          sentenceHighlighting, chrome.readingMode.highlightGranularity);
-    });
-
     test('new theme uses colored highlight with highlights on', () => {
-      emitHighlight(chrome.readingMode.phraseHighlighting);
+      emitHighlight(chrome.readingMode.wordHighlighting);
       emitColorTheme(chrome.readingMode.blueTheme);
       assertNotEquals('transparent', highlightColor());
     });
@@ -460,48 +591,23 @@ suite('AppReceivesToolbarChanges', () => {
 
   suite('on granularity change', () => {
     setup(() => {
+      setupBasicSpeech(speech);
+      readAloudModel.setInitialized(true);
+      const node = setContent('we mean no harm', readAloudModel);
       app.updateContent();
-    });
-
-    function emitNextGranularity() {
-      emitEvent(app, ToolbarEvent.NEXT_GRANULARITY);
-    }
-
-    function emitPreviousGranularity() {
-      emitEvent(app, ToolbarEvent.PREVIOUS_GRANULARITY);
-    }
-
-    test('next propagates change', () => {
-      let movedToNext = false;
-      chrome.readingMode.movePositionToNextGranularity = () => {
-        movedToNext = true;
-      };
-
-      emitNextGranularity();
-
-      assertTrue(movedToNext);
+      app.$.container.appendChild(node);
+      return emitPlayPause();
     });
 
     test('next highlights text', () => {
-      emitNextGranularity();
+      emitEvent(app, ToolbarEvent.NEXT_GRANULARITY);
       const currentHighlight =
           app.$.container.querySelector('.current-read-highlight');
       assertTrue(!!currentHighlight!.textContent);
     });
 
-    test('previous propagates change', () => {
-      let movedToPrevious: boolean = false;
-      chrome.readingMode.movePositionToPreviousGranularity = () => {
-        movedToPrevious = true;
-      };
-
-      emitPreviousGranularity();
-
-      assertTrue(movedToPrevious);
-    });
-
     test('previous highlights text', () => {
-      emitPreviousGranularity();
+      emitEvent(app, ToolbarEvent.PREVIOUS_GRANULARITY);
       const currentHighlight =
           app.$.container.querySelector('.current-read-highlight');
       assertTrue(!!currentHighlight!.textContent);

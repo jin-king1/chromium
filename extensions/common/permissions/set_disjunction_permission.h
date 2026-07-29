@@ -22,7 +22,7 @@ namespace extensions {
 
 // An abstract base class for permissions that are represented by the
 // disjunction of a set of conditions.  Each condition is represented by a
-// |PermissionDataType| (e.g. SocketPermissionData).  If an
+// `PermissionDataType` (e.g. SocketPermissionData).  If an
 // APIPermission::CheckParam matches any of the conditions in the set, the
 // permission is granted.
 //
@@ -118,8 +118,8 @@ class SetDisjunctionPermission : public APIPermission {
       if (data.FromValue(&item_value)) {
         data_set_.insert(data);
       } else {
-        std::string unknown_permission;
-        base::JSONWriter::Write(item_value, &unknown_permission);
+        std::string unknown_permission =
+            base::WriteJson(item_value).value_or("");
         if (unhandled_permissions) {
           unhandled_permissions->push_back(unknown_permission);
         } else {
@@ -135,7 +135,7 @@ class SetDisjunctionPermission : public APIPermission {
   }
 
   std::unique_ptr<base::Value> ToValue() const override {
-    base::Value::List list;
+    base::ListValue list;
     for (const auto& item : data_set_) {
       list.Append(base::Value::FromUniquePtrValue(item.ToValue()));
     }

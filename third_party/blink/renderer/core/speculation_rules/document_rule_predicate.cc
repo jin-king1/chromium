@@ -4,7 +4,8 @@
 
 #include "third_party/blink/renderer/core/speculation_rules/document_rule_predicate.h"
 
-#include "base/containers/contains.h"
+#include <algorithm>
+
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_urlpatterninit_usvstring.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_url_pattern_init.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
@@ -15,11 +16,13 @@
 #include "third_party/blink/renderer/core/frame/web_feature.h"
 #include "third_party/blink/renderer/core/html/html_anchor_element.h"
 #include "third_party/blink/renderer/core/url_pattern/url_pattern.h"
+#include "third_party/blink/renderer/core/url_pattern/url_pattern_utils.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_vector.h"
 #include "third_party/blink/renderer/platform/heap/member.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
 #include "third_party/blink/renderer/platform/json/json_values.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink {
@@ -43,7 +46,7 @@ class Conjunction : public DocumentRulePredicate {
   HeapVector<Member<StyleRule>> GetStyleRules() const override {
     HeapVector<Member<StyleRule>> rules;
     for (DocumentRulePredicate* clause : clauses_) {
-      rules.AppendVector(clause->GetStyleRules());
+      rules.append_range(clause->GetStyleRules());
     }
     return rules;
   }
@@ -93,7 +96,7 @@ class Disjunction : public DocumentRulePredicate {
   HeapVector<Member<StyleRule>> GetStyleRules() const override {
     HeapVector<Member<StyleRule>> rules;
     for (DocumentRulePredicate* clause : clauses_) {
-      rules.AppendVector(clause->GetStyleRules());
+      rules.append_range(clause->GetStyleRules());
     }
     return rules;
   }
@@ -184,7 +187,7 @@ class URLPatternPredicate : public DocumentRulePredicate {
     // For each pattern of predicate’s patterns:
     for (const auto& pattern : patterns_) {
       // Match given pattern and href. If the result is not null, return true.
-      if (pattern->test(ToScriptStateForMainWorld(execution_context_),
+      if (pattern->test(execution_context_->GetIsolate(),
                         MakeGarbageCollected<V8URLPatternInput>(href),
                         ASSERT_NO_EXCEPTION)) {
         return true;
@@ -236,8 +239,8 @@ class CSSSelectorPredicate : public DocumentRulePredicate {
     const ComputedStyle* computed_style = link.GetComputedStyle();
     DCHECK(computed_style);
     DCHECK(!DisplayLockUtilities::LockedAncestorPreventingStyle(link));
-    const Persistent<HeapHashSet<WeakMember<StyleRule>>>& matched_selectors =
-        computed_style->DocumentRulesSelectors();
+    const Persistent<GCedHeapHashSet<WeakMember<StyleRule>>>&
+        matched_selectors = computed_style->DocumentRulesSelectors();
     if (!matched_selectors) {
       return false;
     }
@@ -296,72 +299,12 @@ URLPattern* ParseRawPattern(v8::Isolate* isolate,
                             const KURL& base_url,
                             ExceptionState& exception_state,
                             String* out_error) {
-  // If rawPattern is a string, then:
-  if (String raw_string; raw_pattern->AsString(&raw_string)) {
-    // Set pattern to the result of constructing a URLPattern using the
-    // URLPattern(input, baseURL) constructor steps given rawPattern and
-    // serializedBaseURL.
-    V8URLPatternInput* url_pattern_input =
-        MakeGarbageCollected<V8URLPatternInput>(raw_string);
-    return URLPattern::Create(isolate, url_pattern_input, base_url,
-                              exception_state);
+  auto result =
+      ParseURLPatternFromJSON(isolate, *raw_pattern, base_url, exception_state);
+  if (result.has_value()) {
+    return result.value();
   }
-  // Otherwise, if rawPattern is a map
-  if (JSONObject* pattern_object = JSONObject::Cast(raw_pattern)) {
-    // Let init be «[ "baseURL" → serializedBaseURL ]», representing a
-    // dictionary of type URLPatternInit.
-    URLPatternInit* init = URLPatternInit::Create();
-    init->setBaseURL(base_url);
-
-    // For each key -> value of rawPattern:
-    for (wtf_size_t i = 0; i < pattern_object->size(); i++) {
-      JSONObject::Entry entry = pattern_object->at(i);
-      String key = entry.first;
-      String value;
-      // If value is not a string
-      if (!entry.second->AsString(&value)) {
-        SetParseErrorMessage(
-            out_error, "Values for a URL pattern object must be strings.");
-        return nullptr;
-      }
-
-      // Set init[key] to value.
-      if (key == "protocol") {
-        init->setProtocol(value);
-      } else if (key == "username") {
-        init->setUsername(value);
-      } else if (key == "password") {
-        init->setPassword(value);
-      } else if (key == "hostname") {
-        init->setHostname(value);
-      } else if (key == "port") {
-        init->setPort(value);
-      } else if (key == "pathname") {
-        init->setPathname(value);
-      } else if (key == "search") {
-        init->setSearch(value);
-      } else if (key == "hash") {
-        init->setHash(value);
-      } else if (key == "baseURL") {
-        init->setBaseURL(value);
-      } else {
-        SetParseErrorMessage(
-            out_error,
-            String::Format("Invalid key \"%s\" for a URL pattern object found.",
-                           key.Latin1().c_str()));
-        return nullptr;
-      }
-    }
-
-    // Set pattern to the result of constructing a URLPattern using the
-    // URLPattern(input, baseURL) constructor steps given init.
-    V8URLPatternInput* url_pattern_input =
-        MakeGarbageCollected<V8URLPatternInput>(init);
-    return URLPattern::Create(isolate, url_pattern_input, exception_state);
-  }
-  SetParseErrorMessage(out_error,
-                       "Value for \"href_matches\" should either be a "
-                       "string, an object, or a list of strings and objects.");
+  SetParseErrorMessage(out_error, result.error());
   return nullptr;
 }
 
@@ -374,11 +317,9 @@ String GetPredicateType(JSONObject* input, String* out_error) {
       // If we'd already found one, then this is ambiguous.
       if (!predicate_type.IsNull()) {
         SetParseErrorMessage(
-            out_error,
-            String::Format("Document rule predicate type is ambiguous, "
-                           "two types found: \"%s\" and \"%s\".",
-                           predicate_type.Latin1().c_str(),
-                           type.Latin1().c_str()));
+            out_error, StrCat({"Document rule predicate type is ambiguous, "
+                               "two types found: \"",
+                               predicate_type, "\" and \"", type, "\"."}));
         return String();
       }
 
@@ -419,10 +360,8 @@ DocumentRulePredicate* DocumentRulePredicate::Parse(
     // "and" and "or" cannot be paired with any other keys.
     if (input->size() != 1) {
       SetParseErrorMessage(
-          out_error,
-          String::Format(
-              "Document rule predicate with \"%s\" key cannot have other keys.",
-              predicate_type.Latin1().c_str()));
+          out_error, StrCat({"Document rule predicate with \"", predicate_type,
+                             "\" key cannot have other keys."}));
       return nullptr;
     }
     // Let rawClauses be the input[predicateType].
@@ -431,8 +370,8 @@ DocumentRulePredicate* DocumentRulePredicate::Parse(
     // If rawClauses is not a list, then return null.
     if (!raw_clauses) {
       SetParseErrorMessage(
-          out_error, String::Format("\"%s\" key should have a list value.",
-                                    predicate_type.Latin1().c_str()));
+          out_error,
+          StrCat({"\"", predicate_type, "\" key should have a list value."}));
       return nullptr;
     }
 
@@ -508,12 +447,11 @@ DocumentRulePredicate* DocumentRulePredicate::Parse(
         // "document", then return null.
         String relative_to;
         if (!input->GetString("relative_to", &relative_to) ||
-            !base::Contains(kKnownRelativeToValues, relative_to)) {
+            !std::ranges::contains(kKnownRelativeToValues, relative_to)) {
           SetParseErrorMessage(
               out_error,
-              String::Format(
-                  "Unrecognized \"relative_to\" value: %s.",
-                  input->Get("relative_to")->ToJSONString().Latin1().c_str()));
+              StrCat({"Unrecognized \"relative_to\" value: ",
+                      input->Get("relative_to")->ToJSONString(), "."}));
           return nullptr;
         }
         // If relativeTo is "document", set baseURL to the document's
@@ -523,9 +461,8 @@ DocumentRulePredicate* DocumentRulePredicate::Parse(
         }
       } else {
         // Otherwise, this is an unrecognized key. The predicate is invalid.
-        SetParseErrorMessage(out_error,
-                             String::Format("Unrecognized key found: \"%s\".",
-                                            key.Latin1().c_str()));
+        SetParseErrorMessage(
+            out_error, StrCat({"Unrecognized key found: \"", key, "\"."}));
         return nullptr;
       }
     }
@@ -553,9 +490,8 @@ DocumentRulePredicate* DocumentRulePredicate::Parse(
       if (!pattern) {
         SetParseErrorMessage(
             out_error,
-            String::Format(
-                "URL Pattern for \"href_matches\" could not be parsed: %s.",
-                raw_pattern->ToJSONString().Latin1().c_str()));
+            StrCat({"URL Pattern for \"href_matches\" could not be parsed: ",
+                    raw_pattern->ToJSONString(), "."}));
         return nullptr;
       }
       // Append pattern to patterns.
@@ -606,8 +542,8 @@ DocumentRulePredicate* DocumentRulePredicate::Parse(
                                    raw_selector_string, arena);
       if (selector_vector.empty()) {
         SetParseErrorMessage(
-            out_error, String::Format("\"%s\" is not a valid selector.",
-                                      raw_selector_string.Latin1().c_str()));
+            out_error,
+            StrCat({"\"", raw_selector_string, "\" is not a valid selector."}));
         return nullptr;
       }
       StyleRule* selector =

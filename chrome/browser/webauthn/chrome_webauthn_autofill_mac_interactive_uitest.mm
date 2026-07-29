@@ -2,6 +2,7 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <memory>
 #include <vector>
 
@@ -28,7 +29,7 @@
 #include "content/public/test/browser_test_utils.h"
 #include "device/fido/mac/credential_store.h"
 #include "device/fido/mac/scoped_touch_id_test_environment.h"
-#include "device/fido/public_key_credential_user_entity.h"
+#include "device/fido/public/public_key_credential_user_entity.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "ui/base/l10n/l10n_util.h"
@@ -79,7 +80,7 @@ class WebAuthnMacAutofillIntegrationTest : public CertVerifierBrowserTest {
     // Set up the fake keychain.
     config_ =
         ChromeWebAuthenticationDelegate::TouchIdAuthenticatorConfigForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     touch_id_test_environment_ =
         std::make_unique<device::fido::mac::ScopedTouchIdTestEnvironment>(
             config_);
@@ -118,33 +119,36 @@ IN_PROC_BROWSER_TEST_F(WebAuthnMacAutofillIntegrationTest, SelectAccount) {
   // effect of waiting for the browser to send the renderer the password
   // information, and waiting for the UI to render.
   base::WeakPtr<autofill::AutofillSuggestionController> controller;
-  while (!controller) {
+  base::TimeTicks start_time = base::TimeTicks::Now();
+  while (!controller ||
+         std::ranges::count(controller->GetSuggestions(),
+                            autofill::SuggestionType::kWebauthnCredential,
+                            &autofill::Suggestion::type) == 0) {
+    if (base::TimeTicks::Now() - start_time > base::Seconds(2)) {
+      ASSERT_TRUE(controller) << "Timed out waiting for suggestion popup.";
+      FAIL() << "Timed out waiting for WebAuthn suggestion in popup.";
+    }
     content::SimulateMouseClickOrTapElementWithId(web_contents, "username");
     controller = autofill_client->suggestion_controller_for_testing();
   }
 
-  auto suggestions = controller->GetSuggestions();
-  size_t suggestion_index;
-  autofill::Suggestion webauthn_entry;
-  for (suggestion_index = 0; suggestion_index < suggestions.size();
-       ++suggestion_index) {
-    if (suggestions[suggestion_index].type ==
-        autofill::SuggestionType::kWebauthnCredential) {
-      webauthn_entry = suggestions[suggestion_index];
-      break;
-    }
-  }
-  ASSERT_LT(suggestion_index, suggestions.size()) << "WebAuthn entry not found";
-  EXPECT_EQ(webauthn_entry.main_text.value, u"flandre");
-  EXPECT_EQ(webauthn_entry.labels.at(0).at(0).value,
+  std::vector<autofill::Suggestion> suggestions = controller->GetSuggestions();
+  auto it = std::ranges::find(suggestions,
+                              autofill::SuggestionType::kWebauthnCredential,
+                              &autofill::Suggestion::type);
+  ASSERT_NE(it, suggestions.end()) << "WebAuthn entry not found";
+  EXPECT_EQ(it->main_text.value, u"flandre");
+  EXPECT_EQ(it->labels.at(0).at(0).value,
             l10n_util::GetStringUTF16(
                 IDS_PASSWORD_MANAGER_PASSKEY_FROM_CHROME_PROFILE));
-  EXPECT_EQ(webauthn_entry.icon, autofill::Suggestion::Icon::kGlobe);
+  EXPECT_EQ(it->icon, autofill::Suggestion::Icon::kGlobe);
 
   // Click the credential.
   test_api(static_cast<autofill::AutofillPopupControllerImpl&>(*controller))
       .DisableThreshold(true);
-  controller->AcceptSuggestion(suggestion_index);
+  controller->AcceptSuggestion(
+      it - suggestions.begin(),
+      autofill::AutofillMetrics::SuggestionAcceptedMethod::kMouse);
   std::string result;
   ASSERT_TRUE(message_queue.WaitForMessage(&result));
   EXPECT_EQ(result, "\"webauthn: OK\"");

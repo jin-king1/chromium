@@ -24,8 +24,8 @@
 #include "content/public/browser/browser_thread.h"
 #include "ui/display/win/dpi.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/icon_util.h"
 #include "ui/gfx/image/image_skia.h"
+#include "ui/gfx/win/icon_util.h"
 
 namespace {
 // Helper class to manage lifetime of icon reader service.
@@ -161,7 +161,7 @@ gfx::Image GetIconForFileExtension(const std::wstring& group,
   gfx::Image image;
 
   // Not only is GetFileInfo a blocking call, it's also known to hang
-  // (crbug.com/1249943), add a ScopedBlockingCall to let the scheduler know
+  // (crbug.com/40791559), add a ScopedBlockingCall to let the scheduler know
   // when this hangs and to explicitly label this call in tracing.
   base::ScopedBlockingCall blocking_call(FROM_HERE,
                                          base::BlockingType::MAY_BLOCK);

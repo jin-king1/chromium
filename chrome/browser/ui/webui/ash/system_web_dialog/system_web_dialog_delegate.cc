@@ -5,10 +5,9 @@
 #include "chrome/browser/ui/webui/ash/system_web_dialog/system_web_dialog_delegate.h"
 
 #include <algorithm>
-#include <list>
+#include <vector>
 
 #include "ash/public/cpp/shell_window_ids.h"
-#include "base/containers/contains.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/views/chrome_web_dialog_view.h"
@@ -26,6 +25,7 @@
 #include "ui/display/screen.h"
 #include "ui/display/util/display_util.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 
 namespace ash {
 
@@ -33,9 +33,9 @@ namespace {
 
 constexpr int kSystemDialogCornerRadiusDp = 12;
 
-// Track all open system web dialog instances. This should be a small list.
-std::list<SystemWebDialogDelegate*>* GetInstances() {
-  static base::NoDestructor<std::list<SystemWebDialogDelegate*>> instances;
+// Track all open system web dialog instances. This should be a small vector.
+std::vector<SystemWebDialogDelegate*>* GetInstances() {
+  static base::NoDestructor<std::vector<SystemWebDialogDelegate*>> instances;
   return instances.get();
 }
 
@@ -47,7 +47,7 @@ views::Widget::InitParams CreateWidgetParams(
     SystemWebDialogDelegate::FrameKind frame_kind) {
   views::Widget::InitParams params(
       views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
-  params.corner_radius = kSystemDialogCornerRadiusDp;
+  params.rounded_corners = gfx::RoundedCornersF(kSystemDialogCornerRadiusDp);
   // Set shadow type according to the frame kind.
   switch (frame_kind) {
     case SystemWebDialogDelegate::FrameKind::kNonClient:
@@ -93,10 +93,10 @@ SystemWebDialogDelegate* SystemWebDialogDelegate::FindInstance(
 
 // static
 bool SystemWebDialogDelegate::HasInstance(const GURL& url) {
-  return base::Contains(*GetInstances(), url,
-                        [](const SystemWebDialogDelegate* instance) {
-                          return instance->GetDialogContentURL();
-                        });
+  return std::ranges::contains(*GetInstances(), url,
+                               [](const SystemWebDialogDelegate* instance) {
+                                 return instance->GetDialogContentURL();
+                               });
 }
 
 // static
@@ -112,12 +112,12 @@ gfx::Size SystemWebDialogDelegate::ComputeDialogSizeForInternalScreen(
   }
 
   display::Display internal_display;
-  if (!display::Screen::GetScreen()->GetDisplayWithDisplayId(
+  if (!display::Screen::Get()->GetDisplayWithDisplayId(
           display::Display::InternalDisplayId(), &internal_display)) {
     // GetDisplayWithDisplayId() returns false if the laptop's lid is closed.
     // Return the preferred size instead.
-    // TODO(crbug.com/40737061): Test this edge case with displays
-    // (lid closed with external monitors).
+    // This edge case with external monitors when the lid is closed is not
+    // covered by tests. See crbug.com/40737061 for context.
     return preferred_size;
   }
 
@@ -176,7 +176,7 @@ void SystemWebDialogDelegate::Focus() {
   // Focusing a modal dialog does not make it the topmost dialog and does not
   // enable interaction. It does however remove focus from the current dialog,
   // preventing interaction with any dialog. TODO(stevenjb): Investigate and
-  // fix, https://crbug.com/914133.
+  // fix, https://crbug.com/40606092.
   if (GetDialogModalType() == ui::mojom::ModalType::kNone) {
     if (!dialog_window()->IsVisible()) {
       dialog_window()->Show();
@@ -225,5 +225,10 @@ void SystemWebDialogDelegate::ShowSystemDialogForBrowserContext(
 void SystemWebDialogDelegate::ShowSystemDialog(gfx::NativeWindow parent) {
   ShowSystemDialogForBrowserContext(ProfileManager::GetActiveUserProfile(),
                                     parent);
+}
+
+const std::vector<SystemWebDialogDelegate*>&
+SystemWebDialogDelegate::GetAllInstances() {
+  return *GetInstances();
 }
 }  // namespace ash

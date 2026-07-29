@@ -3,6 +3,7 @@
 // found in the LICENSE file.
 
 #import "base/ios/ios_util.h"
+#import "components/autofill/core/common/autofill_payments_features.h"
 #import "ios/chrome/browser/autofill/ui_bundled/autofill_app_interface.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
@@ -29,32 +30,38 @@ NSString* const kEditIconIdentifier = @"_editIcon";
 
 // Matcher for the 'Name on Card' field in the add credit card view.
 id<GREYMatcher> NameOnCardField() {
-  return grey_accessibilityLabel(
-      l10n_util::GetNSStringWithFixup(IDS_IOS_AUTOFILL_CARDHOLDER));
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_CARDHOLDER);
 }
 
 // Matcher for the 'Card Number' field in the add credit card view.
 id<GREYMatcher> CardNumberField() {
-  return grey_accessibilityLabel(
-      l10n_util::GetNSStringWithFixup(IDS_IOS_AUTOFILL_CARD_NUMBER));
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_CARD_NUMBER);
 }
 
 // Matcher for the 'Month of Expiry' field in the add credit card view.
 id<GREYMatcher> MonthOfExpiryField() {
-  return grey_accessibilityLabel(
-      l10n_util::GetNSStringWithFixup(IDS_IOS_AUTOFILL_EXP_MONTH));
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_EXP_MONTH);
 }
 
 // Matcher for the 'Year of Expiry' field in the add credit card view.
 id<GREYMatcher> YearOfExpiryField() {
-  return grey_accessibilityLabel(
-      l10n_util::GetNSStringWithFixup(IDS_IOS_AUTOFILL_EXP_YEAR));
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_EXP_YEAR);
 }
 
 // Matcher for the 'Nickname' field in the add credit card view.
 id<GREYMatcher> NicknameField() {
-  return grey_accessibilityLabel(
-      l10n_util::GetNSStringWithFixup(IDS_IOS_AUTOFILL_NICKNAME));
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_NICKNAME);
+}
+
+// Matcher for the 'CVC' field in the add credit card view.
+id<GREYMatcher> CvcField() {
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_SECURITY_CODE);
+}
+
+// Matcher for the 'Use Camera' button in the add credit card view.
+id<GREYMatcher> UseCameraButton() {
+  return ButtonWithAccessibilityLabelId(
+      IDS_IOS_AUTOFILL_ADD_CREDIT_CARD_OPEN_CAMERA_BUTTON_LABEL);
 }
 
 // Matcher for the 'Card Number' text field in the add credit card view.
@@ -77,6 +84,11 @@ id<GREYMatcher> NicknameTextField() {
   return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_NICKNAME);
 }
 
+// Matcher for the 'CVC' text field in the add credit card view.
+id<GREYMatcher> CvcTextField() {
+  return TextFieldForCellWithLabelId(IDS_IOS_AUTOFILL_SECURITY_CODE);
+}
+
 // Matcher for the 'Card Number' icon view in the add credit card view.
 id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
   return IconViewForCellWithLabelId(IDS_IOS_AUTOFILL_CARD_NUMBER, icon_type);
@@ -93,13 +105,27 @@ id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
 - (AppLaunchConfiguration)appConfigurationForTestCase {
   AppLaunchConfiguration config;
   // Add feature configs here.
+  if ([self isRunningTest:@selector
+            (testUseCameraButtonShownWhenFeatureEnabled)]) {
+    config.features_enabled.push_back(
+        autofill::features::kAutofillCreditCardScannerIos);
+  }
   return config;
 }
 
 - (void)setUp {
   [super setUp];
   [ChromeEarlGreyUI openSettingsMenu];
-  [ChromeEarlGreyUI tapSettingsMenuButton:PaymentMethodsButton()];
+  if ([ChromeEarlGrey isYourSavedInfoSettingsPageIosEnabled]) {
+    [ChromeEarlGreyUI
+        tapSettingsMenuButton:grey_accessibilityID(
+                                  @"kSettingsAutofillAndPasswordsCellId")];
+    [[EarlGrey
+        selectElementWithMatcher:PaymentMethodsButton()]
+        performAction:grey_tap()];
+  } else {
+    [ChromeEarlGreyUI tapSettingsMenuButton:PaymentMethodsButton()];
+  }
   [[EarlGrey selectElementWithMatcher:SettingsToolbarAddButton()]
       performAction:grey_tap()];
 }
@@ -124,10 +150,22 @@ id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
       assertWithMatcher:grey_sufficientlyVisible()];
   [[EarlGrey selectElementWithMatcher:NicknameField()]
       assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:CvcField()]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  // The 'Use Camera' button is currently behind a flag and should not be shown
+  // by default.
+  [[EarlGrey selectElementWithMatcher:UseCameraButton()]
+      assertWithMatcher:grey_nil()];
 
   [[EarlGrey
       selectElementWithMatcher:chrome_test_util::AddCreditCardCancelButton()]
       performAction:grey_tap()];
+}
+
+// This test is run with the kAutofillCreditCardScannerIos feature enabled.
+- (void)testUseCameraButtonShownWhenFeatureEnabled {
+  [[EarlGrey selectElementWithMatcher:UseCameraButton()]
+      assertWithMatcher:grey_sufficientlyVisible()];
 }
 
 #pragma mark - Test top toolbar buttons
@@ -215,6 +253,38 @@ id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
                                    nil)];
 }
 
+// Tests when a user tries to add an invalid card CVC, the "Add" button is
+// not enabled.
+- (void)testAddButtonDisabledOnInvalidCvc {
+  [[EarlGrey selectElementWithMatcher:CardNumberTextField()]
+      performAction:grey_replaceText(@"4111111111111111")];
+  [[EarlGrey selectElementWithMatcher:MonthOfExpiryTextField()]
+      performAction:grey_replaceText(@"12")];
+  [[EarlGrey selectElementWithMatcher:YearOfExpiryTextField()]
+      performAction:grey_replaceText(@"2030")];
+  [[EarlGrey selectElementWithMatcher:CvcTextField()]
+      performAction:grey_replaceText(@"12341234")];
+
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::AddCreditCardButton()]
+      assertWithMatcher:grey_allOf(grey_not(grey_enabled()),
+                                   grey_sufficientlyVisible(), nil)];
+}
+
+// Tests when a user tries to add an empty card CVC, the "Add" button is
+// enabled.
+- (void)testAddButtonEnabledOnEmptyCvc {
+  [[EarlGrey selectElementWithMatcher:CardNumberTextField()]
+      performAction:grey_replaceText(@"4111111111111111")];
+  [[EarlGrey selectElementWithMatcher:MonthOfExpiryTextField()]
+      performAction:grey_replaceText(@"12")];
+  [[EarlGrey selectElementWithMatcher:YearOfExpiryTextField()]
+      performAction:grey_replaceText(@"2030")];
+
+  [[EarlGrey selectElementWithMatcher:chrome_test_util::AddCreditCardButton()]
+      assertWithMatcher:grey_allOf(grey_enabled(), grey_sufficientlyVisible(),
+                                   nil)];
+}
+
 // Tests when a user tries to add a valid card number, the screen is dismissed
 // and the new card number appears on the Autofill Credit Card 'Payment Methods'
 // screen.
@@ -240,7 +310,7 @@ id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
       assertWithMatcher:grey_notNil()];
 
   NSString* newCreditCardObjectLabel =
-      @", Visa  ‪•⁠ ⁠•⁠ ⁠•⁠ ⁠•⁠ ⁠1111‬";
+      @"Visa  ‪•⁠ ⁠•⁠ ⁠•⁠ ⁠•⁠ ⁠1111‬";
   [[EarlGrey selectElementWithMatcher:ButtonWithAccessibilityLabel(
                                           newCreditCardObjectLabel)]
       assertWithMatcher:grey_sufficientlyVisible()];
@@ -264,7 +334,7 @@ id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
       performAction:grey_tap()];
 
   NSString* newCreditCardObjectLabel =
-      @", Fav Card  ‪•⁠ ⁠•⁠ ⁠•⁠ ⁠•⁠ ⁠1111‬";
+      @"Fav Card  ‪•⁠ ⁠•⁠ ⁠•⁠ ⁠•⁠ ⁠1111‬";
   [[EarlGrey selectElementWithMatcher:ButtonWithAccessibilityLabel(
                                           newCreditCardObjectLabel)]
       assertWithMatcher:grey_sufficientlyVisible()];
@@ -281,8 +351,11 @@ id<GREYMatcher> CardNumberIconView(NSString* icon_type) {
   // Error icon displayed when field is invalid.
   [[EarlGrey selectElementWithMatcher:CardNumberTextField()]
       performAction:grey_replaceText(@"1234")];
-  [[EarlGrey selectElementWithMatcher:MonthOfExpiryTextField()]
-      performAction:grey_tap()];
+
+  // Tap CVC field to shift focus from the card number field, avoiding keyboard
+  // obstruction on iPad.
+  [[EarlGrey selectElementWithMatcher:CvcTextField()] performAction:grey_tap()];
+
   [[EarlGrey selectElementWithMatcher:CardNumberIconView(kErrorIconIdentifier)]
       assertWithMatcher:grey_sufficientlyVisible()];
   [[EarlGrey selectElementWithMatcher:CardNumberIconView(kEditIconIdentifier)]

@@ -51,7 +51,6 @@ class NavigationClient : mojom::NavigationClient {
       const blink::DocumentToken& document_token,
       const base::UnguessableToken& devtools_navigation_token,
       const base::Uuid& base_auction_nonce,
-      const std::optional<network::ParsedPermissionsPolicy>& permissions_policy,
       blink::mojom::PolicyContainerPtr policy_container,
       mojo::PendingRemote<blink::mojom::CodeCacheHost> code_cache_host,
       mojo::PendingRemote<blink::mojom::CodeCacheHost>
@@ -69,6 +68,7 @@ class NavigationClient : mojom::NavigationClient {
       const std::optional<std::string>& error_page_content,
       std::unique_ptr<blink::PendingURLLoaderFactoryBundle> subresource_loaders,
       const blink::DocumentToken& document_token,
+      const base::UnguessableToken& devtools_navigation_token,
       blink::mojom::PolicyContainerPtr policy_container,
       mojom::AlternativeErrorPageOverrideInfoPtr alternative_error_page_info,
       CommitFailedNavigationCallback callback) override;
@@ -86,7 +86,10 @@ class NavigationClient : mojom::NavigationClient {
   // notification to the browser.
   void SetUpRendererInitiatedNavigation(
       mojo::PendingRemote<mojom::NavigationRendererCancellationListener>
-          renderer_cancellation_listener_remote);
+          renderer_cancellation_listener_remote,
+      mojo::PendingRemote<
+          mojom::NavigationRendererIgnoreDuplicateNavigationListener>
+          renderer_ignore_duplicate_navigation_listener_remote);
 
   void ResetWithoutCancelling();
 
@@ -95,6 +98,16 @@ class NavigationClient : mojom::NavigationClient {
   void ResetForAbort();
 
   bool HasBeginNavigationParams() const { return !!begin_params_; }
+
+  void DidIgnoreDuplicateNavigation();
+
+  void SetCookieModificationCount(uint64_t cookie_modification_count) {
+    cookie_modification_count_ = cookie_modification_count;
+  }
+
+  uint64_t cookie_modification_count() const {
+    return cookie_modification_count_;
+  }
 
   const blink::mojom::BeginNavigationParams& begin_params() const {
     return *begin_params_;
@@ -115,13 +128,33 @@ class NavigationClient : mojom::NavigationClient {
   // ended, so notify the browser about it.
   void NotifyNavigationCancellationWindowEnded();
 
+  // Change the `render_frame_` associated with this client to the RenderFrame
+  // indicated by `commit_target_frame_token`. This can only happen if a
+  // RenderFrame<>RenderFrame swap navigation is committing, but it reuses the
+  // previous RenderFrame's NavigationClient to preserve navigation cancellation
+  // behavior.
+  // See `NavigationRequest::ReuseRequestNavigationClientForCommitIfNeeded()`
+  // for more details.
+  void MoveOwnershipToCommitTargetIfNeeded(
+      std::optional<blink::LocalFrameToken> commit_target_frame_token);
+
   mojo::AssociatedReceiver<mojom::NavigationClient> navigation_client_receiver_{
       this};
   mojo::Remote<mojom::NavigationRendererCancellationListener>
       renderer_cancellation_listener_remote_;
+  mojo::Remote<mojom::NavigationRendererIgnoreDuplicateNavigationListener>
+      renderer_ignore_duplicate_navigation_listener_remote_;
+
+  // Note that this might change due to `MoveOwnershipToCommitTargetIfNeeded()`.
   raw_ptr<RenderFrameImpl, DanglingUntriaged> render_frame_;
+
   // See NavigationState::was_initiated_in_this_frame for details.
   bool was_initiated_in_this_frame_ = false;
+
+  // Captures a snapshot of the initiating document's cookie modification count
+  // when this navigation starts. Used during duplicate navigation checks to
+  // determine if cookies have changed since this navigation began.
+  uint64_t cookie_modification_count_ = 0;
 
   // If the navigation is initiated by this renderer, this will be set to the
   // params sent on the

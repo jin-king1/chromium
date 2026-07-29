@@ -4,6 +4,7 @@
 
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/key_command_actions.h"
+#import "ios/chrome/browser/shared/ui/symbols/symbols.h"
 
 namespace {
 
@@ -18,15 +19,19 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 
 }  // namespace
 
+const char kMobileKeyCommandClose[] = "MobileKeyCommandClose";
+
 @implementation UIKeyCommand (Chrome)
 
 #pragma mark - Specific Keyboard Commands
 
 + (UIKeyCommand*)cr_openNewTab {
+  UIImage* image = SymbolWithConfiguration(SymbolPlusInCircle, nil);
   return [self cr_commandWithInput:@"t"
                      modifierFlags:Command
                             action:@selector(keyCommand_openNewTab)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_TAB"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_TAB"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_openNewRegularTab {
@@ -36,31 +41,39 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_openNewIncognitoTab {
+  UIImage* image = SymbolWithConfiguration(SymbolIncognito, nil);
   return [self cr_commandWithInput:@"n"
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_openNewIncognitoTab)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_INCOGNITO_TAB"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_INCOGNITO_TAB"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_openNewWindow {
+  UIImage* image = SymbolWithConfiguration(SymbolPlusRectangle, nil);
   return [self cr_commandWithInput:@"n"
                      modifierFlags:AltCommand
                             action:@selector(keyCommand_openNewWindow)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_WINDOW"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_WINDOW"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_openNewIncognitoWindow {
+  UIImage* image = SymbolWithConfiguration(SymbolIncognitoRectangle, nil);
   return [self cr_commandWithInput:@"n"
                      modifierFlags:AltShiftCommand
                             action:@selector(keyCommand_openNewIncognitoWindow)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_INCOGNITO_WINDOW"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_NEW_INCOGNITO_WINDOW"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_reopenLastClosedTab {
+  UIImage* image = SymbolWithConfiguration(SymbolArrowUTurnForward, nil);
   return [self cr_commandWithInput:@"t"
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_reopenLastClosedTab)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_REOPEN_CLOSED_TAB"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_REOPEN_CLOSED_TAB"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_find {
@@ -85,35 +98,43 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_openLocation {
+  UIImage* image = SymbolWithConfiguration(SymbolGlobe, nil);
   return [self cr_commandWithInput:@"l"
                      modifierFlags:Command
                             action:@selector(keyCommand_openLocation)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_OPEN_LOCATION"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_OPEN_LOCATION"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_closeTab {
+  UIImage* image = SymbolWithConfiguration(SymbolXMarkSquare, nil);
   return [self cr_commandWithInput:@"w"
                      modifierFlags:Command
                             action:@selector(keyCommand_closeTab)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_CLOSE_TAB"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_CLOSE_TAB"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_showNextTab {
+  UIImage* image = SymbolWithConfiguration(SymbolArrowRightSquare, nil);
   UIKeyCommand* keyCommand =
       [self cr_commandWithInput:@"\t"
                   modifierFlags:Control
                          action:@selector(keyCommand_showNextTab)
-                titleIDAsString:@"IDS_IOS_KEYBOARD_NEXT_TAB"];
+                titleIDAsString:@"IDS_IOS_KEYBOARD_NEXT_TAB"
+                          image:image];
   keyCommand.wantsPriorityOverSystemBehavior = YES;
   return keyCommand;
 }
 
 + (UIKeyCommand*)cr_showPreviousTab {
+  UIImage* image = SymbolWithConfiguration(SymbolArrowLeftSquare, nil);
   UIKeyCommand* keyCommand =
       [self cr_commandWithInput:@"\t"
                   modifierFlags:ControlShift
                          action:@selector(keyCommand_showPreviousTab)
-                titleIDAsString:@"IDS_IOS_KEYBOARD_PREVIOUS_TAB"];
+                titleIDAsString:@"IDS_IOS_KEYBOARD_PREVIOUS_TAB"
+                          image:image];
   keyCommand.wantsPriorityOverSystemBehavior = YES;
   return keyCommand;
 }
@@ -151,42 +172,52 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_showBookmarks {
+  UIImage* image = SymbolWithConfiguration(SymbolBookmarks, nil);
   return [self cr_commandWithInput:@"b"
                      modifierFlags:AltCommand
                             action:@selector(keyCommand_showBookmarks)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_BOOKMARKS"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_BOOKMARKS"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_addToBookmarks {
+  UIImage* image = SymbolWithConfiguration(SymbolStarLeadingHalfFilled, nil);
   return [self cr_commandWithInput:@"d"
                      modifierFlags:Command
                             action:@selector(keyCommand_addToBookmarks)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_ADD_TO_BOOKMARKS"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_ADD_TO_BOOKMARKS"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_reload {
+  UIImage* image = SymbolWithConfiguration(SymbolArrowClockWise, nil);
   return [self cr_commandWithInput:@"r"
                      modifierFlags:Command
                             action:@selector(keyCommand_reload)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_RELOAD"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_RELOAD"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_back {
   // iOS 15+ supports -[UIKeyCommand allowsAutomaticMirroring], which is true
   // by default. It handles flipping the direction of brackets.
+  UIImage* image = SymbolWithConfiguration(SymbolArrowLeft, nil);
   return [self cr_commandWithInput:@"["
                      modifierFlags:Command
                             action:@selector(keyCommand_back)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_HISTORY_BACK"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_HISTORY_BACK"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_forward {
   // iOS 15+ supports -[UIKeyCommand allowsAutomaticMirroring], which is true
   // by default. It handles flipping the direction of brackets.
+  UIImage* image = SymbolWithConfiguration(SymbolArrowRight, nil);
   return [self cr_commandWithInput:@"]"
                      modifierFlags:Command
                             action:@selector(keyCommand_forward)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_HISTORY_FORWARD"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_HISTORY_FORWARD"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_back_2 {
@@ -206,17 +237,22 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_showHistory {
+  UIImage* image = DefaultSymbolWithConfiguration(
+      kClockArrowTriangleheadCounterclockwiseRotate90Symbol, nil);
   return [self cr_commandWithInput:@"y"
                      modifierFlags:Command
                             action:@selector(keyCommand_showHistory)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_HISTORY"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_HISTORY"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_voiceSearch {
+  UIImage* image = SymbolWithConfiguration(SymbolMicrophone, nil);
   return [self cr_commandWithInput:@"."
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_voiceSearch)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_VOICE_SEARCH"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_VOICE_SEARCH"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_close {
@@ -226,31 +262,43 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_showSettings {
+  NSString* titleID = @"IDS_IOS_KEYBOARD_SHOW_SETTINGS";
+  if (@available(iOS 26, *)) {
+    titleID = @"IDS_IOS_KEYBOARD_SETTINGS";
+  }
+  UIImage* image = SymbolWithConfiguration(SymbolSettings, nil);
   return [self cr_commandWithInput:@","
                      modifierFlags:Command
                             action:@selector(keyCommand_showSettings)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_SETTINGS"];
+                   titleIDAsString:titleID
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_stop {
+  UIImage* image = SymbolWithConfiguration(SymbolXMark, nil);
   return [self cr_commandWithInput:@"."
                      modifierFlags:Command
                             action:@selector(keyCommand_stop)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_STOP"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_STOP"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_showHelp {
+  UIImage* image = SymbolWithConfiguration(SymbolHelp, nil);
   return [self cr_commandWithInput:@"?"
                      modifierFlags:AltCommand
                             action:@selector(keyCommand_showHelp)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_HELP"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_HELP"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_showDownloads {
+  UIImage* image = SymbolWithConfiguration(SymbolDownload, nil);
   return [self cr_commandWithInput:@"l"
                      modifierFlags:AltCommand
                             action:@selector(keyCommand_showDownloads)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_DOWNLOADS"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_DOWNLOADS"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_showDownloads_2 {
@@ -260,10 +308,13 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_select1 {
+  UIImage* image = SymbolWithConfiguration(SymbolArrowLeftToLineSquare, nil);
   UIKeyCommand* keyCommand =
-      [self keyCommandWithInput:@"1"
+      [self cr_commandWithInput:@"1"
                   modifierFlags:Command
-                         action:@selector(keyCommand_select1)];
+                         action:@selector(keyCommand_select1)
+                titleIDAsString:@"IDS_IOS_KEYBOARD_FIRST_TAB"
+                          image:image];
   keyCommand.allowsAutomaticLocalization = NO;
   return keyCommand;
 }
@@ -317,17 +368,21 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_select9 {
+  UIImage* image = SymbolWithConfiguration(SymbolArrowRightToLineSquare, nil);
   return [self cr_commandWithInput:@"9"
                      modifierFlags:Command
                             action:@selector(keyCommand_select9)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_LAST_TAB"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_LAST_TAB"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_reportAnIssue {
+  UIImage* image = SymbolWithConfiguration(SymbolExclamationMarkBubble, nil);
   return [self cr_commandWithInput:@"i"
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_reportAnIssue)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_REPORT_AN_ISSUE"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_REPORT_AN_ISSUE"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_reportAnIssue_2 {
@@ -337,38 +392,48 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
 }
 
 + (UIKeyCommand*)cr_addToReadingList {
+  UIImage* image = SymbolWithConfiguration(SymbolReadLaterAction, nil);
   return [self cr_commandWithInput:@"d"
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_addToReadingList)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_ADD_TO_READING_LIST"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_ADD_TO_READING_LIST"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_showReadingList {
+  UIImage* image = SymbolWithConfiguration(SymbolReadingList, nil);
   return [self cr_commandWithInput:@"r"
                      modifierFlags:AltCommand
                             action:@selector(keyCommand_showReadingList)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_READING_LIST"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_SHOW_READING_LIST"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_goToTabGrid {
+  UIImage* image = SymbolWithConfiguration(SymbolTabs, nil);
   return [self cr_commandWithInput:@"\\"
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_goToTabGrid)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_GO_TO_TAB_GRID"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_GO_TO_TAB_GRID"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_clearBrowsingData {
+  UIImage* image = SymbolWithConfiguration(SymbolTrash, nil);
   return [self cr_commandWithInput:UIKeyInputDelete
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_clearBrowsingData)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_CLEAR_BROWSING_DATA"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_CLEAR_BROWSING_DATA"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_closeAll {
+  UIImage* image = SymbolWithConfiguration(SymbolXMarkSquareFill, nil);
   return [self cr_commandWithInput:@"w"
                      modifierFlags:ShiftCommand
                             action:@selector(keyCommand_closeAll)
-                   titleIDAsString:@"IDS_IOS_KEYBOARD_CLOSE_ALL"];
+                   titleIDAsString:@"IDS_IOS_KEYBOARD_CLOSE_ALL"
+                             image:image];
 }
 
 + (UIKeyCommand*)cr_undo {
@@ -437,9 +502,24 @@ UIKeyModifierFlags ControlShift = UIKeyModifierControl | UIKeyModifierShift;
                       modifierFlags:(UIKeyModifierFlags)modifierFlags
                              action:(SEL)action
                     titleIDAsString:(NSString*)messageID {
+  return [self cr_commandWithInput:input
+                     modifierFlags:modifierFlags
+                            action:action
+                   titleIDAsString:messageID
+                             image:nil];
+}
+
+// The title ID string is used as a key to NSLocalizedString because key
+// commands can be requested by the OS very early on, before the resource bundle
+// of the localized strings is loaded.
++ (instancetype)cr_commandWithInput:(NSString*)input
+                      modifierFlags:(UIKeyModifierFlags)modifierFlags
+                             action:(SEL)action
+                    titleIDAsString:(NSString*)messageID
+                              image:(UIImage*)image {
   UIKeyCommand* keyCommand =
       [self commandWithTitle:NSLocalizedString(messageID, @"")
-                       image:nil
+                       image:image
                       action:action
                        input:input
                modifierFlags:modifierFlags

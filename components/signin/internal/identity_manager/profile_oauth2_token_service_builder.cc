@@ -10,7 +10,6 @@
 #include "build/build_config.h"
 #include "components/prefs/pref_service.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service.h"
-#include "components/signin/public/base/account_consistency_method.h"
 #include "components/signin/public/base/device_id_helper.h"
 #include "components/signin/public/base/signin_client.h"
 #include "components/signin/public/base/signin_switches.h"
@@ -21,11 +20,9 @@
 
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 #include "components/signin/internal/identity_manager/mutable_profile_oauth2_token_service_delegate.h"
-#include "components/signin/public/webdata/token_web_data.h"
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #include "components/signin/internal/identity_manager/token_binding_helper.h"
-#include "components/unexportable_keys/unexportable_key_service.h"  // nogncheck
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#include "components/signin/public/webdata/token_web_data.h"
+#include "components/unexportable_keys/unexportable_key_service.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -72,40 +69,32 @@ std::unique_ptr<ProfileOAuth2TokenServiceDelegate> CreateCrOsOAuthDelegate(
 std::unique_ptr<MutableProfileOAuth2TokenServiceDelegate>
 CreateMutableProfileOAuthDelegate(
     AccountTrackerService* account_tracker_service,
-    signin::AccountConsistencyMethod account_consistency,
     bool delete_signin_cookies_on_exit,
     scoped_refptr<TokenWebData> token_web_data,
     SigninClient* signin_client,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
     unexportable_keys::UnexportableKeyService* unexportable_key_service,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #if BUILDFLAG(IS_WIN)
     MutableProfileOAuth2TokenServiceDelegate::FixRequestErrorCallback
         reauth_callback,
 #endif
     network::NetworkConnectionTracker* network_connection_tracker) {
-  // When signin cookies are cleared on exit and Dice is enabled, all tokens
-  // should also be cleared.
+  // When signin cookies are cleared on exit, all tokens should also be cleared.
   RevokeAllTokensOnLoad revoke_all_tokens_on_load =
-      (account_consistency == signin::AccountConsistencyMethod::kDice) &&
-              delete_signin_cookies_on_exit
+      delete_signin_cookies_on_exit
           ? RevokeAllTokensOnLoad::kDeleteSiteDataOnExit
           : RevokeAllTokensOnLoad::kNo;
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   std::unique_ptr<TokenBindingHelper> token_binding_helper;
-  if (unexportable_key_service) {
+  if (unexportable_key_service &&
+      switches::IsChromeRefreshTokenBindingEnabled(signin_client->GetPrefs())) {
     token_binding_helper =
         std::make_unique<TokenBindingHelper>(*unexportable_key_service);
   }
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 
   return std::make_unique<MutableProfileOAuth2TokenServiceDelegate>(
       signin_client, account_tracker_service, network_connection_tracker,
-      token_web_data, account_consistency, revoke_all_tokens_on_load,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+      token_web_data, revoke_all_tokens_on_load,
       std::move(token_binding_helper),
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #if BUILDFLAG(IS_WIN)
       reauth_callback
 #else
@@ -118,7 +107,6 @@ CreateMutableProfileOAuthDelegate(
 std::unique_ptr<ProfileOAuth2TokenServiceDelegate>
 CreateOAuth2TokenServiceDelegate(
     AccountTrackerService* account_tracker_service,
-    signin::AccountConsistencyMethod account_consistency,
     SigninClient* signin_client,
 #if BUILDFLAG(IS_CHROMEOS)
     account_manager::AccountManagerFacade* account_manager_facade,
@@ -129,9 +117,7 @@ CreateOAuth2TokenServiceDelegate(
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
     scoped_refptr<TokenWebData> token_web_data,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
     unexportable_keys::UnexportableKeyService* unexportable_key_service,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif
 #if BUILDFLAG(IS_IOS)
     std::unique_ptr<DeviceAccountsProvider> device_accounts_provider,
@@ -153,13 +139,10 @@ CreateOAuth2TokenServiceDelegate(
                                  account_manager_facade, is_regular_profile);
 #elif BUILDFLAG(ENABLE_DICE_SUPPORT)
   // Fall back to |MutableProfileOAuth2TokenServiceDelegate| on all platforms
-  // other than Android, iOS, and Chrome OS (Ash and Lacros).
+  // other than Android, iOS, and Chrome OS (Ash).
   return CreateMutableProfileOAuthDelegate(
-      account_tracker_service, account_consistency,
-      delete_signin_cookies_on_exit, token_web_data, signin_client,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-      unexportable_key_service,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+      account_tracker_service, delete_signin_cookies_on_exit, token_web_data,
+      signin_client, unexportable_key_service,
 #if BUILDFLAG(IS_WIN)
       reauth_callback,
 #endif  // BUILDFLAG(IS_WIN)
@@ -175,7 +158,6 @@ std::unique_ptr<ProfileOAuth2TokenService> BuildProfileOAuth2TokenService(
     PrefService* pref_service,
     AccountTrackerService* account_tracker_service,
     network::NetworkConnectionTracker* network_connection_tracker,
-    signin::AccountConsistencyMethod account_consistency,
 #if BUILDFLAG(IS_CHROMEOS)
     account_manager::AccountManagerFacade* account_manager_facade,
     bool is_regular_profile,
@@ -183,9 +165,7 @@ std::unique_ptr<ProfileOAuth2TokenService> BuildProfileOAuth2TokenService(
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
     bool delete_signin_cookies_on_exit,
     scoped_refptr<TokenWebData> token_web_data,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
     unexportable_keys::UnexportableKeyService* unexportable_key_service,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 #if BUILDFLAG(IS_IOS)
     std::unique_ptr<DeviceAccountsProvider> device_accounts_provider,
@@ -205,26 +185,22 @@ std::unique_ptr<ProfileOAuth2TokenService> BuildProfileOAuth2TokenService(
 #endif
 
   return std::make_unique<ProfileOAuth2TokenService>(
-      pref_service,
-      CreateOAuth2TokenServiceDelegate(
-          account_tracker_service, account_consistency, signin_client,
+      pref_service, CreateOAuth2TokenServiceDelegate(
+                        account_tracker_service, signin_client,
 #if BUILDFLAG(IS_CHROMEOS)
-          account_manager_facade, is_regular_profile,
+                        account_manager_facade, is_regular_profile,
 #endif  // BUILDFLAG(IS_CHROMEOS)
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-          delete_signin_cookies_on_exit,
+                        delete_signin_cookies_on_exit,
 #endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 #if BUILDFLAG(ENABLE_DICE_SUPPORT)
-          token_web_data,
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-          unexportable_key_service,
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+                        token_web_data, unexportable_key_service,
 #endif
 #if BUILDFLAG(IS_IOS)
-          std::move(device_accounts_provider),
+                        std::move(device_accounts_provider),
 #endif
 #if BUILDFLAG(IS_WIN)
-          reauth_callback,
+                        reauth_callback,
 #endif
-          network_connection_tracker));
+                        network_connection_tracker));
 }

@@ -36,6 +36,11 @@ bool ABGRToARGB(const VideoFrame& src_frame, VideoFrame& dst_frame);
 // Also converts between I420, I422, I444 and vice versa.
 void I4xxxScale(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
+void I4xxxScale_16(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+void Convert16To8Plane(const VideoFrame& src_frame, VideoFrame& dst_frame);
+void Convert8To16Plane(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
 // Scaling not supported.
 bool I420xToNV12x(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
@@ -54,6 +59,12 @@ bool NV12xScale(const VideoFrame& src_frame,
 
 // Scaling not supported.
 bool NV12xToI420x(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+// Scaling not supported.
+bool NV12xToP010(const VideoFrame& src_frame, VideoFrame& dst_frame);
+
+// Scaling not supported.
+bool I4xxxPxxToP010(const VideoFrame& src_frame, VideoFrame& dst_frame);
 
 }  // namespace media::internals
 

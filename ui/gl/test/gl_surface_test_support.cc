@@ -10,6 +10,7 @@
 #include "base/command_line.h"
 #include "build/build_config.h"
 #include "ui/gl/gl_context.h"
+#include "ui/gl/gl_context_egl.h"
 #include "ui/gl/gl_features.h"
 #include "ui/gl/gl_implementation.h"
 #include "ui/gl/gl_switches.h"
@@ -30,6 +31,7 @@ namespace {
 GLDisplay* InitializeOneOffHelper(bool init_extensions) {
   DCHECK_EQ(kGLImplementationNone, GetGLImplementation());
 
+  GLContextEGL::EnablePerThreadVirtualizationGroup();
 #if BUILDFLAG(IS_OZONE)
   ui::OzonePlatform::InitParams params;
   params.single_process = true;
@@ -41,11 +43,11 @@ GLDisplay* InitializeOneOffHelper(bool init_extensions) {
 #endif
 
   bool use_software_gl = true;
+  base::CommandLine* cmd = base::CommandLine::ForCurrentProcess();
 
   // We usually use software GL as this works on all bots. The
   // command line can override this behaviour to use hardware GL.
-  if (base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kUseGpuInTests)) {
+  if (cmd->HasSwitch(switches::kUseGpuInTests)) {
     use_software_gl = false;
   }
 
@@ -60,11 +62,12 @@ GLDisplay* InitializeOneOffHelper(bool init_extensions) {
 
   GLImplementationParts impl = allowed_impls[0];
   if (use_software_gl) {
-    impl = gl::GetSoftwareGLImplementation();
+    // Disable D3D11 WARP for consistent cross-platform software rendering.
+    cmd->AppendSwitch(::switches::kDisableD3D11Warp);
+    impl = gl::GetSoftwareGLImplementation(cmd);
   }
 
-  DCHECK(!base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kUseGL))
-      << "kUseGL has not effect in tests";
+  DCHECK(!cmd->HasSwitch(switches::kUseGL)) << "kUseGL has not effect in tests";
 
   bool disable_gl_drawing = true;
 

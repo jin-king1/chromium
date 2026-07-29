@@ -6,22 +6,23 @@
 
 #include "base/metrics/histogram_functions.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/download/bubble/download_bubble_prefs.h"
 #include "chrome/browser/download/download_item_model.h"
 #include "chrome/browser/download/download_item_warning_data.h"
+#include "chrome/browser/download/download_ui_enterprise_util.h"
 #include "chrome/browser/download/download_ui_safe_browsing_util.h"
 #include "chrome/browser/download/offline_item_utils.h"
 #include "chrome/browser/safe_browsing/advanced_protection_status_manager.h"
 #include "chrome/browser/safe_browsing/advanced_protection_status_manager_factory.h"
-#include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/color/chrome_color_id.h"
 #include "chrome/grit/branded_strings.h"
 #include "chrome/grit/generated_resources.h"
+#include "components/download/public/common/download_danger_type.h"
 #include "components/enterprise/buildflags/buildflags.h"
 #include "components/offline_items_collection/core/fail_state.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/vector_icons/vector_icons.h"
+#include "extensions/strings/grit/extensions_strings.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
 #include "chrome/browser/enterprise/connectors/common.h"
@@ -178,6 +179,8 @@ void DownloadBubbleSecurityViewInfo::PopulateForInterrupted(
       warning_summary_ = l10n_util::GetStringUTF16(
           IDS_DOWNLOAD_BUBBLE_SUBPAGE_SUMMARY_TOO_BIG);
       return;
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_GDRIVE:
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_ONEDRIVE:
     case download::DOWNLOAD_DANGER_TYPE_SENSITIVE_CONTENT_BLOCK: {
 #if BUILDFLAG(ENTERPRISE_CLOUD_CONTENT_ANALYSIS)
       if (enterprise_connectors::ShouldPromptReviewForDownload(
@@ -222,6 +225,8 @@ void DownloadBubbleSecurityViewInfo::PopulateForInterrupted(
   }
 
   switch (model.GetLastFailState()) {
+    // TODO(alshawwa): Handle LOCAL_DOWNLOAD_BLOCKED separately.
+    case FailState::LOCAL_DOWNLOAD_BLOCKED:
     case FailState::FILE_BLOCKED:
       warning_summary_ = l10n_util::GetStringUTF16(
           IDS_DOWNLOAD_BUBBLE_INTERRUPTED_SUBPAGE_SUMMARY_BLOCKED_ORGANIZATION);
@@ -461,7 +466,10 @@ void DownloadBubbleSecurityViewInfo::PopulateForInProgressOrComplete(
       } else {
         warning_summary_ = l10n_util::GetStringUTF16(
             IDS_DOWNLOAD_BUBBLE_SUBPAGE_SUMMARY_ASYNC_SCANNING);
-        warning_secondary_icon_ = &vector_icons::kDocumentScannerIcon;
+        warning_secondary_icon_ =
+            &(features::IsRoundedIconsEnabled()
+                  ? vector_icons::kDocumentScannerIcon
+                  : vector_icons::kDocumentScannerOldIcon);
         warning_secondary_text_ =
             download::DoesDownloadConnectorBlock(model.profile(),
                                                  model.GetURL())
@@ -518,6 +526,8 @@ void DownloadBubbleSecurityViewInfo::PopulateForInProgressOrComplete(
     case download::DOWNLOAD_DANGER_TYPE_USER_VALIDATED:
     case download::DOWNLOAD_DANGER_TYPE_ALLOWLISTED_BY_POLICY:
     case download::DOWNLOAD_DANGER_TYPE_BLOCKED_SCAN_FAILED:
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_GDRIVE:
+    case download::DOWNLOAD_DANGER_TYPE_FORCE_SAVE_TO_ONEDRIVE:
     case download::DOWNLOAD_DANGER_TYPE_MAX:
       return;
   }
@@ -537,28 +547,6 @@ void DownloadBubbleSecurityViewInfo::PopulateForTailoredWarning(
       PopulateForDangerousUi(l10n_util::GetStringUTF16(
           IDS_DOWNLOAD_BUBBLE_SUBPAGE_SUMMARY_WARNING_COOKIE_THEFT));
       return;
-    case TailoredWarningType::kCookieTheftWithAccountInfo: {
-      std::string email;
-      if (auto* identity_manager =
-              IdentityManagerFactory::GetForProfile(model.profile());
-          identity_manager) {
-        email = identity_manager
-                    ->GetPrimaryAccountInfo(signin::ConsentLevel::kSignin)
-                    .email;
-      }
-      base::UmaHistogramBoolean(
-          "SBClientDownload.TailoredWarning.HasVaidEmailForAccountInfo",
-          !email.empty());
-      if (!email.empty()) {
-        PopulateForDangerousUi(l10n_util::GetStringFUTF16(
-            IDS_DOWNLOAD_BUBBLE_SUBPAGE_SUMMARY_WARNING_COOKIE_THEFT_AND_ACCOUNT,
-            base::ASCIIToUTF16(email)));
-        return;
-      }
-      PopulateForDangerousUi(l10n_util::GetStringUTF16(
-          IDS_DOWNLOAD_BUBBLE_SUBPAGE_SUMMARY_WARNING_COOKIE_THEFT));
-      return;
-    }
     case TailoredWarningType::kNoTailoredWarning: {
       NOTREACHED();
     }

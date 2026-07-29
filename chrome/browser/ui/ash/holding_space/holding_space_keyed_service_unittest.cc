@@ -21,11 +21,15 @@
 #include "ash/public/cpp/holding_space/holding_space_progress.h"
 #include "ash/public/cpp/holding_space/holding_space_util.h"
 #include "ash/public/cpp/image_util.h"
+#include "ash/session/session_controller_impl.h"
+#include "ash/shell.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/bind.h"
 #include "base/test/gmock_callback_support.h"
 #include "base/test/metrics/histogram_tester.h"
@@ -47,6 +51,7 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/file_system_access/chrome_file_system_access_permission_context.h"
 #include "chrome/browser/file_system_access/file_system_access_permission_context_factory.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/nearby_sharing/common/nearby_share_features.h"
 #include "chrome/browser/prefs/browser_prefs.h"
 #include "chrome/browser/ui/ash/holding_space/holding_space_keyed_service_factory.h"
@@ -56,6 +61,7 @@
 #include "chrome/browser/ui/ash/holding_space/scoped_test_mount_point.h"
 #include "chrome/browser/ui/webui/print_preview/pdf_printer_handler.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile_manager.h"
 #include "chromeos/ash/components/disks/disk_mount_manager.h"
 #include "chromeos/ash/components/disks/fake_disk_mount_manager.h"
@@ -63,8 +69,10 @@
 #include "chromeos/ui/base/file_icon_util.h"
 #include "components/account_id/account_id.h"
 #include "components/pref_registry/pref_registry_syncable.h"
+#include "components/prefs/testing_pref_store.h"
 #include "components/sync_preferences/pref_service_mock_factory.h"
 #include "components/sync_preferences/pref_service_syncable.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_names.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/test/fake_download_item.h"
@@ -77,6 +85,7 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/chromeos/styles/cros_styles.h"
 #include "ui/gfx/image/image_skia.h"
 #include "ui/gfx/image/image_skia_operations.h"
@@ -139,6 +148,7 @@ std::unique_ptr<KeyedService> BuildArcFileSystemBridge(
 std::unique_ptr<KeyedService> BuildVolumeManager(
     content::BrowserContext* context) {
   return std::make_unique<file_manager::VolumeManager>(
+      TestingBrowserProcess::GetGlobal()->local_state(),
       Profile::FromBrowserContext(context),
       nullptr /* drive_integration_service */,
       nullptr /* power_manager_client */,
@@ -265,14 +275,6 @@ std::map<std::string, std::vector<Bucket>> MergeHistogramSamples(
     }
   }
   return result;
-}
-
-bool ShouldRestoreFromPersistence(HoldingSpaceItem::Type type) {
-  if (HoldingSpaceItem::IsSuggestionType(type) &&
-      !features::IsHoldingSpaceSuggestionsEnabled()) {
-    return false;
-  }
-  return true;
 }
 
 // Waiters ---------------------------------------------------------------------
@@ -633,11 +635,7 @@ class HoldingSpaceKeyedServiceTest : public BrowserWithTestWindowTest {
   void ActivateSecondaryProfile() {
     const std::string kSecondaryProfileName = "secondary_profile";
     const AccountId account_id(AccountId::FromUserEmail(kSecondaryProfileName));
-    GetSessionControllerClient()->SwitchActiveUser(account_id);
-  }
-
-  TestSessionControllerClient* GetSessionControllerClient() {
-    return ash_test_helper()->test_session_controller_client();
+    ash::Shell::Get()->session_controller()->SwitchActiveUser(account_id);
   }
 
   // Resolves an absolute file path in the file manager's file system context,
@@ -729,29 +727,8 @@ class HoldingSpaceKeyedServiceTest : public BrowserWithTestWindowTest {
   base::ScopedTempDir temp_dir_;
 };
 
-class HoldingSpaceKeyedServiceWithExperimentalFeatureTest
-    : public HoldingSpaceKeyedServiceTest,
-      public testing::WithParamInterface<
-          /*enable_suggestions=*/bool> {
- public:
-  HoldingSpaceKeyedServiceWithExperimentalFeatureTest() {
-    std::vector<base::test::FeatureRef> enabled_features;
-    std::vector<base::test::FeatureRef> disabled_features;
-    (GetParam() ? enabled_features : disabled_features)
-        .push_back(features::kHoldingSpaceSuggestions);
-    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-                         /*enabled_suggestions=*/testing::Bool());
-
 class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
-    : public HoldingSpaceKeyedServiceWithExperimentalFeatureTest {
+    : public HoldingSpaceKeyedServiceTest {
  public:
   HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest() {
     // To let ProfileHelper::GetUserByProfile() directly return
@@ -766,7 +743,7 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
     ash_test_helper()->prefs_provider()->ClearUnownedUserPrefs(
         AccountId::FromUserEmail(profile_->GetProfileUserName()));
     profile_ = nullptr;
-    HoldingSpaceKeyedServiceWithExperimentalFeatureTest::TearDown();
+    HoldingSpaceKeyedServiceTest::TearDown();
   }
 
   std::optional<std::string> GetDefaultProfileName() override {
@@ -778,10 +755,7 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
     auto* user = user_manager()->AddGuestUser();
     user_manager()->UserLoggedIn(
         user->GetAccountId(),
-        user_manager::FakeUserManager::GetFakeUsernameHash(
-            user->GetAccountId()),
-        /*browser_restart=*/false,
-        /*is_child=*/false);
+        user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
   }
 
   TestingProfile* CreateProfile(const std::string& profile_name) override {
@@ -804,6 +778,11 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
     return profile_;
   }
 
+  std::unique_ptr<BrowserWindow> CreateBrowserWindow() override {
+    // Do not create browser window.
+    return nullptr;
+  }
+
   std::unique_ptr<Browser> CreateBrowser(
       Profile* profile,
       Browser::Type browser_type,
@@ -817,12 +796,7 @@ class HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest
   raw_ptr<TestingProfile> profile_;
 };
 
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest,
-    /*enabled_suggestions=*/testing::Bool());
-
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest,
+TEST_F(HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest,
        GuestUserProfile) {
   auto* guest_profile = profile();
 
@@ -845,8 +819,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureForGuestTest,
   ASSERT_EQ(guest_profile_service, primary_otr_guest_profile_service);
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       OffTheRecordProfile) {
+TEST_F(HoldingSpaceKeyedServiceTest, OffTheRecordProfile) {
   // Service instances should be created for on the record profiles.
   HoldingSpaceKeyedService* const primary_profile_service =
       HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(GetProfile());
@@ -869,8 +842,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   ASSERT_FALSE(incognito_primary_profile_service);
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       SecondaryUserProfile) {
+TEST_F(HoldingSpaceKeyedServiceTest, SecondaryUserProfile) {
   HoldingSpaceKeyedService* const primary_holding_space_service =
       HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(GetProfile());
 
@@ -894,8 +866,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
             secondary_holding_space_service->model_for_testing());
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       RecordsUserPreferencesAtStartUp) {
+TEST_F(HoldingSpaceKeyedServiceTest, RecordsUserPreferencesAtStartUp) {
   // Initially expect no user preferences recorded.
   base::HistogramTester histogram_tester;
   histogram_tester.ExpectTotalCount(
@@ -936,8 +907,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 }
 
 // Verifies that updates to the holding space model are persisted.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       UpdatePersistentStorage) {
+TEST_F(HoldingSpaceKeyedServiceTest, UpdatePersistentStorage) {
   // Create a file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
       ScopedTestMountPoint::CreateAndMountDownloads(GetProfile());
@@ -951,7 +921,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   EXPECT_EQ(primary_holding_space_model,
             primary_holding_space_service->model_for_testing());
 
-  base::Value::List persisted_holding_space_items;
+  base::ListValue persisted_holding_space_items;
 
   // Verify persistent storage is updated when adding each type of item.
   for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -992,8 +962,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 // Verifies that only finalized holding space items are persisted and that,
 // once finalized, previously in progress holding space items are persisted at
 // the appropriate index.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       PersistenceOfInProgressItems) {
+TEST_F(HoldingSpaceKeyedServiceTest, PersistenceOfInProgressItems) {
   // Create a file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
       ScopedTestMountPoint::CreateAndMountDownloads(GetProfile());
@@ -1028,7 +997,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   auto* finalized_holding_space_item_ptr = finalized_holding_space_item.get();
   holding_space_model->AddItem(std::move(finalized_holding_space_item));
 
-  base::Value::List persisted_holding_space_items;
+  base::ListValue persisted_holding_space_items;
   persisted_holding_space_items.Append(
       finalized_holding_space_item_ptr->Serialize());
 
@@ -1138,8 +1107,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 
 // Verifies that when a file backing a holding space item is moved, the holding
 // space item is updated in place and persistence storage is updated.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       UpdatePersistentStorageAfterMove) {
+TEST_F(HoldingSpaceKeyedServiceTest, UpdatePersistentStorageAfterMove) {
   // Create a file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
       ScopedTestMountPoint::CreateAndMountDownloads(GetProfile());
@@ -1158,7 +1126,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
       file_manager::util::GetFileManagerFileSystemContext(GetProfile());
   ASSERT_TRUE(context);
 
-  base::Value::List persisted_holding_space_items;
+  base::ListValue persisted_holding_space_items;
 
   // Verify persistent storage is updated when adding each type of item.
   for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -1268,8 +1236,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 
 // Verifies that files that are trashed via the `TrashIOTask` are removed from
 // the holding space model.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       TrashedFilesAreRemovedFromTheModel) {
+TEST_F(HoldingSpaceKeyedServiceTest, TrashedFilesAreRemovedFromTheModel) {
   // Create a file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
       ScopedTestMountPoint::CreateAndMountDownloads(GetProfile());
@@ -1350,8 +1317,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 // backing file is changed using move operation. Furthermore, verifies that
 // conflicts caused by moving a holding space item file to another path present
 // in the holding space get resolved.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       UpdateItemsOverwrittenByMove) {
+TEST_F(HoldingSpaceKeyedServiceTest, UpdateItemsOverwrittenByMove) {
   // Create a file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
       ScopedTestMountPoint::CreateAndMountDownloads(GetProfile());
@@ -1382,7 +1348,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   };
   std::map<HoldingSpaceItem::Type, TestCase> test_config;
 
-  base::Value::List persisted_holding_space_items;
+  base::ListValue persisted_holding_space_items;
 
   // Configure holding space state for the test. For each item adds two holding
   // space items to the model - "src" and "dst" (during the test, the src item's
@@ -1423,7 +1389,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
                 HoldingSpacePersistenceDelegate::kPersistencePath),
             persisted_holding_space_items);
 
-  base::Value::List final_persisted_holding_space_items;
+  base::ListValue final_persisted_holding_space_items;
   // Runs the test logic.
   for (const auto type : holding_space_util::GetAllItemTypes()) {
     const TestCase& test_case = test_config[type];
@@ -1504,8 +1470,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 // Verifies that the holding space model is restored from persistence. Note that
 // when restoring from persistence, existence of backing files is verified and
 // any stale holding space items are removed.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       RestorePersistentStorage) {
+TEST_F(HoldingSpaceKeyedServiceTest, RestorePersistentStorage) {
   // Verify expected histograms.
   base::HistogramTester histogram_tester;
   EXPECT_THAT(
@@ -1530,12 +1495,12 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   }
 
   HoldingSpaceModel::ItemList restored_holding_space_items;
-  base::Value::List persisted_holding_space_items_after_restoration;
+  base::ListValue persisted_holding_space_items_after_restoration;
 
   // Create a secondary profile w/ a pre-populated pref store.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_holding_space_items_before_restoration;
+        base::ListValue persisted_holding_space_items_before_restoration;
 
         // Persist some holding space items of each type.
         for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -1556,18 +1521,15 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
           persisted_holding_space_items_before_restoration.Append(
               fresh_holding_space_item->Serialize());
 
-          if (ShouldRestoreFromPersistence(type)) {
-            // We expect the `fresh_holding_space_item` to still be in
-            // persistence after model restoration since its backing file
-            // exists.
-            persisted_holding_space_items_after_restoration.Append(
-                fresh_holding_space_item->Serialize());
+          // We expect the `fresh_holding_space_item` to still be in persistence
+          // after model restoration since its backing file exists.
+          persisted_holding_space_items_after_restoration.Append(
+              fresh_holding_space_item->Serialize());
 
-            // We expect the `fresh_holding_space_item` to be restored from
-            // persistence since its backing file exists.
-            restored_holding_space_items.push_back(
-                std::move(fresh_holding_space_item));
-          }
+          // We expect the `fresh_holding_space_item` to be restored from
+          // persistence since its backing file exists.
+          restored_holding_space_items.push_back(
+              std::move(fresh_holding_space_item));
 
           base::FilePath file_path = downloads_mount->GetRootPath().AppendASCII(
               base::UnguessableToken::Create().ToString());
@@ -1637,7 +1599,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 
 // Verifies that items from volumes that are not immediately mounted during
 // startup get restored into the holding space.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
+TEST_F(HoldingSpaceKeyedServiceTest,
        RestorePersistentStorageForDelayedVolumeMount) {
   // Create file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
@@ -1654,13 +1616,13 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 
   std::vector<std::string> initialized_items_before_delayed_mount;
   HoldingSpaceModel::ItemList restored_holding_space_items;
-  base::Value::List persisted_holding_space_items_after_restoration;
-  base::Value::List persisted_holding_space_items_after_delayed_mount;
+  base::ListValue persisted_holding_space_items_after_restoration;
+  base::ListValue persisted_holding_space_items_after_delayed_mount;
 
   // Create a secondary profile w/ a pre-populated pref store.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_holding_space_items_before_restoration;
+        base::ListValue persisted_holding_space_items_before_restoration;
 
         // Persist some holding space items of each type.
         for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -1676,18 +1638,14 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
           persisted_holding_space_items_before_restoration.Append(
               delayed_holding_space_item->Serialize());
 
-          const bool should_restore = ShouldRestoreFromPersistence(type);
-
           // If an item should be restored, it should be restored after delayed
           // volume mount, and remain in persistent storage.
-          if (should_restore) {
-            persisted_holding_space_items_after_restoration.Append(
-                delayed_holding_space_item->Serialize());
-            persisted_holding_space_items_after_delayed_mount.Append(
-                delayed_holding_space_item->Serialize());
-            restored_holding_space_items.push_back(
-                std::move(delayed_holding_space_item));
-          }
+          persisted_holding_space_items_after_restoration.Append(
+              delayed_holding_space_item->Serialize());
+          persisted_holding_space_items_after_delayed_mount.Append(
+              delayed_holding_space_item->Serialize());
+          restored_holding_space_items.push_back(
+              std::move(delayed_holding_space_item));
 
           const base::FilePath non_existent_path =
               delayed_mount->GetRootPath().Append("non-existent");
@@ -1705,10 +1663,8 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
           persisted_holding_space_items_before_restoration.Append(
               non_existant_delayed_holding_space_item->Serialize());
 
-          if (should_restore) {
-            persisted_holding_space_items_after_restoration.Append(
-                non_existant_delayed_holding_space_item->Serialize());
-          }
+          persisted_holding_space_items_after_restoration.Append(
+              non_existant_delayed_holding_space_item->Serialize());
 
           const base::FilePath file = downloads_mount->CreateArbitraryFile();
           const GURL file_system_url = GetFileSystemUrl(GetProfile(), file);
@@ -1726,17 +1682,15 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
               fresh_holding_space_item->Serialize());
 
           // The item should be immediately added to the model, and remain in
-          // the persistent storage if it should be restored.
-          if (should_restore) {
-            initialized_items_before_delayed_mount.push_back(
-                fresh_holding_space_item->id());
-            persisted_holding_space_items_after_restoration.Append(
-                fresh_holding_space_item->Serialize());
-            persisted_holding_space_items_after_delayed_mount.Append(
-                fresh_holding_space_item->Serialize());
-            restored_holding_space_items.push_back(
-                std::move(fresh_holding_space_item));
-          }
+          // the persistent storage.
+          initialized_items_before_delayed_mount.push_back(
+              fresh_holding_space_item->id());
+          persisted_holding_space_items_after_restoration.Append(
+              fresh_holding_space_item->Serialize());
+          persisted_holding_space_items_after_delayed_mount.Append(
+              fresh_holding_space_item->Serialize());
+          restored_holding_space_items.push_back(
+              std::move(fresh_holding_space_item));
         }
 
         pref_store->SetValueSilently(
@@ -1816,7 +1770,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 // startup get restored into the holding space - same as
 // RestorePersistentStorageForDelayedVolumeMount, but the volume gets mounted
 // while item restoration is in progress.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
+TEST_F(HoldingSpaceKeyedServiceTest,
        RestorePersistentStorageForDelayedVolumeMountDuringRestoration) {
   // Create file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
@@ -1832,12 +1786,12 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
       HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(GetProfile());
 
   HoldingSpaceModel::ItemList restored_holding_space_items;
-  base::Value::List persisted_holding_space_items_after_delayed_mount;
+  base::ListValue persisted_holding_space_items_after_delayed_mount;
 
   // Create a secondary profile w/ a pre-populated pref store.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_holding_space_items_before_restoration;
+        base::ListValue persisted_holding_space_items_before_restoration;
 
         // Persist some holding space items of each type.
         for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -1853,16 +1807,12 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
           persisted_holding_space_items_before_restoration.Append(
               delayed_holding_space_item->Serialize());
 
-          const bool should_restore = ShouldRestoreFromPersistence(type);
-
           // The item is restored after delayed volume mount, and remain
-          // in persistent storage if it should be restored.
-          if (should_restore) {
-            persisted_holding_space_items_after_delayed_mount.Append(
-                delayed_holding_space_item->Serialize());
-            restored_holding_space_items.push_back(
-                std::move(delayed_holding_space_item));
-          }
+          // in persistent storage.
+          persisted_holding_space_items_after_delayed_mount.Append(
+              delayed_holding_space_item->Serialize());
+          restored_holding_space_items.push_back(
+              std::move(delayed_holding_space_item));
 
           base::FilePath non_existent_path =
               delayed_mount->GetRootPath().Append("non-existent");
@@ -1897,13 +1847,11 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
               fresh_holding_space_item->Serialize());
 
           // The item should be immediately added to the model, and remain in
-          // the persistent storage if it should be restored.
-          if (should_restore) {
-            persisted_holding_space_items_after_delayed_mount.Append(
-                fresh_holding_space_item->Serialize());
-            restored_holding_space_items.push_back(
-                std::move(fresh_holding_space_item));
-          }
+          // the persistent storage.
+          persisted_holding_space_items_after_delayed_mount.Append(
+              fresh_holding_space_item->Serialize());
+          restored_holding_space_items.push_back(
+              std::move(fresh_holding_space_item));
         }
 
         pref_store->SetValueSilently(
@@ -1960,7 +1908,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 
 // Verifies that mounting volumes that contain no holding space items does not
 // interfere with holding space restoration.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
+TEST_F(HoldingSpaceKeyedServiceTest,
        RestorePersistentStorageWithUnrelatedVolumeMounts) {
   // Create file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
@@ -1980,13 +1928,13 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 
   std::vector<std::string> initialized_items_before_delayed_mount;
   HoldingSpaceModel::ItemList restored_holding_space_items;
-  base::Value::List persisted_holding_space_items_after_restoration;
-  base::Value::List persisted_holding_space_items_after_delayed_mount;
+  base::ListValue persisted_holding_space_items_after_restoration;
+  base::ListValue persisted_holding_space_items_after_delayed_mount;
 
   // Create a secondary profile w/ a pre-populated pref store.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_holding_space_items_before_restoration;
+        base::ListValue persisted_holding_space_items_before_restoration;
 
         // Persist some holding space items of each type.
         for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -2008,17 +1956,15 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
               fresh_holding_space_item->Serialize());
 
           // The item should be immediately added to the model, and remain in
-          // the persistent storage if it should be restored.
-          if (ShouldRestoreFromPersistence(type)) {
-            initialized_items_before_delayed_mount.push_back(
-                fresh_holding_space_item->id());
-            persisted_holding_space_items_after_restoration.Append(
-                fresh_holding_space_item->Serialize());
-            persisted_holding_space_items_after_delayed_mount.Append(
-                fresh_holding_space_item->Serialize());
-            restored_holding_space_items.push_back(
-                std::move(fresh_holding_space_item));
-          }
+          // the persistent storage.
+          initialized_items_before_delayed_mount.push_back(
+              fresh_holding_space_item->id());
+          persisted_holding_space_items_after_restoration.Append(
+              fresh_holding_space_item->Serialize());
+          persisted_holding_space_items_after_delayed_mount.Append(
+              fresh_holding_space_item->Serialize());
+          restored_holding_space_items.push_back(
+              std::move(fresh_holding_space_item));
         }
 
         pref_store->SetValueSilently(
@@ -2088,8 +2034,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 }
 
 // Tests that items from an unmounted volume get removed from the holding space.
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       RemoveItemsFromUnmountedVolumes) {
+TEST_F(HoldingSpaceKeyedServiceTest, RemoveItemsFromUnmountedVolumes) {
   auto test_mount_1 = std::make_unique<ScopedTestMountPoint>(
       "test_mount_1", storage::kFileSystemTypeLocal,
       file_manager::VOLUME_TYPE_TESTING);
@@ -2144,8 +2089,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
 #else
 #define MAYBE_RemoveOlderFilesFromPersistence RemoveOlderFilesFromPersistence
 #endif
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       MAYBE_RemoveOlderFilesFromPersistence) {
+TEST_F(HoldingSpaceKeyedServiceTest, MAYBE_RemoveOlderFilesFromPersistence) {
   // Create file system mount point.
   std::unique_ptr<ScopedTestMountPoint> downloads_mount =
       ScopedTestMountPoint::CreateAndMountDownloads(GetProfile());
@@ -2155,13 +2099,13 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
       HoldingSpaceKeyedServiceFactory::GetInstance()->GetService(GetProfile());
 
   HoldingSpaceModel::ItemList restored_holding_space_items;
-  base::Value::List persisted_holding_space_items_after_restoration;
+  base::ListValue persisted_holding_space_items_after_restoration;
   base::Time last_creation_time = base::Time::Now();
 
   // Create a secondary profile w/ a pre-populated pref store.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_holding_space_items_before_restoration;
+        base::ListValue persisted_holding_space_items_before_restoration;
 
         // Persist some holding space items of each type.
         for (const auto type : holding_space_util::GetAllItemTypes()) {
@@ -2182,14 +2126,11 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
           persisted_holding_space_items_before_restoration.Append(
               fresh_holding_space_item->Serialize());
 
-          bool should_restore = ShouldRestoreFromPersistence(type);
-
-          if (should_restore) {
-            // We expect all holding space items of other types to be removed
-            // from persistence during restoration due to being older than
-            // `kMaxFileAge`.
-            should_restore = type == HoldingSpaceItem::Type::kPinnedFile;
-          }
+          // We expect all holding space items of other types to be removed
+          // from persistence during restoration due to being older than
+          // `kMaxFileAge`.
+          const bool should_restore =
+              type == HoldingSpaceItem::Type::kPinnedFile;
 
           if (should_restore) {
             persisted_holding_space_items_after_restoration.Append(
@@ -2246,8 +2187,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
             persisted_holding_space_items_after_restoration);
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       AddArcDownloadItem) {
+TEST_F(HoldingSpaceKeyedServiceTest, AddArcDownloadItem) {
   // Wait for the holding space model to attach.
   TestingProfile* profile = GetProfile();
   HoldingSpaceModelAttachedWaiter(profile).Wait();
@@ -2286,8 +2226,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
                 base::FilePath("Download.png")));
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       AddInProgressDownloadItem) {
+TEST_F(HoldingSpaceKeyedServiceTest, AddInProgressDownloadItem) {
   // Wait for the holding space model to attach.
   TestingProfile* profile = GetProfile();
   HoldingSpaceModelAttachedWaiter(profile).Wait();
@@ -2496,7 +2435,9 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
                   gfx::ImageSkiaOperations::CreateSuperimposedImage(
                       image_util::CreateEmptyImage(kImageSize),
                       gfx::CreateVectorIcon(
-                          vector_icons::kErrorOutlineIcon,
+                          ::features::IsRoundedIconsEnabled()
+                              ? vector_icons::kErrorIcon
+                              : vector_icons::kErrorOutlineOldIcon,
                           kHoldingSpaceIconSize,
                           cros_styles::ResolveColor(
                               cros_styles::ColorName::kIconColorAlert,
@@ -2535,7 +2476,9 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
                   gfx::ImageSkiaOperations::CreateSuperimposedImage(
                       image_util::CreateEmptyImage(kImageSize),
                       gfx::CreateVectorIcon(
-                          vector_icons::kErrorOutlineIcon,
+                          ::features::IsRoundedIconsEnabled()
+                              ? vector_icons::kErrorIcon
+                              : vector_icons::kErrorOutlineOldIcon,
                           kHoldingSpaceIconSize,
                           cros_styles::ResolveColor(
                               cros_styles::ColorName::kIconColorWarning,
@@ -2572,7 +2515,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   EXPECT_TRUE(BitmapsAreEqual(actual_image, expected_image));
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest, RemoveAll) {
+TEST_F(HoldingSpaceKeyedServiceTest, RemoveAll) {
   // Wait for the holding space model to attach.
   TestingProfile* profile = GetProfile();
   HoldingSpaceModelAttachedWaiter(profile).Wait();
@@ -2608,8 +2551,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest, RemoveAll) {
   EXPECT_EQ(0u, model->items().size());
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       CreateInterruptedDownloadItem) {
+TEST_F(HoldingSpaceKeyedServiceTest, CreateInterruptedDownloadItem) {
   // Wait for the holding space model to attach.
   TestingProfile* profile = GetProfile();
   HoldingSpaceModelAttachedWaiter(profile).Wait();
@@ -2684,8 +2626,7 @@ TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
   EXPECT_TRUE(model->items()[0]->progress().IsComplete());
 }
 
-TEST_P(HoldingSpaceKeyedServiceWithExperimentalFeatureTest,
-       InterruptAndResumeDownload) {
+TEST_F(HoldingSpaceKeyedServiceTest, InterruptAndResumeDownload) {
   // Wait for the holding space model to attach.
   TestingProfile* profile = GetProfile();
   HoldingSpaceModelAttachedWaiter(profile).Wait();
@@ -3074,24 +3015,46 @@ TEST_F(HoldingSpaceKeyedServiceNearbySharingTest, AddNearbyShareItem) {
   EXPECT_EQ(u"File 2.png", item_2->GetText());
 }
 
+// Test parameters for tests of Photoshop Web integration. Used to wrap `GURL`
+// so that value-param representation can be overridden. See `PrintToString()`
+// below as well as https://crbug.com/410764102 for additional details.
+struct HoldingSpaceKeyedServicePhotoshopWebIntegrationTestParams {
+  GURL file_picker_binding_context;
+};
+
+// NOTE: Used by `::testing::PrintToStringParamName()`. Per
+// https://crbug.com/410764102, return value must be non-empty.
+std::string PrintToString(
+    const HoldingSpaceKeyedServicePhotoshopWebIntegrationTestParams& params) {
+  const GURL& context = params.file_picker_binding_context;
+  return context.is_empty() ? "(empty)" : context.spec();
+}
+
 // Base class for tests of Photoshop Web integration. Parameterized by the
 // binding context to use for the file picker during testing.
 class HoldingSpaceKeyedServicePhotoshopWebIntegrationTest
     : public HoldingSpaceKeyedServiceTest,
       public ::testing::WithParamInterface<
-          /*file_picker_binding_context=*/GURL> {
+          HoldingSpaceKeyedServicePhotoshopWebIntegrationTestParams> {
  public:
   // The binding context to use for the file picker given test parameterization.
-  const GURL& GetFilePickerBindingContext() const { return GetParam(); }
+  const GURL& GetFilePickerBindingContext() const {
+    return GetParam().file_picker_binding_context;
+  }
 };
 
 INSTANTIATE_TEST_SUITE_P(
     All,
     HoldingSpaceKeyedServicePhotoshopWebIntegrationTest,
     /*file_picker_binding_context=*/
-    ::testing::Values(GURL(),
-                      GURL("https://google.com/"),
-                      GURL("https://photoshop.adobe.com/")));
+    ::testing::Values(
+        HoldingSpaceKeyedServicePhotoshopWebIntegrationTestParams{
+            .file_picker_binding_context = GURL()},
+        HoldingSpaceKeyedServicePhotoshopWebIntegrationTestParams{
+            .file_picker_binding_context = GURL("https://google.com/")},
+        HoldingSpaceKeyedServicePhotoshopWebIntegrationTestParams{
+            .file_picker_binding_context =
+                GURL("https://photoshop.adobe.com/")}));
 
 // Verifies that a Photoshop Web item will be added to the user's Holding Space
 // under expected circumstances.
@@ -3186,7 +3149,7 @@ class HoldingSpaceKeyedServicePrintToPdfIntegrationTest
 
     pdf_printer_handler_->StartPrint(
         job_title,
-        /*settings=*/base::Value::Dict(),
+        /*settings=*/base::DictValue(),
         base::MakeRefCounted<base::RefCountedString>(std::string()),
         /*callback=*/base::DoNothing());
 
@@ -3203,8 +3166,9 @@ class HoldingSpaceKeyedServicePrintToPdfIntegrationTest
 
     // Create the PDF printer handler.
     Browser* browser = GetBrowserForPdfPrinterHandler();
-    pdf_printer_handler_ = std::make_unique<printing::PdfPrinterHandler>(
-        browser->profile(), browser->tab_strip_model()->GetActiveWebContents(),
+    pdf_printer_handler_ = std::make_unique<::printing::PdfPrinterHandler>(
+        browser->GetProfile(),
+        browser->tab_strip_model()->GetActiveWebContents(),
         /*sticky_settings=*/nullptr);
   }
 
@@ -3226,7 +3190,7 @@ class HoldingSpaceKeyedServicePrintToPdfIntegrationTest
     return incognito_browser_.get();
   }
 
-  std::unique_ptr<printing::PdfPrinterHandler> pdf_printer_handler_;
+  std::unique_ptr<::printing::PdfPrinterHandler> pdf_printer_handler_;
   std::unique_ptr<Browser> incognito_browser_;
 };
 
@@ -3408,14 +3372,8 @@ TEST_F(HoldingSpaceKeyedServiceIncognitoDownloadsTest,
 }
 
 class HoldingSpaceSuggestionsDelegateTest
-    : public HoldingSpaceKeyedServiceTest,
-      public testing::WithParamInterface<bool> {
+    : public HoldingSpaceKeyedServiceTest {
  public:
-  HoldingSpaceSuggestionsDelegateTest() {
-    scoped_feature_list_.InitWithFeatureState(
-        features::kHoldingSpaceSuggestions, GetParam());
-  }
-
   void SetUp() override {
     HoldingSpaceKeyedServiceTest::SetUp();
 
@@ -3449,17 +3407,12 @@ class HoldingSpaceSuggestionsDelegateTest
   ScopedTestMountPoint* local_mount_point() { return local_mount_point_.get(); }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_list_;
   std::unique_ptr<ScopedTestMountPoint> drive_mount_point_;
   std::unique_ptr<ScopedTestMountPoint> local_mount_point_;
 };
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         HoldingSpaceSuggestionsDelegateTest,
-                         /*enable_suggestion_feature=*/testing::Bool());
-
 // Verifies that suggestion refresh through the holding space client is WAI.
-TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRefresh) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, SuggestionRefresh) {
   using Type = HoldingSpaceItem::Type;
 
   // Populate drive and local file suggestions.
@@ -3494,16 +3447,11 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRefresh) {
   // Verify initial suggestions.  Note that suggestions are reversed in the
   // holding space model to account for the fact that items are presented in
   // reverse-chronological order.
-  const bool suggestion_feature_enabled =
-      features::IsHoldingSpaceSuggestionsEnabled();
   HoldingSpaceModel* model = HoldingSpaceController::Get()->model();
   EXPECT_THAT(GetSuggestionsInModel(*model),
-              ::testing::Conditional(
-                  suggestion_feature_enabled,
-                  ::testing::ElementsAre(
-                      std::make_pair(Type::kLocalSuggestion, file_path_2),
-                      std::make_pair(Type::kDriveSuggestion, file_path_1)),
-                  ::testing::IsEmpty()));
+              ::testing::ElementsAre(
+                  std::make_pair(Type::kLocalSuggestion, file_path_2),
+                  std::make_pair(Type::kDriveSuggestion, file_path_1)));
 
   // Create additional files to back refreshed suggestions.
   const base::FilePath file_path_3 = drive_mount_point()->CreateArbitraryFile();
@@ -3514,7 +3462,6 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRefresh) {
   // the suggestions feature is enabled.
   EXPECT_CALL(*GetFileSuggestKeyedService(),
               GetSuggestFileData(FileSuggestionType::kDriveFile, ::testing::_))
-      .Times(suggestion_feature_enabled ? 1u : 0u)
       .WillOnce(base::test::RunOnceCallback<1u>(
           std::make_optional(std::vector<FileSuggestData>{
               {FileSuggestionType::kDriveFile, file_path_3,
@@ -3528,7 +3475,6 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRefresh) {
                /*icon_url=*/std::nullopt}})));
   EXPECT_CALL(*GetFileSuggestKeyedService(),
               GetSuggestFileData(FileSuggestionType::kLocalFile, ::testing::_))
-      .Times(suggestion_feature_enabled ? 1u : 0u)
       .WillOnce(base::test::RunOnceCallback<1u>(
           std::make_optional(std::vector<FileSuggestData>{
               {FileSuggestionType::kLocalFile, file_path_4,
@@ -3542,19 +3488,15 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRefresh) {
                /*icon_url=*/std::nullopt}})));
   HoldingSpaceController::Get()->client()->RefreshSuggestions();
 
-  // Verify that all suggestions have been updated in the model if and only if
-  // the suggestions feature is enabled.
+  // Verify that all suggestions have been updated in the model.
   EXPECT_THAT(GetSuggestionsInModel(*model),
-              ::testing::Conditional(
-                  suggestion_feature_enabled,
-                  ::testing::ElementsAre(
-                      std::make_pair(Type::kLocalSuggestion, file_path_4),
-                      std::make_pair(Type::kDriveSuggestion, file_path_3)),
-                  ::testing::IsEmpty()));
+              ::testing::ElementsAre(
+                  std::make_pair(Type::kLocalSuggestion, file_path_4),
+                  std::make_pair(Type::kDriveSuggestion, file_path_3)));
 }
 
 // Verifies that suggestion removal through the holding space client is WAI.
-TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRemoval) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, SuggestionRemoval) {
   using Type = HoldingSpaceItem::Type;
 
   // Populate drive and local file suggestions.
@@ -3589,24 +3531,17 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRemoval) {
   // Verify initial suggestions.  Note that suggestions are reversed in the
   // holding space model to account for the fact that items are presented in
   // reverse-chronological order.
-  const bool suggestion_feature_enabled =
-      features::IsHoldingSpaceSuggestionsEnabled();
   HoldingSpaceModel* model = HoldingSpaceController::Get()->model();
   EXPECT_THAT(GetSuggestionsInModel(*model),
-              ::testing::Conditional(
-                  suggestion_feature_enabled,
-                  ::testing::ElementsAre(
-                      std::make_pair(Type::kLocalSuggestion, file_path_2),
-                      std::make_pair(Type::kDriveSuggestion, file_path_1)),
-                  ::testing::IsEmpty()));
+              ::testing::ElementsAre(
+                  std::make_pair(Type::kLocalSuggestion, file_path_2),
+                  std::make_pair(Type::kDriveSuggestion, file_path_1)));
 
   // Remove all suggestions through the holding space client. Verify that
-  // `FileSuggestKeyedService::RemoveSuggestionsAndNotify()` is called if and
-  // only if the suggestions feature is enabled.
+  // `FileSuggestKeyedService::RemoveSuggestionsAndNotify()` is called.
   EXPECT_CALL(*GetFileSuggestKeyedService(),
               RemoveSuggestionsAndNotify(
-                  std::vector<base::FilePath>({file_path_1, file_path_2})))
-      .Times(suggestion_feature_enabled ? 1u : 0u);
+                  std::vector<base::FilePath>({file_path_1, file_path_2})));
   HoldingSpaceController::Get()->client()->RemoveSuggestions(
       {file_path_1, file_path_2});
   task_environment()->FastForwardBy(base::Seconds(1));
@@ -3615,7 +3550,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, SuggestionRemoval) {
   EXPECT_THAT(GetSuggestionsInModel(*model), IsEmpty());
 }
 
-TEST_P(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
   const base::FilePath file_path_1 = drive_mount_point()->CreateArbitraryFile();
 
   // Update Drive file suggestions. Fast-forward to ensure the suggestion fetch
@@ -3634,16 +3569,9 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
            /*icon_url=*/std::nullopt}});
   task_environment()->FastForwardBy(base::Seconds(1));
 
-  const bool suggestion_feature_enabled =
-      features::IsHoldingSpaceSuggestionsEnabled();
-
-  // Populate the expected suggestions array if the holding space suggestion
-  // feature is enabled. There should be no suggestions in the model when the
-  // feature is disabled.
-  std::vector<std::pair<HoldingSpaceItem::Type, base::FilePath>> expected;
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
+  // Populate the expected suggestions array.
+  std::vector<std::pair<HoldingSpaceItem::Type, base::FilePath>> expected = {
+      {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
 
   // Check the model after Drive file suggestions update.
   HoldingSpaceModel* const model = HoldingSpaceController::Get()->model();
@@ -3666,10 +3594,8 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
            /*icon_url=*/std::nullopt}});
   task_environment()->RunUntilIdle();
 
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
-                {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
+  expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
+              {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 
   const base::FilePath file_path_3 = drive_mount_point()->CreateArbitraryFile();
@@ -3698,11 +3624,9 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
                                     /*icon_url=*/std::nullopt}});
   task_environment()->FastForwardBy(base::Seconds(1));
 
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
-                {HoldingSpaceItem::Type::kDriveSuggestion, file_path_3},
-                {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
+  expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
+              {HoldingSpaceItem::Type::kDriveSuggestion, file_path_3},
+              {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 
   // Update Drive file suggestions with an empty array.
@@ -3711,11 +3635,8 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
       /*suggestions=*/std::vector<FileSuggestData>{});
   task_environment()->FastForwardBy(base::Seconds(1));
 
-  // Drive file suggestions should be removed from the model if suggestions are
-  // enabled.
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2}};
-  }
+  // Drive file suggestions should be removed from the model.
+  expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 
   // Update local file suggestions with an empty array.
@@ -3729,7 +3650,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, VerifySuggestionsInModel) {
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 }
 
-TEST_P(HoldingSpaceSuggestionsDelegateTest, DownloadsFolderNotSuggested) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, DownloadsFolderNotSuggested) {
   auto downloads_mount =
       local_mount_point()->CreateAndMountDownloads(GetProfile());
   auto downloads_path =
@@ -3770,17 +3691,15 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, DownloadsFolderNotSuggested) {
            /*icon_url=*/std::nullopt}});
   task_environment()->FastForwardBy(base::Seconds(1));
 
-  std::vector<std::pair<HoldingSpaceItem::Type, base::FilePath>> expected;
-  if (features::IsHoldingSpaceSuggestionsEnabled()) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path},
-                {HoldingSpaceItem::Type::kLocalSuggestion, other_folder_path}};
-  }
+  std::vector<std::pair<HoldingSpaceItem::Type, base::FilePath>> expected = {
+      {HoldingSpaceItem::Type::kLocalSuggestion, file_path},
+      {HoldingSpaceItem::Type::kLocalSuggestion, other_folder_path}};
 
   EXPECT_EQ(GetSuggestionsInModel(*HoldingSpaceController::Get()->model()),
             expected);
 }
 
-TEST_P(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
   const base::FilePath file_path_1 = drive_mount_point()->CreateArbitraryFile();
   const GURL file_system_url_1 = GetFileSystemUrl(GetProfile(), file_path_1);
   const HoldingSpaceFile::FileSystemType file_system_type_1 =
@@ -3803,16 +3722,9 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
            /*icon_url=*/std::nullopt}});
   task_environment()->FastForwardBy(base::Seconds(1));
 
-  const bool suggestion_feature_enabled =
-      features::IsHoldingSpaceSuggestionsEnabled();
-
-  // Populate the expected suggestions array if the holding space suggestion
-  // feature is enabled. There should be no suggestions in the model when the
-  // feature is disabled.
+  // Populate the expected suggestions array.
   std::vector<std::pair<HoldingSpaceItem::Type, base::FilePath>> expected;
-  if (suggestion_feature_enabled) {
     expected = {{HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
 
   // Check the model after Drive file suggestions update.
   HoldingSpaceModel* const model = HoldingSpaceController::Get()->model();
@@ -3835,10 +3747,8 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
            /*icon_url=*/std::nullopt}});
   task_environment()->RunUntilIdle();
 
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
-                {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
+  expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
+              {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 
   // Pin the suggested Drive file and verify that the suggestion is removed
@@ -3851,9 +3761,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
   model->AddItem(std::move(pinned_item));
   task_environment()->RunUntilIdle();
 
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2}};
-  }
+  expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 
   // Unpin the suggested Drive file and verify that the suggestion is re-added
@@ -3861,10 +3769,8 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
   model->RemoveItem(pinned_item_id);
   task_environment()->RunUntilIdle();
 
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
-                {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
+  expected = {{HoldingSpaceItem::Type::kLocalSuggestion, file_path_2},
+              {HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 
   // Add an uninitialized pinned item for the suggested local file to the model
@@ -3898,14 +3804,12 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, PinAndUnpinSuggestions) {
                        GetFileSystemUrl(GetProfile(), file_path_2)));
   task_environment()->RunUntilIdle();
 
-  if (suggestion_feature_enabled) {
-    expected = {{HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
-  }
+  expected = {{HoldingSpaceItem::Type::kDriveSuggestion, file_path_1}};
   EXPECT_EQ(GetSuggestionsInModel(*model), expected);
 }
 
 // Verifies the file suggestion update on a profile with restored suggestions.
-TEST_P(HoldingSpaceSuggestionsDelegateTest, RestoreSuggestions) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, RestoreSuggestions) {
   const base::FilePath drive_file = drive_mount_point()->CreateArbitraryFile();
   const GURL drive_file_system_url = GetFileSystemUrl(GetProfile(), drive_file);
   const HoldingSpaceFile::FileSystemType drive_file_system_type =
@@ -3922,7 +3826,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, RestoreSuggestions) {
   // Create a secondary profile with a persisted drive file suggestion.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_items;
+        base::ListValue persisted_items;
         persisted_items.Append(drive_file_suggestion->Serialize());
         pref_store->SetValueSilently(
             HoldingSpacePersistenceDelegate::kPersistencePath,
@@ -3936,10 +3840,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, RestoreSuggestions) {
   HoldingSpaceModel* const secondary_holding_space_model =
       HoldingSpaceController::Get()->model();
   ItemsInitializedWaiter(secondary_holding_space_model).Wait();
-  const bool suggestion_feature_enabled =
-      features::IsHoldingSpaceSuggestionsEnabled();
-  EXPECT_EQ(secondary_holding_space_model->items().size(),
-            suggestion_feature_enabled ? 1u : 0u);
+  EXPECT_EQ(secondary_holding_space_model->items().size(), 1u);
 
   // Update local file suggestions on the secondary profile. Fast-forward to
   // ensure the suggestion fetch completes.
@@ -3960,20 +3861,16 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, RestoreSuggestions) {
                                    /*icon_url=*/std::nullopt}});
   task_environment()->FastForwardBy(base::Seconds(1));
 
+  // The drive and local file suggestions should coexist in the model.
   const auto& model_items = secondary_holding_space_model->items();
-  if (suggestion_feature_enabled) {
-    // The drive and local file suggestions should coexist in the model.
-    ASSERT_EQ(model_items.size(), 2u);
-    EXPECT_EQ(model_items[0]->file().file_path, local_file);
-    EXPECT_EQ(model_items[1]->file().file_path, drive_file);
-  } else {
-    EXPECT_TRUE(model_items.empty());
-  }
+  ASSERT_EQ(model_items.size(), 2u);
+  EXPECT_EQ(model_items[0]->file().file_path, local_file);
+  EXPECT_EQ(model_items[1]->file().file_path, drive_file);
 }
 
 // Verifies by updating file suggestions in the holding space model which
 // contains the suggested files from an unmounted file system.
-TEST_P(HoldingSpaceSuggestionsDelegateTest, UpdateSuggestionsWithDelayedMount) {
+TEST_F(HoldingSpaceSuggestionsDelegateTest, UpdateSuggestionsWithDelayedMount) {
   auto delayed_mount = std::make_unique<ScopedTestMountPoint>(
       "drivefs-delayed_mount",
       /*file_system_type=*/storage::kFileSystemTypeDriveFs,
@@ -3990,7 +3887,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, UpdateSuggestionsWithDelayedMount) {
   // Create a secondary profile with a persisted delayed file suggestion.
   TestingProfile* const secondary_profile = CreateSecondaryProfile(
       base::BindLambdaForTesting([&](TestingPrefStore* pref_store) {
-        base::Value::List persisted_items;
+        base::ListValue persisted_items;
         persisted_items.Append(delayed_holding_space_item->Serialize());
         pref_store->SetValueSilently(
             HoldingSpacePersistenceDelegate::kPersistencePath,
@@ -4003,10 +3900,7 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, UpdateSuggestionsWithDelayedMount) {
   HoldingSpaceModelAttachedWaiter(secondary_profile).Wait();
   HoldingSpaceModel* const secondary_holding_space_model =
       HoldingSpaceController::Get()->model();
-  const bool suggestion_feature_enabled =
-      features::IsHoldingSpaceSuggestionsEnabled();
-  EXPECT_EQ(secondary_holding_space_model->items().size(),
-            suggestion_feature_enabled ? 1u : 0u);
+  EXPECT_EQ(secondary_holding_space_model->items().size(), 1u);
 
   // Update with a local file suggestion.
   const base::FilePath local_file = local_mount_point()->CreateArbitraryFile();
@@ -4027,18 +3921,14 @@ TEST_P(HoldingSpaceSuggestionsDelegateTest, UpdateSuggestionsWithDelayedMount) {
   task_environment()->FastForwardBy(base::Seconds(1));
 
   const auto& model_items = secondary_holding_space_model->items();
-  if (suggestion_feature_enabled) {
-    ASSERT_EQ(model_items.size(), 2u);
-    EXPECT_EQ(model_items[0]->file().file_path, local_file);
-    EXPECT_EQ(model_items[0]->type(), HoldingSpaceItem::Type::kLocalSuggestion);
-    EXPECT_TRUE(model_items[0]->IsInitialized());
+  ASSERT_EQ(model_items.size(), 2u);
+  EXPECT_EQ(model_items[0]->file().file_path, local_file);
+  EXPECT_EQ(model_items[0]->type(), HoldingSpaceItem::Type::kLocalSuggestion);
+  EXPECT_TRUE(model_items[0]->IsInitialized());
 
-    EXPECT_EQ(model_items[1]->file().file_path, delayed_mount_file_path);
-    EXPECT_EQ(model_items[1]->type(), HoldingSpaceItem::Type::kDriveSuggestion);
-    EXPECT_FALSE(model_items[1]->IsInitialized());
-  } else {
-    EXPECT_TRUE(model_items.empty());
-  }
+  EXPECT_EQ(model_items[1]->file().file_path, delayed_mount_file_path);
+  EXPECT_EQ(model_items[1]->type(), HoldingSpaceItem::Type::kDriveSuggestion);
+  EXPECT_FALSE(model_items[1]->IsInitialized());
 }
 
 }  // namespace ash

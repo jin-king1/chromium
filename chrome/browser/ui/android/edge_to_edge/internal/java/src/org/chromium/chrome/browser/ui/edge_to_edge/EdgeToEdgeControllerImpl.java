@@ -4,14 +4,18 @@
 
 package org.chromium.chrome.browser.ui.edge_to_edge;
 
+import static androidx.core.view.WindowInsetsCompat.Type.systemBars;
+import static androidx.core.view.WindowInsetsCompat.Type.tappableElement;
+
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.Activity;
 import android.graphics.Rect;
 import android.os.Build.VERSION_CODES;
 import android.view.View;
 
 import androidx.annotation.CallSuper;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import androidx.annotation.IntDef;
 import androidx.annotation.RequiresApi;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.graphics.Insets;
@@ -21,8 +25,13 @@ import org.chromium.base.Callback;
 import org.chromium.base.Log;
 import org.chromium.base.ObserverList;
 import org.chromium.base.ValueChangedCallback;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.fullscreen.FullscreenManager;
 import org.chromium.chrome.browser.fullscreen.FullscreenOptions;
 import org.chromium.chrome.browser.layouts.LayoutManager;
@@ -32,21 +41,23 @@ import org.chromium.chrome.browser.tab.EmptyTabObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabObserver;
 import org.chromium.chrome.browser.tab.TabSupplierObserver;
-import org.chromium.components.browser_ui.edge_to_edge.EdgeToEdgeManager;
-import org.chromium.components.browser_ui.edge_to_edge.EdgeToEdgePadAdjuster;
-import org.chromium.components.browser_ui.edge_to_edge.EdgeToEdgeStateProvider;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
-import org.chromium.ui.InsetObserver;
-import org.chromium.ui.InsetObserver.WindowInsetsConsumer;
-import org.chromium.ui.InsetObserver.WindowInsetsConsumer.InsetConsumerSource;
 import org.chromium.ui.base.WindowAndroid;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeManager;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeManager.BackupNavbarInsetsCallSite;
+import org.chromium.ui.edge_to_edge.EdgeToEdgePadAdjuster;
+import org.chromium.ui.edge_to_edge.EdgeToEdgeStateProvider;
+import org.chromium.ui.insets.InsetObserver;
+import org.chromium.ui.insets.InsetObserver.WindowInsetsConsumer;
+import org.chromium.ui.insets.InsetObserver.WindowInsetsConsumer.InsetConsumerSource;
 
 /**
  * Controls use of the Android Edge To Edge feature that allows an App to draw benieth the Status
  * and Navigation Bars. For Chrome, we intentend to sometimes draw under the Nav Bar but not the
  * Status Bar.
  */
+@NullMarked
 @RequiresApi(VERSION_CODES.R)
 public class EdgeToEdgeControllerImpl
         implements EdgeToEdgeController,
@@ -54,23 +65,84 @@ public class EdgeToEdgeControllerImpl
                 LayoutStateProvider.LayoutStateObserver,
                 FullscreenManager.Observer {
     private static final String TAG = "E2E_ControllerImpl";
+    private static final String DRAW_TO_EDGE_UNSUPPORTED_CONFIG_HISTOGRAM =
+            "Android.EdgeToEdge.DrawToEdgeInUnsupportedConfiguration";
+    private static final String SUPPORTED_CONFIGURATION_SWITCH_HISTOGRAM =
+            "Android.EdgeToEdge.SupportedConfigurationSwitch2";
+    private static final String CONFIGURATION_SWITCH_OUTCOME_HISTOGRAM =
+            "Android.EdgeToEdge.Debugging.ConfigurationSwitchOutcome";
+
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        SupportedConfigurationSwitch.FROM_SUPPORTED_TO_UNSUPPORTED,
+        SupportedConfigurationSwitch.FROM_UNSUPPORTED_TO_SUPPORTED,
+        SupportedConfigurationSwitch.NUM_ENTRIES
+    })
+    @interface SupportedConfigurationSwitch {
+        int FROM_SUPPORTED_TO_UNSUPPORTED = 0;
+        int FROM_UNSUPPORTED_TO_SUPPORTED = 1;
+        int NUM_ENTRIES = 2;
+    }
+
+    /** When configuration changes from supported to unsupported, what's the outcome */
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        ConfigurationSwitchOutcome.ADD_PADDING_NEW_INSETS,
+        ConfigurationSwitchOutcome.ADD_PADDING_ORIGINAL_INSETS,
+        ConfigurationSwitchOutcome.ERROR_ADD_PADDING_BOTH_INSETS_EMPTY,
+        ConfigurationSwitchOutcome.NO_PADDING_BOTH_INSETS_EMPTY,
+        ConfigurationSwitchOutcome.NO_PADDING_NO_NEW_INSETS,
+        ConfigurationSwitchOutcome.ERROR_NO_PADDING_WITH_NEW_INSETS,
+        ConfigurationSwitchOutcome.NUM_ENTRIES
+    })
+    public @interface ConfigurationSwitchOutcome {
+
+        // Correct cases
+        int ADD_PADDING_ORIGINAL_INSETS = 0;
+        int ADD_PADDING_NEW_INSETS = 1;
+        // Error case / impossible case
+        int ERROR_ADD_PADDING_BOTH_INSETS_EMPTY = 2;
+        int NO_PADDING_BOTH_INSETS_EMPTY = 3;
+        int NO_PADDING_NO_NEW_INSETS = 4;
+        // Error case / impossible case
+        int ERROR_NO_PADDING_WITH_NEW_INSETS = 5;
+
+        int NUM_ENTRIES = 6;
+    }
+
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        SupportedConfigurationStrangeInsetsState.TAPPABLE_ELEMENT_NOT_GESTURE_NAV,
+        SupportedConfigurationStrangeInsetsState.NO_TAPPABLE_ELEMENT_NOT_GESTURE_NAV,
+        SupportedConfigurationStrangeInsetsState.ERROR_TAPPABLE_ELEMENT_GESTURE_NAV,
+        SupportedConfigurationStrangeInsetsState.NUM_ENTRIES
+    })
+    @interface SupportedConfigurationStrangeInsetsState {
+        int TAPPABLE_ELEMENT_NOT_GESTURE_NAV = 0;
+        int NO_TAPPABLE_ELEMENT_NOT_GESTURE_NAV = 1;
+        int ERROR_TAPPABLE_ELEMENT_GESTURE_NAV = 2;
+        int NUM_ENTRIES = 2;
+    }
 
     /** The outermost view in our view hierarchy that is identified with a resource ID. */
     private static final int ROOT_UI_VIEW_ID = android.R.id.content;
 
-    private final @NonNull Activity mActivity;
-    private final @NonNull WindowAndroid mWindowAndroid;
-    private final @NonNull TabSupplierObserver mTabSupplierObserver;
+    private final Activity mActivity;
+    private final WindowAndroid mWindowAndroid;
+    private final TabSupplierObserver mTabSupplierObserver;
     private final ObserverList<EdgeToEdgePadAdjuster> mPadAdjusters = new ObserverList<>();
     private final ObserverList<ChangeObserver> mEdgeChangeObservers = new ObserverList<>();
-    private final @NonNull TabObserver mTabObserver;
+    private final TabObserver mTabObserver;
     private final BrowserControlsStateProvider mBrowserControlsStateProvider;
-    private final ObservableSupplier<LayoutManager> mLayoutManagerSupplier;
+    private final MonotonicObservableSupplier<LayoutManager> mLayoutManagerSupplier;
     private final Callback<LayoutManager> mOnLayoutManagerCallback =
             new ValueChangedCallback<>(this::updateLayoutStateProvider);
     private final FullscreenManager mFullscreenManager;
-    private final @NonNull EdgeToEdgeManager mEdgeToEdgeManager;
-    private final @NonNull EdgeToEdgeStateProvider mEdgeToEdgeStateProvider;
+    private final EdgeToEdgeManager mEdgeToEdgeManager;
+    private final EdgeToEdgeStateProvider mEdgeToEdgeStateProvider;
     private final int mEdgeToEdgeToken;
 
     // Cached rects used for adding under fullscreen.
@@ -85,8 +157,10 @@ public class EdgeToEdgeControllerImpl
     private final @Nullable EdgeToEdgeOSWrapper mEdgeToEdgeOsWrapper;
     private @Nullable LayoutManager mLayoutManager;
 
-    private Tab mCurrentTab;
-    private WebContentsObserver mWebContentsObserver;
+    private @Nullable Tab mCurrentTab;
+    private @Nullable WebContentsObserver mWebContentsObserver;
+
+    private boolean mIsBottomChinEnabled;
 
     /**
      * Whether the system is drawing "toEdge" (i.e. the edge-to-edge wrapper has no bottom padding).
@@ -110,10 +184,10 @@ public class EdgeToEdgeControllerImpl
     private boolean mHasSafeAreaConstraint;
 
     private InsetObserver mInsetObserver;
-    private @NonNull Insets mSystemInsets;
+    private Insets mSystemInsets = Insets.NONE;
     private Insets mAppliedContentViewPadding = Insets.NONE;
     private @Nullable Insets mKeyboardInsets;
-    private @Nullable WindowInsetsConsumer mWindowInsetsConsumer;
+    private final @Nullable WindowInsetsConsumer mWindowInsetsConsumer;
     private boolean mBottomControlsAreVisible;
     private int mBottomControlsHeight;
 
@@ -135,19 +209,20 @@ public class EdgeToEdgeControllerImpl
      * @param fullscreenManager The {@link FullscreenManager} for checking the fullscreen state.
      */
     public EdgeToEdgeControllerImpl(
-            @NonNull Activity activity,
-            @NonNull WindowAndroid windowAndroid,
-            @NonNull ObservableSupplier<Tab> tabObservableSupplier,
+            Activity activity,
+            WindowAndroid windowAndroid,
+            NullableObservableSupplier<Tab> tabObservableSupplier,
             @Nullable EdgeToEdgeOSWrapper edgeToEdgeOsWrapper,
-            @NonNull EdgeToEdgeManager edgeToEdgeManager,
-            @NonNull BrowserControlsStateProvider browserControlsStateProvider,
-            @NonNull ObservableSupplier<LayoutManager> layoutManagerSupplier,
-            @NonNull FullscreenManager fullscreenManager) {
+            EdgeToEdgeManager edgeToEdgeManager,
+            BrowserControlsStateProvider browserControlsStateProvider,
+            MonotonicObservableSupplier<LayoutManager> layoutManagerSupplier,
+            FullscreenManager fullscreenManager) {
         mActivity = activity;
         mWindowAndroid = windowAndroid;
         mEdgeToEdgeManager = edgeToEdgeManager;
         mPxToDp = 1.f / mActivity.getResources().getDisplayMetrics().density;
         mDisablePaddingRootView = EdgeToEdgeUtils.isEdgeToEdgeEverywhereEnabled();
+
         mEdgeToEdgeOsWrapper =
                 edgeToEdgeOsWrapper == null && !mDisablePaddingRootView
                         ? new EdgeToEdgeOSWrapperImpl()
@@ -155,21 +230,12 @@ public class EdgeToEdgeControllerImpl
         mTabSupplierObserver =
                 new TabSupplierObserver(tabObservableSupplier) {
                     @Override
-                    protected void onObservingDifferentTab(Tab tab) {
+                    protected void onObservingDifferentTab(@Nullable Tab tab) {
                         onTabSwitched(tab);
                     }
                 };
         mTabObserver =
                 new EmptyTabObserver() {
-                    @Override
-                    public void onWebContentsSwapped(
-                            Tab tab, boolean didStartLoad, boolean didFinishLoad) {
-                        drawToEdge(
-                                EdgeToEdgeUtils.isPageOptedIntoEdgeToEdge(mCurrentTab),
-                                /* changedWindowState= */ false);
-                        updateWebContentsObserver(tab);
-                    }
-
                     @Override
                     public void onContentChanged(Tab tab) {
                         assert tab.getWebContents() != null
@@ -185,7 +251,7 @@ public class EdgeToEdgeControllerImpl
         mBrowserControlsStateProvider.addObserver(this);
 
         mLayoutManagerSupplier = layoutManagerSupplier;
-        mLayoutManagerSupplier.addObserver(mOnLayoutManagerCallback);
+        mLayoutManagerSupplier.addSyncObserverAndPostIfNonNull(mOnLayoutManagerCallback);
         mLayoutManager = layoutManagerSupplier.get();
         if (mLayoutManager != null) {
             mLayoutManager.addObserver(this);
@@ -194,16 +260,18 @@ public class EdgeToEdgeControllerImpl
         mFullscreenManager = fullscreenManager;
         mFullscreenManager.addObserver(this);
 
-        mInsetObserver = mWindowAndroid.getInsetObserver();
-        assert mInsetObserver != null
+        InsetObserver insetObserver = mWindowAndroid.getInsetObserver();
+        assert insetObserver != null
                 : "The EdgeToEdgeControllerImpl needs access to a valid InsetObserver to listen to"
                         + " the system insets!";
+        mInsetObserver = insetObserver;
         mWindowInsetsConsumer = this::handleWindowInsets;
         mInsetObserver.addInsetsConsumer(
                 mWindowInsetsConsumer, InsetConsumerSource.EDGE_TO_EDGE_CONTROLLER_IMPL);
+        mIsBottomChinEnabled = isSupportedByConfiguration(mActivity, mInsetObserver);
 
         mEdgeToEdgeStateProvider = mEdgeToEdgeManager.getEdgeToEdgeStateProvider();
-        mEdgeToEdgeToken = mEdgeToEdgeStateProvider.acquireSetDecorFitsSystemWindowToken();
+        mEdgeToEdgeToken = mEdgeToEdgeStateProvider.acquireEdgeToEdgeToken();
 
         // Any padding to make the content fit the window insets has not yet been applied, so by
         // default, the content is not yet fitting the window insets. The signal should be set to
@@ -213,6 +281,16 @@ public class EdgeToEdgeControllerImpl
         // retriggerOnApplyWindowInsets to populate all the initial state.
         mIsPageOptedIntoEdgeToEdge = EdgeToEdgeUtils.isPageOptedIntoEdgeToEdge(mCurrentTab);
         mInsetObserver.retriggerOnApplyWindowInsets();
+    }
+
+    @VisibleForTesting
+    static boolean isSupportedByConfiguration(Activity activity, InsetObserver insetObserver) {
+        if (shouldMonitorConfigurationChanges()) {
+            return EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled(activity)
+                    && EdgeToEdgeUtils.doAllInsetsIndicateGestureNavigation(
+                            insetObserver.getLastRawWindowInsets());
+        }
+        return EdgeToEdgeUtils.isEdgeToEdgeBottomChinEnabled(activity);
     }
 
     @VisibleForTesting
@@ -354,8 +432,7 @@ public class EdgeToEdgeControllerImpl
 
                     @Override
                     public void safeAreaConstraintChanged(boolean hasConstraint) {
-                        if (mHasSafeAreaConstraint == hasConstraint
-                                || !EdgeToEdgeUtils.isSafeAreaConstraintEnabled()) {
+                        if (mHasSafeAreaConstraint == hasConstraint) {
                             return;
                         }
 
@@ -390,9 +467,17 @@ public class EdgeToEdgeControllerImpl
      */
     @VisibleForTesting
     void drawToEdge(boolean pageOptedIntoEdgeToEdge, boolean changedWindowState) {
+        final boolean isChinEnabled = isSupportedByConfiguration(mActivity, mInsetObserver);
+
+        if (!isChinEnabled) {
+            RecordHistogram.recordBooleanHistogram(
+                    DRAW_TO_EDGE_UNSUPPORTED_CONFIG_HISTOGRAM, changedWindowState);
+        }
+
         // Exit early if there is a tappable navbar (3-button) as the controller should not function
         // when 3-button nav is enabled.
-        if (EdgeToEdgeUtils.hasTappableNavigationBar(mActivity.getWindow())) {
+        if (!shouldMonitorConfigurationChanges()
+                && EdgeToEdgeUtils.hasTappableNavigationBar(mActivity.getWindow())) {
             return;
         }
 
@@ -402,6 +487,10 @@ public class EdgeToEdgeControllerImpl
         boolean shouldDrawToEdge =
                 EdgeToEdgeUtils.shouldDrawToEdge(
                         pageOptedIntoEdgeToEdge, currentLayoutType, mSystemInsets.bottom);
+        if (shouldMonitorConfigurationChanges()) {
+            shouldDrawToEdge &= isChinEnabled;
+            pageOptedIntoEdgeToEdge &= isChinEnabled;
+        }
         // Refresh the mHasSafeAreaConstraint to ensure the boolean stays fresh (e.g. when
         // #drawToEdge is called due to tab switching)
         boolean hasSafeAreaConstraint = EdgeToEdgeUtils.hasSafeAreaConstraintForTab(mCurrentTab);
@@ -444,20 +533,83 @@ public class EdgeToEdgeControllerImpl
         }
     }
 
-    @NonNull
+    private void verifyInsetsInSupportedConfiguration(WindowInsetsCompat windowInsets) {
+        // Check for the presence of a tappable element (in case the navigation bar inset is
+        // missing for some reason) for logging purposes.
+        Insets tappableElementInsets =
+                windowInsets.getInsets(WindowInsetsCompat.Type.tappableElement());
+        // The navigation bar will never be at the top.
+        boolean tappableElement =
+                tappableElementInsets.bottom > 0
+                        || tappableElementInsets.left > 0
+                        || tappableElementInsets.right > 0;
+
+        // Check whether the device appears to be in gesture navigation mode.
+        boolean isGestureNavigation = EdgeToEdgeUtils.isInGestureNavigationMode(windowInsets);
+        @SupportedConfigurationStrangeInsetsState int state;
+        if (tappableElement) {
+            if (isGestureNavigation) {
+                state = SupportedConfigurationStrangeInsetsState.ERROR_TAPPABLE_ELEMENT_GESTURE_NAV;
+            } else {
+                state = SupportedConfigurationStrangeInsetsState.TAPPABLE_ELEMENT_NOT_GESTURE_NAV;
+            }
+        } else {
+            if (isGestureNavigation) {
+                // !tappableElement && isGestureNavigation is intended
+                return;
+            } else {
+                state =
+                        SupportedConfigurationStrangeInsetsState
+                                .NO_TAPPABLE_ELEMENT_NOT_GESTURE_NAV;
+            }
+        }
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.EdgeToEdge.Debugging.SupportedConfigurationStrangeInsets",
+                state,
+                SupportedConfigurationStrangeInsetsState.NUM_ENTRIES);
+    }
+
     @VisibleForTesting
-    WindowInsetsCompat handleWindowInsets(View rootView, @NonNull WindowInsetsCompat windowInsets) {
+    WindowInsetsCompat handleWindowInsets(View rootView, WindowInsetsCompat windowInsets) {
+        boolean changedWindowState = false;
+        @SupportedConfigurationSwitch
+        int configurationChanged = SupportedConfigurationSwitch.NUM_ENTRIES;
+        if (mIsBottomChinEnabled != isSupportedByConfiguration(mActivity, mInsetObserver)) {
+            Log.v(
+                    TAG,
+                    "Switching supported configuration from %s",
+                    (mIsBottomChinEnabled
+                            ? "supported to unsupported"
+                            : "unsupported to supported"));
+            configurationChanged =
+                    mIsBottomChinEnabled
+                            ? SupportedConfigurationSwitch.FROM_SUPPORTED_TO_UNSUPPORTED
+                            : SupportedConfigurationSwitch.FROM_UNSUPPORTED_TO_SUPPORTED;
+            RecordHistogram.recordEnumeratedHistogram(
+                    SUPPORTED_CONFIGURATION_SWITCH_HISTOGRAM,
+                    configurationChanged,
+                    SupportedConfigurationSwitch.NUM_ENTRIES);
+            mIsBottomChinEnabled = isSupportedByConfiguration(mActivity, mInsetObserver);
+            changedWindowState = true;
+        }
+        if (mIsBottomChinEnabled) {
+            verifyInsetsInSupportedConfiguration(windowInsets);
+        }
+
         // Exit early if there is a tappable navbar (3-button) as the controller should not function
         // when 3-button nav is enabled.
-        if (EdgeToEdgeUtils.hasTappableNavigationBar(mActivity.getWindow())) {
+        if (!shouldMonitorConfigurationChanges()
+                && EdgeToEdgeUtils.hasTappableNavigationBar(mActivity.getWindow())) {
             return windowInsets;
         }
 
-        Insets newInsets = getSystemInsets(windowInsets);
+        Insets originalSystemInsets = mSystemInsets;
+        Insets newInsets =
+                getSystemInsets(windowInsets, mInsetObserver.hasSeenNonZeroNavigationBarInsets());
         Insets newKeyboardInsets = windowInsets.getInsets(WindowInsetsCompat.Type.ime());
 
         if (updateVisibilityRects(rootView)
-                || !newInsets.equals(mSystemInsets)
+                || !newInsets.equals(originalSystemInsets)
                 || !newKeyboardInsets.equals(mKeyboardInsets)) {
             mSystemInsets = newInsets;
             mKeyboardInsets = newKeyboardInsets;
@@ -466,10 +618,21 @@ public class EdgeToEdgeControllerImpl
             // TODO(https://crbug.com/325356134) Find a cleaner check and remedy.
             mIsPageOptedIntoEdgeToEdge =
                     mIsPageOptedIntoEdgeToEdge
-                            && EdgeToEdgeControllerFactory.isSupportedConfiguration(mActivity);
-            // Note that we cannot #drawToEdge earlier since we need the system
-            // insets.
+                            && isSupportedByConfiguration(mActivity, mInsetObserver);
+
+            changedWindowState = true;
+        }
+
+        // Note that we cannot call #drawToEdge earlier since we need the system
+        // insets.
+        if (changedWindowState) {
             drawToEdge(mIsPageOptedIntoEdgeToEdge, /* changedWindowState= */ true);
+        }
+
+        // Signal: When configuration is changed, did we pad the system correctly.
+        if (configurationChanged == SupportedConfigurationSwitch.FROM_SUPPORTED_TO_UNSUPPORTED) {
+            recordConfigurationSwitchScenario(
+                    originalSystemInsets, newInsets, mAppliedContentViewPadding);
         }
 
         var builder = new WindowInsetsCompat.Builder(windowInsets);
@@ -479,10 +642,21 @@ public class EdgeToEdgeControllerImpl
             builder.setInsets(WindowInsetsCompat.Type.statusBars(), Insets.NONE);
             builder.setInsets(WindowInsetsCompat.Type.captionBar(), Insets.NONE);
         }
+        Insets mandatorySystemGestures =
+                windowInsets.getInsets(WindowInsetsCompat.Type.mandatorySystemGestures());
         if (mAppliedContentViewPadding.bottom == 0) {
             builder.setInsets(WindowInsetsCompat.Type.navigationBars(), Insets.NONE);
+            builder.setInsets(WindowInsetsCompat.Type.tappableElement(), Insets.NONE);
             builder.setInsets(WindowInsetsCompat.Type.ime(), Insets.NONE);
+            mandatorySystemGestures =
+                    Insets.of(
+                            mandatorySystemGestures.left,
+                            mandatorySystemGestures.top,
+                            mandatorySystemGestures.right,
+                            0);
         }
+        builder.setInsets(
+                WindowInsetsCompat.Type.mandatorySystemGestures(), mandatorySystemGestures);
         return builder.build();
     }
 
@@ -517,8 +691,11 @@ public class EdgeToEdgeControllerImpl
         // Never pad the adjusters if the keyboard is visible.
         if (mKeyboardInsets != null && mKeyboardInsets.bottom > 0) return false;
 
-        // Never pad the adjusters if the bottom controls are visible.
-        if (mBottomControlsAreVisible) return false;
+        // Never pad the adjusters if the bottom controls are visible. Except in the tab switcher.
+        @LayoutType
+        int currentLayoutType =
+                mLayoutManager != null ? mLayoutManager.getActiveLayoutType() : LayoutType.NONE;
+        if (mBottomControlsAreVisible && currentLayoutType != LayoutType.HUB) return false;
 
         // Pad the adjusters if drawing to edge.
         return isDrawingToEdge();
@@ -589,18 +766,16 @@ public class EdgeToEdgeControllerImpl
         // when Chrome does not draw into the system bar region. See https://crbug.com/359659885.
         boolean hasBottomSafeArea =
                 (mIsDrawingToEdge && !mFullscreenManager.getPersistentFullscreenMode());
-        // When pushSafeAreaInsetsForNonOptInPages is not enabled, we are only pushing safe area
-        // insets to pages that are opted into e2e and no bottom controls are presented.
-        boolean pushSafeAreaInsets =
-                EdgeToEdgeUtils.pushSafeAreaInsetsForNonOptInPages()
-                        || (mCurrentTab != null
-                                && mIsPageOptedIntoEdgeToEdge
-                                && mBottomControlsHeight == 0);
-        int bottomInsetOnSafeArea =
-                pushSafeAreaInsets && hasBottomSafeArea ? mSystemInsets.bottom : 0;
+
+        // When the content view is padded (e.g. when keyboard is showing), we should not count the
+        // padding as part of the bottom safe area.
+        int safeAreaInsets = Math.max(mSystemInsets.bottom - mAppliedContentViewPadding.bottom, 0);
+
+        int bottomInsetOnSafeArea = hasBottomSafeArea ? safeAreaInsets : 0;
         mInsetObserver.updateBottomInsetForEdgeToEdge(bottomInsetOnSafeArea);
     }
 
+    @SuppressWarnings("NullAway")
     @CallSuper
     @Override
     public void destroy() {
@@ -611,6 +786,7 @@ public class EdgeToEdgeControllerImpl
         if (mCurrentTab != null) mCurrentTab.removeObserver(mTabObserver);
         mTabSupplierObserver.destroy();
         if (mInsetObserver != null) {
+            assumeNonNull(mWindowInsetsConsumer);
             mInsetObserver.removeInsetsConsumer(mWindowInsetsConsumer);
             mInsetObserver = null;
         }
@@ -627,13 +803,51 @@ public class EdgeToEdgeControllerImpl
         if (mFullscreenManager != null) {
             mFullscreenManager.removeObserver(this);
         }
-        mEdgeToEdgeStateProvider.releaseSetDecorFitsSystemWindowToken(mEdgeToEdgeToken);
+        mEdgeToEdgeStateProvider.releaseEdgeToEdgeToken(mEdgeToEdgeToken);
+    }
+
+    static void recordConfigurationSwitchScenario(
+            Insets originalInsets, Insets newInsets, Insets paddingApplied) {
+        // Do not record when configuration change is disabled.
+        if (!shouldMonitorConfigurationChanges()) return;
+
+        // Do not record landscape mode. Assuming the configuration change will be triggered
+        // mostly with nav bar in portrait mode.
+        if (paddingApplied.left > 0 || paddingApplied.right > 0) return;
+
+        @ConfigurationSwitchOutcome int outcome;
+        // Correct cases - fixed applied
+        if (paddingApplied.bottom > 0) {
+            if (originalInsets.bottom != 0) {
+                outcome = ConfigurationSwitchOutcome.ADD_PADDING_ORIGINAL_INSETS;
+            } else if (newInsets.bottom != 0) {
+                outcome = ConfigurationSwitchOutcome.ADD_PADDING_NEW_INSETS;
+            } else {
+                outcome = ConfigurationSwitchOutcome.ERROR_ADD_PADDING_BOTH_INSETS_EMPTY;
+            }
+        } else { // paddingApplied.bottom == 0
+            if (originalInsets.bottom == 0 && newInsets.bottom == 0) {
+                outcome = ConfigurationSwitchOutcome.NO_PADDING_BOTH_INSETS_EMPTY;
+            } else if (originalInsets.bottom > 0) {
+                outcome = ConfigurationSwitchOutcome.NO_PADDING_NO_NEW_INSETS;
+            } else {
+                outcome = ConfigurationSwitchOutcome.ERROR_NO_PADDING_WITH_NEW_INSETS;
+            }
+        }
+
+        RecordHistogram.recordEnumeratedHistogram(
+                CONFIGURATION_SWITCH_OUTCOME_HISTOGRAM,
+                outcome,
+                ConfigurationSwitchOutcome.NUM_ENTRIES);
     }
 
     @VisibleForTesting
-    @Nullable
-    WebContentsObserver getWebContentsObserver() {
+    @Nullable WebContentsObserver getWebContentsObserver() {
         return mWebContentsObserver;
+    }
+
+    private static boolean shouldMonitorConfigurationChanges() {
+        return ChromeFeatureList.sEdgeToEdgeMonitorConfigurations.isEnabled();
     }
 
     TabObserver getTabObserverForTesting() {
@@ -668,7 +882,34 @@ public class EdgeToEdgeControllerImpl
         return mAppliedContentViewPadding;
     }
 
-    private static Insets getSystemInsets(@NonNull WindowInsetsCompat windowInsets) {
-        return windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
+    private static Insets getSystemInsets(
+            WindowInsetsCompat windowInsets, boolean hasSeenNonZeroNavigationBarInsets) {
+        Insets systemBarInsets = windowInsets.getInsets(systemBars() + tappableElement());
+
+        if (!EdgeToEdgeUtils.isUseBackupNavbarInsetsEnabled()) return systemBarInsets;
+
+        if (systemBarInsets.left == 0
+                && systemBarInsets.right == 0
+                && systemBarInsets.bottom == 0) {
+            @Nullable Insets backupNavbarInsets =
+                    EdgeToEdgeManager.getBackupNavbarInsets(
+                            hasSeenNonZeroNavigationBarInsets,
+                            windowInsets,
+                            BackupNavbarInsetsCallSite.EDGE_TO_EDGE_CONTROLLER,
+                            EdgeToEdgeFieldTrialImpl.getBackupNavbarInsetsOverrides(),
+                            ChromeFeatureList.sEdgeToEdgeUseBackupNavbarInsetsUseGestures
+                                    .getValue());
+            // If applicable, apply backup navbar insets to the left, right, and bottom (not the
+            // top, as that's always the status bar).
+            if (backupNavbarInsets != null) {
+                systemBarInsets =
+                        Insets.of(
+                                backupNavbarInsets.left,
+                                systemBarInsets.top,
+                                backupNavbarInsets.right,
+                                backupNavbarInsets.bottom);
+            }
+        }
+        return systemBarInsets;
     }
 }

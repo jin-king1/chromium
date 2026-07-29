@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "media/base/audio_buffer_queue.h"
 
@@ -35,7 +31,7 @@ static void VerifyBus(AudioBus* bus,
                       ValueType type = ValueType::kNormal) {
   for (int ch = 0; ch < bus->channels(); ++ch) {
     const float v = start + ch * buffer_size * increment;
-    auto channel_data = bus->channel_span(ch);
+    auto channel_data = bus->channel(ch);
     for (int i = offset; i < offset + frames; ++i) {
       float expected_value = v + (i - offset) * increment;
       if (type == ValueType::kFloat)

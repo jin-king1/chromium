@@ -9,11 +9,13 @@
 
 #include <memory>
 #include <optional>
+#include <unordered_map>
 #include <vector>
 
 #include "cc/paint/filter_operations.h"
 #include "components/viz/common/quads/quad_list.h"
 #include "components/viz/common/viz_common_export.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/gfx/display_color_spaces.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/rrect_f.h"
@@ -57,18 +59,6 @@ class VIZ_COMMON_EXPORT RenderPassInternal {
   // render pass' |output_rect|.
   gfx::Transform transform_to_root_target;
 
-  // Post-processing filters, applied to the pixels in the render pass' texture.
-  cc::FilterOperations filters;
-
-  // Post-processing filters, applied to the pixels showing through the
-  // backdrop of the render pass, from behind it.
-  cc::FilterOperations backdrop_filters;
-
-  // Clipping bounds for backdrop filter. If defined, is in a coordinate space
-  // equivalent to render pass physical pixels after applying
-  // `RenderPassDrawQuad::filter_scale`.
-  std::optional<gfx::RRectF> backdrop_filter_bounds;
-
   // If false, the pixels in the render pass' texture are all opaque.
   bool has_transparent_background = true;
 
@@ -99,8 +89,8 @@ class VIZ_COMMON_EXPORT RenderPassInternal {
   // will be serialized as the mojom traits depends on it. Ideally the order is
   // maintained in viz after deserialization, for cache efficiency while
   // iterating through quads, but it's not a strict requirement.
-  QuadList quad_list;
   SharedQuadStateList shared_quad_state_list;
+  QuadList quad_list;
 
   template <typename RenderPassType>
   static void CopyAllForTest(
@@ -110,7 +100,9 @@ class VIZ_COMMON_EXPORT RenderPassInternal {
       out->push_back(source->DeepCopy());
   }
 
-  void AsValueInto(base::trace_event::TracedValue* value) const;
+  void AsValueInto(base::trace_event::TracedValue* value,
+                   const std::unordered_map<ResourceId, size_t>&
+                       resource_id_to_index_map) const;
 
  protected:
   RenderPassInternal();

@@ -36,6 +36,7 @@
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/download/public/common/download_item.h"
 #include "components/history/core/browser/history_service.h"
 #include "components/history/core/browser/history_types.h"
 #include "components/keyed_service/core/service_access_type.h"
@@ -66,7 +67,8 @@
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/test/base/ui_test_utils.h"
 #else
 #include "chrome/browser/android/tab_android.h"
@@ -134,8 +136,9 @@ class ChromeBrowsingDataLifetimeManagerTest
     // triggered even if the same pref value is set twice in a row.
     GetProfile()->GetPrefs()->ClearPref(
         browsing_data::prefs::kBrowsingDataLifetime);
-    GetProfile()->GetPrefs()->Set(browsing_data::prefs::kBrowsingDataLifetime,
-                                  *base::JSONReader::Read(pref));
+    GetProfile()->GetPrefs()->Set(
+        browsing_data::prefs::kBrowsingDataLifetime,
+        *base::JSONReader::Read(pref, base::JSON_PARSE_CHROMIUM_EXTENSIONS));
 
     completion_observer.BlockUntilCompletion();
   }
@@ -171,7 +174,7 @@ class ChromeBrowsingDataLifetimeManagerScheduledRemovalTest
 };
 
 #if BUILDFLAG(IS_ANDROID)
-// See https://crbug.com/1432023 for tracking bug.
+// See https://crbug.com/40902685 for tracking bug.
 #define MAYBE_PrefChange DISABLED_PrefChange
 #else
 #define MAYBE_PrefChange PrefChange
@@ -241,12 +244,13 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
 }
 #endif
 
-// Failing crbug.com/1456542.
+// Failing crbug.com/40917994.
 IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
                        DISABLED_History) {
   // No history saved in incognito mode.
-  if (IsIncognito())
+  if (IsIncognito()) {
     return;
+  }
   static constexpr char kPref[] =
       R"([{"time_to_live_in_hours": 1, "data_types":["browsing_history"]}])";
 
@@ -328,10 +332,59 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
   EXPECT_NE(net::OK, content::LoadBasicRequest(network_context(), url));
 }
 
+#if !BUILDFLAG(IS_ANDROID)
+IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
+                       KeepsDownloadsData) {
+  static constexpr char kPref[] =
+      R"([{"time_to_live_in_hours": 1, "data_types":
+      ["cookies_and_other_site_data"]}])";
+
+  // Download data and set some site data
+  GURL url = embedded_test_server()->GetURL("/browsing_data/site_data.html");
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(), url));
+  DownloadAnItem();
+  SetupSiteData(GetActiveWebContents());
+  CheckSiteData(GetActiveWebContents(), /*has_site_data=*/true);
+
+  // Navigate away.
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(),
+                                     GURL(url::kAboutBlankURL)));
+
+  download::SimpleDownloadManager::DownloadVector downloads;
+  if (auto* download_manager = GetProfile()->GetDownloadManager()) {
+    download_manager->GetAllDownloads(&downloads);
+  }
+  ASSERT_EQ(downloads.size(), 1u);
+
+  // Set the download as in progress coming and the tab url to the page we
+  // started the download from.
+  downloads[0]->SetStateForTesting(
+      download::DownloadItem::DownloadState::IN_PROGRESS);
+  downloads[0]->SetDownloadUrlForTesting(url);
+
+  // Data should not be deleted while the download is in progress.
+  ApplyBrowsingDataLifetimeDeletion(kPref);
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(), url));
+  CheckSiteData(GetActiveWebContents(), /*has_site_data=*/true);
+
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(),
+                                     GURL(url::kAboutBlankURL)));
+
+  // Data should now be deleted since the download is in complete.
+  downloads[0]->SetStateForTesting(
+      download::DownloadItem::DownloadState::COMPLETE);
+
+  ApplyBrowsingDataLifetimeDeletion(kPref);
+  ASSERT_TRUE(content::NavigateToURL(GetActiveWebContents(), url));
+  CheckSiteData(GetActiveWebContents(), /*has_site_data=*/false);
+}
+#endif  //  !BUILDFLAG(IS_ANDROID)
+
 IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
                        KeepsOtherTabData) {
-  if (IsIncognito())
+  if (IsIncognito()) {
     return;
+  }
 
   static constexpr char kPref[] =
       R"([{"time_to_live_in_hours": 1, "data_types":
@@ -352,8 +405,11 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
   TabAndroid* current_tab = TabAndroid::FromWebContents(first_tab);
   std::unique_ptr<content::WebContents> contents = content::WebContents::Create(
       content::WebContents::CreateParams(GetProfile()));
-  auto* second_tab = contents.release();
-  tab_model->CreateTab(current_tab, second_tab, /*select=*/true);
+  auto* second_tab = contents.get();
+  tab_model->CreateTab(current_tab, std::move(contents),
+                       TabModel::kInvalidIndex,
+                       TabModel::TabLaunchType::FROM_RECENT_TABS_FOREGROUND,
+                       /*should_pin=*/false);
   ASSERT_TRUE(content::NavigateToURL(second_tab, url));
 #endif
   DCHECK_NE(first_tab, second_tab);
@@ -410,8 +466,9 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
 #if !BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
                        KeepsOtherWindowData) {
-  if (IsIncognito())
+  if (IsIncognito()) {
     return;
+  }
 
   static constexpr char kPref[] =
       R"([{"time_to_live_in_hours": 1, "data_types":
@@ -433,12 +490,17 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
       browser(), url, WindowOpenDisposition::NEW_WINDOW,
       ui_test_utils::BROWSER_TEST_WAIT_FOR_LOAD_STOP);
 
-  EXPECT_EQ(BrowserList::GetInstance()->size(), 2u);
+  EXPECT_EQ(GlobalBrowserCollection::GetInstance()->GetSize(), 2u);
   content::WebContents* new_tab = nullptr;
-  for (Browser* b : *BrowserList::GetInstance()) {
-    if (b != browser())
-      new_tab = b->tab_strip_model()->GetActiveWebContents();
-  }
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [this, &new_tab](BrowserWindowInterface* browser_window_interface) {
+        if (browser_window_interface != browser()) {
+          new_tab = browser_window_interface->GetTabStripModel()
+                        ->GetActiveWebContents();
+          return false;
+        }
+        return true;
+      });
 
   ASSERT_TRUE(new_tab);
   ASSERT_NE(new_tab, GetActiveWebContents());
@@ -473,18 +535,31 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
 IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
                        MAYBE_Autofill) {
   // No autofill data saved in incognito mode.
-  if (IsIncognito())
+  if (IsIncognito()) {
     return;
+  }
   static constexpr char kPref[] =
       R"([{"time_to_live_in_hours": 1, "data_types":["autofill"]}])";
 
   autofill::AutofillProfile profile(
       "01234567-89ab-cdef-fedc-ba9876543210",
       autofill::AutofillProfile::RecordType::kLocalOrSyncable,
-      AddressCountryCode("US"));
-  autofill::test::SetProfileInfo(
-      &profile, "Marion", "Mitchell", "Morrison", "johnwayne@me.xyz", "Fox",
-      "123 Zoo St.", "unit 5", "Hollywood", "CA", "91601", "US", "12345678910");
+      autofill::AddressCountryCode("US"));
+  autofill::test::SetProfileInfo(&profile,
+                                 autofill::test::SetProfileInfoOptionsBuilder()
+                                     .with_first_name("Marion")
+                                     .with_middle_name("Mitchell")
+                                     .with_last_name("Morrison")
+                                     .with_email("johnwayne@me.xyz")
+                                     .with_company("Fox")
+                                     .with_address1("123 Zoo St.")
+                                     .with_address2("unit 5")
+                                     .with_city("Hollywood")
+                                     .with_state("CA")
+                                     .with_zipcode("91601")
+                                     .with_country("US")
+                                     .with_phone("12345678910")
+                                     .Build());
   autofill::AddTestProfile(GetProfile(), profile);
   auto* personal_data_manager =
       autofill::PersonalDataManagerFactory::GetForBrowserContext(GetProfile());
@@ -566,7 +641,7 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerShutdownTest,
   static constexpr char kPref[] = R"([])";
   GetProfile()->GetPrefs()->Set(
       browsing_data::prefs::kClearBrowsingDataOnExitList,
-      *base::JSONReader::Read(kPref));
+      *base::JSONReader::Read(kPref, base::JSON_PARSE_CHROMIUM_EXTENSIONS));
   base::RunLoop().RunUntilIdle();
 }
 
@@ -602,7 +677,7 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerShutdownTest,
       "hosted_app_data"])";
   GetProfile()->GetPrefs()->Set(
       browsing_data::prefs::kClearBrowsingDataOnExitList,
-      *base::JSONReader::Read(kPref));
+      *base::JSONReader::Read(kPref, base::JSON_PARSE_CHROMIUM_EXTENSIONS));
   base::RunLoop().RunUntilIdle();
 }
 
@@ -630,16 +705,14 @@ IN_PROC_BROWSER_TEST_P(ChromeBrowsingDataLifetimeManagerShutdownTest,
 INSTANTIATE_TEST_SUITE_P(
     All,
     ChromeBrowsingDataLifetimeManagerShutdownTest,
-    ::testing::ValuesIn(std::vector<FeatureConditions> {
-      {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Incognito},
-          {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Default},
+    ::testing::ValuesIn(std::vector<FeatureConditions>{
+        {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Incognito},
+        {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Default},
 #if !BUILDFLAG(IS_CHROMEOS)
-          {BrowsingDataDeletionCondition::BrowserSigninDisabled,
-           BrowserType::Incognito},
-      {
-        BrowsingDataDeletionCondition::BrowserSigninDisabled,
-            BrowserType::Default
-      }
+        {BrowsingDataDeletionCondition::BrowserSigninDisabled,
+         BrowserType::Incognito},
+        {BrowsingDataDeletionCondition::BrowserSigninDisabled,
+         BrowserType::Default}
 #endif  // !BUILDFLAG(IS_CHROMEOS)
     }));
 #endif  // !BUILDFLAG(IS_ANDROID)
@@ -648,15 +721,13 @@ INSTANTIATE_TEST_SUITE_P(
 INSTANTIATE_TEST_SUITE_P(
     All,
     ChromeBrowsingDataLifetimeManagerScheduledRemovalTest,
-    ::testing::ValuesIn(std::vector<FeatureConditions> {
-      {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Incognito},
-          {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Default},
+    ::testing::ValuesIn(std::vector<FeatureConditions>{
+        {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Incognito},
+        {BrowsingDataDeletionCondition::SyncDisabled, BrowserType::Default},
 #if BUILDFLAG(IS_ANDROID)
-          {BrowsingDataDeletionCondition::BrowserSigninDisabled,
-           BrowserType::Incognito},
-      {
-        BrowsingDataDeletionCondition::BrowserSigninDisabled,
-            BrowserType::Default
-      }
+        {BrowsingDataDeletionCondition::BrowserSigninDisabled,
+         BrowserType::Incognito},
+        {BrowsingDataDeletionCondition::BrowserSigninDisabled,
+         BrowserType::Default}
 #endif  // BUILDFLAG(IS_ANDROID)
     }));

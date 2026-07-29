@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 async function getFirstTab() {
-  let tabs = await chrome.tabs.query({});
+  const tabs = await chrome.tabs.query({});
   chrome.test.assertTrue(tabs.length >= 1);
   return tabs[0];
 }
@@ -21,7 +21,7 @@ chrome.test.runTests([
     await chrome.test.assertPromiseRejects(
         chrome.sidePanel.open({tabId}),
         'Error: `sidePanel.open()` may only be called in response to a ' +
-        'user gesture.');
+            'user gesture.');
     chrome.test.succeed();
   },
 
@@ -57,7 +57,7 @@ chrome.test.runTests([
     chrome.test.runWithUserGesture(async () => {
       await chrome.test.assertPromiseRejects(
           chrome.sidePanel.open({tabId: fakeTabId}),
-          `Error: No tab with tabId: ${fakeTabId}`);
+          `Error: No tab with id: ${fakeTabId}.`);
       chrome.test.succeed();
     });
   },

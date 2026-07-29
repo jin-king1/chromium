@@ -35,7 +35,7 @@
 
 #include "third_party/blink/public/common/dom_storage/session_storage_namespace_id.h"
 #include "third_party/blink/public/common/fenced_frame/redacted_fenced_frame_config.h"
-#include "third_party/blink/public/common/page/browsing_context_group_info.h"
+#include "third_party/blink/public/common/fingerprinting_protection/noise_token.h"
 #include "third_party/blink/public/common/renderer_preferences/renderer_preferences.h"
 #include "third_party/blink/public/common/web_preferences/web_preferences.h"
 #include "third_party/blink/public/mojom/fenced_frame/fenced_frame.mojom-shared.h"
@@ -43,7 +43,6 @@
 #include "third_party/blink/public/mojom/page/page.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom-shared.h"
 #include "third_party/blink/public/mojom/page/prerender_page_param.mojom-forward.h"
-#include "third_party/blink/public/mojom/partitioned_popins/partitioned_popin_params.mojom-forward.h"
 #include "third_party/blink/public/mojom/renderer_preference_watcher.mojom-shared.h"
 #include "third_party/blink/public/platform/cross_variant_mojo_util.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
@@ -61,7 +60,6 @@ class PaintCanvas;
 
 namespace gfx {
 class ColorSpace;
-class Point;
 class PointF;
 class Rect;
 class Size;
@@ -73,7 +71,6 @@ struct ColorProviderColorMaps;
 class PageScheduler;
 class WebFrame;
 class WebFrameWidget;
-class WebHitTestResult;
 class WebLocalFrame;
 class WebNoStatePrefetchClient;
 class WebPagePopup;
@@ -135,10 +132,9 @@ class BLINK_EXPORT WebView {
   // TODO(yuzus): Remove |is_hidden| and start using |PageVisibilityState|.
   // |color_provider_colors| is used to create color providers that live in the
   // Page. Passing in nullptr indicates the default color maps should be used.
-  // `partitioned_popin_params` are set if this window was opened as a
-  // partitioned popin. The entire frame tree of a partitioned popin is
-  // partitioned as though it was an iframe in the opener.
-  // See https://explainers-by-googlers.github.io/partitioned-popins/
+  // |history_index| and |history_length| are information about the frame tree's
+  // history list at the point when this view was created. These values are
+  // updated again at navigation commit time.
   static WebView* Create(
       WebViewClient*,
       bool is_hidden,
@@ -153,9 +149,10 @@ class BLINK_EXPORT WebView {
       scheduler::WebAgentGroupScheduler& agent_group_scheduler,
       const SessionStorageNamespaceId& session_storage_namespace_id,
       std::optional<SkColor> page_base_background_color,
-      const BrowsingContextGroupInfo& browsing_context_group_info,
+      const base::UnguessableToken& browsing_context_group_token,
       const ColorProviderColorMaps* color_provider_colors,
-      blink::mojom::PartitionedPopinParamsPtr partitioned_popin_params);
+      int32_t history_index,
+      int32_t history_length);
 
   // Destroys the WebView synchronously.
   virtual void Close() = 0;
@@ -285,14 +282,26 @@ class BLINK_EXPORT WebView {
   // Indicates that view's preferred size changes will be sent to the browser.
   virtual void EnablePreferredSizeChangedMode() = 0;
 
-  // Sets the additional zoom factor used for device scale factor. This is used
-  // to scale the content by the device scale factor, without affecting zoom
-  // level.
-  virtual void SetZoomFactorForDeviceScaleFactor(float) = 0;
+  // Sets the additional zoom factor used for device scale factor, as well as
+  // what portion (if any) of the device scale factor is due to text scaling.
+  // If no text scaling contributed to the device scale factor,
+  // text_scale_multiplier should be 1.0.
+  //
+  // The device_scale_factor is used to scale the content without affecting
+  // zoom level. The text_scale_multiplier is used for sites that are handling
+  // their own text scaling, to remove this portion from the overall
+  // device_scale_factor.
+  virtual void SetZoomFactorForDeviceScaleFactor(
+      float device_scale_factor,
+      float text_scale_multiplier) = 0;
 
   // Gets the device scale zoom that will be factored into the viewport layout
   // width.
   virtual float ZoomFactorForViewportLayout() = 0;
+
+  // Gets the device scale zoom that will be factored into the viewport layout
+  // width, but with any text scale multiplier removed.
+  virtual float ZoomFactorForViewportLayoutWithoutTextScale() = 0;
 
   // Override the screen orientation override.
   virtual void SetScreenOrientationOverrideForTesting(
@@ -315,16 +324,6 @@ class BLINK_EXPORT WebView {
   // Disable auto resize.
   virtual void DisableAutoResizeForTesting(const gfx::Size& new_size) = 0;
 
-  // Data exchange -------------------------------------------------------
-
-  // Do a hit test equivalent to what would be done for a GestureTap event
-  // that has width/height corresponding to the supplied |tapArea|.
-  //
-  // TODO(crbug.com/376493204): This method is only called by Blink unit tests,
-  // so it should be removed from this API.
-  virtual WebHitTestResult HitTestResultForTap(const gfx::Point& tap_point,
-                                               const gfx::Size& tap_area) = 0;
-
   // Developer tools -----------------------------------------------------
 
   // Enables device emulation as specified in params.
@@ -341,9 +340,6 @@ class BLINK_EXPORT WebView {
   virtual void DidCloseContextMenu() = 0;
 
   // Popup menu ----------------------------------------------------------
-
-  // Sets whether select popup menus should be rendered by the browser.
-  static void SetUseExternalPopupMenus(bool);
 
   // Cancels and hides the current popup (datetime, select...) if any.
   virtual void CancelPagePopup() = 0;
@@ -471,20 +467,10 @@ class BLINK_EXPORT WebView {
   // Returns whether this WebView represents a fenced frame root or not.
   virtual bool IsFencedFrameRoot() const = 0;
 
-  // Draggable Regions ---------------------------------------------------
-  // Indicates that this WebView should collect draggable regions set using the
-  // app-region CSS property.
-  virtual void SetSupportsDraggableRegions(bool supports_draggable_regions) = 0;
-
   // Misc -------------------------------------------------------------
 
   // Returns the number of live WebView instances in this process.
   static size_t GetWebViewCount();
-
-  // Sets whether web or OS-level Attribution Reporting is supported. See
-  // https://github.com/WICG/attribution-reporting-api/blob/main/app_to_web.md
-  virtual void SetPageAttributionSupport(
-      network::mojom::AttributionSupport support) = 0;
 
  protected:
   ~WebView() = default;

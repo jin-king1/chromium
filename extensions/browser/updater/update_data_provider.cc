@@ -8,16 +8,19 @@
 #include <utility>
 
 #include "base/base64.h"
+#include "base/check_op.h"
+#include "base/containers/to_vector.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/strings/string_util.h"
 #include "base/task/thread_pool.h"
 #include "components/crx_file/crx_verifier.h"
 #include "components/update_client/utils.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
-#include "crypto/sha2.h"
+#include "crypto/hash.h"
 #include "extensions/browser/content_verifier/content_verifier.h"
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_prefs.h"
@@ -87,11 +90,11 @@ void UpdateDataProvider::GetData(
     DCHECK_NE(0u, update_crx_component.count(id));
     const ExtensionUpdateData& extension_data = update_crx_component.at(id);
     auto& crx_component = data.back();
-    std::string pubkey_bytes;
-    base::Base64Decode(extension->public_key(), &pubkey_bytes);
-    crx_component->pk_hash.resize(crypto::kSHA256Length, 0);
-    crypto::SHA256HashString(pubkey_bytes, crx_component->pk_hash.data(),
-                             crx_component->pk_hash.size());
+    auto pubkey = base::Base64Decode(extension->public_key());
+    if (!pubkey) {
+      continue;
+    }
+    crx_component->pk_hash = base::ToVector(crypto::hash::Sha256(*pubkey));
     crx_component->app_id =
         update_client::GetCrxIdFromPublicKeyHash(crx_component->pk_hash);
     if (extension_data.is_corrupt_reinstall) {
@@ -101,8 +104,6 @@ void UpdateDataProvider::GetData(
           extension_data.pending_version
               ? base::Version(*extension_data.pending_version)
               : extension->version();
-      crx_component->fingerprint = extension_data.pending_fingerprint.value_or(
-          extension->DifferentialFingerprint());
     }
     bool allow_dev = extension_urls::GetWebstoreUpdateUrl() !=
                      extension_urls::GetDefaultWebstoreUpdateUrl();
@@ -111,7 +112,7 @@ void UpdateDataProvider::GetData(
         extension->from_webstore() ? GetWebstoreVerifierFormat(allow_dev)
                                    : GetPolicyVerifierFormat();
     crx_component->installer = base::MakeRefCounted<ExtensionInstaller>(
-        id, extension->path(), install_immediately,
+        id, install_immediately,
         base::BindRepeating(&UpdateDataProvider::RunInstallCallback, this));
     if (!ExtensionsBrowserClient::Get()->IsExtensionEnabled(id,
                                                             browser_context_)) {

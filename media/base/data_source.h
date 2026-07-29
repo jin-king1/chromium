@@ -7,13 +7,12 @@
 
 #include <stdint.h>
 
+#include "base/containers/span.h"
 #include "base/functional/callback_forward.h"
 #include "media/base/media_export.h"
 #include "url/gurl.h"
 
 namespace media {
-
-class CrossOriginDataSource;
 
 // Abstracting informational methods into DataSourceInfo allows
 // "meta-datasource" objects like HlsDataSourceProvider to query it's entire
@@ -27,16 +26,33 @@ class MEDIA_EXPORT DataSourceInfo {
 
   // DataSource implementations that might make requests must ensure the value
   // is accurate for cross origin resources.
-  virtual bool WouldTaintOrigin() = 0;
+  virtual bool WouldTaintOrigin() const = 0;
 
   // Returns true if we are performing streaming. In this case seeking is
   // not possible.
-  virtual bool IsStreaming() = 0;
+  virtual bool IsStreaming() const = 0;
 };
 
 class MEDIA_EXPORT DataSource : public DataSourceInfo {
  public:
   using ReadCB = base::OnceCallback<void(int)>;
+  using DataSourceCb = base::OnceCallback<void(std::unique_ptr<DataSource>)>;
+  using EventCb = base::RepeatingCallback<void(const DataSource*)>;
+
+  enum class RangeMode {
+    kRangeRequest,
+    kFullRequest,
+  };
+
+  enum class CacheMode {
+    kBypassCache,
+    kHitCache,
+  };
+
+  enum class EncodingMode {
+    kIdentity,
+    kAllowGzip,
+  };
 
   enum { kReadError = -1, kAborted = -2 };
 
@@ -60,12 +76,11 @@ class MEDIA_EXPORT DataSource : public DataSourceInfo {
 
   ~DataSource() override;
 
-  // Reads |size| bytes from |position| into |data|. And when the read is done
-  // or failed, |read_cb| is called with the number of bytes read or
+  // Reads `data.size()` bytes from `position` into `data`. And when the read
+  // is done or failed, `read_cb` is called with the number of bytes read or
   // kReadError in case of error.
   virtual void Read(int64_t position,
-                    int size,
-                    uint8_t* data,
+                    base::span<uint8_t> data,
                     DataSource::ReadCB read_cb) = 0;
 
   // Stops the DataSource. Once this is called all future Read() calls will
@@ -100,26 +115,24 @@ class MEDIA_EXPORT DataSource : public DataSourceInfo {
   // preload value.
   virtual void SetPreload(media::DataSource::Preload preload);
 
+  // Returns whether this data source was involved in a web-based redirection.
+  // The default implementation is always false, as most data source objects
+  // (like MemoryDataSource and FileDataSource) cannot do redirection at all.
+  virtual bool DidRedirect() const;
+
   // Gets the url for this data source, if it exists. By default this returns
   // an empty GURL.
   virtual GURL GetUrlAfterRedirects() const;
 
-  // Cancels any open network connections once reaching the deferred state. If
-  // |must_cancel_netops| is false this is done only for preload=metadata, non-
-  // streaming resources that have not started playback. If |must_cancel_netops|
-  // is true, all resource types will have their connections canceled. If
-  // already deferred, connections will be immediately closed. Most data source
-  // implementations do not need to override this, as they do not open other
-  // network connections.
-  virtual void OnBufferingHaveEnough(bool must_cancel_netops);
+  // Stops any outstanding speculative loading. Active and future Read() calls
+  // will not be stopped. OnMediaIsPlaying() or OnMediaPlaybackRateChanged()
+  // with a rate > 0 will reset this flag.
+  virtual void StopPreloading();
 
   // Allows a holder to notify certain events to the data source. Most data
   // sources won't care too much about these events though.
   virtual void OnMediaPlaybackRateChanged(double playback_rate);
   virtual void OnMediaIsPlaying();
-
-  // Gets a CrossOriginDataSource version of |this|, or nullptr if it isn't one.
-  virtual CrossOriginDataSource* GetAsCrossOriginDataSource();
 };
 
 }  // namespace media

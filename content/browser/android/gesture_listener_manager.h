@@ -5,7 +5,6 @@
 #ifndef CONTENT_BROWSER_ANDROID_GESTURE_LISTENER_MANAGER_H_
 #define CONTENT_BROWSER_ANDROID_GESTURE_LISTENER_MANAGER_H_
 
-#include "base/android/jni_weak_ref.h"
 #include "base/android/scoped_java_ref.h"
 #include "base/containers/flat_set.h"
 #include "base/memory/raw_ptr.h"
@@ -35,31 +34,24 @@ class CONTENT_EXPORT GestureListenerManager
       public RenderWidgetHost::InputEventObserver,
       public WebContentsObserver {
  public:
-  GestureListenerManager(JNIEnv* env,
-                         const base::android::JavaParamRef<jobject>& obj,
-                         WebContentsImpl* web_contents);
+  explicit GestureListenerManager(WebContentsImpl* web_contents);
 
   GestureListenerManager(const GestureListenerManager&) = delete;
   GestureListenerManager& operator=(const GestureListenerManager&) = delete;
 
   ~GestureListenerManager() override;
 
-  void ResetGestureDetection(JNIEnv* env,
-                             const base::android::JavaParamRef<jobject>& obj);
-  void SetDoubleTapSupportEnabled(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      jboolean enabled);
-  void SetMultiTouchZoomSupportEnabled(
-      JNIEnv* env,
-      const base::android::JavaParamRef<jobject>& obj,
-      jboolean enabled);
+  base::android::ScopedJavaLocalRef<jobject> GetJavaObject(JNIEnv* env);
+
+  void ResetGestureDetection(JNIEnv* env);
+  void SetDoubleTapSupportEnabled(JNIEnv* env, bool enabled);
+  void SetMultiTouchZoomSupportEnabled(JNIEnv* env, bool enabled);
   cc::mojom::RootScrollOffsetUpdateFrequency
   root_scroll_offset_update_frequency() const {
     return root_scroll_offset_update_frequency_.value_or(
         cc::mojom::RootScrollOffsetUpdateFrequency::kNone);
   }
-  void SetRootScrollOffsetUpdateFrequency(JNIEnv* env, jint frequency);
+  void SetRootScrollOffsetUpdateFrequency(JNIEnv* env, int32_t frequency);
   void GestureEventAck(const blink::WebGestureEvent& event,
                        blink::mojom::InputEventResultState ack_result);
   void DidStopFlinging();
@@ -77,6 +69,7 @@ class CONTENT_EXPORT GestureListenerManager
                         const float top_shown_pix,
                         bool top_changed);
   void UpdateOnTouchDown();
+  void UpdateOnTouchUp();
   void OnRootScrollOffsetChanged(const gfx::PointF& root_scroll_offset);
 
   // RenderWidgetHostConnector implementation.
@@ -92,7 +85,8 @@ class CONTENT_EXPORT GestureListenerManager
 
   // Start RenderWidgetHost::InputEventObserver overrides
   void OnInputEvent(const RenderWidgetHost& widget,
-                    const blink::WebInputEvent&) override;
+                    const blink::WebInputEvent& event,
+                    InputEventSource source) override;
   void OnInputEventAck(const RenderWidgetHost& widget,
                        blink::mojom::InputEventResultSource source,
                        blink::mojom::InputEventResultState state,
@@ -113,11 +107,7 @@ class CONTENT_EXPORT GestureListenerManager
   std::unique_ptr<ResetScrollObserver> reset_scroll_observer_;
   raw_ptr<WebContentsImpl> web_contents_;
   raw_ptr<RenderWidgetHostViewAndroid> rwhva_ = nullptr;
-  int active_pointers_ = 0;
   bool is_in_a_fling_ = false;
-
-  // A weak reference to the Java GestureListenerManager object.
-  JavaObjectWeakGlobalRef java_ref_;
 
   // Highest update frequency requested by any of the listeners.
   std::optional<cc::mojom::RootScrollOffsetUpdateFrequency>

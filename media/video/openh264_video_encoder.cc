@@ -5,6 +5,7 @@
 #include "media/video/openh264_video_encoder.h"
 
 #include <algorithm>
+#include <cmath>
 #include <limits>
 #include <numeric>
 
@@ -15,8 +16,11 @@
 #include "base/trace_event/trace_event.h"
 #include "media/base/media_switches.h"
 #include "media/base/svc_scalability_mode.h"
+#include "media/base/video_aspect_ratio.h"
 #include "media/base/video_frame.h"
 #include "media/base/video_util.h"
+#include "media/parsers/h264_level_limits.h"
+#include "media/parsers/h264_parser.h"
 #include "media/video/video_encoder_info.h"
 
 namespace media {
@@ -128,23 +132,87 @@ void SetUpOpenH264Params(VideoCodecProfile profile,
   layer.bVideoSignalTypePresent = true;
   layer.bColorDescriptionPresent = true;
 
-  if (itu_cs.primaries != VideoColorSpace::PrimaryID::INVALID &&
-      itu_cs.primaries != VideoColorSpace::PrimaryID::UNSPECIFIED) {
-    layer.uiColorPrimaries = static_cast<unsigned char>(itu_cs.primaries);
+  if (itu_cs.primaries() != VideoColorSpace::PrimaryID::INVALID &&
+      itu_cs.primaries() != VideoColorSpace::PrimaryID::UNSPECIFIED) {
+    layer.uiColorPrimaries = static_cast<unsigned char>(itu_cs.primaries());
   }
-  if (itu_cs.transfer != VideoColorSpace::TransferID::INVALID &&
-      itu_cs.transfer != VideoColorSpace::TransferID::UNSPECIFIED) {
+  if (itu_cs.transfer() != VideoColorSpace::TransferID::INVALID &&
+      itu_cs.transfer() != VideoColorSpace::TransferID::UNSPECIFIED) {
     layer.uiTransferCharacteristics =
-        static_cast<unsigned char>(itu_cs.transfer);
+        static_cast<unsigned char>(itu_cs.transfer());
   }
-  if (itu_cs.matrix != VideoColorSpace::MatrixID::INVALID &&
-      itu_cs.matrix != VideoColorSpace::MatrixID::UNSPECIFIED) {
-    layer.uiColorMatrix = static_cast<unsigned char>(itu_cs.matrix);
+  if (itu_cs.matrix() != VideoColorSpace::MatrixID::INVALID &&
+      itu_cs.matrix() != VideoColorSpace::MatrixID::UNSPECIFIED) {
+    layer.uiColorMatrix = static_cast<unsigned char>(itu_cs.matrix());
   }
-  if (itu_cs.range == gfx::ColorSpace::RangeID::FULL ||
-      itu_cs.range == gfx::ColorSpace::RangeID::LIMITED) {
-    layer.bFullRange = itu_cs.range == gfx::ColorSpace::RangeID::FULL;
+  if (itu_cs.range() == gfx::ColorSpace::RangeID::FULL ||
+      itu_cs.range() == gfx::ColorSpace::RangeID::LIMITED) {
+    layer.bFullRange = itu_cs.range() == gfx::ColorSpace::RangeID::FULL;
   }
+}
+
+// OpenH264 silently fails during preprocessing when a frame's area
+// exceeds its internal macroblock limit (MAX_MBS_PER_FRAME in
+// third_party/openh264). We must manually resize such frames.
+// MAX_MBS_PER_FRAME is 36864.
+constexpr int kOpenH264MaxMBs = 36864;
+
+bool IsFrameSizeTooLarge(const gfx::Size& frame_size) {
+  uint64_t mb_width = (static_cast<uint64_t>(frame_size.width()) + 15) / 16;
+  uint64_t mb_height = (static_cast<uint64_t>(frame_size.height()) + 15) / 16;
+  return mb_width * mb_height > kOpenH264MaxMBs;
+}
+
+// OpenH264 can resize frames automatically as long as
+// - the input and output aspect ratios are the same and
+// - the input is larger than the output in both dimensions.
+bool NeedsManualResizing(const gfx::Size& src, const gfx::Size& dst) {
+  if (src.IsEmpty() || dst.IsEmpty()) {
+    return true;
+  }
+
+  if (IsFrameSizeTooLarge(src)) {
+    return true;
+  }
+
+  if (dst.width() > src.width() || dst.height() > src.height()) {
+    return true;
+  }
+
+  return VideoAspectRatio::PAR(src.width(), src.height()) !=
+         VideoAspectRatio::PAR(dst.width(), dst.height());
+}
+
+// Validates that the frame size is within the limits defined by H.264
+// Level 6.1.
+EncoderStatus ValidateH264Resolution(const gfx::Size& frame_size) {
+  uint8_t level = H264SPS::kLevelIDC6p1;
+  uint32_t max_fs = H264LevelToMaxFS(level);
+  if (max_fs == 0) {
+    return EncoderStatus(EncoderStatus::Codes::kEncoderUnsupportedConfig,
+                         "Invalid H.264 level");
+  }
+
+  uint64_t mb_width = (static_cast<uint64_t>(frame_size.width()) + 15) / 16;
+  uint64_t mb_height = (static_cast<uint64_t>(frame_size.height()) + 15) / 16;
+  uint64_t mb_count = mb_width * mb_height;
+
+  if (mb_count > max_fs) {
+    return EncoderStatus(
+        EncoderStatus::Codes::kEncoderUnsupportedConfig,
+        "Configured frame size exceeds H.264 level max macroblocks");
+  }
+
+  // Aspect ratio constraint from H.264 standard Annex A:
+  // PicWidthInMbs <= Sqrt(MaxFS * 8)
+  // FrameHeightInMbs <= Sqrt(MaxFS * 8)
+  double max_mb_dim = std::sqrt(static_cast<double>(max_fs) * 8.0);
+  if (mb_width > max_mb_dim || mb_height > max_mb_dim) {
+    return EncoderStatus(EncoderStatus::Codes::kEncoderUnsupportedConfig,
+                         "Configured aspect ratio exceeds H.264 level limits");
+  }
+
+  return EncoderStatus::Codes::kOk;
 }
 
 }  // namespace
@@ -232,6 +300,20 @@ void OpenH264VideoEncoder::Initialize(VideoCodecProfile profile,
                       "Unsupported frame size which is less than 16"));
     return;
   }
+
+  if (IsFrameSizeTooLarge(options.frame_size)) {
+    std::move(done_cb).Run(EncoderStatus(
+        EncoderStatus::Codes::kEncoderUnsupportedConfig,
+        "Configured frame size exceeds OpenH264 max macroblocks"));
+    return;
+  }
+
+  if (auto status = ValidateH264Resolution(options.frame_size);
+      !status.is_ok()) {
+    std::move(done_cb).Run(status);
+    return;
+  }
+
   SetUpOpenH264Params(
       profile_, options,
       VideoColorSpace::FromGfxColorSpace(last_frame_color_space_), &params);
@@ -380,36 +462,64 @@ void OpenH264VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
                       "No frame provided for encoding."));
     return;
   }
+
+  TRACE_EVENT1("media", "OpenH264::EncodeFrame", "timestamp",
+               frame->timestamp());
   const bool supported_format = frame->format() == PIXEL_FORMAT_NV12 ||
+                                frame->format() == PIXEL_FORMAT_NV12A ||
                                 frame->format() == PIXEL_FORMAT_I420 ||
+                                frame->format() == PIXEL_FORMAT_I420A ||
+                                frame->format() == PIXEL_FORMAT_I422 ||
+                                frame->format() == PIXEL_FORMAT_I422A ||
+                                frame->format() == PIXEL_FORMAT_I444 ||
+                                frame->format() == PIXEL_FORMAT_I444A ||
+                                frame->format() == PIXEL_FORMAT_YUV420P10 ||
+                                frame->format() == PIXEL_FORMAT_YUV422P10 ||
+                                frame->format() == PIXEL_FORMAT_YUV444P10 ||
+                                frame->format() == PIXEL_FORMAT_YUV420P12 ||
+                                frame->format() == PIXEL_FORMAT_YUV422P12 ||
+                                frame->format() == PIXEL_FORMAT_YUV444P12 ||
+                                frame->format() == PIXEL_FORMAT_YUV420AP10 ||
+                                frame->format() == PIXEL_FORMAT_YUV422AP10 ||
+                                frame->format() == PIXEL_FORMAT_YUV444AP10 ||
                                 frame->format() == PIXEL_FORMAT_XBGR ||
                                 frame->format() == PIXEL_FORMAT_XRGB ||
                                 frame->format() == PIXEL_FORMAT_ABGR ||
                                 frame->format() == PIXEL_FORMAT_ARGB;
-  if ((!frame->IsMappable() && !frame->HasMappableGpuBuffer()) ||
+  if ((!frame->HasDirectCpuAccess() && !frame->HasMappableSharedImage()) ||
       !supported_format) {
     std::move(done_cb).Run(
         EncoderStatus(EncoderStatus::Codes::kUnsupportedFrameFormat,
                       "Unexpected frame format.")
-            .WithData("IsMappable", frame->IsMappable())
+            .WithData("HasDirectCpuAccess", frame->HasDirectCpuAccess())
             .WithData("storage type", frame->storage_type())
             .WithData("format", frame->format()));
     return;
   }
 
-  if (frame->format() == PIXEL_FORMAT_NV12 && frame->HasMappableGpuBuffer()) {
+  if (frame->format() == PIXEL_FORMAT_NV12 && frame->HasMappableSharedImage()) {
     frame = ConvertToMemoryMappedFrame(frame);
     if (!frame) {
-      std::move(done_cb).Run(
-          EncoderStatus(EncoderStatus::Codes::kSystemAPICallError,
-                        "Convert GMB frame to MemoryMappedFrame failed."));
+      std::move(done_cb).Run(EncoderStatus(
+          EncoderStatus::Codes::kSystemAPICallError,
+          "Convert MappableSI frame to MemoryMappedFrame failed."));
       return;
     }
   }
 
-  if (frame->format() != PIXEL_FORMAT_I420) {
-    // OpenH264 can resize frame automatically, but since we're converting
-    // pixel format anyway we can do resize as well.
+  bool requires_copy =
+      frame->format() != PIXEL_FORMAT_I420 ||
+      NeedsManualResizing(frame->visible_rect().size(), options_.frame_size) ||
+      frame->stride(VideoFrame::Plane::kU) !=
+          frame->stride(VideoFrame::Plane::kV);
+
+  if (requires_copy) {
+    // In cases where we need to
+    // - enlarge the frame
+    // - change the pixel format
+    // - change the aspect ratio or
+    // - use matching U and V strides
+    // we are forced to convert and rescale manually.
     auto i420_frame = frame_pool_.CreateFrame(
         PIXEL_FORMAT_I420, options_.frame_size, gfx::Rect(options_.frame_size),
         options_.frame_size, frame->timestamp());
@@ -462,8 +572,6 @@ void OpenH264VideoEncoder::Encode(scoped_refptr<VideoFrame> frame,
   }
 
   SFrameBSInfo frame_info = {};
-  TRACE_EVENT1("media", "OpenH264::EncodeFrame", "timestamp",
-               frame->timestamp());
   if (int err = codec_->EncodeFrame(&picture, &frame_info)) {
     std::move(done_cb).Run(
         EncoderStatus(EncoderStatus::Codes::kEncoderFailedEncode,
@@ -483,6 +591,26 @@ void OpenH264VideoEncoder::ChangeOptions(const Options& options,
   if (!codec_) {
     std::move(done_cb).Run(
         EncoderStatus::Codes::kEncoderInitializeNeverCompleted);
+    return;
+  }
+
+  if (options.frame_size.width() < 16 || options.frame_size.height() < 16) {
+    std::move(done_cb).Run(
+        EncoderStatus(EncoderStatus::Codes::kEncoderUnsupportedConfig,
+                      "Unsupported frame size which is less than 16"));
+    return;
+  }
+
+  if (IsFrameSizeTooLarge(options.frame_size)) {
+    std::move(done_cb).Run(EncoderStatus(
+        EncoderStatus::Codes::kEncoderUnsupportedConfig,
+        "Configured frame size exceeds OpenH264 max macroblocks"));
+    return;
+  }
+
+  if (auto status = ValidateH264Resolution(options.frame_size);
+      !status.is_ok()) {
+    std::move(done_cb).Run(status);
     return;
   }
 

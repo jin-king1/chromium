@@ -9,22 +9,21 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.drawable.Drawable;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-import androidx.annotation.OptIn;
+import androidx.annotation.VisibleForTesting;
 import androidx.browser.auth.AuthTabIntent;
 import androidx.browser.auth.AuthTabSessionToken;
-import androidx.browser.auth.ExperimentalAuthTab;
 import androidx.browser.customtabs.CustomTabsIntent;
 
 import org.chromium.base.IntentUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.browserservices.intents.ColorProvider;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
 import org.chromium.chrome.browser.flags.ActivityType;
-import org.chromium.chrome.browser.flags.ChromeFeatureList;
+import org.chromium.chrome.browser.flags.CustomTabProfileType;
 import org.chromium.components.browser_ui.widget.TintedDrawable;
 import org.chromium.components.embedder_support.util.UrlConstants;
 import org.chromium.url.GURL;
@@ -36,22 +35,21 @@ import org.chromium.url.GURL;
  * re-created when color scheme changes, which happens automatically since color scheme change leads
  * to activity re-creation.
  */
-@OptIn(markerClass = ExperimentalAuthTab.class)
+@NullMarked
 public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider {
-    private final @NonNull Intent mIntent;
+    private final Intent mIntent;
     private final @Nullable String mClientPackageName;
-    private final SessionHolder<AuthTabSessionToken> mSession;
-    private final @NonNull ColorProvider mColorProvider;
-    private final @NonNull Drawable mCloseButtonIcon;
+    private final @Nullable SessionHolder<AuthTabSessionToken> mSession;
+    private final ColorProvider mColorProvider;
+    private final Drawable mCloseButtonIcon;
     private final @Nullable String mRedirectScheme;
     private final @Nullable String mRedirectHost;
     private final @Nullable String mRedirectPath;
     private final @CustomTabProfileType int mCustomTabMode;
 
-    @Nullable private String mUrlToLoad;
+    private @Nullable String mUrlToLoad;
 
     public static boolean isAuthTabIntent(Intent intent) {
-        if (!ChromeFeatureList.sCctAuthTab.isEnabled()) return false;
         return IntentUtils.safeGetBooleanExtra(intent, AuthTabIntent.EXTRA_LAUNCH_AUTH_TAB, false);
     }
 
@@ -66,7 +64,7 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
             Intent intent, Context context, @CustomTabsIntent.ColorScheme int colorScheme) {
         assert intent != null;
         mIntent = intent;
-        AuthTabSessionToken token = AuthTabSessionToken.getSessionTokenFromIntent(intent);
+        AuthTabSessionToken token = AuthTabSessionToken.createSessionTokenFromIntent(intent);
         mSession = token != null ? new SessionHolder<>(token) : null;
         mClientPackageName =
                 IntentUtils.safeGetStringExtra(
@@ -78,17 +76,10 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
         // might want to disallow more.
         mRedirectScheme =
                 IntentUtils.safeGetStringExtra(intent, AuthTabIntent.EXTRA_REDIRECT_SCHEME);
-        boolean httpsEnabled = ChromeFeatureList.sCctAuthTabEnableHttpsRedirects.isEnabled();
         String host =
-                httpsEnabled
-                        ? IntentUtils.safeGetStringExtra(
-                                intent, AuthTabIntent.EXTRA_HTTPS_REDIRECT_HOST)
-                        : null;
+                IntentUtils.safeGetStringExtra(intent, AuthTabIntent.EXTRA_HTTPS_REDIRECT_HOST);
         String path =
-                httpsEnabled
-                        ? IntentUtils.safeGetStringExtra(
-                                intent, AuthTabIntent.EXTRA_HTTPS_REDIRECT_PATH)
-                        : null;
+                IntentUtils.safeGetStringExtra(intent, AuthTabIntent.EXTRA_HTTPS_REDIRECT_PATH);
         GURL redirectUrl = new GURL(UrlConstants.HTTPS_URL_PREFIX + host + path);
         mRedirectHost = redirectUrl.getHost();
         mRedirectPath = redirectUrl.getPath();
@@ -101,12 +92,12 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
     }
 
     @Override
-    public String getAuthRedirectHost() {
+    public @Nullable String getAuthRedirectHost() {
         return mRedirectHost;
     }
 
     @Override
-    public String getAuthRedirectPath() {
+    public @Nullable String getAuthRedirectPath() {
         return mRedirectPath;
     }
 
@@ -120,19 +111,18 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
         return mIntent;
     }
 
-    @Nullable
     @Override
-    public SessionHolder<AuthTabSessionToken> getSession() {
+    public @Nullable SessionHolder<AuthTabSessionToken> getSession() {
         return mSession;
     }
 
     @Override
-    public String getClientPackageName() {
+    public @Nullable String getClientPackageName() {
         return mClientPackageName;
     }
 
     @Override
-    public String getUrlToLoad() {
+    public @Nullable String getUrlToLoad() {
         if (mUrlToLoad == null) {
             mUrlToLoad = IntentHandler.getUrlFromIntent(mIntent);
         }
@@ -149,15 +139,14 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
         return mColorProvider;
     }
 
-    @Nullable
     @Override
-    public Drawable getCloseButtonDrawable() {
+    public @Nullable Drawable getCloseButtonDrawable() {
         return mCloseButtonIcon;
     }
 
     @Override
-    public int getTitleVisibilityState() {
-        return CustomTabsIntent.SHOW_PAGE_TITLE;
+    public @TitleVisibility int getTitleVisibilityState() {
+        return TitleVisibility.VISIBLE;
     }
 
     @Override
@@ -186,8 +175,17 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
     }
 
     @Override
-    public String getAuthRedirectScheme() {
+    public @Nullable String getAuthRedirectScheme() {
         return mRedirectScheme;
+    }
+
+    @Override
+    public int getFeatureIdForMetricsCollection() {
+        if (mCustomTabMode == CustomTabProfileType.EPHEMERAL) {
+            return IncognitoCctCallerId.EPHEMERAL_TAB;
+        }
+
+        return super.getFeatureIdForMetricsCollection();
     }
 
     /**
@@ -247,8 +245,8 @@ public class AuthTabIntentDataProvider extends BrowserServicesIntentDataProvider
         return new TintedDrawable(context, scaledBitmap);
     }
 
-    private static boolean isEphemeralTab(Intent intent) {
-        if (!ChromeFeatureList.sCctEphemeralMode.isEnabled()) return false;
+    @VisibleForTesting
+    static boolean isEphemeralTab(Intent intent) {
         return IntentUtils.safeGetBooleanExtra(
                 intent, CustomTabsIntent.EXTRA_ENABLE_EPHEMERAL_BROWSING, false);
     }

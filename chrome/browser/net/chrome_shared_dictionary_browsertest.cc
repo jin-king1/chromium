@@ -10,6 +10,8 @@
 #include "base/files/file_util.h"
 #include "base/functional/callback.h"
 #include "base/run_loop.h"
+#include "base/strings/strcat.h"
+#include "base/strings/string_view_util.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -203,13 +205,6 @@ std::string FetchUrlWithNoCorsModeScript(const GURL& url) {
 class ChromeSharedDictionaryBrowserTest : public InProcessBrowserTest {
  public:
   ChromeSharedDictionaryBrowserTest() {
-    scoped_feature_list_.InitWithFeatures(
-        /*enabled_features=*/
-        {network::features::kCompressionDictionaryTransportBackend,
-         network::features::kCompressionDictionaryTransport,
-         network::features::kSharedZstd},
-        /*disabled_features=*/{});
-
     embedded_test_server()->RegisterRequestHandler(
         base::BindRepeating(&ChromeSharedDictionaryBrowserTest::RequestHandler,
                             base::Unretained(this)));
@@ -343,8 +338,8 @@ class ChromeSharedDictionaryBrowserTest : public InProcessBrowserTest {
 
   int GetSiteDataCount(base::Time begin_time, base::Time end_time) {
     base::test::TestFuture<int> result;
-    auto* helper = new SiteDataCountingHelper(browser()->profile(), begin_time,
-                                              end_time, result.GetCallback());
+    auto* helper = new SiteDataCountingHelper(
+        browser()->GetProfile(), begin_time, end_time, result.GetCallback());
     helper->CountAndDestroySelfWhenFinished();
     return result.Get();
     ;
@@ -397,12 +392,11 @@ class ChromeSharedDictionaryBrowserTest : public InProcessBrowserTest {
     return nullptr;
   }
   std::unique_ptr<net::EmbeddedTestServer> cross_origin_server_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest, BlockWriting) {
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(embedded_test_server()->GetURL("/"),
                              CONTENT_SETTING_BLOCK);
 
@@ -414,7 +408,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest, BlockWriting) {
 IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest,
                        BlockWritingCrossOrigin) {
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(cross_origin_server()->GetURL("/"),
                              CONTENT_SETTING_BLOCK);
 
@@ -430,7 +424,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest, BlockReading) {
   WaitForDictionaryReady(*embedded_test_server());
 
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(embedded_test_server()->GetURL("/"),
                              CONTENT_SETTING_BLOCK);
 
@@ -448,7 +442,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest,
   WaitForDictionaryReady(*cross_origin_server());
 
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(cross_origin_server()->GetURL("/"),
                              CONTENT_SETTING_BLOCK);
 
@@ -470,7 +464,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest,
       /*expect_blocked=*/false));
 
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(embedded_test_server()->GetURL("/"),
                              CONTENT_SETTING_BLOCK);
 
@@ -491,7 +485,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest,
       /*expect_blocked=*/false));
 
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(embedded_test_server()->GetURL("/"),
                              CONTENT_SETTING_BLOCK);
 
@@ -733,7 +727,7 @@ IN_PROC_BROWSER_TEST_F(ChromeSharedDictionaryBrowserTest, SiteDataCount) {
   base::RunLoop loop;
   std::vector<network::mojom::SharedDictionaryInfoPtr> dictionaries;
   browser()
-      ->profile()
+      ->GetProfile()
       ->GetDefaultStoragePartition()
       ->GetNetworkContext()
       ->GetSharedDictionaryInfo(
@@ -759,31 +753,18 @@ class SharedDictionaryDevToolsBrowserTest
     : public InProcessBrowserTest,
       public content::TestDevToolsProtocolClient {
  public:
-  explicit SharedDictionaryDevToolsBrowserTest(
-      bool enable_feature = true,
-      bool enable_navigation_feature = true) {
+  explicit SharedDictionaryDevToolsBrowserTest(bool enable_feature = true) {
     if (enable_feature) {
-      if (enable_navigation_feature) {
-        scoped_feature_list_.InitWithFeatures(
-            /*enabled_features=*/
-            {network::features::kCompressionDictionaryTransportBackend,
-             network::features::kCompressionDictionaryTransport,
-             network::features::kSharedDictionaryRegisterNavigationRequests},
-            /*disabled_features=*/
-            {});
-      } else {
-        scoped_feature_list_.InitWithFeatures(
-            /*enabled_features=*/
-            {network::features::kCompressionDictionaryTransportBackend,
-             network::features::kCompressionDictionaryTransport},
-            /*disabled_features=*/
-            {network::features::kSharedDictionaryRegisterNavigationRequests});
-      }
+      scoped_feature_list_.InitWithFeatures(
+          /*enabled_features=*/
+          {network::features::kCompressionDictionaryTransport,
+           network::features::kCompressionDictionaryTTL},
+          /*disabled_features=*/
+          {});
     } else {
       scoped_feature_list_.InitWithFeatures(
           /*enabled_features=*/
-          {network::features::kCompressionDictionaryTransportBackend,
-           network::features::kSharedDictionaryRegisterNavigationRequests},
+          {},
           /*disabled_features=*/
           {network::features::kCompressionDictionaryTransport});
     }
@@ -821,14 +802,14 @@ class SharedDictionaryDevToolsBrowserTest
     SendCommandSync("Network.enable");
     SendCommandSync("Audits.enable");
   }
-  base::Value::Dict WaitForSharedDictionaryIssueAdded(
+  base::DictValue WaitForSharedDictionaryIssueAdded(
       const std::string& expected_error_type) {
-    auto matcher = [](const base::Value::Dict& params) {
+    auto matcher = [](const base::DictValue& params) {
       const std::string* maybe_issue_code =
           params.FindStringByDottedPath("issue.code");
       return maybe_issue_code && *maybe_issue_code == "SharedDictionaryIssue";
     };
-    base::Value::Dict notification = WaitForMatchingNotification(
+    base::DictValue notification = WaitForMatchingNotification(
         "Audits.issueAdded", base::BindRepeating(matcher));
     EXPECT_EQ(*notification.FindStringByDottedPath("issue.code"),
               "SharedDictionaryIssue");
@@ -872,7 +853,7 @@ class SharedDictionaryDevToolsBrowserTest
     base::test::TestFuture<const std::vector<net::SharedDictionaryUsageInfo>&>
         result;
     browser()
-        ->profile()
+        ->GetProfile()
         ->GetDefaultStoragePartition()
         ->GetNetworkContext()
         ->GetSharedDictionaryUsageInfo(result.GetCallback());
@@ -897,37 +878,6 @@ class DevToolsSharedDictionaryFeatureDisabledBrowserTest
   ~DevToolsSharedDictionaryFeatureDisabledBrowserTest() override = default;
 };
 
-class SharedDictionaryNavigationFeatureDisabledDevToolsBrowserTest
-    : public SharedDictionaryDevToolsBrowserTest {
- public:
-  SharedDictionaryNavigationFeatureDisabledDevToolsBrowserTest()
-      : SharedDictionaryDevToolsBrowserTest(
-            /*enable_feature=*/true,
-            /*enable_navigation_feature=*/false) {}
-  ~SharedDictionaryNavigationFeatureDisabledDevToolsBrowserTest() override =
-      default;
-};
-
-IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
-                       UseErrorCrossOriginNoCorsRequest) {
-  const std::string kHostName = "www.example.com";
-  const std::string kCrossOriginHostName = "other.example.com";
-  embedded_https_test_server().SetCertHostnames(
-      {kHostName, kCrossOriginHostName});
-  ASSERT_TRUE(embedded_https_test_server().Start());
-  NavigateAndEnableAudits(embedded_https_test_server().GetURL(
-      kHostName, "/shared_dictionary/blank.html"));
-  content::RenderFrameHost* rfh = GetPrimaryMainFrame();
-  EXPECT_TRUE(
-      ExecJs(rfh, FetchUrlScript(embedded_https_test_server().GetURL(
-                      kCrossOriginHostName, "/shared_dictionary/test.dict"))));
-  WaitUntilDictionaryRegistered();
-  EXPECT_TRUE(ExecJs(
-      rfh, FetchUrlWithNoCorsModeScript(embedded_https_test_server().GetURL(
-               kCrossOriginHostName, "/shared_dictionary/path/target"))));
-  WaitForSharedDictionaryIssueAdded("UseErrorCrossOriginNoCorsRequest");
-}
-
 // Can't cause the dictionary load failure by deletaing the disk cache directory
 // on Windows.
 #if !BUILDFLAG(IS_WIN)
@@ -943,7 +893,7 @@ IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
   {
     base::ScopedAllowBlockingForTesting allow_blocking;
     EXPECT_TRUE(base::DeletePathRecursively(
-        browser()->profile()->GetDefaultStoragePartition()->GetPath().Append(
+        browser()->GetProfile()->GetDefaultStoragePartition()->GetPath().Append(
             FILE_PATH_LITERAL("Shared Dictionary/cache/"))));
   }
   EXPECT_TRUE(ExecJs(rfh, FetchUrlScript(embedded_test_server()->GetURL(
@@ -1031,7 +981,7 @@ IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
   ASSERT_TRUE(embedded_https_test_server().Start());
 
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(
       embedded_https_test_server().GetURL(kCrossOriginHostName, "/"),
       CONTENT_SETTING_BLOCK);
@@ -1074,18 +1024,6 @@ IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
 IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
                        WriteErrorInvalidStructuredHeader) {
   RunCustomHeaderTest("WriteErrorInvalidStructuredHeader", "match=\"");
-}
-
-IN_PROC_BROWSER_TEST_F(
-    SharedDictionaryNavigationFeatureDisabledDevToolsBrowserTest,
-    WriteErrorNavigationRequest) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-  NavigateAndEnableAudits(
-      embedded_test_server()->GetURL("/shared_dictionary/blank.html"));
-  EXPECT_TRUE(NavigateToURL(
-      browser()->tab_strip_model()->GetActiveWebContents(),
-      embedded_test_server()->GetURL("/shared_dictionary/test_dict.html")));
-  WaitForSharedDictionaryIssueAdded("WriteErrorNavigationRequest");
 }
 
 IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
@@ -1132,6 +1070,17 @@ IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
                        WriteErrorNonTokenTypeField) {
   RunCustomHeaderTest("WriteErrorNonTokenTypeField",
                       "match=\"/test/*\", type=\"raw\"");
+}
+
+IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
+                       WriteErrorNonIntegerTTLField) {
+  RunCustomHeaderTest("WriteErrorNonIntegerTTLField",
+                      "match=\"/test/*\", ttl=token");
+}
+
+IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,
+                       WriteErrorInvalidTTLField) {
+  RunCustomHeaderTest("WriteErrorInvalidTTLField", "match=\"/test/*\", ttl=0");
 }
 
 IN_PROC_BROWSER_TEST_F(SharedDictionaryDevToolsBrowserTest,

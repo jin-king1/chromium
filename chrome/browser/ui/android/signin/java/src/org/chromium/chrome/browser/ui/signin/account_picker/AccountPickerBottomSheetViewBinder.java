@@ -4,12 +4,14 @@
 
 package org.chromium.chrome.browser.ui.signin.account_picker;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.signin.services.DisplayableProfileData;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetProperties.ViewState;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Stateless AccountPickerBottomSheet view binder. */
+@NullMarked
 class AccountPickerBottomSheetViewBinder {
     static void bind(
             PropertyModel model, AccountPickerBottomSheetView view, PropertyKey propertyKey) {
@@ -21,6 +23,7 @@ class AccountPickerBottomSheetViewBinder {
                                             .ON_SELECTED_ACCOUNT_CLICKED));
         } else if (propertyKey == AccountPickerBottomSheetProperties.VIEW_STATE) {
             @ViewState int viewState = model.get(AccountPickerBottomSheetProperties.VIEW_STATE);
+            assert viewState != ViewState.NONE : "This indicates no specific active view state";
             view.setDisplayedView(viewState);
         } else if (propertyKey == AccountPickerBottomSheetProperties.SELECTED_ACCOUNT_DATA) {
             DisplayableProfileData profileData =
@@ -34,17 +37,27 @@ class AccountPickerBottomSheetViewBinder {
         } else if (propertyKey == AccountPickerBottomSheetProperties.ON_CONTINUE_AS_CLICKED) {
             view.setOnClickListenerOfContinueButton(
                     model.get(AccountPickerBottomSheetProperties.ON_CONTINUE_AS_CLICKED));
-        } else if (propertyKey == AccountPickerBottomSheetProperties.ON_DISMISS_CLICKED) {
-            view.getDismissButton()
+        } else if (propertyKey
+                == AccountPickerBottomSheetProperties.ON_ACCOUNT_PICKER_DISMISS_CLICKED) {
+            view.getAccountPickerDismissButton()
                     .setOnClickListener(
-                            model.get(AccountPickerBottomSheetProperties.ON_DISMISS_CLICKED));
+                            model.get(
+                                    AccountPickerBottomSheetProperties
+                                            .ON_ACCOUNT_PICKER_DISMISS_CLICKED));
+        } else if (propertyKey
+                == AccountPickerBottomSheetProperties.ON_CONFIRM_MANAGEMENT_CANCEL_CLICKED) {
+            view.getConfirmManagementCancelButton()
+                    .setOnClickListener(
+                            model.get(
+                                    AccountPickerBottomSheetProperties
+                                            .ON_CONFIRM_MANAGEMENT_CANCEL_CLICKED));
         } else if (propertyKey == AccountPickerBottomSheetProperties.BOTTOM_SHEET_STRINGS) {
             AccountPickerBottomSheetStrings bottomSheetStrings =
                     model.get(AccountPickerBottomSheetProperties.BOTTOM_SHEET_STRINGS);
             view.setBottomSheetStrings(
-                    bottomSheetStrings.titleStringId,
-                    bottomSheetStrings.subtitleStringId,
-                    bottomSheetStrings.dismissButtonStringId);
+                    bottomSheetStrings.titleString,
+                    bottomSheetStrings.subtitleString,
+                    bottomSheetStrings.dismissButtonString);
         }
     }
 

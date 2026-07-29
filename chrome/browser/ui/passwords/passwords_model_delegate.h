@@ -10,7 +10,6 @@
 
 #include "base/functional/callback.h"
 #include "base/memory/weak_ptr.h"
-#include "build/branding_buildflags.h"
 #include "chrome/browser/ui/passwords/passwords_leak_dialog_delegate.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
 #include "components/password_manager/core/browser/ui/password_check_referrer.h"
@@ -62,10 +61,6 @@ class PasswordsModelDelegate {
   // SAVE_CONFIRMATION_STATE, the returned credential in AUTO_SIGNIN_STATE.
   virtual const password_manager::PasswordForm& GetPendingPassword() const = 0;
 
-  // Returns unsynced credentials being deleted upon signout.
-  virtual const std::vector<password_manager::PasswordForm>&
-  GetUnsyncedCredentials() const = 0;
-
   // Returns the source of the credential to be saved.
   virtual password_manager::metrics_util::CredentialSourceType
   GetCredentialSource() const = 0;
@@ -101,6 +96,13 @@ class PasswordsModelDelegate {
   // the empty string if there isn't one.
   virtual const std::string& PasskeyRpId() const = 0;
 
+  // Returns username of a password that was updated during a recent password
+  // change flow.
+  virtual const std::u16string& PasswordChangeUsername() const = 0;
+
+  // Returns password that was generated during a recent password change flow.
+  virtual const std::u16string& PasswordChangeNewPassword() const = 0;
+
   // Called from the model when the bubble is displayed.
   virtual void OnBubbleShown() = 0;
 
@@ -116,6 +118,10 @@ class PasswordsModelDelegate {
   // Called from the model when the user chooses to never save passwords.
   virtual void NeverSavePassword() = 0;
 
+  // Called from the model when the user chooses "not now" in response to the
+  // password-save prompt.
+  virtual void OnNotNowClicked() = 0;
+
   // Called when the passwords are revealed to the user without obfuscation.
   virtual void OnPasswordsRevealed() = 0;
 
@@ -124,17 +130,6 @@ class PasswordsModelDelegate {
   // handled accordingly if user had edited them.
   virtual void SavePassword(const std::u16string& username,
                             const std::u16string& password) = 0;
-
-  // Called when the user chooses to save locally some of the unsynced
-  // credentials that were deleted from the account store on signout.
-  virtual void SaveUnsyncedCredentialsInProfileStore(
-      const std::vector<password_manager::PasswordForm>&
-          selected_credentials) = 0;
-
-  // Called when the user chooses not to save locally the unsynced credentials
-  // deleted from the account store on signout (the ones returned by
-  // GetUnsyncedCredentials()).
-  virtual void DiscardUnsyncedCredentials() = 0;
 
   // Called from the dialog controller when a user confirms moving the recently
   // used or selected credential to their account store.
@@ -213,6 +208,24 @@ class PasswordsModelDelegate {
 
   // Opens the password change settings page as a separate tab.
   virtual void NavigateToPasswordChangeSettings() = 0;
+
+  // Called when the mouse enters the bubble view.
+  virtual void OnMouseEntered() = 0;
+
+  // Called when the mouse exits the bubble view.
+  virtual void OnMouseExited() = 0;
+
+  // Model observes the changes of the password manager's error state. By
+  // calling this method we instruct the model to save the password after the
+  // trusted vault error state is fixed.
+  virtual void SavePasswordAfterTrustedVaultErrorResolution() = 0;
+
+  // Starts the UI flow for fixing the trusted vault error.
+  virtual void StartTrustedVaultErrorResolutionFlow() = 0;
+
+  // Returns true if only a trusted vault error prevents from saving the
+  // password.
+  virtual bool IsSavingBlockedByTrustedVaultError() const = 0;
 
  protected:
   virtual ~PasswordsModelDelegate() = default;

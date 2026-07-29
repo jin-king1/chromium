@@ -13,7 +13,16 @@
 #include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/vector2d_f.h"
 
+namespace mojo {
+template <typename DataViewType, typename T>
+struct StructTraits;
+}  // namespace mojo
+
 namespace gfx {
+
+namespace mojom {
+class AxisTransform2dDataView;
+}  // namespace mojom
 
 struct DecomposedTransform;
 
@@ -37,12 +46,8 @@ class COMPONENT_EXPORT(GEOMETRY) AxisTransform2d {
     return AxisTransform2d(scale, translation);
   }
 
-  constexpr bool operator==(const AxisTransform2d& other) const {
-    return scale_ == other.scale_ && translation_ == other.translation_;
-  }
-  constexpr bool operator!=(const AxisTransform2d& other) const {
-    return !(*this == other);
-  }
+  friend constexpr bool operator==(const AxisTransform2d&,
+                                   const AxisTransform2d&) = default;
 
   void PreScale(const Vector2dF& scale) { scale_.Scale(scale.x(), scale.y()); }
   void PostScale(const Vector2dF& scale) {
@@ -118,6 +123,9 @@ class COMPONENT_EXPORT(GEOMETRY) AxisTransform2d {
   std::string ToString() const;
 
  private:
+  friend struct mojo::StructTraits<mojom::AxisTransform2dDataView,
+                                   AxisTransform2d>;
+
   constexpr AxisTransform2d(const Vector2dF& scale,
                             const Vector2dF& translation)
       : scale_(scale), translation_(translation) {}

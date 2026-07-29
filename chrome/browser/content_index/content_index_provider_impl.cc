@@ -8,6 +8,7 @@
 #include <string_view>
 
 #include "base/barrier_closure.h"
+#include "base/notimplemented.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/task/single_thread_task_runner.h"
@@ -34,8 +35,8 @@
 #include "content/public/browser/page_navigator.h"
 #include "content/public/common/referrer.h"
 #else
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #endif
 
 using offline_items_collection::ContentId;
@@ -239,6 +240,10 @@ void ContentIndexProviderImpl::PauseDownload(const ContentId& id) {
 }
 
 void ContentIndexProviderImpl::ResumeDownload(const ContentId& id) {
+  NOTREACHED();
+}
+
+void ContentIndexProviderImpl::ValidateDangerousDownload(const ContentId& id) {
   NOTREACHED();
 }
 

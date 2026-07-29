@@ -19,12 +19,13 @@
 #include "chrome/browser/ui/bookmarks/bookmark_bar.h"
 #include "chrome/browser/ui/bookmarks/bookmark_stats.h"
 #include "chrome/browser/ui/tabs/tab_group_theme.h"
+#include "chrome/browser/ui/views/bookmarks/bookmark_context_menu.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_menu_controller_observer.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_menu_controller_views.h"
 #include "chrome/browser/ui/views/bookmarks/saved_tab_groups/saved_tab_group_bar.h"
-#include "components/bookmarks/browser/bookmark_model_observer.h"
 #include "components/bookmarks/browser/bookmark_node_data.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "ui/accessibility/ax_action_data.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/mojom/menu_source_type.mojom-forward.h"
 #include "ui/compositor/layer_tree_owner.h"
@@ -82,7 +83,8 @@ class BookmarkBarView : public views::AccessiblePaneView,
                         public views::ContextMenuController,
                         public views::DragController,
                         public views::AnimationDelegateViews,
-                        public BookmarkMenuControllerObserver {
+                        public BookmarkMenuControllerObserver,
+                        public BookmarkContextMenuObserver {
   METADATA_HEADER(BookmarkBarView, views::AccessiblePaneView)
 
  public:
@@ -221,6 +223,8 @@ class BookmarkBarView : public views::AccessiblePaneView,
   void BookmarkParentFolderChildrenReordered(
       const BookmarkParentFolder& folder) override;
   void BookmarkAllUserNodesRemoved() override;
+  void ExtensiveBookmarkChangesBeginning() override;
+  void ExtensiveBookmarkChangesEnded() override;
 
   // views::DragController:
   void WriteDragDataForView(views::View* sender,
@@ -237,6 +241,18 @@ class BookmarkBarView : public views::AccessiblePaneView,
       views::View* source,
       const gfx::Point& point,
       ui::mojom::MenuSourceType source_type) override;
+
+  void RunContextMenuAt(std::vector<int64_t> node_ids,
+                        const gfx::Point& point,
+                        ui::mojom::MenuSourceType source_type,
+                        bool can_paste);
+
+  // BookmarkContextMenuObserver:
+  void WillRemoveBookmarks(
+      const std::vector<raw_ptr<const bookmarks::BookmarkNode,
+                                VectorExperimental>>& bookmarks) override {}
+  void DidRemoveBookmarks() override {}
+  void OnContextMenuClosed() override;
 
   // Calculate the available width for the saved tab group bar.
   // This is used in Tab Group v2 UI to allocate space for both saved tab groups
@@ -257,10 +273,10 @@ class BookmarkBarView : public views::AccessiblePaneView,
   friend class BookmarkBarViewEventTestBase;
 
   // Used to identify what the user is dropping onto.
-  enum DropButtonType {
-    DROP_BOOKMARK,
-    DROP_ALL_BOOKMARKS_FOLDER,
-    DROP_OVERFLOW
+  enum class DropButtonType {
+    kDropBookmark,
+    kDropAllBookmarksFolder,
+    kDropOverflow
   };
 
   // Creates recent bookmark button and when visible button as well as
@@ -272,6 +288,8 @@ class BookmarkBarView : public views::AccessiblePaneView,
                        const ui::Event& event);
   void OnMenuButtonPressed(const BookmarkParentFolder& folder,
                            const ui::Event& event);
+  bool OnMenuButtonAccessibleAction(const BookmarkParentFolder& folder,
+                                    const ui::AXActionData& action_data);
 
   // NOTE: unless otherwise stated all methods that take an index are in terms
   // of the bookmark bar view. Typically the view index and model index are the
@@ -301,6 +319,11 @@ class BookmarkBarView : public views::AccessiblePaneView,
   std::unique_ptr<views::View> CreateBookmarkButton(
       const bookmarks::BookmarkNode* node,
       size_t index);
+
+  // Creates a MenuButton for a Bookmark Folder with an optional title.
+  std::unique_ptr<views::MenuButton> CreateMenuButtonForFolder(
+      const BookmarkParentFolder& folder,
+      std::u16string_view title = {});
 
   // Removes the bookmark button at the given index.
   void RemoveBookmarkButton(size_t index);
@@ -347,6 +370,12 @@ class BookmarkBarView : public views::AccessiblePaneView,
   // Marks the current drop as invalid and cancels the menu. Used when the
   // model is mutated and a drop is in progress.
   void InvalidateDrop();
+
+  // Shows a menu for the provided folder.
+  void ShowFolderMenuForFolder(const BookmarkParentFolder& folder);
+
+  // Hides the folder menu for the provided folder (idempotent).
+  void HideFolderMenuForFolder(const BookmarkParentFolder& folder);
 
   // Returns the node corresponding to |sender|, which is one of the
   // |bookmark_buttons_|.
@@ -408,6 +437,19 @@ class BookmarkBarView : public views::AccessiblePaneView,
 
   void MaybeShowSavedTabGroupsIntroPromo() const;
 
+  // Return true when `drop_info_` is not null, as it indicates that a drag
+  // action is being performed.
+  bool HasDropInfo() const;
+
+  // True if BookmarkMergedSurfaceServiceLoaded() has been invoked,
+  // either by manually checking `bookmark_service_->loaded()` or by
+  // notification via BookmarkMergedSurfaceServiceObserver.
+  bool bookmark_service_loaded_signal_processed_ = false;
+
+  // Used to delay some layout updates when extensive changes are on going.
+  bool extensive_bookmarks_changes_ongoing_ = false;
+  bool needs_layout_update_after_extensive_changes_ = false;
+
   // Needed to react to bookmark bar pref changes.
   PrefChangeRegistrar profile_pref_registrar_;
 
@@ -434,6 +476,15 @@ class BookmarkBarView : public views::AccessiblePaneView,
   // If non-NULL we're showing a context menu for one of the items on the
   // bookmark bar.
   std::unique_ptr<BookmarkContextMenu> context_menu_;
+
+  // Observe the context menu so that we know when it closes, in order to reset
+  // the anchor highlight.
+  base::ScopedObservation<BookmarkContextMenu, BookmarkContextMenuObserver>
+      context_menu_observation_{this};
+
+  // Manages the lifetime of the highlight for the button that the context menu
+  // is triggered for.
+  std::optional<views::Button::ScopedAnchorHighlight> context_menu_highlight_;
 
   // Saved Tab Group section
   raw_ptr<tab_groups::SavedTabGroupBar> saved_tab_group_bar_ = nullptr;

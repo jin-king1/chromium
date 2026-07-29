@@ -84,6 +84,26 @@ struct COMPONENT_EXPORT(CHROMEOS_ASH_COMPONENTS_OSAUTH) AuthAttemptVector {
 using BorrowContextCallback =
     base::OnceCallback<void(std::unique_ptr<UserContext>)>;
 
+// Maps the values of the same-named policy located in
+// components/policy/resources/templates/policy_definitions/Signin/LocalAuthFactorsComplexity.yaml.
+// LINT.IfChange(LocalAuthFactorsComplexity)
+enum class LocalAuthFactorsComplexity {
+  kNone = 1,
+  kLow,
+  kMedium,
+  kHigh,
+  kMaxValue = kHigh,
+};
+// LINT.ThenChange(//tools/metrics/histograms/metadata/enterprise/enums.xml:LocalAuthFactorsComplexity)
+
+// Maps the values of the same-named policy located in
+// components/policy/resources/templates/policy_definitions/Signin/DeviceOnlinePasswordMismatchBehavior.yaml.
+enum class DeviceOnlinePasswordMismatchBehavior {
+  kDefault = 0,
+  kAutoWipe = 1,
+  kMaxValue = kAutoWipe,
+};
+
 }  // namespace ash
 
 #endif  // CHROMEOS_ASH_COMPONENTS_OSAUTH_PUBLIC_COMMON_TYPES_H_

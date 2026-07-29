@@ -14,6 +14,8 @@
 #include "components/sessions/core/session_types.h"
 #include "components/sessions/core/sessions_export.h"
 #include "components/sessions/core/tab_restore_types.h"
+#include "components/split_tabs/split_tab_id.h"
+#include "components/split_tabs/split_tab_visual_data.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tab_groups/tab_group_visual_data.h"
 #include "third_party/skia/include/core/SkColor.h"
@@ -52,12 +54,18 @@ class SESSIONS_EXPORT LiveTabContext {
   virtual std::map<std::string, std::string> GetExtraDataForWindow() const = 0;
   virtual std::optional<tab_groups::TabGroupId> GetTabGroupForTab(
       int index) const = 0;
+  virtual std::optional<split_tabs::SplitTabId> GetSplitForTab(
+      int index) const = 0;
   // Should not be called for |group| unless GetTabGroupForTab() returned
   // |group|.
   virtual const tab_groups::TabGroupVisualData* GetVisualDataForGroup(
       const tab_groups::TabGroupId& group) const = 0;
+  virtual const split_tabs::SplitTabVisualData* GetVisualDataForSplit(
+      const split_tabs::SplitTabId& split_id) const = 0;
   virtual const std::optional<base::Uuid> GetSavedTabGroupIdForGroup(
       const tab_groups::TabGroupId& group) const = 0;
+  virtual const std::optional<tab_groups::TabGroupId> GetGroupIdForSavedGroup(
+      const base::Uuid& saved) const = 0;
   virtual bool IsTabPinned(int index) const = 0;
   // Update |group|'s metadata. Should only be called for |group| if a tab has
   // been restored in |group| via AddRestoredTab() or ReplaceRestoredTab().
@@ -75,15 +83,28 @@ class SESSIONS_EXPORT LiveTabContext {
   // has been created by TabRestoreService.
   // |original_session_type| indicates the type of session entry the tab
   // belongs to.
+  // |is_restoring_group_or_window| when true indicates if the tab we
+  // are restoring is part of a window or group which is trying to restore all
+  // of its tabs.
   virtual LiveTab* AddRestoredTab(const tab_restore::Tab& tab,
                                   int tab_index,
                                   bool select,
+                                  bool is_restoring_group_or_window,
                                   tab_restore::Type original_session_type) = 0;
 
   // Note: |tab.platform_data| may be null (e.g., if restoring from last session
   // as this data is not persisted, or if the platform does not provide
   // platform-specific data).
   virtual LiveTab* ReplaceRestoredTab(const tab_restore::Tab& tab) = 0;
+
+  // Reconstructs a split view by merging |leading_tab| and |trailing_tab|
+  // back into a coupled state defined by |split_id|.
+  virtual void ReconstructSplit(
+      LiveTab* leading_tab,
+      LiveTab* trailing_tab,
+      split_tabs::SplitTabId split_id,
+      const split_tabs::SplitTabVisualData& visual_data) = 0;
+
   virtual void CloseTab() = 0;
 
  protected:

@@ -8,14 +8,14 @@
 #include <utility>
 
 #include "base/files/file_path.h"
+#include "base/no_destructor.h"
 #include "base/observer_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/image_fetcher/image_decoder_impl.h"
+#include "chrome/browser/metrics/profile_metrics_service_factory.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/signin/account_consistency_mode_manager.h"
 #include "chrome/browser/signin/chrome_signin_client_factory.h"
-#include "chrome/browser/signin/identity_manager_provider.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "components/signin/public/base/signin_buildflags.h"
@@ -32,6 +32,7 @@
 #include "components/keyed_service/core/service_access_type.h"
 #include "components/signin/core/browser/cookie_settings_util.h"
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#include "chrome/browser/signin/bound_session_credentials/unexportable_key_provider_config.h"
 #include "chrome/browser/signin/bound_session_credentials/unexportable_key_service_factory.h"
 #include "components/unexportable_keys/unexportable_key_service.h"  // nogncheck
 #endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
@@ -40,7 +41,7 @@
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/browser_process_platform_part.h"
-#include "components/account_manager_core/chromeos/account_manager_facade_factory.h"
+#include "chromeos/ash/components/account_manager/account_manager_factory.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -72,17 +73,12 @@ IdentityManagerFactory::IdentityManagerFactory()
 #endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif
   DependsOn(ChromeSigninClientFactory::GetInstance());
-  signin::SetIdentityManagerProvider(
-      base::BindRepeating([](content::BrowserContext* context) {
-        return GetForProfile(Profile::FromBrowserContext(context));
-      }));
+  DependsOn(ProfileMetricsServiceFactory::GetInstance());
   // TODO(crbug.com/40244790): This should declare a dependency to
   // CookieSettingsFactory but this causes a hang for some reason.
 }
 
-IdentityManagerFactory::~IdentityManagerFactory() {
-  signin::SetIdentityManagerProvider({});
-}
+IdentityManagerFactory::~IdentityManagerFactory() = default;
 
 // static
 signin::IdentityManager* IdentityManagerFactory::GetForProfile(
@@ -101,7 +97,8 @@ signin::IdentityManager* IdentityManagerFactory::GetForProfileIfExists(
 
 // static
 IdentityManagerFactory* IdentityManagerFactory::GetInstance() {
-  return base::Singleton<IdentityManagerFactory>::get();
+  static base::NoDestructor<IdentityManagerFactory> instance;
+  return instance.get();
 }
 
 // static
@@ -124,8 +121,6 @@ IdentityManagerFactory::BuildServiceInstanceForBrowserContext(
   Profile* profile = Profile::FromBrowserContext(context);
 
   signin::IdentityManagerBuildParams params;
-  params.account_consistency =
-      AccountConsistencyModeManager::GetMethodForProfile(profile),
   params.image_decoder = std::make_unique<ImageDecoderImpl>();
   params.local_state = g_browser_process->local_state();
   params.network_connection_tracker = content::GetNetworkConnectionTracker();
@@ -147,14 +142,16 @@ IdentityManagerFactory::BuildServiceInstanceForBrowserContext(
       profile, ServiceAccessType::EXPLICIT_ACCESS);
 #if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
   params.unexportable_key_service =
-      UnexportableKeyServiceFactory::GetForProfile(profile);
+      UnexportableKeyServiceFactory::GetForProfileAndPurpose(
+          profile, unexportable_keys::KeyPurpose::kRefreshTokenBinding);
 #endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
 #endif  // #if BUILDFLAG(ENABLE_DICE_SUPPORT)
 
 #if BUILDFLAG(IS_CHROMEOS)
   if (ash::ProfileHelper::IsUserProfile(profile)) {
     params.account_manager_facade =
-        GetAccountManagerFacade(profile->GetPath().value());
+        ash::AccountManagerFactory::Get()->GetAccountManagerFacade(
+            profile->GetPath().value());
     params.is_regular_profile = true;
   }
 #endif
@@ -165,14 +162,15 @@ IdentityManagerFactory::BuildServiceInstanceForBrowserContext(
                           base::Unretained(profile));
 #endif
 
-  params.require_sync_consent_for_scope_verification =
-      !base::FeatureList::IsEnabled(syncer::kReplaceSyncPromosWithSignInPromos);
+  params.profile_metrics_service =
+      ProfileMetricsServiceFactory::GetForProfile(profile);
 
   std::unique_ptr<signin::IdentityManager> identity_manager =
       signin::BuildIdentityManager(&params);
 
-  for (Observer& observer : observer_list_)
+  for (Observer& observer : observer_list_) {
     observer.IdentityManagerCreated(identity_manager.get());
+  }
 
   return identity_manager;
 }

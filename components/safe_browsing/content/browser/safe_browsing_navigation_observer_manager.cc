@@ -8,12 +8,12 @@
 #include <memory>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/feature_list.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/rand_util.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "components/prefs/pref_service.h"
@@ -99,7 +99,7 @@ std::string ShortOriginForReporting(const std::string& url) {
   GURL gurl(url);
   if (gurl.SchemeIsLocal()) {
     std::string sha_url = crypto::SHA256HashString(url);
-    return gurl.scheme() + "://" + base::HexEncode(sha_url);
+    return gurl.GetScheme() + "://" + base::HexEncode(sha_url);
   }
   return gurl.DeprecatedGetOriginAsURL().spec();
 }
@@ -124,7 +124,7 @@ ReferrerChainData::ReferrerChainData(
 
 ReferrerChainData::~ReferrerChainData() = default;
 
-ReferrerChain* ReferrerChainData::GetReferrerChain() {
+ReferrerChain* ReferrerChainData::GetReferrerChain() const {
   return referrer_chain_.get();
 }
 
@@ -305,7 +305,7 @@ void NavigationEventList::RecordPendingNavigationEvent(
 void NavigationEventList::AddRedirectUrlToPendingNavigationEvent(
     content::NavigationHandle* navigation_handle,
     const GURL& server_redirect_url) {
-  if (!base::Contains(pending_navigation_events_, navigation_handle)) {
+  if (!pending_navigation_events_.contains(navigation_handle)) {
     return;
   }
   pending_navigation_events_[navigation_handle]->server_redirect_urls.push_back(
@@ -314,7 +314,7 @@ void NavigationEventList::AddRedirectUrlToPendingNavigationEvent(
 
 void NavigationEventList::RemovePendingNavigationEvent(
     content::NavigationHandle* navigation_handle) {
-  if (base::Contains(pending_navigation_events_, navigation_handle)) {
+  if (pending_navigation_events_.contains(navigation_handle)) {
     pending_navigation_events_.erase(navigation_handle);
   }
 }
@@ -910,7 +910,7 @@ void SafeBrowsingNavigationObserverManager::MaybeAddToReferrerChain(
     referrer_chain_entry->set_main_frame_url(
         ShortURLForReporting(destination_main_frame_url));
   referrer_chain_entry->set_type(type);
-  auto ip_it = host_to_ip_map_.find(destination_url.host());
+  auto ip_it = host_to_ip_map_.find(destination_url.GetHost());
   if (ip_it != host_to_ip_map_.end()) {
     for (const ResolvedIPAddress& entry : ip_it->second) {
       referrer_chain_entry->add_ip_addresses(entry.ip);
@@ -929,8 +929,8 @@ void SafeBrowsingNavigationObserverManager::MaybeAddToReferrerChain(
     }
   }
   // Update the referrer entry if we got here from a Push notification.
-  if (base::Contains(notification_navigation_events_,
-                     nav_event->original_request_url) &&
+  if (notification_navigation_events_.contains(
+          nav_event->original_request_url) &&
       (nav_event->navigation_initiation ==
            ReferrerChainEntry::RENDERER_INITIATED_WITHOUT_USER_GESTURE ||
        nav_event->navigation_initiation ==

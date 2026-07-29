@@ -17,11 +17,15 @@ template <>
 struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
     StructTraits<webnn::mojom::OperandDescriptorDataView,
                  webnn::OperandDescriptor> {
-  static webnn::mojom::DataType data_type(
+  static webnn::OperandDataType data_type(
       const webnn::OperandDescriptor& descriptor);
   static const std::vector<uint32_t>& shape(
       const webnn::OperandDescriptor& descriptor) {
     return descriptor.shape();
+  }
+  static const std::vector<uint32_t>& pending_permutation(
+      const webnn::OperandDescriptor& descriptor) {
+    return descriptor.pending_permutation();
   }
 
   static bool Read(webnn::mojom::OperandDescriptorDataView data,
@@ -33,8 +37,7 @@ struct COMPONENT_EXPORT(WEBNN_MOJOM_TRAITS)
     EnumTraits<webnn::mojom::DataType, webnn::OperandDataType> {
   static webnn::mojom::DataType ToMojom(webnn::OperandDataType input);
 
-  static bool FromMojom(webnn::mojom::DataType input,
-                        webnn::OperandDataType* output);
+  static webnn::OperandDataType FromMojom(webnn::mojom::DataType input);
 };
 
 }  // namespace mojo

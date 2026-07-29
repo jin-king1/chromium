@@ -5,7 +5,7 @@
 #ifndef CONTENT_BROWSER_WEBID_TEST_MOCK_API_PERMISSION_DELEGATE_H_
 #define CONTENT_BROWSER_WEBID_TEST_MOCK_API_PERMISSION_DELEGATE_H_
 
-#include "content/public/browser/federated_identity_api_permission_context_delegate.h"
+#include "content/public/browser/webid/federated_identity_api_permission_context_delegate.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace url {
@@ -34,7 +34,6 @@ class MockApiPermissionDelegate
               RemoveEmbargoAndResetCounts,
               (const url::Origin&),
               (override));
-  MOCK_METHOD(void, RecordIgnoreAndEmbargo, (const url::Origin&), (override));
   MOCK_METHOD(bool,
               HasThirdPartyCookiesAccess,
               (RenderFrameHost&, const GURL&, const url::Origin&),

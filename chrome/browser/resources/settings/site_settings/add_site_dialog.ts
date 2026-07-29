@@ -23,7 +23,7 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 import {loadTimeData} from '../i18n_setup.js';
 
 import {getTemplate} from './add_site_dialog.html.js';
-import {ContentSetting, ContentSettingsTypes, CookiesExceptionType, SITE_EXCEPTION_WILDCARD} from './constants.js';
+import {ContentSetting, CookiesExceptionType, SITE_EXCEPTION_WILDCARD} from './constants.js';
 import type {SiteSettingsMixinInterface} from './site_settings_mixin.js';
 import {SiteSettingsMixin} from './site_settings_mixin.js';
 
@@ -84,11 +84,11 @@ export class AddSiteDialogElement extends AddSiteDialogElementBase {
     };
   }
 
-  contentSetting: ContentSetting;
-  hasIncognito: boolean;
-  private site_: string;
-  private errorMessage_: string;
-  cookiesExceptionType: CookiesExceptionType;
+  declare contentSetting: ContentSetting;
+  declare hasIncognito: boolean;
+  declare cookiesExceptionType: CookiesExceptionType;
+  declare private site_: string;
+  declare private errorMessage_: string;
 
   override connectedCallback() {
     super.connectedCallback();
@@ -133,8 +133,7 @@ export class AddSiteDialogElement extends AddSiteDialogElementBase {
     let primaryPattern = this.site_;
     let secondaryPattern = SITE_EXCEPTION_WILDCARD;
 
-    if (this.cookiesExceptionType === CookiesExceptionType.THIRD_PARTY ||
-        this.category === ContentSettingsTypes.TRACKING_PROTECTION) {
+    if (this.cookiesExceptionType === CookiesExceptionType.THIRD_PARTY) {
       primaryPattern = SITE_EXCEPTION_WILDCARD;
       secondaryPattern = this.site_;
     }

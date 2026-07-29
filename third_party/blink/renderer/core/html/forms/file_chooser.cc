@@ -36,6 +36,7 @@
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/page/chrome_client_impl.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace blink {
@@ -80,10 +81,10 @@ bool FileChooser::OpenFileChooser(ChromeClientImpl& chrome_client_impl) {
   frame->GetBrowserInterfaceBroker().GetInterface(
       file_chooser_.BindNewPipeAndPassReceiver());
   file_chooser_.set_disconnect_handler(
-      WTF::BindOnce(&FileChooser::DidCloseChooser, WTF::Unretained(this)));
+      blink::BindOnce(&FileChooser::DidCloseChooser, blink::Unretained(this)));
   file_chooser_->OpenFileChooser(
       params_.Clone(),
-      WTF::BindOnce(&FileChooser::DidChooseFiles, WTF::Unretained(this)));
+      blink::BindOnce(&FileChooser::DidChooseFiles, blink::Unretained(this)));
 
   // Should be released on file choosing or connection error.
   AddRef();
@@ -100,25 +101,24 @@ void FileChooser::EnumerateChosenDirectory() {
   frame->GetBrowserInterfaceBroker().GetInterface(
       file_chooser_.BindNewPipeAndPassReceiver());
   file_chooser_.set_disconnect_handler(
-      WTF::BindOnce(&FileChooser::DidCloseChooser, WTF::Unretained(this)));
+      blink::BindOnce(&FileChooser::DidCloseChooser, blink::Unretained(this)));
   file_chooser_->EnumerateChosenDirectory(
       std::move(params_->selected_files[0]),
-      WTF::BindOnce(&FileChooser::DidChooseFiles, WTF::Unretained(this)));
+      blink::BindOnce(&FileChooser::DidChooseFiles, blink::Unretained(this)));
 
   // Should be released on file choosing or connection error.
   AddRef();
 }
 
 void FileChooser::DidChooseFiles(mojom::blink::FileChooserResultPtr result) {
-  // TODO(crbug.com/1418799): If |result| is nullptr, we should not clear the
-  // already-selected files in <input type=file> like other browsers.
-  FileChooserFileInfoList files;
-  if (result)
-    files = std::move(result->files);
-
   if (client_) {
-    client_->FilesChosen(std::move(files),
-                         result ? result->base_directory : base::FilePath());
+    if (result) {
+      client_->FilesChosen(std::move(result->files), result->base_directory);
+    } else if (RuntimeEnabledFeatures::FilePickerEventsFixEnabled()) {
+      client_->FileChooserCanceled();
+    } else {
+      client_->FilesChosen(FileChooserFileInfoList(), base::FilePath());
+    }
   }
   DidCloseChooser();
 }

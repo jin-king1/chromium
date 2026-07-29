@@ -16,6 +16,7 @@
 #import "ios/web/public/navigation/navigation_context.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/navigation/navigation_manager.h"
+#import "ipc/constants.mojom.h"
 #import "ui/base/page_transition_types.h"
 #import "url/gurl.h"
 
@@ -54,7 +55,7 @@ std::u16string GenerateKeywordFromNavigationItem(
   // To relax the path constraint, make sure to sanitize the path
   // elements and update AutocompletePopup to look for keywords using the path.
   // See http://b/issue?id=863583.
-  if (!url.SchemeIsHTTPOrHTTPS() || url.path().length() > 1) {
+  if (!url.SchemeIsHTTPOrHTTPS() || url.GetPath().length() > 1) {
     return std::u16string();
   }
 
@@ -170,7 +171,7 @@ void SearchEngineTabHelper::AddTemplateURLByOSDD(const GURL& page_url,
       keyword, osdd_url, item->GetFaviconStatus().url,
       url::Origin::Create(web_state_->GetLastCommittedURL()),
       profile->GetURLLoaderFactory(),
-      /* render_frame_id */ MSG_ROUTING_NONE,
+      /* render_frame_id */ IPC::mojom::kRoutingIdNone,
       /* request_id */ 0);
 }
 
@@ -179,7 +180,7 @@ void SearchEngineTabHelper::AddTemplateURLByOSDD(const GURL& page_url,
 // https://cs.chromium.org/chromium/src/chrome/browser/ui/search_engines/search_engine_tab_helper.cc
 void SearchEngineTabHelper::AddTemplateURLBySearchableURL(
     const GURL& searchable_url) {
-  if (!searchable_url.is_valid()) {
+  if (!searchable_url.is_valid() || !searchable_url.SchemeIsHTTPOrHTTPS()) {
     return;
   }
 
@@ -247,5 +248,3 @@ void SearchEngineTabHelper::AddTemplateURLBySearchableURL(
   // any OpenSearch document derived engines, which outrank this one.
   url_service->Add(std::make_unique<TemplateURL>(data));
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(SearchEngineTabHelper)

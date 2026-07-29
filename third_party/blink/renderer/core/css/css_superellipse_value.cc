@@ -8,6 +8,7 @@
 #include <limits>
 
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
+#include "third_party/blink/renderer/core/style/superellipse.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
 
 namespace blink::cssvalue {
@@ -18,6 +19,10 @@ String CSSSuperellipseValue::CustomCSSText() const {
   result.Append(param_->CssText());
   result.Append(')');
   return result.ReleaseString();
+}
+
+bool CSSSuperellipseValue::HasRandomFunctions() const {
+  return param_ && param_->HasRandomFunctions();
 }
 
 void CSSSuperellipseValue::TraceAfterDispatch(blink::Visitor* visitor) const {

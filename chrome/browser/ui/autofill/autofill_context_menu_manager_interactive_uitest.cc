@@ -17,6 +17,7 @@
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/content/browser/test_autofill_manager_injector.h"
 #include "components/autofill/core/browser/autofill_feedback_data.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/test_utils/autofill_test_utils.h"
@@ -25,6 +26,7 @@
 #include "components/feature_engagement/public/feature_constants.h"
 #include "components/prefs/testing_pref_service.h"
 #include "content/public/test/browser_test.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 
 namespace autofill {
 namespace {
@@ -32,16 +34,16 @@ namespace {
 #if !BUILDFLAG(IS_CHROMEOS)
 // Generates a ContextMenuParams for the Autofill context menu options.
 content::ContextMenuParams CreateContextMenuParams(
-    std::optional<autofill::FormRendererId> form_renderer_id = std::nullopt,
-    autofill::FieldRendererId field_render_id = autofill::FieldRendererId(0)) {
+    std::optional<FormRendererId> form_renderer_id = std::nullopt,
+    FieldRendererId field_render_id = FieldRendererId(0)) {
   content::ContextMenuParams rv;
   rv.is_editable = true;
   rv.page_url = GURL("http://test.page/");
   rv.form_control_type = blink::mojom::FormControlType::kInputText;
   if (form_renderer_id) {
-    rv.form_renderer_id = form_renderer_id->value();
+    rv.form_renderer_id = blink::DOMNodeIdType(form_renderer_id->value());
   }
-  rv.field_renderer_id = field_render_id.value();
+  rv.field_renderer_id = blink::DOMNodeIdType(field_render_id.value());
   return rv;
 }
 
@@ -73,8 +75,8 @@ class AutofillContextMenuManagerFeedbackUIBrowserTest
         std::make_unique<AutofillContextMenuManager>(
             render_view_context_menu_.get(), nullptr);
 
-    browser()->profile()->GetPrefs()->SetBoolean(prefs::kUserFeedbackAllowed,
-                                                 true);
+    browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kUserFeedbackAllowed,
+                                                    true);
   }
 
   void TearDownOnMainThread() override {
@@ -163,11 +165,11 @@ IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
   feedback_dialog->GetWidget()->Close();
 }
 
-// Regression test for crbug.com/1493774.
+// Regression test for crbug.com/40936831.
 IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
                        TabMoveToOtherBrowserDoesNotCrash) {
   // Create another browser.
-  Browser* other_browser = CreateBrowser(browser()->profile());
+  Browser* other_browser = CreateBrowser(browser()->GetProfile());
 
   // Move the tab to the other browser.
   other_browser->tab_strip_model()->InsertDetachedTabAt(
@@ -181,10 +183,10 @@ IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
                        FeedbackDialogArgsAutofillMetadata) {
-  std::string expected_metadata;
-  base::JSONWriter::Write(
-      data_logs::FetchAutofillFeedbackData(GetAutofillManager()),
-      &expected_metadata);
+  std::string expected_metadata =
+      base::WriteJson(
+          data_logs::FetchAutofillFeedbackData(GetAutofillManager()))
+          .value_or("");
 
   // Test that none feedback dialog exists.
   ASSERT_EQ(nullptr, FeedbackDialog::GetInstanceForTest());
@@ -199,7 +201,8 @@ IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
 
   // Extract autofill metadata from dialog arguments and check for correctness.
   std::string dialog_args_str = feedback_dialog->GetDialogArgs();
-  std::optional<base::Value> value = base::JSONReader::Read(dialog_args_str);
+  std::optional<base::Value> value = base::JSONReader::Read(
+      dialog_args_str, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value.has_value() && value->is_dict());
   const std::string* autofill_metadata =
       value->GetDict().FindString("autofillMetadata");
@@ -215,20 +218,20 @@ IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
       test::CreateTestAddressFormData(), frame_token);
   GetAutofillManager()->OnFormsSeen(
       /*updated_forms=*/{form},
-      /*removed_forms=*/{});
+      /*removed_forms=*/{}, autofill::AutofillManagerTestApi::pass_key());
   ASSERT_TRUE(GetAutofillManager()->WaitForFormsSeen(1));
   ASSERT_TRUE(GetAutofillManager()->FindCachedFormById(form.global_id()));
 
   // Set up expected trigger form and field signatures.
-  std::string expected_metadata;
-  base::Value::Dict extra_logs;
+  base::DictValue extra_logs;
   auto form_structure = std::make_unique<FormStructure>(form);
   extra_logs.Set("triggerFormSignature", form_structure->FormSignatureAsStr());
   extra_logs.Set("triggerFieldSignature",
                  form_structure->field(0)->FieldSignatureAsStr());
-  base::JSONWriter::Write(data_logs::FetchAutofillFeedbackData(
-                              GetAutofillManager(), std::move(extra_logs)),
-                          &expected_metadata);
+  std::string expected_metadata =
+      base::WriteJson(data_logs::FetchAutofillFeedbackData(
+                          GetAutofillManager(), std::move(extra_logs)))
+          .value_or("");
 
   // Set up context menu params with the correct trigger form and field.
   autofill_context_menu_manager_->set_params_for_testing(
@@ -244,7 +247,8 @@ IN_PROC_BROWSER_TEST_F(AutofillContextMenuManagerFeedbackUIBrowserTest,
 
   // Extract autofill metadata from dialog arguments and check for correctness.
   std::string dialog_args_str = feedback_dialog->GetDialogArgs();
-  std::optional<base::Value> value = base::JSONReader::Read(dialog_args_str);
+  std::optional<base::Value> value = base::JSONReader::Read(
+      dialog_args_str, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   ASSERT_TRUE(value.has_value() && value->is_dict());
   const std::string* autofill_metadata =
       value->GetDict().FindString("autofillMetadata");

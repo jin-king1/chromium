@@ -7,7 +7,7 @@ import type {Action} from 'chrome://resources/js/store.js';
 
 import {IncognitoAvailability, ROOT_NODE_ID} from './constants.js';
 import type {BookmarkNode, BookmarksPageState, NodeMap} from './types.js';
-import {getDescendants, getDisplayedList, normalizeNode} from './util.js';
+import {getDescendants, getDisplayedList} from './util.js';
 
 /**
  * @fileoverview Module for functions which produce action objects. These are
@@ -22,14 +22,14 @@ export type CreateBookmarkAction = Action&{
 };
 
 export function createBookmark(
-    id: string,
-    treeNode: chrome.bookmarks.BookmarkTreeNode): CreateBookmarkAction {
+    parentId: string, parentIndex: number,
+    node: BookmarkNode): CreateBookmarkAction {
   return {
     name: 'create-bookmark',
-    id: id,
-    parentId: treeNode.parentId!,
-    parentIndex: treeNode.index!,
-    node: normalizeNode(treeNode),
+    id: node.id,
+    parentId: parentId,
+    parentIndex: parentIndex,
+    node: node,
   };
 }
 
@@ -191,7 +191,7 @@ export function selectItem(
     const endIndex = Math.max(anchorIndex, selectedIndex);
 
     for (let i = startIndex; i <= endIndex; i++) {
-      toSelect.push(displayedList[i]);
+      toSelect.push(displayedList[i]!);
     }
   } else {
     toSelect.push(id);

@@ -7,6 +7,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+#include "chrome/browser/commerce/shopping_service_factory.h"
 #include "chrome/browser/signin/identity_test_environment_profile_adaptor.h"
 #include "chrome/browser/sync/local_or_syncable_bookmark_sync_service_factory.h"
 #include "chrome/browser/ui/views/bookmarks/bookmark_editor_view.h"
@@ -15,6 +16,7 @@
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/browser/bookmark_utils.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
+#include "components/commerce/core/mock_shopping_service.h"
 #include "components/strings/grit/components_strings.h"
 #include "components/sync_bookmarks/bookmark_sync_service.h"
 #include "third_party/skia/include/core/SkBitmap.h"
@@ -69,19 +71,26 @@ class PriceTrackingBubbleDialogViewUnitTest : public BrowserWithTestWindowTest {
     return IdentityTestEnvironmentProfileAdaptor::
         GetIdentityTestEnvironmentFactoriesWithAppendedFactories(
             {TestingProfile::TestingFactory{
-                BookmarkModelFactory::GetInstance(),
-                BookmarkModelFactory::GetDefaultFactory()}});
+                 BookmarkModelFactory::GetInstance(),
+                 BookmarkModelFactory::GetDefaultFactory()},
+             TestingProfile::TestingFactory{
+                 commerce::ShoppingServiceFactory::GetInstance(),
+                 base::BindRepeating([](content::BrowserContext* context) {
+                   return commerce::MockShoppingService::Build();
+                 })}});
   }
 
-  void CreateBubbleViewAndShow(PriceTrackingBubbleDialogView::Type type) {
+  void CreateBubbleViewAndShow(
+      PriceTrackingBubbleDialogView::Type type,
+      std::optional<std::u16string> bookmark_folder_name = std::nullopt) {
     SkBitmap bitmap;
     bitmap.allocN32Pixels(1, 1);
-    bubble_coordinator_->Show(
-        browser()->tab_strip_model()->GetWebContentsAt(0), profile(),
-        GURL(kTestURL),
-        ui::ImageModel::FromImage(
-            gfx::Image(gfx::ImageSkia::CreateFrom1xBitmap(bitmap))),
-        Callback().Get(), OnDialogClosingCallback().Get(), type);
+    bubble_coordinator_->Show(browser()->tab_strip_model()->GetWebContentsAt(0),
+                              profile(), GURL(kTestURL),
+                              ui::ImageModel::FromImage(gfx::Image(
+                                  gfx::ImageSkia::CreateFrom1xBitmap(bitmap))),
+                              Callback().Get(), OnDialogClosingCallback().Get(),
+                              type, bookmark_folder_name);
   }
 
   base::MockCallback<PriceTrackingBubbleDialogView::OnTrackPriceCallback>&
@@ -105,6 +114,14 @@ class PriceTrackingBubbleDialogViewUnitTest : public BrowserWithTestWindowTest {
     // Pretend sync is on for bookmarks, required for price tracking.
     LocalOrSyncableBookmarkSyncServiceFactory::GetForProfile(profile())
         ->SetIsTrackingMetadataForTesting();
+
+    // Mock that the service is eligible for shopping list, required for price
+    // tracking.
+    commerce::MockShoppingService* mock_shopping_service =
+        static_cast<commerce::MockShoppingService*>(
+            commerce::ShoppingServiceFactory::GetForBrowserContext(
+                browser()->GetProfile()));
+    mock_shopping_service->SetIsShoppingListEligible(true);
   }
 
   raw_ptr<bookmarks::BookmarkModel, DanglingUntriaged> bookmark_model_;
@@ -136,7 +153,7 @@ class PriceTrackingBubbleDialogViewLayoutUnitTest
     if (BookmarkWasCreated()) {
       return bookmark_folder_name_;
     } else {
-      return u"";
+      return u"Shopping list";
     }
   }
 
@@ -162,7 +179,8 @@ class PriceTrackingBubbleDialogViewLayoutUnitTest
 
 TEST_P(PriceTrackingBubbleDialogViewLayoutUnitTest, FUEBubble) {
   CreateBubbleViewAndShow(
-      PriceTrackingBubbleDialogView::Type::TYPE_FIRST_USE_EXPERIENCE);
+      PriceTrackingBubbleDialogView::Type::TYPE_FIRST_USE_EXPERIENCE,
+      GetFolderName());
 
   auto* bubble = BubbleCoordinator()->GetBubble();
   EXPECT_TRUE(bubble);
@@ -191,7 +209,8 @@ TEST_P(PriceTrackingBubbleDialogViewLayoutUnitTest, NormalBubble) {
     return;
   }
 
-  CreateBubbleViewAndShow(PriceTrackingBubbleDialogView::Type::TYPE_NORMAL);
+  CreateBubbleViewAndShow(PriceTrackingBubbleDialogView::Type::TYPE_NORMAL,
+                          GetFolderName());
 
   auto* bubble = BubbleCoordinator()->GetBubble();
   EXPECT_TRUE(bubble);
@@ -257,7 +276,8 @@ TEST_F(PriceTrackingBubbleDialogViewActionUnitTest, CancelNormalBubble) {
 
 TEST_F(PriceTrackingBubbleDialogViewActionUnitTest,
        ClickLinkInTheNormalBubble) {
-  CreateBubbleViewAndShow(PriceTrackingBubbleDialogView::Type::TYPE_NORMAL);
+  CreateBubbleViewAndShow(PriceTrackingBubbleDialogView::Type::TYPE_NORMAL,
+                          /*bookmark_folder_name=*/u"Shopping list");
 
   auto* bubble = BubbleCoordinator()->GetBubble();
   EXPECT_TRUE(bubble);

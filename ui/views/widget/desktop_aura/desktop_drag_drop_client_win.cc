@@ -6,9 +6,12 @@
 
 #include <memory>
 
-#include "base/metrics/histogram_macros.h"
+#include "base/auto_reset.h"
+#include "base/notimplemented.h"
+#include "base/scoped_observation.h"
 #include "base/threading/hang_watcher.h"
 #include "ui/aura/env.h"
+#include "ui/aura/window_observer.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
 #include "ui/base/dragdrop/drag_source_win.h"
 #include "ui/base/dragdrop/drop_target_event.h"
@@ -22,17 +25,44 @@
 
 namespace views {
 
+namespace {
+
+class SourceWindowObserver : public aura::WindowObserver {
+ public:
+  explicit SourceWindowObserver(aura::Window* window)
+      : scoped_observation_(this) {
+    scoped_observation_.Observe(window);
+  }
+
+  // aura::WindowObserver:
+  void OnWindowDestroying(aura::Window* window) override {
+    source_window_alive_ = false;
+    scoped_observation_.Reset();
+  }
+
+  bool source_window_alive() { return source_window_alive_; }
+
+ private:
+  bool source_window_alive_ = true;
+  base::ScopedObservation<aura::Window, aura::WindowObserver>
+      scoped_observation_;
+};
+
+bool g_is_dragging = false;
+
+}  // namespace
+
 DesktopDragDropClientWin::DesktopDragDropClientWin(
     aura::Window* root_window,
     HWND window,
     DesktopWindowTreeHostWin* desktop_host)
-    : drag_drop_in_progress_(false), desktop_host_(desktop_host) {
+    : desktop_host_(desktop_host) {
   drop_target_ = new DesktopDropTargetWin(root_window);
   drop_target_->Init(window);
 }
 
 DesktopDragDropClientWin::~DesktopDragDropClientWin() {
-  if (drag_drop_in_progress_) {
+  if (g_is_dragging) {
     DragCancel();
   }
 }
@@ -44,44 +74,35 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
     const gfx::Point& screen_location,
     int allowed_operations,
     ui::mojom::DragEventSource source) {
+  CHECK(!g_is_dragging);
+  if (desktop_host_->IsInNativeMoveResizeLoop()) {
+    return ui::PreferredDragOperation(
+        ui::DragDropTypes::DropEffectToDragOperation(DROPEFFECT_NONE));
+  }
   gfx::Point touch_screen_point;
   if (source == ui::mojom::DragEventSource::kTouch) {
-    display::Screen* screen = display::Screen::GetScreen();
+    display::Screen* screen = display::Screen::Get();
     CHECK(screen);
     aura::Window* window =
         screen->GetWindowAtScreenPoint(screen->GetCursorScreenPoint());
-    touch_screen_point =
-        screen_location + source_window->GetBoundsInScreen().OffsetFromOrigin();
+    touch_screen_point = screen_location;
     source_window->GetHost()->ConvertDIPToPixels(&touch_screen_point);
     bool touch_down = aura::Env::GetInstance()->is_touch_down();
     bool touch_over_other_window =
         !window || window->GetRootWindow() != root_window;
-    bool touch_drag_cursor_sync =
-        base::FeatureList::IsEnabled(features::kEnableTouchDragCursorSync);
-    // If attempting to start a touch drag with the cursor over another window,
-    // move cursor to this window so the next drag attempt will succeed.
-    // TODO(crbug.com/40312079): Mouse cursor needs to follow long press touch
-    // events for this to be smoother, but ::SetCursorPos needs to be called
-    // well before calling ::DoDragDrop.
-    if (touch_drag_cursor_sync && touch_down && touch_over_other_window) {
-      ::SetCursorPos(touch_screen_point.x(), touch_screen_point.y());
-    }
     // Check that the cursor is over the window being dragged from. If not,
     // don't start the drag because ::DoDragDrop will not do the drag.
-    if (touch_drag_cursor_sync && (!touch_down || touch_over_other_window)) {
+    if (!touch_down || touch_over_other_window) {
       return ui::PreferredDragOperation(
           ui::DragDropTypes::DropEffectToDragOperation(DROPEFFECT_NONE));
     }
     desktop_host_->StartTouchDrag(touch_screen_point);
-    // Gesture state gets left in a state where you can't start
-    // another drag, unless it's cleaned up. Cleaning it up before starting
-    // drag drop also fixes an issue with getting two kGestureScrollBegin events
-    // in a row. See crbug.com/1120809.
-    source_window->CleanupGestureState();
   }
+  // Observe the source window to avoid accessing it if the window is
+  // destroyed while the drag is ongoing.
+  SourceWindowObserver source_window_observer(source_window);
   base::WeakPtr<DesktopDragDropClientWin> alive(weak_factory_.GetWeakPtr());
 
-  drag_drop_in_progress_ = true;
   drag_source_ = ui::DragSourceWin::Create();
   Microsoft::WRL::ComPtr<ui::DragSourceWin> drag_source_copy = drag_source_;
   drag_source_copy->set_data(data.get());
@@ -89,6 +110,7 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
       true);
 
   DWORD effect;
+  base::AutoReset<bool> drag_scoper(&g_is_dragging, true);
 
   // Never consider the current scope as hung. The hang watching deadline (if
   // any) is not valid since the user can take unbounded time to complete the
@@ -100,17 +122,17 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
       drag_source_.Get(),
       ui::DragDropTypes::DragOperationToDropEffect(allowed_operations),
       &effect);
-  if (alive && source == ui::mojom::DragEventSource::kTouch) {
-    desktop_host_->FinishTouchDrag(touch_screen_point);
-    // Move the mouse cursor to where the drag drop started, to avoid issues
-    // when the drop is outside of the Chrome window.
-    ::SetCursorPos(touch_screen_point.x(), touch_screen_point.y());
+  if (source == ui::mojom::DragEventSource::kTouch) {
+    if (source_window_observer.source_window_alive()) {
+      // Kill the gesture that initiated the drag to avoid issues with lingering
+      // touch events.
+      source_window->CleanupGestureState();
+    }
+    if (alive) {
+      desktop_host_->FinishTouchDrag(touch_screen_point);
+    }
   }
   drag_source_copy->set_data(nullptr);
-
-  if (alive) {
-    drag_drop_in_progress_ = false;
-  }
 
   if (result != DRAGDROP_S_DROP) {
     effect = DROPEFFECT_NONE;
@@ -121,11 +143,13 @@ ui::mojom::DragOperation DesktopDragDropClientWin::StartDragAndDrop(
 }
 
 void DesktopDragDropClientWin::DragCancel() {
-  drag_source_->CancelDrag();
+  if (drag_source_) {
+    drag_source_->CancelDrag();
+  }
 }
 
 bool DesktopDragDropClientWin::IsDragDropInProgress() {
-  return drag_drop_in_progress_;
+  return g_is_dragging;
 }
 
 void DesktopDragDropClientWin::AddObserver(

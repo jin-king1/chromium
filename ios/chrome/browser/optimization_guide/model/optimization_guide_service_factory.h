@@ -24,7 +24,7 @@ class OptimizationGuideServiceFactory : public ProfileKeyedServiceFactoryIOS {
   static void InitializePredictionModelStore();
 
   // Returns the default factory used to build OptimizationGuideService. Can be
-  // registered with SetTestingFactory to use real instances during testing.
+  // registered with AddTestingFactory to use real instances during testing.
   static TestingFactory GetDefaultFactory();
 
  private:
@@ -33,9 +33,9 @@ class OptimizationGuideServiceFactory : public ProfileKeyedServiceFactoryIOS {
   OptimizationGuideServiceFactory();
   ~OptimizationGuideServiceFactory() override;
 
-  // BrowserStateKeyedServiceFactory:
+  // ProfileKeyedServiceFactoryIOS:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 };
 
 #endif  // IOS_CHROME_BROWSER_OPTIMIZATION_GUIDE_MODEL_OPTIMIZATION_GUIDE_SERVICE_FACTORY_H_

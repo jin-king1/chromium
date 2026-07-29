@@ -4,6 +4,8 @@
 
 #include "ash/style/icon_button.h"
 
+#include <variant>
+
 #include "ash/public/cpp/style/color_provider.h"
 #include "ash/style/blurred_background_shield.h"
 #include "ash/style/style_util.h"
@@ -29,6 +31,7 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/background.h"
 #include "ui/views/border.h"
+#include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/highlight_path_generator.h"
 
 namespace ash {
@@ -194,15 +197,15 @@ std::unique_ptr<views::Background> CreateSolidBackground(
 }
 
 // Returns a normal and disabled image model for `symbol`. `is_toggled` and
-// `color_id` control styling. The returned model dimensions wil be `icon_size`
+// `color` control styling. The returned model dimensions wil be `icon_size`
 // x `icon_size` in pixels.
 std::pair<ui::ImageModel, ui::ImageModel> SymbolImages(
     const bool is_toggled,
-    ui::ColorId color_id,
+    ui::ColorVariant color,
     const int icon_size,
     base_icu::UChar32 symbol) {
   const gfx::Size size(icon_size, icon_size);
-  ui::ImageModel normal_model = TextImage::AsImageModel(size, symbol, color_id);
+  ui::ImageModel normal_model = TextImage::AsImageModel(size, symbol, color);
   ui::ImageModel disabled_model =
       TextImage::AsImageModel(size, symbol, cros_tokens::kCrosSysDisabled);
 
@@ -227,11 +230,11 @@ std::unique_ptr<IconButton> IconButton::Builder::Build() {
   }
 
   std::u16string accessible_name;
-  if (absl::holds_alternative<int>(accessible_name_)) {
+  if (std::holds_alternative<int>(accessible_name_)) {
     accessible_name =
-        l10n_util::GetStringUTF16(absl::get<int>(accessible_name_));
+        l10n_util::GetStringUTF16(std::get<int>(accessible_name_));
   } else {
-    accessible_name = absl::get<std::u16string>(accessible_name_);
+    accessible_name = std::get<std::u16string>(accessible_name_);
   }
 
   auto button = std::make_unique<IconButton>(
@@ -535,8 +538,7 @@ void IconButton::OnFocus() {
   if (IsProminentFloatingType(type_) && !IsToggledOn()) {
     // If prominent floating button is still using default colors, updates its
     // icon color on focus.
-    if (icon_color_.GetColorId() ==
-        GetDefaultIconColorId(type_, /*focused=*/false)) {
+    if (icon_color_ == GetDefaultIconColorId(type_, /*focused=*/false)) {
       icon_color_ = GetDefaultIconColorId(type_, /*focused=*/true);
       UpdateVectorIcon(/*color_changes_only=*/true);
     }
@@ -548,8 +550,7 @@ void IconButton::OnBlur() {
   if (IsProminentFloatingType(type_) && !IsToggledOn()) {
     // If prominent floating button is still using default colors, updates its
     // icon color on focus.
-    if (icon_color_.GetColorId() ==
-        GetDefaultIconColorId(type_, /*focused=*/true)) {
+    if (icon_color_ == GetDefaultIconColorId(type_, /*focused=*/true)) {
       icon_color_ = GetDefaultIconColorId(type_, /*focused=*/false);
       UpdateVectorIcon(/*color_changes_only=*/true);
     }
@@ -563,10 +564,9 @@ void IconButton::PaintButtonContents(gfx::Canvas* canvas) {
       const gfx::Rect rect(GetContentsBounds());
       cc::PaintFlags flags;
       flags.setAntiAlias(true);
-      SkPath mask;
-      mask.addCircle(rect.CenterPoint().x(), rect.CenterPoint().y(),
-                     rect.width() / 2);
-      canvas->ClipPath(mask, true);
+      const SkPath mask = SkPath::Circle(
+          rect.CenterPoint().x(), rect.CenterPoint().y(), rect.width() / 2);
+      canvas->ClipPath(mask, /*do_anti_alias=*/true);
       canvas->DrawImageInt(background_image_, 0, 0, flags);
     }
   }
@@ -604,9 +604,9 @@ void IconButton::UpdateBackground() {
   }
 
   // Create a background according to the toggled state.
-  ui::ColorVariant color_variant =
+  ui::ColorVariant color =
       is_toggled ? background_toggled_color_ : background_color_;
-  SetBackground(CreateSolidBackground(color_variant, type_));
+  SetBackground(CreateSolidBackground(color, type_));
 }
 
 void IconButton::UpdateBlurredBackgroundShield() {
@@ -624,11 +624,11 @@ void IconButton::UpdateBlurredBackgroundShield() {
         gfx::RoundedCornersF(GetButtonSizeOnType(type_) / 2));
   }
 
-  ui::ColorVariant color_variant =
+  ui::ColorVariant color =
       GetEnabled()
           ? (is_toggled ? background_toggled_color_ : background_color_)
           : cros_tokens::kCrosSysDisabledContainer;
-  blurred_background_shield_->SetColor(color_variant);
+  blurred_background_shield_->SetColor(color);
 }
 
 void IconButton::UpdateVectorIcon(bool color_changes_only) {
@@ -636,14 +636,12 @@ void IconButton::UpdateVectorIcon(bool color_changes_only) {
 
   const int icon_size = icon_size_.value_or(GetIconSizeOnType(type_));
   const bool is_toggled = IsToggledOn();
-  ui::ColorVariant color_variant =
-      is_toggled ? icon_toggled_color_ : icon_color_;
+  ui::ColorVariant color = is_toggled ? icon_toggled_color_ : icon_color_;
 
   if (character_.has_value()) {
-    images = SymbolImages(is_toggled, *color_variant.GetColorId(), icon_size,
-                          *character_);
+    images = SymbolImages(is_toggled, color, icon_size, *character_);
   } else {
-    images = VectorImages(is_toggled, color_variant, icon_size);
+    images = VectorImages(is_toggled, color, icon_size);
   }
 
   if (images.first.IsEmpty()) {
@@ -681,11 +679,6 @@ void IconButton::OnEnabledStateChanged() {
     UpdateVectorIcon();
   }
   UpdateBackground();
-}
-
-SkColor IconButton::GetBackgroundColor() const {
-  DCHECK(background());
-  return background()->get_color();
 }
 
 bool IconButton::IsToggledOn() const {

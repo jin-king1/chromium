@@ -6,7 +6,6 @@ package org.chromium.webview_shell;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.UiModeManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageInfo;
@@ -23,22 +22,18 @@ import android.view.ViewGroup.LayoutParams;
 import android.webkit.CookieManager;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
+import android.widget.Button;
 import android.widget.Toast;
 
-import androidx.activity.EdgeToEdge;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.appcompat.app.AppCompatDelegate;
 import androidx.appcompat.widget.Toolbar;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 import androidx.webkit.TracingConfig;
 import androidx.webkit.TracingController;
 import androidx.webkit.WebSettingsCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
-import org.chromium.base.BuildInfo;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.PackageManagerUtils;
@@ -49,9 +44,7 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
-import java.util.Arrays;
-import java.util.HashSet;
-import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.Executors;
 
 /**
@@ -68,25 +61,51 @@ public class WebViewBrowserActivity extends AppCompatActivity {
     private boolean mIsStoppingTracing;
     private WebView mWebView;
 
-    // This set of models will always bypass strict mode.
-    // Google pre-release hardware models do not belong here.
-    private static final HashSet<String> STRICT_MODE_BYPASS_MODELS =
-            new HashSet<>(
-                    Arrays.asList(
-                            "humuhumu titan" // See https://crbug.com/1090841#c76
-                            ));
+    /**
+     * Determines whether the WebView initialization should be delayed.
+     * This is useful for allowing tasks like memory profiling or environment setup
+     * before the WebView is created. Subclasses can override this to return true.
+     */
+    protected boolean shouldDelayStartup() {
+        return false;
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
-        EdgeToEdge.enable(this);
         super.onCreate(savedInstanceState);
+        if (shouldDelayStartup()) {
+            setupDelayStartup();
+        } else {
+            initialize();
+        }
+    }
+
+    private void setupDelayStartup() {
+        final Button startupButton = new Button(this);
+        startupButton.setText(getResources().getString(R.string.action_startup_webview));
+        setContentView(startupButton);
+
+        startupButton.setOnClickListener(
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View v) {
+                        initialize();
+                    }
+                });
+    }
+
+    protected String getBrowserToolbarTitle() {
+        return getResources().getString(R.string.title_activity_browser);
+    }
+
+    protected void initialize() {
         ContextUtils.initApplicationContext(getApplicationContext());
 
-        setupEdgeToEdge();
+        EdgeToEdgeUtil.setupEdgeToEdge(this, findViewById(android.R.id.content));
         setContentView(R.layout.activity_webview_browser);
         setSupportActionBar((Toolbar) findViewById(R.id.browser_toolbar));
         mWebViewVersion = WebViewCompat.getCurrentWebViewPackage(this).versionName;
-        getSupportActionBar().setTitle(getResources().getString(R.string.title_activity_browser));
+        getSupportActionBar().setTitle(getBrowserToolbarTitle());
         getSupportActionBar().setSubtitle(mWebViewVersion);
 
         mFragment =
@@ -97,13 +116,20 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         enableStrictMode();
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        mWebView = mFragment.getWebView();
+    protected void onWebViewCreated(WebView webView) {
+        mWebView = webView;
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (mFragment != null) {
+            mWebView = mFragment.getWebView();
+        }
+    }
+
+    @Override
+    @SuppressWarnings("GestureBackNavigation")
     public void onBackPressed() {
         if (mWebView != null && mWebView.canGoBack()) {
             mWebView.goBack();
@@ -118,11 +144,15 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.TRACING_CONTROLLER_BASIC_USAGE)) {
             menu.findItem(R.id.menu_enable_tracing).setEnabled(false);
         }
-        if (!WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)
-                || BuildInfo.targetsAtLeastT()) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             menu.findItem(R.id.menu_force_dark_off).setEnabled(false);
             menu.findItem(R.id.menu_force_dark_auto).setEnabled(false);
             menu.findItem(R.id.menu_force_dark_on).setEnabled(false);
+        }
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+            menu.findItem(R.id.menu_webauthn_browser).setEnabled(false);
+            menu.findItem(R.id.menu_webauthn_app).setEnabled(false);
+            menu.findItem(R.id.menu_webauthn_off).setEnabled(false);
         }
         if (!WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) {
             menu.findItem(R.id.menu_multi_profile).setEnabled(false);
@@ -130,8 +160,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             menu.findItem(R.id.menu_night_mode_on).setEnabled(false);
         }
-        if (!BuildInfo.targetsAtLeastT()
-                || !WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
+        if (!WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             menu.findItem(R.id.menu_algorithmic_darkening_on).setEnabled(false);
         }
         return super.onCreateOptionsMenu(menu);
@@ -146,8 +175,7 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         } else {
             menu.findItem(R.id.menu_enable_tracing).setEnabled(false);
         }
-        if (WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)
-                && !BuildInfo.targetsAtLeastT()) {
+        if (mWebView != null && WebViewFeature.isFeatureSupported(WebViewFeature.FORCE_DARK)) {
             int forceDarkState = WebSettingsCompat.getForceDark(mWebView.getSettings());
             switch (forceDarkState) {
                 case WebSettingsCompat.FORCE_DARK_OFF:
@@ -161,21 +189,24 @@ public class WebViewBrowserActivity extends AppCompatActivity {
                     break;
             }
         }
-
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            boolean checked =
-                    AppCompatDelegate.MODE_NIGHT_YES == AppCompatDelegate.getDefaultNightMode();
-            int defaultNightMode = AppCompatDelegate.getDefaultNightMode();
-            if (defaultNightMode == AppCompatDelegate.MODE_NIGHT_FOLLOW_SYSTEM
-                    || defaultNightMode == AppCompatDelegate.MODE_NIGHT_UNSPECIFIED) {
-                UiModeManager uiModeManager =
-                        (UiModeManager)
-                                this.getApplicationContext().getSystemService(UI_MODE_SERVICE);
-                checked = UiModeManager.MODE_NIGHT_YES == uiModeManager.getNightMode();
+        if (mWebView != null
+                && WebViewFeature.isFeatureSupported(WebViewFeature.WEB_AUTHENTICATION)) {
+            int webAuthnSupport =
+                    WebSettingsCompat.getWebAuthenticationSupport(mWebView.getSettings());
+            switch (webAuthnSupport) {
+                case WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_BROWSER:
+                    menu.findItem(R.id.menu_webauthn_browser).setChecked(true);
+                    break;
+                case WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP:
+                    menu.findItem(R.id.menu_webauthn_app).setChecked(true);
+                    break;
+                case WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_NONE:
+                    menu.findItem(R.id.menu_webauthn_off).setChecked(true);
+                    break;
             }
-            menu.findItem(R.id.menu_night_mode_on).setChecked(checked);
         }
-        if (BuildInfo.targetsAtLeastT()
+
+        if (mWebView != null
                 && WebViewFeature.isFeatureSupported(WebViewFeature.ALGORITHMIC_DARKENING)) {
             menu.findItem(R.id.menu_algorithmic_darkening_on)
                     .setChecked(
@@ -200,20 +231,26 @@ public class WebViewBrowserActivity extends AppCompatActivity {
             mFragment.resetWebView();
             mWebView = mFragment.getWebView();
             return true;
+        } else if (itemId == R.id.menu_destroy_webview) {
+            mFragment.destroyWebView();
+            mWebView = mFragment.getWebView();
+            return true;
         } else if (itemId == R.id.menu_clear_cache) {
             if (mWebView != null) {
                 mWebView.clearCache(true);
             }
             return true;
         } else if (itemId == R.id.menu_get_cookie) {
-            String url = mWebView.getUrl();
-            if (url != null) {
-                String cookie = CookieManager.getInstance().getCookie(url);
-                Log.w(TAG, "GetCookie: " + cookie);
-                Toast.makeText(this, "Printing cookie values to adb logcat", Toast.LENGTH_SHORT)
-                        .show();
-            } else {
-                Toast.makeText(this, "Error: Url is not set", Toast.LENGTH_SHORT).show();
+            if (mWebView != null) {
+                String url = mWebView.getUrl();
+                if (url != null) {
+                    String cookie = CookieManager.getInstance().getCookie(url);
+                    Log.w(TAG, "GetCookie: " + cookie);
+                    Toast.makeText(this, "Printing cookie values to adb logcat", Toast.LENGTH_SHORT)
+                            .show();
+                } else {
+                    Toast.makeText(this, "Error: Url is not set", Toast.LENGTH_SHORT).show();
+                }
             }
             return true;
         } else if (itemId == R.id.menu_enable_tracing) {
@@ -236,10 +273,10 @@ public class WebViewBrowserActivity extends AppCompatActivity {
                     try (StrictModeContext ignored = StrictModeContext.allowDiskWrites()) {
                         String outFileName = getFilesDir() + "/webview_tracing.json";
                         try {
+                            mIsStoppingTracing = true;
                             tracingController.stop(
                                     new TracingLogger(outFileName, this),
                                     Executors.newSingleThreadExecutor());
-                            mIsStoppingTracing = true;
                         } catch (FileNotFoundException e) {
                             throw new RuntimeException(e);
                         }
@@ -259,6 +296,27 @@ public class WebViewBrowserActivity extends AppCompatActivity {
             return true;
         } else if (itemId == R.id.menu_force_dark_on) {
             WebSettingsCompat.setForceDark(mWebView.getSettings(), WebSettingsCompat.FORCE_DARK_ON);
+            item.setChecked(true);
+            return true;
+        } else if (itemId == R.id.menu_webauthn_browser) {
+            WebSettingsCompat.setWebAuthenticationSupport(
+                    mWebView.getSettings(),
+                    WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_BROWSER);
+            item.setChecked(true);
+            Toast.makeText(
+                            this,
+                            "Some password managers don't honor passkeys in this shell.",
+                            Toast.LENGTH_LONG)
+                    .show();
+            return true;
+        } else if (itemId == R.id.menu_webauthn_app) {
+            WebSettingsCompat.setWebAuthenticationSupport(
+                    mWebView.getSettings(), WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_FOR_APP);
+            item.setChecked(true);
+            return true;
+        } else if (itemId == R.id.menu_webauthn_off) {
+            WebSettingsCompat.setWebAuthenticationSupport(
+                    mWebView.getSettings(), WebSettingsCompat.WEB_AUTHENTICATION_SUPPORT_NONE);
             item.setChecked(true);
             return true;
         } else if (itemId == R.id.menu_night_mode_on) {
@@ -287,6 +345,17 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         } else if (itemId == R.id.start_animation_activity) {
             startActivity(new Intent(this, WebViewAnimationTestActivity.class));
             return true;
+        } else if (itemId == R.id.start_inspect_user_actions_activity) {
+            Intent intent = new Intent(this, InspectUserActionsActivity.class);
+            intent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP);
+            startActivity(intent);
+            finish();
+            return true;
+        } else if (itemId == R.id.menu_fullscreen) {
+            Intent intent = new Intent(this, FullscreenActivity.class);
+            intent.putExtra(FullscreenActivity.URL_EXTRA, mWebView.getUrl());
+            startActivity(intent);
+            return true;
         } else if (itemId == R.id.menu_print) {
             PrintManager printManager = (PrintManager) getSystemService(Context.PRINT_SERVICE);
             String jobName = "WebViewShell document";
@@ -307,7 +376,39 @@ public class WebViewBrowserActivity extends AppCompatActivity {
                 mWebView.setVisibility(View.VISIBLE);
             }
             return true;
+        } else if (itemId == R.id.menu_preconnect) {
+            String url = mFragment.getUrlFromUrlBar();
+            if (url == null || url.equals("about:blank")) {
+                Toast.makeText(this, "Please enter URL in URL bar.", Toast.LENGTH_SHORT).show();
+            } else if (mWebView != null) {
+                WebViewCompat.getProfile(mWebView).preconnect(url);
+            }
+            return true;
+        } else if (itemId == R.id.menu_add_quic_hint) {
+            String url = mFragment.getUrlFromUrlBar();
+            if (url == null || url.equals("about:blank")) {
+                Toast.makeText(this, "Please enter URL in URL bar.", Toast.LENGTH_SHORT).show();
+            } else {
+                try {
+                    WebViewCompat.getProfile(mWebView).addQuicHints(Set.of(url));
+                    Toast.makeText(this, "QUIC hint added for " + url, Toast.LENGTH_SHORT).show();
+                } catch (IllegalArgumentException e) {
+                    Log.e(TAG, "Failed to add QUIC hint: ", e);
+                    Toast.makeText(this, "Please enter valid URL in URL bar.", Toast.LENGTH_SHORT)
+                            .show();
+                }
+            }
+            return true;
+        } else if (itemId == R.id.menu_check_protocol) {
+            mWebView.evaluateJavascript(
+                    "performance.getEntriesByType(\"navigation\")[0].nextHopProtocol",
+                    (result) -> {
+                        String msg = "Page was loaded with \"" + result + "\" protocol.";
+                        Log.i(TAG, msg);
+                        Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+                    });
         }
+
         return super.onOptionsItemSelected(item);
     }
 
@@ -376,15 +477,16 @@ public class WebViewBrowserActivity extends AppCompatActivity {
      * not controlled by WebView or by WebView shell browser).
      */
     private static void enableStrictMode() {
-        String manufacturer = Build.MANUFACTURER.toLowerCase(Locale.US);
-        String model = Build.MODEL.toLowerCase(Locale.US);
-
         StrictMode.ThreadPolicy.Builder threadPolicyBuilder =
                 new StrictMode.ThreadPolicy.Builder().detectAll().penaltyLog().penaltyDeath();
 
-        if (!manufacturer.equalsIgnoreCase("google") || STRICT_MODE_BYPASS_MODELS.contains(model)) {
-            threadPolicyBuilder.permitDiskReads();
-            threadPolicyBuilder.permitDiskWrites();
+        // See https://crbug.com/1090841#c76
+        // See https://crbug.com/439646941
+        // See https://crbug.com/439646941
+        threadPolicyBuilder.permitDiskReads();
+        threadPolicyBuilder.permitDiskWrites();
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            threadPolicyBuilder.permitUnbufferedIo();
         }
 
         StrictMode.setThreadPolicy(threadPolicyBuilder.build());
@@ -426,19 +528,16 @@ public class WebViewBrowserActivity extends AppCompatActivity {
         @Override
         public void close() throws IOException {
             super.close();
-            showDialog(mByteCount);
-            mIsStoppingTracing = false;
-        }
 
-        private void showDialog(long nbBytes) {
             StringBuilder info = new StringBuilder();
             info.append("Tracing data written to file\n");
-            info.append("number of bytes: " + nbBytes);
+            info.append("number of bytes: " + mByteCount);
 
             mActivity.runOnUiThread(
                     new Runnable() {
                         @Override
                         public void run() {
+                            mIsStoppingTracing = false;
                             AlertDialog dialog =
                                     new AlertDialog.Builder(mActivity)
                                             .setTitle("Tracing API")
@@ -449,19 +548,5 @@ public class WebViewBrowserActivity extends AppCompatActivity {
                         }
                     });
         }
-    }
-
-    private void setupEdgeToEdge() {
-        ViewCompat.setOnApplyWindowInsetsListener(
-                findViewById(android.R.id.content),
-                (v, windowInsets) -> {
-                    Insets insets = windowInsets.getInsets(WindowInsetsCompat.Type.systemBars());
-                    // Apply the insets paddings to the view.
-                    v.setPadding(insets.left, insets.top, insets.right, insets.bottom);
-
-                    // Return CONSUMED to indicate we have handled the insets for this view
-                    // and don't want them to be passed down to descendant views.
-                    return WindowInsetsCompat.CONSUMED;
-                });
     }
 }

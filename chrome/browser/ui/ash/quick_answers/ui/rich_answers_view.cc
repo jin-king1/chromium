@@ -20,10 +20,12 @@
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/themed_vector_icon.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
 #include "ui/compositor/layer.h"
 #include "ui/display/screen.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/gfx/vector_icon_types.h"
 #include "ui/views/accessibility/view_accessibility.h"
@@ -40,6 +42,7 @@
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/widget/widget.h"
 #include "ui/wm/core/coordinate_conversion.h"
 #include "url/gurl.h"
@@ -54,9 +57,6 @@ using quick_answers::ResultType;
 constexpr int kDefaultRichCardWidth = 360;
 constexpr int kMinimumRichCardHeight = 120;
 constexpr int kMaximumRichCardHeight = 464;
-
-// View dimensions.
-constexpr auto kMainViewInsets = gfx::Insets::TLBR(20, 20, 16, 20);
 
 // Buttons view.
 constexpr int kSettingsButtonSizeDip = 20;
@@ -128,7 +128,7 @@ views::UniqueWidgetPtr RichAnswersView::CreateWidget(
   params.shadow_elevation = 2;
   params.shadow_type = views::Widget::InitParams::ShadowType::kDrop;
   params.z_order = ui::ZOrderLevel::kFloatingUIElement;
-  params.corner_radius = kRoundedCornerRadius;
+  params.rounded_corners = gfx::RoundedCornersF(kRoundedCornerRadius);
   params.name = kWidgetName;
   views::UniqueWidgetPtr widget =
       std::make_unique<views::Widget>(std::move(params));
@@ -200,7 +200,7 @@ void RichAnswersView::SetUpBaseView() {
   views::ScrollView* scroll_view = AddChildView(
       views::Builder<views::ScrollView>()
           .ClipHeightTo(kMinimumRichCardHeight, kMaximumRichCardHeight)
-          .SetBackgroundThemeColorId(ui::kColorPrimaryBackground)
+          .SetBackgroundColor(ui::kColorPrimaryBackground)
           .SetHorizontalScrollBarMode(
               views::ScrollView::ScrollBarMode::kDisabled)
           .SetDrawOverflowIndicator(false)
@@ -261,9 +261,12 @@ views::View* RichAnswersView::AddSettingsButtonTo(views::View* container_view) {
           &QuickAnswersUiController::OnSettingsButtonPressed, controller_)));
   settings_button_->SetImageModel(
       views::Button::ButtonState::STATE_NORMAL,
-      ui::ImageModel::FromVectorIcon(vector_icons::kSettingsOutlineIcon,
-                                     ui::kColorSysOnSurface,
-                                     /*icon_size=*/kSettingsButtonSizeDip));
+      ui::ImageModel::FromVectorIcon(
+          features::IsRoundedIconsEnabled()
+              ? vector_icons::kSettingsIcon
+              : vector_icons::kSettingsOutlineOldIcon,
+          ui::kColorSysOnSurface,
+          /*icon_size=*/kSettingsButtonSizeDip));
   settings_button_->SetTooltipText(l10n_util::GetStringUTF16(
       IDS_RICH_ANSWERS_VIEW_SETTINGS_BUTTON_A11Y_NAME_TEXT));
 
@@ -315,7 +318,7 @@ void RichAnswersView::OnGoogleSearchLinkClicked() {
 }
 
 void RichAnswersView::UpdateBounds() {
-  auto display_bounds = display::Screen::GetScreen()
+  auto display_bounds = display::Screen::Get()
                             ->GetDisplayMatching(anchor_view_bounds_)
                             .work_area();
   int preferred_height = GetPreferredSize().height();

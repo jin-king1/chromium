@@ -14,38 +14,41 @@
 #include "ash/constants/ash_switches.h"
 #include "ash/game_dashboard/game_dashboard_delegate.h"
 #include "ash/public/cpp/app_types_util.h"
-#include "ash/public/cpp/assistant/assistant_state.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/tab_strip_delegate.h"
 #include "ash/shell_delegate.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
 #include "ash/webui/settings/public/constants/setting.mojom-shared.h"
 #include "ash/wm/window_pin_util.h"
+#include "ash/wm/window_properties.h"
 #include "ash/wm/window_state.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/command_line.h"
+#include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
+#include "base/path_service.h"
 #include "cc/input/touch_action.h"
 #include "chrome/browser/apps/app_service/app_service_proxy.h"
 #include "chrome/browser/apps/app_service/app_service_proxy_factory.h"
 #include "chrome/browser/ash/api/tasks/chrome_tasks_delegate.h"
 #include "chrome/browser/ash/arc/arc_util.h"
-#include "chrome/browser/ash/arc/session/arc_session_manager.h"
-#include "chrome/browser/ash/assistant/assistant_util.h"
-#include "chrome/browser/ash/crosapi/crosapi_ash.h"
-#include "chrome/browser/ash/crosapi/crosapi_manager.h"
-#include "chrome/browser/ash/crosapi/desk_profiles_ash.h"
-#include "chrome/browser/ash/crosapi/fullscreen_controller_ash.h"
+#include "chrome/browser/ash/arc/locked_fullscreen/arc_locked_fullscreen_manager.h"
+#include "chrome/browser/ash/arc/session/arc_service_launcher.h"
+#include "chrome/browser/ash/browser_delegate/browser_controller.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/file_manager/path_util.h"
 #include "chrome/browser/ash/multidevice_setup/multidevice_setup_service_factory.h"
-#include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/ash/scanner/chrome_scanner_delegate.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/browser_process_platform_part_ash.h"
 #include "chrome/browser/feedback/feedback_uploader_chrome.h"
 #include "chrome/browser/feedback/feedback_uploader_factory_chrome.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/nearby_sharing/nearby_share_delegate_impl.h"
+#include "chrome/browser/picture_in_picture/picture_in_picture_occlusion_tracker.h"
+#include "chrome/browser/picture_in_picture/picture_in_picture_window_manager.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sessions/session_restore.h"
@@ -54,7 +57,6 @@
 #include "chrome/browser/ui/ash/back_gesture/back_gesture_contextual_nudge_delegate.h"
 #include "chrome/browser/ui/ash/boca/chrome_tab_strip_delegate.h"
 #include "chrome/browser/ui/ash/capture_mode/chrome_capture_mode_delegate.h"
-#include "chrome/browser/ui/ash/clipboard/clipboard_history_controller_delegate_impl.h"
 #include "chrome/browser/ui/ash/desks/chrome_saved_desk_delegate.h"
 #include "chrome/browser/ui/ash/focus_mode/chrome_focus_mode_delegate.h"
 #include "chrome/browser/ui/ash/game_dashboard/chrome_game_dashboard_delegate.h"
@@ -71,19 +73,23 @@
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/scoped_tabbed_browser_displayer.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
-#include "chrome/browser/ui/views/chrome_browser_main_extra_parts_views.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/webui/tab_strip/tab_strip_ui_layout.h"
-#include "chrome/browser/ui/webui/tab_strip/tab_strip_ui_util.h"
+#include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/webui/ash/diagnostics_dialog/diagnostics_dialog.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
-#include "chrome/common/channel_info.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
 #include "chromeos/ash/components/audio/system_sounds_delegate_impl.h"
 #include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/components/channel/channel_info.h"
 #include "chromeos/ash/components/specialized_features/feedback.h"
+#include "chromeos/ash/experiences/clipboard/clipboard_history_controller_delegate_impl.h"
+#include "chromeos/ash/experiences/clipboard/clipboard_image_model_factory_impl.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "chromeos/ash/services/multidevice_setup/multidevice_setup_service.h"
+#include "components/session_manager/core/session.h"
+#include "components/session_manager/core/session_manager.h"
 #include "components/ui_devtools/devtools_server.h"
+#include "components/ui_devtools/views/server_holder.h"
 #include "components/user_manager/user_manager.h"
 #include "components/version_info/channel.h"
 #include "components/version_info/version_info.h"
@@ -96,9 +102,11 @@
 #include "extensions/browser/app_window/app_window_registry.h"
 #include "extensions/common/constants.h"
 #include "ui/aura/client/aura_constants.h"
+#include "ui/aura/env.h"
 #include "ui/aura/window.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/views/widget/widget.h"
 #include "url/gurl.h"
 
 namespace {
@@ -110,22 +118,11 @@ const char kKeyboardShortcutHelpPageUrl[] =
 // independent option here.
 std::optional<bool> disable_logging_redirect_for_testing;
 
-// Returns the TabStripModel that associates with |window| if the given |window|
-// contains a browser frame, otherwise returns nullptr.
-TabStripModel* GetTabstripModelForWindowIfAny(aura::Window* window) {
-  BrowserView* browser_view =
-      BrowserView::GetBrowserViewForNativeWindow(window);
-  return browser_view ? browser_view->browser()->tab_strip_model() : nullptr;
-}
-
 content::WebContents* GetActiveWebContentsForNativeBrowserWindow(
     gfx::NativeWindow window) {
-  if (!window) {
-    return nullptr;
-  }
-
-  TabStripModel* tab_strip_model = GetTabstripModelForWindowIfAny(window);
-  return tab_strip_model ? tab_strip_model->GetActiveWebContents() : nullptr;
+  ash::BrowserDelegate* browser =
+      ash::BrowserController::GetInstance()->GetBrowserForWindow(window);
+  return browser ? browser->GetActiveWebContents() : nullptr;
 }
 
 feedback::FeedbackSource ToChromeFeedbackSource(
@@ -146,7 +143,9 @@ feedback::FeedbackSource ToChromeFeedbackSource(
 
 }  // namespace
 
-ChromeShellDelegate::ChromeShellDelegate() = default;
+ChromeShellDelegate::ChromeShellDelegate() {
+  env_observation_.Observe(aura::Env::GetInstance());
+}
 
 ChromeShellDelegate::~ChromeShellDelegate() = default;
 
@@ -157,8 +156,13 @@ bool ChromeShellDelegate::CanShowWindowForUser(
 }
 
 std::unique_ptr<ash::CaptureModeDelegate>
-ChromeShellDelegate::CreateCaptureModeDelegate() const {
-  return std::make_unique<ChromeCaptureModeDelegate>();
+ChromeShellDelegate::CreateCaptureModeDelegate(PrefService* local_state) const {
+  // TODO(crbug.com/403153076): Remove g_browser_process usage.
+  ApplicationLocaleStorage* application_locale_storage =
+      g_browser_process->GetFeatures()->application_locale_storage();
+
+  return std::make_unique<ChromeCaptureModeDelegate>(
+      local_state, application_locale_storage);
 }
 
 std::unique_ptr<ash::ClipboardHistoryControllerDelegate>
@@ -166,9 +170,20 @@ ChromeShellDelegate::CreateClipboardHistoryControllerDelegate() const {
   return std::make_unique<ClipboardHistoryControllerDelegateImpl>();
 }
 
+std::unique_ptr<ash::ClipboardImageModelFactory>
+ChromeShellDelegate::CreateClipboardImageModelFactory() const {
+  return std::make_unique<ClipboardImageModelFactoryImpl>();
+}
+
 std::unique_ptr<ash::CoralDelegate> ChromeShellDelegate::CreateCoralDelegate()
     const {
-  return std::make_unique<CoralDelegateImpl>();
+  // TODO(crbug.com/403153076): Remove g_browser_process usage.
+  ApplicationLocaleStorage* application_locale_storage =
+      g_browser_process->GetFeatures()->application_locale_storage();
+  variations::VariationsService* variations_service =
+      g_browser_process->variations_service();
+  return std::make_unique<CoralDelegateImpl>(application_locale_storage,
+                                             variations_service);
 }
 
 std::unique_ptr<ash::GameDashboardDelegate>
@@ -244,7 +259,7 @@ ChromeShellDelegate::GetBrowserProcessUrlLoaderFactory() const {
 }
 
 void ChromeShellDelegate::OpenKeyboardShortcutHelpPage() const {
-  ash::NewWindowDelegate::GetPrimary()->OpenUrl(
+  ash::NewWindowDelegate::GetInstance()->OpenUrl(
       GURL(kKeyboardShortcutHelpPageUrl),
       ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
       ash::NewWindowDelegate::Disposition::kNewForegroundTab);
@@ -297,14 +312,6 @@ bool ChromeShellDelegate::ShouldWaitForTouchPressAck(gfx::NativeWindow window) {
   return !!render_widget_host_view->GetRenderWidgetHost();
 }
 
-bool ChromeShellDelegate::IsTabDrag(const ui::OSExchangeData& drop_data) {
-  return tab_strip_ui::IsDraggedTab(drop_data);
-}
-
-int ChromeShellDelegate::GetBrowserWebUITabStripHeight() {
-  return TabStripUILayout::GetContainerHeight();
-}
-
 void ChromeShellDelegate::BindFingerprint(
     mojo::PendingReceiver<device::mojom::Fingerprint> receiver) {
   content::GetDeviceService().BindFingerprint(std::move(receiver));
@@ -344,9 +351,12 @@ bool ChromeShellDelegate::IsSessionRestoreInProgress() const {
 
 void ChromeShellDelegate::SetUpEnvironmentForLockedFullscreen(
     const ash::WindowState& window_state) {
-  bool locked = window_state.IsPinned();
+  const bool locked = window_state.IsPinned();
   // Reset the clipboard and kill dev tools when entering or exiting locked
   // fullscreen (security concerns).
+  if (locked) {
+    ash::ClipboardImageModelFactory::Get()->CancelAllRequests();
+  }
   ui::Clipboard::GetForCurrentThread()->Clear(ui::ClipboardBuffer::kCopyPaste);
   content::DevToolsAgentHost::DetachAllClients();
 
@@ -356,48 +366,51 @@ void ChromeShellDelegate::SetUpEnvironmentForLockedFullscreen(
   ChromeCaptureModeDelegate::Get()->SetIsScreenCaptureLocked(locked);
 
   // Get the primary profile as that's what ARC and Assistant are attached to.
-  const Profile* profile = ProfileManager::GetPrimaryUserProfile();
+  const Profile* const profile = ProfileManager::GetPrimaryUserProfile();
   // Commands below require profile.
   if (!profile) {
     return;
   }
 
-  // Disable ARC while in the locked fullscreen mode.
-  arc::ArcSessionManager* const arc_session_manager =
-      arc::ArcSessionManager::Get();
-  if (!ash::IsArcWindow(window_state.window()) && arc_session_manager &&
+  arc::ArcServiceLauncher* const arc_service_launcher =
+      arc::ArcServiceLauncher::Get();
+  if (arc_service_launcher &&
+      arc_service_launcher->arc_locked_fullscreen_manager() &&
+      !ash::IsArcWindow(window_state.window()) &&
       arc::IsArcAllowedForProfile(profile)) {
-    if (locked) {
-      // Disable ARC, preserve data.
-      arc_session_manager->RequestDisable();
-    } else {
-      // Re-enable ARC if needed.
-      if (arc::IsArcPlayStoreEnabledForProfile(profile)) {
-        arc_session_manager->RequestEnable();
-      }
-    }
+    arc_service_launcher->arc_locked_fullscreen_manager()
+        ->UpdateForLockedFullscreenMode(locked);
   }
 
-  if (assistant::IsAssistantAllowedForProfile(profile) ==
-      ash::assistant::AssistantAllowedState::ALLOWED) {
-    ash::AssistantState::Get()->NotifyLockedFullScreenStateChanged(locked);
+  // If a window is entering locked fullscreen, then we should close any
+  // diagnostics dialog that may be open, since it would show on top of the
+  // fullscreen window. There is no need to close it when leaving locked
+  // fullscreen, since it is OK for the dialog to be open after exiting locked
+  // fullscreen in case the dialog was somehow opened during locked fullscreen.
+  if (locked) {
+    ash::DiagnosticsDialog::MaybeCloseExistingDialog();
   }
 }
 
 bool ChromeShellDelegate::IsUiDevToolsStarted() const {
-  return ChromeBrowserMainExtraPartsViews::Get()->GetUiDevToolsServerInstance();
+  return ui_devtools::ServerHolder::GetInstance()
+      ->GetUiDevToolsServerInstance();
 }
 
 void ChromeShellDelegate::StartUiDevTools() {
-  ChromeBrowserMainExtraPartsViews::Get()->CreateUiDevTools();
+  base::FilePath output_dir;
+  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &output_dir);
+  DCHECK(result);
+
+  return ui_devtools::ServerHolder::GetInstance()->CreateUiDevTools(output_dir);
 }
 
 void ChromeShellDelegate::StopUiDevTools() {
-  ChromeBrowserMainExtraPartsViews::Get()->DestroyUiDevTools();
+  return ui_devtools::ServerHolder::GetInstance()->DestroyUiDevTools();
 }
 
 int ChromeShellDelegate::GetUiDevToolsPort() const {
-  return ChromeBrowserMainExtraPartsViews::Get()
+  return ui_devtools::ServerHolder::GetInstance()
       ->GetUiDevToolsServerInstance()
       ->port();
 }
@@ -418,10 +431,11 @@ base::FilePath ChromeShellDelegate::GetPrimaryUserDownloadsFolder() const {
     return base::FilePath();
   }
 
-  Profile* user_profile =
-      ash::ProfileHelper::Get()->GetProfileByUser(primary_user);
-  if (user_profile) {
-    return file_manager::util::GetDownloadsFolderForProfile(user_profile);
+  content::BrowserContext* browser_context =
+      ash::BrowserContextHelper::Get()->GetBrowserContextByUser(primary_user);
+  if (browser_context) {
+    return file_manager::util::GetDownloadsFolderForProfile(
+        Profile::FromBrowserContext(browser_context));
   }
 
   return base::FilePath();
@@ -508,16 +522,86 @@ version_info::Channel ChromeShellDelegate::GetChannel() {
     // Simulate a non-stable channel so the release track UI is visible.
     return version_info::Channel::BETA;
   }
-  return chrome::GetChannel();
+  return ash::GetChannel();
 }
 
 void ChromeShellDelegate::ForceSkipWarningUserOnClose(
     const std::vector<raw_ptr<aura::Window, VectorExperimental>>& windows) {
   for (aura::Window* window : windows) {
-    BrowserView* browser_view =
-        BrowserView::GetBrowserViewForNativeWindow(window);
-    if (browser_view) {
-      browser_view->browser()->set_force_skip_warning_user_on_close(true);
+    ash::BrowserDelegate* browser =
+        ash::BrowserController::GetInstance()->GetBrowserForWindow(window);
+    if (browser) {
+      UnloadController::From(&browser->GetBrowser())
+          ->set_force_skip_warning_user_on_close(true);
+    }
+  }
+}
+
+void ChromeShellDelegate::OnPostWindowStateTypeChange(
+    ash::WindowState* window_state,
+    chromeos::WindowStateType old_type) {
+  // Register/unregister the PiP widget with the occlusion tracker. This ensures
+  // that permission prompts can detect when they are occluded by this PiP
+  // window and apply clickjacking protections.
+  // Note: These calls may be redundant for native Chrome PiP windows which
+  // already register themselves, but are necessary for Exo-hosted windows.
+  PictureInPictureOcclusionTracker* tracker =
+      PictureInPictureWindowManager::GetInstance()->GetOcclusionTracker();
+  if (!tracker) {
+    return;
+  }
+
+  if (window_state->IsPip()) {
+    if (auto* widget =
+            views::Widget::GetWidgetForNativeWindow(window_state->window())) {
+      tracker->OnPictureInPictureWidgetOpened(widget);
+    }
+  } else if (old_type == chromeos::WindowStateType::kPip) {
+    if (auto* widget =
+            views::Widget::GetWidgetForNativeWindow(window_state->window())) {
+      tracker->RemovePictureInPictureWidget(widget);
+    }
+  }
+}
+
+void ChromeShellDelegate::OnWindowInitialized(aura::Window* window) {
+  observed_windows_.AddObservation(window);
+  if (auto* window_state = window->GetProperty(ash::kWindowStateKey)) {
+    MaybeObserveWindowState(window_state);
+  }
+}
+
+void ChromeShellDelegate::OnWindowPropertyChanged(aura::Window* window,
+                                                  const void* key,
+                                                  intptr_t old) {
+  if (key == ash::kWindowStateKey) {
+    if (auto* window_state = window->GetProperty(ash::kWindowStateKey)) {
+      MaybeObserveWindowState(window_state);
+    }
+  }
+}
+
+void ChromeShellDelegate::OnWindowDestroying(aura::Window* window) {
+  if (auto* window_state = window->GetProperty(ash::kWindowStateKey)) {
+    if (observed_window_states_.IsObservingSource(window_state)) {
+      observed_window_states_.RemoveObservation(window_state);
+    }
+  }
+
+  if (observed_windows_.IsObservingSource(window)) {
+    observed_windows_.RemoveObservation(window);
+  }
+}
+
+void ChromeShellDelegate::MaybeObserveWindowState(
+    ash::WindowState* window_state) {
+  if (!observed_window_states_.IsObservingSource(window_state)) {
+    observed_window_states_.AddObservation(window_state);
+
+    // If the window is already in PiP, register it.
+    if (window_state->IsPip()) {
+      OnPostWindowStateTypeChange(window_state,
+                                  chromeos::WindowStateType::kDefault);
     }
   }
 }
@@ -526,23 +610,19 @@ std::string ChromeShellDelegate::GetVersionString() {
   return std::string(version_info::GetVersionNumber());
 }
 
-void ChromeShellDelegate::ShouldExitFullscreenBeforeLock(
-    ChromeShellDelegate::ShouldExitFullscreenCallback callback) {
-  crosapi::CrosapiManager::Get()
-      ->crosapi_ash()
-      ->fullscreen_controller_ash()
-      ->ShouldExitFullscreenBeforeLock(std::move(callback));
-}
-
-ash::DeskProfilesDelegate* ChromeShellDelegate::GetDeskProfilesDelegate() {
-  return crosapi::CrosapiManager::Get()->crosapi_ash()->desk_profiles_ash();
-}
-
 void ChromeShellDelegate::OpenMultitaskingSettings() {
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      ProfileManager::GetActiveUserProfile(),
-      chromeos::settings::mojom::kSystemPreferencesSectionPath,
-      chromeos::settings::mojom::Setting::kSnapWindowSuggestions);
+  auto* session = session_manager::SessionManager::Get()->GetActiveSession();
+  if (!session) {
+    // TODO(crbug.com/447287122): Revisit here to see if there always is
+    // an active session.
+    return;
+  }
+  ash::SettingsAppManager::Get()->Open(
+      CHECK_DEREF(
+          user_manager::UserManager::Get()->FindUser(session->account_id())),
+      {.sub_page = chromeos::settings::mojom::kSystemPreferencesSectionPath,
+       .setting_id =
+           chromeos::settings::mojom::Setting::kSnapWindowSuggestions});
 }
 
 bool ChromeShellDelegate::IsNoFirstRunSwitchOn() const {

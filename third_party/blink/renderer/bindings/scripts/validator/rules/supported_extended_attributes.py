@@ -49,6 +49,7 @@ def _build_supported_extended_attributes():
           applicable_to=[T.ATTRIBUTE, T.OPERATION],
           forms=F.IDENT,
           values=["Everything", "Nothing"]),
+        E("AllowResizable", applicable_to=[T.TYPE]),
         E("AllowShared", applicable_to=[T.TYPE]),
         E("BufferSourceTypeNoSizeLimit", applicable_to=[T.TYPE]),
         E("CEReactions", applicable_to=[T.ATTRIBUTE, T.OPERATION]),
@@ -96,10 +97,6 @@ def _build_supported_extended_attributes():
         E("Global", applicable_to=[T.INTERFACE], forms=[F.IDENT,
                                                         F.IDENT_LIST]),
         E("HasAsyncIteratorReturnAlgorithm", applicable_to=[T.ASYNC_ITERABLE]),
-        E("HighEntropy",
-          applicable_to=[T.ATTRIBUTE, T.CONSTRUCTOR, T.OPERATION],
-          forms=[F.NO_ARGS, F.IDENT],
-          values=["Direct"]),
         E("HTMLConstructor", applicable_to=[T.CONSTRUCTOR, T.INTERFACE]),
         E("ImplementedAs",
           applicable_to=[
@@ -159,6 +156,7 @@ def _build_supported_extended_attributes():
         E("NodeWrapInOwnContext",
           applicable_to=[T.ATTRIBUTE, T.OPERATION, T.TYPE]),
         E("NotEnumerable", applicable_to=[T.ATTRIBUTE, T.OPERATION]),
+        E("NotSubclassable", applicable_to=[T.INTERFACE]),
         E("PassAsSpan", applicable_to=[T.TYPE]),
         E("PermissiveDictionaryConversion", applicable_to=[T.DICTIONARY]),
         E("PerWorldBindings", applicable_to=[T.ATTRIBUTE, T.OPERATION]),
@@ -191,15 +189,12 @@ def _build_supported_extended_attributes():
           applicable_to=[T.ATTRIBUTE],
           forms=[F.IDENT, F.IDENT_LIST],
           values=V_CALL_WITH),
-        E("StringContext",
-          applicable_to=[T.TYPE],
-          forms=F.IDENT,
-          values=["TrustedHTML", "TrustedScript", "TrustedScriptURL"]),
         E("SupportsTaskAttribution", applicable_to=[T.CALLBACK_FUNCTION]),
         E("TargetOfExposed", applicable_to=[T.INTERFACE], forms=F.IDENT),
         E("Transferable", applicable_to=[T.INTERFACE]),
         E("URL", applicable_to=[T.ATTRIBUTE]),
         E("Unscopable", applicable_to=[T.ATTRIBUTE, T.OPERATION]),
+        E("V8EnableIndexOf", applicable_to=[T.INTERFACE]),
     ]
 
     desc_map = dict()

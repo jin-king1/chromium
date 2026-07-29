@@ -25,12 +25,14 @@
 
 #include "third_party/blink/renderer/core/html/html_source_element.h"
 
+#include "base/task/single_thread_task_runner.h"
 #include "third_party/blink/public/platform/task_type.h"
 #include "third_party/blink/renderer/core/css/media_list.h"
 #include "third_party/blink/renderer/core/css/media_query_list.h"
 #include "third_party/blink/renderer/core/css/media_query_matcher.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/dom/events/event.h"
+#include "third_party/blink/renderer/core/html/html_image_element.h"
 #include "third_party/blink/renderer/core/html/html_picture_element.h"
 #include "third_party/blink/renderer/core/html/media/html_media_element.h"
 #include "third_party/blink/renderer/core/html_names.h"
@@ -96,7 +98,9 @@ Node::InsertionNotificationRequest HTMLSourceElement::InsertedInto(
                                    ? DynamicTo<HTMLPictureElement>(parent)
                                    : nullptr;
   if (html_picture_element) {
-    html_picture_element->SourceChanged(ImageSourceChangeType::kAdded);
+    html_picture_element->SourceChanged(
+        ImageSourceChangeType::kAdded,
+        HTMLImageElement::ShouldResetImageReplacement(true));
   }
   return kInsertionDone;
 }
@@ -110,8 +114,11 @@ void HTMLSourceElement::RemovedFrom(ContainerNode& removal_root) {
     media->SourceWasRemoved(this);
   if (auto* picture = DynamicTo<HTMLPictureElement>(parent)) {
     RemoveMediaQueryListListener();
-    if (was_removed_from_parent)
-      picture->SourceChanged(ImageSourceChangeType::kRemoved);
+    if (was_removed_from_parent) {
+      picture->SourceChanged(
+          ImageSourceChangeType::kRemoved,
+          HTMLImageElement::ShouldResetImageReplacement(true));
+    }
   }
   HTMLElement::RemovedFrom(removal_root);
 }
@@ -139,8 +146,7 @@ void HTMLSourceElement::ScheduleErrorEvent() {
 
   pending_error_event_ = PostCancellableTask(
       *GetDocument().GetTaskRunner(TaskType::kDOMManipulation), FROM_HERE,
-      WTF::BindOnce(&HTMLSourceElement::DispatchPendingEvent,
-                    WrapPersistent(this)));
+      BindOnce(&HTMLSourceElement::DispatchPendingEvent, WrapPersistent(this)));
 }
 
 void HTMLSourceElement::CancelPendingErrorEvent() {
@@ -185,14 +191,21 @@ void HTMLSourceElement::ParseAttribute(
   if (name == html_names::kSrcsetAttr || name == html_names::kSizesAttr ||
       name == html_names::kMediaAttr || name == html_names::kTypeAttr) {
     if (auto* picture = DynamicTo<HTMLPictureElement>(parentElement())) {
-      picture->SourceChanged(ImageSourceChangeType::kAttribute);
+      // A change to the sizes attribute usually indicates a sizing change to
+      // the image, and we do not want to reset an active image replacement in
+      // that case.
+      picture->SourceChanged(ImageSourceChangeType::kAttribute,
+                             HTMLImageElement::ShouldResetImageReplacement(
+                                 name != html_names::kSizesAttr));
     }
   }
 }
 
 void HTMLSourceElement::NotifyMediaQueryChanged() {
   if (auto* picture = DynamicTo<HTMLPictureElement>(parentElement())) {
-    picture->SourceChanged(ImageSourceChangeType::kMedia);
+    picture->SourceChanged(
+        ImageSourceChangeType::kMedia,
+        HTMLImageElement::ShouldResetImageReplacement(false));
   }
 }
 

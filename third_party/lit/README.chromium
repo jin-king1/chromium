@@ -3,6 +3,7 @@ Short Name: lit
 URL: https://lit.dev
 Version: 3.0.2
 Revision: 02b8d62003a16075ce3873ac3e40db43c0254ecf
+Update Mechanism: Manual
 License: BSD-3-Clause
 License File: LICENSE
 Security Critical: no
@@ -36,3 +37,5 @@ This directory contains
  6) cr_lit_element.ts: A Chromium specific LitElement subclass, to be used as
     the superclass for all web components based on Lit. Offers some
     functionality that bridges the gap between Polymer and Lit.
+ 7) deduping_mixin.ts: A helper dedupingMixin() function, equivalent to
+    Polymer's dedupingMixin() function.

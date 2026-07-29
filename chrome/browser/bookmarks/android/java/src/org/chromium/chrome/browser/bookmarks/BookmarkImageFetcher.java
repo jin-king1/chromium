@@ -12,6 +12,8 @@ import android.util.Pair;
 
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.page_image_service.ImageServiceBridge;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.ui.favicon.FaviconHelper;
@@ -28,6 +30,7 @@ import org.chromium.url.GURL;
 import java.util.Iterator;
 
 /** Class which encapsulates fetching images for bookmarks. */
+@NullMarked
 public class BookmarkImageFetcher {
     private final Profile mProfile;
     private final Context mContext;
@@ -101,7 +104,9 @@ public class BookmarkImageFetcher {
      * @param callback The callback to receive the images.
      */
     public void fetchFirstTwoImagesForFolder(
-            BookmarkItem folder, int imageSize, Callback<Pair<Drawable, Drawable>> callback) {
+            BookmarkItem folder,
+            int imageSize,
+            Callback<Pair<@Nullable Drawable, @Nullable Drawable>> callback) {
         fetchFirstTwoImagesForFolderImpl(
                 mBookmarkModel.getChildIds(folder.getId()).iterator(),
                 /* firstDrawable= */ null,
@@ -120,17 +125,17 @@ public class BookmarkImageFetcher {
      */
     public void fetchImageForBookmarkWithFaviconFallback(
             BookmarkItem item, int imageSize, Callback<Drawable> callback) {
-        fetchImageForBookmark(
-                item,
-                imageSize,
-                mCallbackController.makeCancelable(
-                        drawable -> {
-                            if (drawable == null) {
-                                fetchFaviconForBookmark(item, callback);
-                            } else {
-                                callback.onResult(drawable);
-                            }
-                        }));
+        Callback<@Nullable Drawable> imageCallback =
+                drawable -> {
+                    if (drawable == null) {
+                        fetchFaviconForBookmark(item, callback);
+                    } else {
+                        callback.onResult(drawable);
+                    }
+                };
+        imageCallback = mCallbackController.makeCancelable(imageCallback);
+
+        fetchImageForBookmark(item, imageSize, imageCallback);
     }
 
     /**
@@ -141,7 +146,7 @@ public class BookmarkImageFetcher {
      */
     public void fetchFaviconForBookmark(BookmarkItem item, Callback<Drawable> callback) {
         GURL faviconUrl = item.getUrl();
-        int faviconDisplaySize = BookmarkUtils.getFaviconDisplaySize(mContext.getResources());
+        int faviconDisplaySize = BookmarkViewUtils.getFaviconDisplaySize(mContext.getResources());
         FaviconHelper.FaviconImageCallback faviconCallback =
                 (image, iconUrl) -> {
                     callback.onResult(
@@ -154,27 +159,34 @@ public class BookmarkImageFetcher {
                                     faviconDisplaySize));
                 };
 
-        if (mImageServiceBridge.hasConsentToFetchImages(item.isAccountBookmark())) {
+        if (item.isAccountBookmark()) {
             mFaviconHelper.getForeignFaviconImageForURL(
-                    mProfile, faviconUrl, faviconDisplaySize, faviconCallback);
+                    mProfile,
+                    faviconUrl,
+                    faviconDisplaySize,
+                    /* fallbackToHost= */ true,
+                    faviconCallback);
         } else {
             mFaviconHelper.getLocalFaviconImageForURL(
-                    mProfile, faviconUrl, faviconDisplaySize, faviconCallback);
+                    mProfile,
+                    faviconUrl,
+                    faviconDisplaySize,
+                    /* fallbackToHost= */ true,
+                    faviconCallback);
         }
     }
 
     private void fetchImageForBookmark(
-            BookmarkItem item, int imageSize, Callback<Drawable> callback) {
-        final Callback<Bitmap> imageCallback =
-                mCallbackController.makeCancelable(
-                        (image) -> {
-                            if (image == null) {
-                                callback.onResult(null);
-                            } else {
-                                callback.onResult(
-                                        new BitmapDrawable(mContext.getResources(), image));
-                            }
-                        });
+            BookmarkItem item, int imageSize, Callback<@Nullable Drawable> callback) {
+        Callback<@Nullable Bitmap> imageCallback =
+                image -> {
+                    if (image == null) {
+                        callback.onResult(null);
+                    } else {
+                        callback.onResult(new BitmapDrawable(mContext.getResources(), image));
+                    }
+                };
+        imageCallback = mCallbackController.makeCancelable(imageCallback);
 
         // Price-tracable bookmarks already have image URLs in their metadata. Prioritize that meta
         // when it's available because the coverage is much higher.
@@ -197,10 +209,10 @@ public class BookmarkImageFetcher {
 
     private void fetchFirstTwoImagesForFolderImpl(
             Iterator<BookmarkId> childIdIterator,
-            Drawable firstDrawable,
-            Drawable secondDrawable,
+            @Nullable Drawable firstDrawable,
+            @Nullable Drawable secondDrawable,
             int imageSize,
-            Callback<Pair<Drawable, Drawable>> callback) {
+            Callback<Pair<@Nullable Drawable, @Nullable Drawable>> callback) {
         if (!childIdIterator.hasNext() || (firstDrawable != null && secondDrawable != null)) {
             callback.onResult(new Pair<>(firstDrawable, secondDrawable));
             return;
@@ -217,24 +229,24 @@ public class BookmarkImageFetcher {
             return;
         }
 
-        fetchImageForBookmark(
-                item,
-                imageSize,
-                mCallbackController.makeCancelable(
-                        drawable -> {
-                            Drawable newFirstDrawable = firstDrawable;
-                            Drawable newSecondDrawable = secondDrawable;
-                            if (newFirstDrawable == null) {
-                                newFirstDrawable = drawable;
-                            } else {
-                                newSecondDrawable = drawable;
-                            }
-                            fetchFirstTwoImagesForFolderImpl(
-                                    childIdIterator,
-                                    newFirstDrawable,
-                                    newSecondDrawable,
-                                    imageSize,
-                                    callback);
-                        }));
+        Callback<@Nullable Drawable> imageCallback =
+                drawable -> {
+                    Drawable newFirstDrawable = firstDrawable;
+                    Drawable newSecondDrawable = secondDrawable;
+                    if (newFirstDrawable == null) {
+                        newFirstDrawable = drawable;
+                    } else {
+                        newSecondDrawable = drawable;
+                    }
+                    fetchFirstTwoImagesForFolderImpl(
+                            childIdIterator,
+                            newFirstDrawable,
+                            newSecondDrawable,
+                            imageSize,
+                            callback);
+                };
+        imageCallback = mCallbackController.makeCancelable(imageCallback);
+
+        fetchImageForBookmark(item, imageSize, imageCallback);
     }
 }

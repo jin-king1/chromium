@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/modules/webaudio/media_stream_audio_source_handler.h"
 
+#include <inttypes.h>
+
 #include "base/synchronization/lock.h"
 #include "third_party/blink/public/platform/modules/webrtc/webrtc_logging.h"
 #include "third_party/blink/renderer/modules/webaudio/audio_node_output.h"
@@ -86,7 +88,8 @@ void MediaStreamAudioSourceHandler::SetFormat(uint32_t number_of_channels,
     source_number_of_channels_ = number_of_channels;
   }
 
-  DeferredTaskHandler::GraphAutoLocker graph_locker(Context());
+  DeferredTaskHandler::GraphAutoLocker graph_locker(
+      Context()->GetDeferredTaskHandler());
   Output(0).SetNumberOfChannels(number_of_channels);
 }
 
@@ -124,11 +127,11 @@ void MediaStreamAudioSourceHandler::Process(uint32_t number_of_frames) {
   }
 }
 
-void MediaStreamAudioSourceHandler::SendLogMessage(
-    const char* const function_name,
-    const String& message) {
+void MediaStreamAudioSourceHandler::SendLogMessage(const String& function_name,
+                                                   const String& message) {
   WebRtcLogMessage(String::Format("[WA]MSASH::%s %s [this=0x%" PRIXPTR "]",
-                                  function_name, message.Utf8().c_str(),
+                                  function_name.Utf8().c_str(),
+                                  message.Utf8().c_str(),
                                   reinterpret_cast<uintptr_t>(this))
                        .Utf8());
 }

@@ -12,12 +12,12 @@
 #import "chrome/browser/app_controller_mac.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_commands.h"
-#include "chrome/browser/ui/browser_finder.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
 #include "content/public/browser/web_contents.h"
 #import "ui/base/cocoa/cocoa_base_utils.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace {
 
@@ -54,8 +54,8 @@ remote_cocoa::NativeWidgetNSWindowBridge* FindBridgeForSender(
   if ([sender respondsToSelector:@selector(window)]) {
     targetWindow = [sender window];
   }
-  auto* bridge = remote_cocoa::NativeWidgetNSWindowBridge::GetFromNativeWindow(
-      targetWindow);
+  auto* bridge =
+      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(targetWindow);
   DCHECK(bridge);
   return bridge;
 }
@@ -75,7 +75,7 @@ remote_cocoa::NativeWidgetNSWindowBridge* FindBridgeForSender(
   }
 
   auto* bridge =
-      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNativeWindow(window);
+      remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window);
   DCHECK(bridge);
 
   remote_cocoa::mojom::ValidateUserInterfaceItemResultPtr result;
@@ -121,7 +121,7 @@ remote_cocoa::NativeWidgetNSWindowBridge* FindBridgeForSender(
   if (![sender isEnabled]) {
     // This code is reachable e.g. if the user mashes the back button, queuing
     // up a bunch of events before the button's enabled state is updated:
-    // http://crbug.com/63254
+    // http://crbug.com/40478451
     return;
   }
 

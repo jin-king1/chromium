@@ -102,9 +102,7 @@ class MetricsMediatorLogLaunchTest : public PlatformTest {
  protected:
   MetricsMediatorLogLaunchTest()
       : profile_(TestProfileIOS::Builder().Build()),
-        num_tabs_has_been_called_(FALSE),
-        num_ntp_tabs_has_been_called_(FALSE),
-        num_live_ntp_tabs_has_been_called_(FALSE) {}
+        num_tabs_has_been_called_(FALSE) {}
 
   void initiateMetricsMediator(BOOL coldStart, int tabCount) {
     num_tabs_swizzle_block_ = [^(id self, int numTab) {
@@ -112,42 +110,36 @@ class MetricsMediatorLogLaunchTest : public PlatformTest {
       // Tests.
       EXPECT_EQ(tabCount, numTab);
     } copy];
-    num_ntp_tabs_swizzle_block_ = [^(id self, int numTab) {
-      num_ntp_tabs_has_been_called_ = YES;
-      // Tests.
-      EXPECT_EQ(tabCount, numTab);
-    } copy];
-    num_live_ntp_tabs_swizzle_block_ = [^(id self, int numTab) {
-      num_live_ntp_tabs_has_been_called_ = YES;
-    } copy];
     if (coldStart) {
       tabs_uma_histogram_swizzler_.reset(new ScopedBlockSwizzler(
           [MetricsMediator class], @selector(recordStartupTabCount:),
           num_tabs_swizzle_block_));
-      ntp_tabs_uma_histogram_swizzler_.reset(new ScopedBlockSwizzler(
-          [MetricsMediator class], @selector(recordStartupNTPTabCount:),
-          num_ntp_tabs_swizzle_block_));
     } else {
       tabs_uma_histogram_swizzler_.reset(new ScopedBlockSwizzler(
           [MetricsMediator class], @selector(recordResumeTabCount:),
           num_tabs_swizzle_block_));
-      ntp_tabs_uma_histogram_swizzler_.reset(new ScopedBlockSwizzler(
-          [MetricsMediator class], @selector(recordResumeNTPTabCount:),
-          num_ntp_tabs_swizzle_block_));
-      live_ntp_tabs_uma_histogram_swizzler_.reset(new ScopedBlockSwizzler(
-          [MetricsMediator class], @selector(recordResumeLiveNTPTabCount:),
-          num_live_ntp_tabs_swizzle_block_));
     }
   }
 
   void TearDown() override {
+    for (FakeSceneState* scene_state in connected_scenes_) {
+      [scene_state shutdown];
+    }
     connected_scenes_ = nil;
     PlatformTest::TearDown();
   }
 
   void verifySwizzleHasBeenCalled() {
     EXPECT_TRUE(num_tabs_has_been_called_);
-    EXPECT_TRUE(num_ntp_tabs_has_been_called_);
+  }
+
+  NSArray<FakeSceneState*>* SceneArrayWithCount(int count) {
+    NSMutableArray<SceneState*>* scenes = [NSMutableArray array];
+    for (int i = 0; i < count; i++) {
+      [scenes
+          addObject:[[FakeSceneState alloc] initWithProfile:profile_.get()]];
+    }
+    return [scenes copy];
   }
 
   web::WebTaskEnvironment task_environment_;
@@ -155,14 +147,8 @@ class MetricsMediatorLogLaunchTest : public PlatformTest {
   std::unique_ptr<TestProfileIOS> profile_;
   NSArray<FakeSceneState*>* connected_scenes_;
   __block BOOL num_tabs_has_been_called_;
-  __block BOOL num_ntp_tabs_has_been_called_;
-  __block BOOL num_live_ntp_tabs_has_been_called_;
   LogLaunchMetricsBlock num_tabs_swizzle_block_;
-  LogLaunchMetricsBlock num_ntp_tabs_swizzle_block_;
-  LogLaunchMetricsBlock num_live_ntp_tabs_swizzle_block_;
   std::unique_ptr<ScopedBlockSwizzler> tabs_uma_histogram_swizzler_;
-  std::unique_ptr<ScopedBlockSwizzler> ntp_tabs_uma_histogram_swizzler_;
-  std::unique_ptr<ScopedBlockSwizzler> live_ntp_tabs_uma_histogram_swizzler_;
 };
 
 // Verifies that the log of the number of open tabs is sent and verifies
@@ -172,8 +158,7 @@ TEST_F(MetricsMediatorLogLaunchTest,
   BOOL coldStart = YES;
   initiateMetricsMediator(coldStart, 23);
   // 23 tabs across three scenes.
-  connected_scenes_ = [FakeSceneState sceneArrayWithCount:3
-                                                  profile:profile_.get()];
+  connected_scenes_ = SceneArrayWithCount(3);
   [connected_scenes_[0] appendWebStatesWithURL:GURL(kChromeUINewTabURL)
                                          count:9];
   [connected_scenes_[1] appendWebStatesWithURL:GURL(kChromeUINewTabURL)
@@ -214,8 +199,7 @@ TEST_F(MetricsMediatorLogLaunchTest, logLaunchMetricsNoBackgroundDate) {
   BOOL coldStart = NO;
   initiateMetricsMediator(coldStart, 32);
   // 32 tabs across five scenes.
-  connected_scenes_ = [FakeSceneState sceneArrayWithCount:5
-                                                  profile:profile_.get()];
+  connected_scenes_ = SceneArrayWithCount(5);
   [connected_scenes_[0] appendWebStatesWithURL:GURL(kChromeUINewTabURL)
                                          count:8];
   [connected_scenes_[1] appendWebStatesWithURL:GURL(kChromeUINewTabURL)
@@ -238,7 +222,6 @@ TEST_F(MetricsMediatorLogLaunchTest, logLaunchMetricsNoBackgroundDate) {
                                           connectedScenes:connected_scenes_];
   // Tests.
   verifySwizzleHasBeenCalled();
-  EXPECT_TRUE(num_live_ntp_tabs_has_been_called_);
 }
 
 using MetricsMediatorNoFixtureTest = PlatformTest;

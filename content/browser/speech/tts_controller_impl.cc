@@ -423,6 +423,7 @@ bool TtsControllerImpl::IsSpeaking() {
 }
 
 void TtsControllerImpl::UpdateLanguageStatus(
+    BrowserContext* browser_context,
     const std::string& lang,
     LanguageInstallStatus install_status,
     const std::string& error) {
@@ -431,7 +432,8 @@ void TtsControllerImpl::UpdateLanguageStatus(
   }
 
   for (auto& delegate : update_language_status_delegates_) {
-    delegate.OnUpdateLanguageStatus(lang, install_status, error);
+    delegate.OnUpdateLanguageStatus(browser_context, lang, install_status,
+                                    error);
   }
 }
 
@@ -796,7 +798,7 @@ void TtsControllerImpl::PopulateParsedText(std::string* parsed_text,
   if (text_value)
     *parsed_text += *text_value;
 
-  const base::Value::List* children =
+  const base::ListValue* children =
       data_decoder::GetXmlElementChildren(*element);
   if (!children) {
     return;
@@ -1006,6 +1008,10 @@ bool TtsControllerImpl::ShouldSpeakUtterance(TtsUtterance* utterance) {
 //
 
 void TtsControllerImpl::WebContentsDestroyed() {
+  StopCurrentUtteranceAndRemoveUtterancesMatching(web_contents());
+}
+
+void TtsControllerImpl::PrimaryPageChanged(Page& page) {
   StopCurrentUtteranceAndRemoveUtterancesMatching(web_contents());
 }
 

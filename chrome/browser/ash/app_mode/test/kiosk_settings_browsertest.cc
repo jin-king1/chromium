@@ -12,17 +12,17 @@
 #include "base/strings/strcat.h"
 #include "chrome/browser/ash/app_mode/kiosk_chrome_app_manager.h"
 #include "chrome/browser/ash/app_mode/kiosk_controller.h"
+#include "chrome/browser/ash/app_mode/kiosk_system_session.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_mixin.h"
 #include "chrome/browser/ash/app_mode/test/kiosk_test_utils.h"
-#include "chrome/browser/ash/login/app_mode/test/kiosk_base_test.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_settings_navigation_throttle.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
-#include "chrome/browser/ui/browser_list.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/mixin_based_in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_navigation_observer.h"
@@ -35,12 +35,14 @@
 namespace ash {
 
 using chromeos::KioskSettingsNavigationThrottle;
+using kiosk::test::WaitKioskLaunched;
 
 namespace {
 
 constexpr std::string_view kSettingsUrl = "https://settings.com";
 
 using kiosk::test::CurrentProfile;
+using kiosk::test::DidKioskCloseNewWindow;
 
 KioskSystemSession& GetKioskSystemSession() {
   return CHECK_DEREF(KioskController::Get().GetKioskSystemSession());
@@ -57,7 +59,7 @@ NavigateParams NavigateAndReturnParams(const GURL& url,
   auto& profile = CurrentProfile();
   NavigateParams params(&profile, url, ui::PAGE_TRANSITION_AUTO_BOOKMARK);
   params.disposition = disposition;
-  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
   Navigate(&params);
   return params;
 }
@@ -65,14 +67,15 @@ NavigateParams NavigateAndReturnParams(const GURL& url,
 // Opens a popup at `url` and returns true if the window wasn't force closed.
 bool OpenPopup(const GURL& url) {
   NavigateAndReturnParams(url, WindowOpenDisposition::NEW_POPUP);
-  return !DidSessionCloseNewWindow(&GetKioskSystemSession());
+  return !DidKioskCloseNewWindow();
 }
 
 // Navigates to `url` in the current tab, and returns the browser.
 Browser& NavigateInCurrentTab(const GURL& url) {
   auto params =
       NavigateAndReturnParams(url, WindowOpenDisposition::CURRENT_TAB);
-  return CHECK_DEREF(params.browser.get());
+  CHECK(params.browser);
+  return CHECK_DEREF(params.browser->GetBrowserForMigrationOnly());
 }
 
 GURL NavigateInBrowser(Browser& browser, const GURL& url) {
@@ -90,6 +93,18 @@ GURL NextCommittedUrl(Browser& browser) {
                                   /*expected_number_of_navigations=*/1)
       .Wait();
   return web_contents.GetLastCommittedURL();
+}
+
+// Navigates within the page, and waits for it to take effect.
+void NavigateInPage(Browser& browser, const GURL& url) {
+  auto& web_contents = ActiveWebContents(browser);
+  content::TestNavigationObserver observer(&web_contents, 1);
+
+  ASSERT_TRUE(content::ExecJs(
+      &web_contents,
+      content::JsReplace("window.history.pushState({}, '', $1)", url.path())));
+
+  observer.Wait();
 }
 
 // Helper for tests to override the list of settings pages.
@@ -131,7 +146,7 @@ class KioskSettingsTest
 
   void SetUpOnMainThread() override {
     MixinBasedInProcessBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+    ASSERT_TRUE(WaitKioskLaunched());
   }
 
   KioskMixin kiosk_{&mixin_host_,
@@ -211,6 +226,41 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CannotNavigateToDisallowedSubUrl) {
   EXPECT_EQ(committed_url, settings_url);
 }
 
+IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CannotNavigateInPageToDisallowedUrl) {
+  const GURL settings_url("chrome://os-settings/manageAccessibility");
+  const GURL invalid_url("chrome://os-settings/invalid-page");
+
+  ASSERT_TRUE(OpenPopup(settings_url));
+
+  auto& session = GetKioskSystemSession();
+  Browser& settings = CHECK_DEREF(session.GetSettingsBrowserForTesting());
+  ASSERT_EQ(NextCommittedUrl(settings), settings_url);
+
+  ui_test_utils::BrowserDestroyedObserver observer(&settings);
+
+  NavigateInPage(settings, invalid_url);
+
+  // Navigating to this unsupported page should result in closing the browser.
+  observer.Wait();
+  EXPECT_EQ(session.GetSettingsBrowserForTesting(), nullptr);
+}
+
+IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CanNavigateInPageToAllowedSubUrl) {
+  const GURL settings_url("chrome://os-settings/manageAccessibility");
+  const GURL settings_suburl("chrome://os-settings/manageAccessibility/tts");
+
+  ASSERT_TRUE(OpenPopup(settings_url));
+
+  auto& session = GetKioskSystemSession();
+  Browser& settings = CHECK_DEREF(session.GetSettingsBrowserForTesting());
+  ASSERT_EQ(NextCommittedUrl(settings), settings_url);
+
+  NavigateInPage(settings, settings_suburl);
+
+  EXPECT_NE(session.GetSettingsBrowserForTesting(), nullptr);
+  EXPECT_EQ(ActiveWebContents(settings).GetLastCommittedURL(), settings_suburl);
+}
+
 IN_PROC_BROWSER_TEST_P(KioskSettingsTest, DoesNotOpenTwoSettingsBrowsers) {
   const GURL settings_url_1("https://settings-one.com/");
   const GURL settings_url_2("https://settings-two.com/");
@@ -243,15 +293,13 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest,
       {/*url=*/settings_url.spec().c_str(), /*allow_subpages=*/false},
   });
 
-  auto& session = GetKioskSystemSession();
-
   // Navigation in the current tab creates a new browser of app type, and closes
   // the non-app one.
   Browser& browser = NavigateInCurrentTab(settings_url);
-  EXPECT_FALSE(DidSessionCloseNewWindow(&session));
-  EXPECT_FALSE(DidSessionCloseNewWindow(&session));
+  EXPECT_FALSE(DidKioskCloseNewWindow());
+  EXPECT_FALSE(DidKioskCloseNewWindow());
 
-  Browser* settings = session.GetSettingsBrowserForTesting();
+  Browser* settings = GetKioskSystemSession().GetSettingsBrowserForTesting();
   ASSERT_NE(settings, nullptr);
   EXPECT_NE(&browser, settings);
 }
@@ -280,24 +328,22 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest,
 
 // Covers crbug.com/245088137, the settings could not reopen after losing focus.
 IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CanRefocusSettings) {
-  const auto& pages = KioskSettingsNavigationThrottle::DefaultSettingsPages();
-  ASSERT_GT(pages.size(), 1UL);
-
-  ASSERT_TRUE(OpenPopup(GURL(pages[0].url)));
+  ASSERT_TRUE(OpenPopup(GURL("chrome://os-settings/manageAccessibility")));
 
   auto& session = GetKioskSystemSession();
   Browser& settings = CHECK_DEREF(session.GetSettingsBrowserForTesting());
 
   // The settings browser is focused.
-  EXPECT_TRUE(settings.window()->IsActive());
+  EXPECT_TRUE(settings.GetWindow()->IsActive());
 
   // Simulate a focus switch.
-  settings.window()->Deactivate();
-  EXPECT_FALSE(settings.window()->IsActive());
+  settings.GetWindow()->Deactivate();
+  EXPECT_FALSE(settings.GetWindow()->IsActive());
 
-  // Verify focus can switch to any other settings page.
-  for (size_t i = 1; i < pages.size(); i++) {
-    const GURL other_settings_page(pages[i].url);
+  // Verify focus can switch to another settings page.
+  {
+    const GURL other_settings_page(
+        "chrome-extension://klbcgckkldhdhonijdbnhhaiedfkllef/");
 
     // Open another settings browser and expect navigation in the old window.
     auto& web_contents = ActiveWebContents(settings);
@@ -312,7 +358,7 @@ IN_PROC_BROWSER_TEST_P(KioskSettingsTest, CanRefocusSettings) {
     EXPECT_EQ(web_contents.GetLastCommittedURL(), other_settings_page);
 
     // The settings browser should be focused again.
-    EXPECT_TRUE(settings.window()->IsActive());
+    EXPECT_TRUE(settings.GetWindow()->IsActive());
   }
 }
 

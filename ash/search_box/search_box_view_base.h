@@ -37,7 +37,6 @@ class Textfield;
 
 namespace ash {
 
-class LauncherSearchIphView;
 class SearchBoxImageButton;
 class SearchIconImageView;
 
@@ -83,11 +82,10 @@ class SearchBoxViewBase : public views::View,
   views::ImageButton* CreateAssistantButton(
       const base::RepeatingClosure& button_callback);
 
-  // Creates the search box assistant new entry point button at the right edge
-  // of the search box in LTR layout. The assistant new entry point button will
-  // initially be hidden. The visibility will be updated appropriately when
-  // `UpdateButtonsVisibility()` gets called.
-  views::ImageButton* CreateAssistantNewEntryPointButton(
+  // Creates the search box Gemini button at the right edge of the search box in
+  // LTR layout. The Gemini button will initially be hidden. The visibility will
+  // be updated appropriately when `UpdateButtonsVisibility()` gets called.
+  views::ImageButton* CreateGeminiButton(
       const base::RepeatingClosure& button_callback);
 
   // Creates the search box category filter button at the right edge of the
@@ -108,17 +106,13 @@ class SearchBoxViewBase : public views::View,
 
   views::ImageButton* sunfish_button();
   views::ImageButton* assistant_button();
-  views::ImageButton* assistant_new_entry_point_button();
+  views::ImageButton* gemini_button();
   views::View* edge_button_container();
   views::ImageButton* close_button();
   views::ImageButton* filter_button();
   views::View* filter_and_close_button_container();
   views::ImageView* search_icon();
   views::Textfield* search_box() { return search_box_; }
-
-  void SetIphView(std::unique_ptr<LauncherSearchIphView> iph_view);
-  LauncherSearchIphView* GetIphView();
-  void DeleteIphView();
 
   // Called when the query in the search box textfield changes. The search box
   // implementation is expected to handle the new query.
@@ -165,8 +159,6 @@ class SearchBoxViewBase : public views::View,
 
   // Whether the trimmed query in the search box is empty.
   bool IsSearchBoxTrimmedQueryEmpty() const;
-
-  virtual void UpdateSearchTextfieldAccessibleActiveDescendantId();
 
   void ClearSearch();
 
@@ -231,7 +223,7 @@ class SearchBoxViewBase : public views::View,
   void SetSearchIconImage(gfx::ImageSkia image);
 
   void SetShowAssistantButton(bool show);
-  void SetShowAssistantNewEntryPointButton(bool show);
+  void SetShowGeminiButton(bool show);
   void SetShowSunfishButton(bool show);
 
   // Detects |kMousePressed| and |EventType::kGestureTap| events on the white
@@ -268,7 +260,7 @@ class SearchBoxViewBase : public views::View,
   raw_ptr<views::BoxLayoutView> content_container_;
   raw_ptr<SearchIconImageView> search_icon_ = nullptr;
   raw_ptr<SearchBoxImageButton> assistant_button_ = nullptr;
-  raw_ptr<SearchBoxImageButton> assistant_new_entry_point_button_ = nullptr;
+  raw_ptr<SearchBoxImageButton> gemini_button_ = nullptr;
   raw_ptr<SearchBoxImageButton> sunfish_button_ = nullptr;
   raw_ptr<SearchBoxImageButton> close_button_ = nullptr;
   raw_ptr<SearchBoxImageButton> filter_button_ = nullptr;
@@ -293,8 +285,8 @@ class SearchBoxViewBase : public views::View,
   bool show_close_button_when_active_ = false;
   // Whether to show assistant button.
   bool show_assistant_button_ = false;
-  // Whether to show assistant new entry point button.
-  bool show_assistant_new_entry_point_button_ = false;
+  // Whether to show Gemini button.
+  bool show_gemini_button_ = false;
   // Whether to show sunfish button.
   bool show_sunfish_button_ = false;
 

@@ -19,10 +19,18 @@ void SetUpFullscreenModelForTesting(FullscreenModel* model,
 void SimulateFullscreenUserScrollWithDelta(FullscreenModel* model,
                                            CGFloat offset_delta);
 
+// Simulates a user scroll event in `model` for a scroll of `offset_delta`
+// points without ending the scroll.
+void SimulateFullscreenUserScrollWithDeltaWithoutEnding(FullscreenModel* model,
+                                                        CGFloat offset_delta);
+
 // Simulates a user scroll event in `model` that will result in a progress value
 // of `progress`.
 void SimulateFullscreenUserScrollForProgress(FullscreenModel* model,
                                              CGFloat progress);
+
+// Simulates a user scroll to the bottom of the content.
+void SimulateScrollToBottom(FullscreenModel* model);
 
 // Returns the delta from `model`'s current Y offset that would result in
 // `progress`.

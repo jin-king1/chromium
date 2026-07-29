@@ -8,9 +8,12 @@
 #include <optional>
 #include <string>
 
+#include "base/values.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom-forward.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
-namespace content {
+namespace content::webid {
 
 // Delegate to control FedCM's popupd. An example of a use case is if a user is
 // signed-in according to the FedCM IDP Sign-in Status API but we find that the
@@ -29,13 +32,21 @@ class IdentityRegistryDelegate {
   // `idp_config_url` is passed by value so that it remains valid even if the
   // implementation destructs the IdentityRegistry (e.g. by closing the
   // associated WebContents).
-  // If account_id is nullopt, uses the account that was selected in the
+  // If `account_id` is nullopt, uses the account that was selected in the
   // account chooser.
   virtual bool OnResolve(GURL idp_config_url,
                          const std::optional<std::string>& account_id,
-                         const std::string& token) = 0;
+                         blink::mojom::ResolveTokenParamsPtr params) = 0;
+
+  enum class Method { kClose, kResolve };
+
+  // Notifies the delegate for an origin mismatch so they can output debugging
+  // messages.
+  virtual void OnOriginMismatch(Method method,
+                                const url::Origin& expected,
+                                const url::Origin& actual) {}
 };
 
-}  // namespace content
+}  // namespace content::webid
 
 #endif  // CONTENT_BROWSER_WEBID_IDENTITY_REGISTRY_DELEGATE_H_

@@ -5,9 +5,15 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_FIELD_TYPES_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_FIELD_TYPES_H_
 
+#include <array>
+#include <optional>
+#include <ostream>
+#include <string>
+#include <string_view>
 #include <type_traits>
+#include <utility>
 
-#include "base/types/cxx23_to_underlying.h"
+#include "base/notreached.h"
 #include "components/autofill/core/common/dense_set.h"
 #include "components/autofill/core/common/html_field_types.h"
 
@@ -19,7 +25,7 @@ namespace autofill {
 // server, which is itself backward-compatible. The list must be kept up to
 // date with the Autofill server list.
 //
-// NOTE: When deprecating field types, also update IsValidFieldType().
+// NOTE: When deprecating field types, also update ToSafeFieldType().
 //
 // This enum represents the list of all field types natively understood by the
 // Autofill server. A subset of these types is used to store Autofill data in
@@ -183,9 +189,7 @@ enum FieldType {
 
   COMPANY_NAME = 60,
 
-  // Generic type whose default value is known.
-  FIELD_WITH_DEFAULT_VALUE = 61,
-
+  // FIELD_WITH_DEFAULT_VALUE value 61 is deprecated.
   // PHONE_BILLING values [62, 66] are deprecated.
   // NAME_BILLING values [67, 72] are deprecated.
 
@@ -455,13 +459,7 @@ enum FieldType {
   // classification for the field.
   // SERVER_RESPONSE_PENDING = 161;
 
-  // Improved Prediction indicates that this field is support by the predition
-  // improvement system.
-  // This type is a metatype and does not correspond to a specific sort of
-  // data.
-  // It should not take precedence over existing types.
-  // TODO(crbug.com/389629676): Deprecate this field type.
-  IMPROVED_PREDICTION = 162,
+  // IMPROVED_PREDICTION = 162 is deprecated
 
   // Types to represent alternative names (e.g. phonetic name in Japanese).
   ALTERNATIVE_FULL_NAME = 163,
@@ -470,25 +468,25 @@ enum FieldType {
 
   // Prefix of the last name, e.g. "van" in the Netherlands.
   // This is the first child of NAME_LAST.
-  NAME_LAST_PREFIX = 166,
+  // NAME_LAST_PREFIX = 166 is deprecated
 
   // Type to represent the core part of the last name.
   // More technically it contains the last name without the prefix.
   // NAME_LAST_CORE: NAME_LAST_FIRST + NAME_LAST_CONJUNCTION + NAME_LAST_SECOND.
   // Don't use this type unless there is NAME_LAST_PREFIX present in the form.
   // E.g. "Gogh" in "Vincent van Gogh".
-  NAME_LAST_CORE = 167,
+  // NAME_LAST_CORE = 167 is deprecated
 
   // Types corresponding to the "Passport" entity from
   // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
   // *TAG field types are merely placeholder tagging that the type belongs to
   // the passport entity, but that the existing Autofill classification or logic
   // should be used.
-  PASSPORT_NAME_TAG = 168,
+  // PASSPORT_NAME_TAG = 168 is deprecated
   PASSPORT_NUMBER = 169,
-  PASSPORT_ISSUING_COUNTRY_TAG = 170,
-  PASSPORT_EXPIRATION_DATE_TAG = 171,
-  PASSPORT_ISSUE_DATE_TAG = 172,
+  PASSPORT_ISSUING_COUNTRY = 170,
+  PASSPORT_EXPIRATION_DATE = 171,
+  PASSPORT_ISSUE_DATE = 172,
 
   // Types corresponding to the "Loyalty card" entity from
   // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
@@ -498,7 +496,7 @@ enum FieldType {
 
   // Types corresponding to the "Car" entity from
   // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
-  VEHICLE_OWNER_TAG = 175,
+  // VEHICLE_OWNER_TAG = 175 is deprecated
   VEHICLE_LICENSE_PLATE = 176,
   VEHICLE_VIN = 177,
   VEHICLE_MAKE = 178,
@@ -506,11 +504,85 @@ enum FieldType {
 
   // Types corresponding to the "Drivers license" entity from
   // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
-  DRIVERS_LICENSE_NAME_TAG = 180,
+  // DRIVERS_LICENSE_NAME_TAG = 180 is deprecated
   DRIVERS_LICENSE_REGION = 181,
   DRIVERS_LICENSE_NUMBER = 182,
-  DRIVERS_LICENSE_EXPIRATION_DATE_TAG = 183,
-  DRIVERS_LICENSE_ISSUE_DATE_TAG = 184,
+  DRIVERS_LICENSE_EXPIRATION_DATE = 183,
+  DRIVERS_LICENSE_ISSUE_DATE = 184,
+
+  VEHICLE_YEAR = 185,
+  VEHICLE_PLATE_STATE = 186,
+
+  // Types 187 and 188 are not used yet on the client, but will likely be added
+  // in the future.
+
+  // For fields that can contain either email or loyalty membership ID. This
+  // type is neither voted for by the client nor emitted by the server. The
+  // client will vote for either EMAIL_ADDRESS or LOYALTY_MEMBERSHIP_ID and the
+  // server will emit both types in the response. The joined type is built by
+  // the client.
+  EMAIL_OR_LOYALTY_MEMBERSHIP_ID = 189,
+
+  // Types corresponding to the "National Id Card" entity from
+  // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
+  NATIONAL_ID_CARD_NUMBER = 190,
+  NATIONAL_ID_CARD_EXPIRATION_DATE = 191,
+  NATIONAL_ID_CARD_ISSUE_DATE = 192,
+  NATIONAL_ID_CARD_ISSUING_COUNTRY = 193,
+
+  // Types corresponding to the "Known traveler" entity from
+  // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
+  KNOWN_TRAVELER_NUMBER = 194,
+  KNOWN_TRAVELER_NUMBER_EXPIRATION_DATE = 203,
+
+  // Types corresponding to the "Redress number" entity from
+  // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
+  REDRESS_NUMBER = 195,
+
+  // Types 196 and 197 are not used on the client yet, but will likely be added
+  // in the future.
+
+  // ADDRESS_HOME_ZIP = ADDRESS_HOME_ZIP_PREFIX + separator +
+  // ADDRESS_HOME_ZIP_SUFFIX.
+  // For the US zip code 94043-4100 the types correspond to 94043 and 4100.
+  ADDRESS_HOME_ZIP_PREFIX = 201,
+  ADDRESS_HOME_ZIP_SUFFIX = 202,
+
+  // Types corresponding to the "Flight reservation" entity from
+  // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
+  FLIGHT_RESERVATION_FLIGHT_NUMBER = 198,
+  FLIGHT_RESERVATION_CONFIRMATION_CODE = 199,
+  FLIGHT_RESERVATION_TICKET_NUMBER = 200,
+  FLIGHT_RESERVATION_DEPARTURE_AIRPORT = 204,
+  FLIGHT_RESERVATION_ARRIVAL_AIRPORT = 205,
+  FLIGHT_RESERVATION_DEPARTURE_DATE = 206,
+
+  // Combination of types ADDRESS_HOME_ZIP and ADDRESS_HOME_CITY.
+  // For France addresses, the postal code and the city can be combined into a
+  // single field (e.g. "75000 Paris").
+  ADDRESS_HOME_ZIP_AND_CITY = 207,
+
+  // Types corresponding to the "Order" entity from
+  // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
+  ORDER_ID = 208,
+  ORDER_DATE = 209,
+  ORDER_MERCHANT_NAME = 210,
+  // The following two types were never predicted by the Autofill server.
+  // The numeric values may therefore be recycled:
+  // ORDER_MERCHANT_DOMAIN = 211,
+  // ORDER_PRODUCT_NAMES = 212,
+  // ORDER_ACCOUNT = 213,
+  // ORDER_GRAND_TOTAL = 214,
+
+  // Types corresponding to the "Shipment" entity from
+  // components/autofill/core/browser/data_model/autofill_ai/entity_schema.json.
+  // Only SHIPMENT_TRACKING_NUMBER is filled and the other numeric values may be
+  // recycled:
+  // SHIPMENT_ASSOCIATED_ORDER_ID = 215,
+  // SHIPMENT_CARRIER_NAME = 216,
+  // SHIPMENT_CARRIER_DOMAIN = 217,
+  SHIPMENT_TRACKING_NUMBER = 218,
+  // SHIPMENT_DELIVERY_ADDRESS = 219,
 
   // No new types can be added without a corresponding change to the Autofill
   // server.
@@ -522,7 +594,7 @@ enum FieldType {
   // If the newly added type is a storable type of AutofillProfile, update
   // AutofillProfile.StorableTypes in
   // tools/metrics/histograms/metadata/autofill/histograms.xml.
-  MAX_VALID_FIELD_TYPE = 185,
+  MAX_VALID_FIELD_TYPE = 220,
 };
 // LINT.ThenChange(//chrome/common/extensions/api/autofill_private.idl)
 
@@ -541,12 +613,40 @@ enum class FieldTypeGroup {
   kIban,
   kStandaloneCvcField,
   kAutofillAi,
-  kMaxValue = kAutofillAi,
+  kLoyaltyCard,
+  kOneTimePassword,
+  kMaxValue = kOneTimePassword,
 };
+
+// Returns `raw_value` if it is a known FieldType constant.
+//
+// Validating FieldTypes in server responses is particularly important because
+// old clients may know fewer values than the server does.
+constexpr std::optional<FieldType> ToSafeFieldType(
+    std::underlying_type_t<FieldType> raw_value);
+
+// Returns `raw_value` if it is a known HtmlFieldType constant.
+// This is equivalent to mojom::IsKnownEnumValue() but it is `constexpr`.
+constexpr std::optional<HtmlFieldType> ToSafeHtmlFieldType(
+    std::underlying_type_t<HtmlFieldType> raw_value);
 
 template <>
 struct DenseSetTraits<FieldType>
-    : EnumDenseSetTraits<FieldType, NO_SERVER_DATA, MAX_VALID_FIELD_TYPE> {};
+    : EnumDenseSetTraits<FieldType, NO_SERVER_DATA, MAX_VALID_FIELD_TYPE> {
+  static constexpr bool is_valid(FieldType x) {
+    return ToSafeFieldType(std::to_underlying(x)).has_value();
+  }
+};
+
+template <>
+struct DenseSetTraits<HtmlFieldType>
+    : EnumDenseSetTraits<HtmlFieldType,
+                         HtmlFieldType::kMinValue,
+                         HtmlFieldType::kMaxValue> {
+  static constexpr bool is_valid(HtmlFieldType x) {
+    return ToSafeHtmlFieldType(std::to_underlying(x)).has_value();
+  }
+};
 
 using FieldTypeSet = DenseSet<FieldType>;
 
@@ -565,6 +665,10 @@ std::string_view FieldTypeToStringView(FieldType type);
 // Returns a string describing `type`.
 std::string FieldTypeToString(FieldType type);
 
+// Returns a comma-separated list of string representations of the elements of
+// `s`.
+std::string FieldTypeSetToString(FieldTypeSet s);
+
 // Inverse FieldTypeToStringView(). Returns UNKNOWN_TYPE for unknown FieldType
 // string representations.
 FieldType TypeNameToFieldType(std::string_view type_name);
@@ -578,91 +682,273 @@ std::string_view FieldTypeToDeveloperRepresentationString(FieldType type);
 
 // There's a one-to-many relationship between FieldTypeGroup and
 // FieldType as well as HtmlFieldType.
-FieldTypeSet GetFieldTypesOfGroup(FieldTypeGroup group);
-FieldTypeGroup GroupTypeOfFieldType(FieldType field_type);
+constexpr FieldTypeSet FieldTypesOfGroup(FieldTypeGroup group);
+constexpr FieldTypeGroup GroupTypeOfFieldType(FieldType field_type);
 FieldTypeGroup GroupTypeOfHtmlFieldType(HtmlFieldType field_type);
 
 // Not all HtmlFieldTypes have a corresponding FieldType.
 FieldType HtmlFieldTypeToBestCorrespondingFieldType(HtmlFieldType field_type);
 
-// Returns |raw_value| if it corresponds to a non-deprecated enumeration
+// Returns `raw_value` if it corresponds to a non-deprecated enumeration
 // constant of FieldType other than MAX_VALID_FIELD_TYPE. Otherwise, returns
-// |fallback_value|.
-constexpr FieldType ToSafeFieldType(std::underlying_type_t<FieldType> raw_value,
-                                    FieldType fallback_value) {
-  auto IsValid = [](std::underlying_type_t<FieldType> t) {
-    return NO_SERVER_DATA <= t && t < MAX_VALID_FIELD_TYPE &&
+// std::nullopt.
+constexpr std::optional<FieldType> ToSafeFieldType(
+    std::underlying_type_t<FieldType> raw_value) {
+  auto is_invalid = [](std::underlying_type_t<FieldType> t) {
+    return t < NO_SERVER_DATA || t >= MAX_VALID_FIELD_TYPE ||
            // Work phone numbers (values [15,19]) are deprecated.
-           !(15 <= t && t <= 19) &&
+           (15 <= t && t <= 19) ||
            // Cell phone numbers (values [25,29]) are deprecated.
-           !(25 <= t && t <= 29) &&
+           (25 <= t && t <= 29) ||
            // Shipping addresses (values [44,50]) are deprecated.
-           !(44 <= t && t <= 50) &&
+           (44 <= t && t <= 50) ||
            // Probably-account creation password (value 94) is deprecated.
-           t != 94 &&
+           t == 94 ||
            // Billing addresses (values [37,43], 78, 80, 82, 84) are deprecated.
-           !(37 <= t && t <= 43) && t != 78 && t != 80 && t != 82 && t != 84 &&
+           (37 <= t && t <= 43) || t == 78 || t == 80 || t == 82 || t == 84 ||
+           // FIELD_WITH_DEFAULT_VALUE is deprecated.
+           t == 61 ||
            // Billing phone numbers (values [62,66]) are deprecated.
-           !(62 <= t && t <= 66) &&
+           (62 <= t && t <= 66) ||
            // Billing names (values [67,72]) are deprecated.
-           !(67 <= t && t <= 72) &&
+           (67 <= t && t <= 72) ||
            // Fax numbers (values [20,24]) are deprecated.
-           !(20 <= t && t <= 24) &&
+           (20 <= t && t <= 24) ||
            // UPI VPA type (value 102) is deprecated.
-           !(t == 102) &&
+           t == 102 ||
            // Birthdates (values [118, 120]) are deprecated.
-           !(118 <= t && t <= 120) &&
+           (118 <= t && t <= 120) ||
            // Reserved for server-side only use.
-           !(111 <= t && t <= 113) && t != 117 && t != 127 &&
-           !(130 <= t && t <= 132) && t != 134 && !(137 <= t && t <= 139) &&
-           !(147 <= t && t <= 149) && t != 155 && t != 159 && t != 161;
+           (111 <= t && t <= 113) || t == 117 || t == 127 ||
+           (130 <= t && t <= 132) || t == 134 || (137 <= t && t <= 139) ||
+           (147 <= t && t <= 149) || t == 155 || t == 159 || t == 161 ||
+           // Deprecated Autofill AI types.
+           t == 162 || t == 166 || t == 167 || t == 168 || t == 175 ||
+           t == 180 ||
+           // Types for the country for driver's license and vehicle are not
+           // used yet, but will likely be added in the future.
+           (187 <= t && t <= 188) ||
+           // Types for date of birth and gender are not used yet, but will
+           // likely be added in the future.
+           (196 <= t && t <= 197) ||
+           // Unused Forms AI types: These types were never predicted by the
+           // Autofill server and never used. They may be recycled in the
+           // future.
+           (211 <= t && t <= 214) || (215 <= t && t <= 217) || t == 219;
   };
-  return IsValid(raw_value) ? static_cast<FieldType>(raw_value)
-                            : fallback_value;
+  if (is_invalid(raw_value)) {
+    return std::nullopt;
+  }
+  return static_cast<FieldType>(raw_value);  // nocheck
 }
 
-constexpr HtmlFieldType ToSafeHtmlFieldType(
-    std::underlying_type_t<HtmlFieldType> raw_value,
-    HtmlFieldType fallback_value) {
-  using underlying_type_t = std::underlying_type_t<HtmlFieldType>;
-  auto IsValid = [](underlying_type_t t) {
-    return static_cast<underlying_type_t>(HtmlFieldType::kMinValue) <= t &&
-           t <= static_cast<underlying_type_t>(HtmlFieldType::kMaxValue) &&
+constexpr std::optional<HtmlFieldType> ToSafeHtmlFieldType(
+    std::underlying_type_t<HtmlFieldType> raw_value) {
+  auto is_invalid = [](std::underlying_type_t<HtmlFieldType> t) {
+    return t < std::to_underlying(HtmlFieldType::kMinValue) ||
+           t > std::to_underlying(HtmlFieldType::kMaxValue) ||
            // Full address is deprecated.
-           t != 17 &&
+           t == 17 ||
            // UPI is deprecated.
-           t != 46;
+           t == 46;
   };
-  return IsValid(raw_value) ? static_cast<HtmlFieldType>(raw_value)
-                            : fallback_value;
+  if (is_invalid(raw_value)) {
+    return std::nullopt;
+  }
+  return static_cast<HtmlFieldType>(raw_value);  // nocheck
 }
 
-constexpr inline FieldTypeSet kAllFieldTypes = [] {
-  FieldTypeSet fields;
-  for (std::underlying_type_t<FieldType> i = 0; i < MAX_VALID_FIELD_TYPE; ++i) {
-    if (FieldType field_type = ToSafeFieldType(i, NO_SERVER_DATA);
-        field_type != NO_SERVER_DATA) {
-      fields.insert(field_type);
-    }
-  }
-  return fields;
-}();
+constexpr FieldTypeGroup GroupTypeOfFieldType(FieldType field_type) {
+  switch (field_type) {
+    case NAME_HONORIFIC_PREFIX:
+    case NAME_FIRST:
+    case NAME_MIDDLE:
+    case NAME_LAST:
+    case NAME_LAST_FIRST:
+    case NAME_LAST_SECOND:
+    case NAME_LAST_CONJUNCTION:
+    case NAME_MIDDLE_INITIAL:
+    case NAME_FULL:
+    case NAME_SUFFIX:
+    case ALTERNATIVE_FAMILY_NAME:
+    case ALTERNATIVE_GIVEN_NAME:
+    case ALTERNATIVE_FULL_NAME:
+      return FieldTypeGroup::kName;
 
-constexpr HtmlFieldTypeSet kAllHtmlFieldTypes = [] {
-  HtmlFieldTypeSet fields;
-  using underlying_type_t = std::underlying_type_t<HtmlFieldType>;
-  for (underlying_type_t i = base::to_underlying(HtmlFieldType::kMinValue);
-       i < base::to_underlying(HtmlFieldType::kMaxValue); ++i) {
-    if (HtmlFieldType field_type =
-            ToSafeHtmlFieldType(i, HtmlFieldType::kUnrecognized);
-        field_type != HtmlFieldType::kUnrecognized) {
-      fields.insert(field_type);
-    }
-  }
-  return fields;
-}();
+    case EMAIL_ADDRESS:
+    case USERNAME_AND_EMAIL_ADDRESS:
+    case EMAIL_OR_LOYALTY_MEMBERSHIP_ID:
+      return FieldTypeGroup::kEmail;
 
-bool IsDateFieldType(FieldType field_type);
+    case PHONE_HOME_NUMBER:
+    case PHONE_HOME_NUMBER_PREFIX:
+    case PHONE_HOME_NUMBER_SUFFIX:
+    case PHONE_HOME_CITY_CODE:
+    case PHONE_HOME_CITY_CODE_WITH_TRUNK_PREFIX:
+    case PHONE_HOME_COUNTRY_CODE:
+    case PHONE_HOME_CITY_AND_NUMBER:
+    case PHONE_HOME_CITY_AND_NUMBER_WITHOUT_TRUNK_PREFIX:
+    case PHONE_HOME_WHOLE_NUMBER:
+    case PHONE_HOME_EXTENSION:
+      return FieldTypeGroup::kPhone;
+
+    case ADDRESS_HOME_LINE1:
+    case ADDRESS_HOME_LINE2:
+    case ADDRESS_HOME_LINE3:
+    case ADDRESS_HOME_APT:
+    case ADDRESS_HOME_APT_NUM:
+    case ADDRESS_HOME_APT_TYPE:
+    case ADDRESS_HOME_CITY:
+    case ADDRESS_HOME_STATE:
+    case ADDRESS_HOME_ZIP:
+    case ADDRESS_HOME_ZIP_AND_CITY:
+    case ADDRESS_HOME_ZIP_PREFIX:
+    case ADDRESS_HOME_ZIP_SUFFIX:
+    case ADDRESS_HOME_COUNTRY:
+    case ADDRESS_HOME_STREET_ADDRESS:
+    case ADDRESS_HOME_SORTING_CODE:
+    case ADDRESS_HOME_DEPENDENT_LOCALITY:
+    case ADDRESS_HOME_STREET_NAME:
+    case ADDRESS_HOME_HOUSE_NUMBER:
+    case ADDRESS_HOME_SUBPREMISE:
+    case ADDRESS_HOME_OTHER_SUBUNIT:
+    case ADDRESS_HOME_ADDRESS:
+    case ADDRESS_HOME_ADDRESS_WITH_NAME:
+    case ADDRESS_HOME_FLOOR:
+    case ADDRESS_HOME_LANDMARK:
+    case ADDRESS_HOME_BETWEEN_STREETS:
+    case ADDRESS_HOME_BETWEEN_STREETS_1:
+    case ADDRESS_HOME_BETWEEN_STREETS_2:
+    case ADDRESS_HOME_ADMIN_LEVEL2:
+    case ADDRESS_HOME_STREET_LOCATION:
+    case ADDRESS_HOME_OVERFLOW:
+    case ADDRESS_HOME_OVERFLOW_AND_LANDMARK:
+    case ADDRESS_HOME_BETWEEN_STREETS_OR_LANDMARK:
+    case ADDRESS_HOME_STREET_LOCATION_AND_LOCALITY:
+    case ADDRESS_HOME_STREET_LOCATION_AND_LANDMARK:
+    case ADDRESS_HOME_DEPENDENT_LOCALITY_AND_LANDMARK:
+    case DELIVERY_INSTRUCTIONS:
+    case ADDRESS_HOME_HOUSE_NUMBER_AND_APT:
+      return FieldTypeGroup::kAddress;
+
+    case CREDIT_CARD_NAME_FULL:
+    case CREDIT_CARD_NAME_FIRST:
+    case CREDIT_CARD_NAME_LAST:
+    case CREDIT_CARD_NUMBER:
+    case CREDIT_CARD_EXP_MONTH:
+    case CREDIT_CARD_EXP_2_DIGIT_YEAR:
+    case CREDIT_CARD_EXP_4_DIGIT_YEAR:
+    case CREDIT_CARD_EXP_DATE_2_DIGIT_YEAR:
+    case CREDIT_CARD_EXP_DATE_4_DIGIT_YEAR:
+    case CREDIT_CARD_TYPE:
+    case CREDIT_CARD_VERIFICATION_CODE:
+      return FieldTypeGroup::kCreditCard;
+
+    case CREDIT_CARD_STANDALONE_VERIFICATION_CODE:
+      return FieldTypeGroup::kStandaloneCvcField;
+
+    case IBAN_VALUE:
+      return FieldTypeGroup::kIban;
+
+    case COMPANY_NAME:
+      return FieldTypeGroup::kCompany;
+
+    case PASSPORT_NUMBER:
+    case PASSPORT_ISSUING_COUNTRY:
+    case PASSPORT_EXPIRATION_DATE:
+    case PASSPORT_ISSUE_DATE:
+    case VEHICLE_LICENSE_PLATE:
+    case VEHICLE_VIN:
+    case VEHICLE_MAKE:
+    case VEHICLE_MODEL:
+    case VEHICLE_YEAR:
+    case VEHICLE_PLATE_STATE:
+    case DRIVERS_LICENSE_REGION:
+    case DRIVERS_LICENSE_NUMBER:
+    case DRIVERS_LICENSE_EXPIRATION_DATE:
+    case DRIVERS_LICENSE_ISSUE_DATE:
+    case NATIONAL_ID_CARD_NUMBER:
+    case NATIONAL_ID_CARD_ISSUE_DATE:
+    case NATIONAL_ID_CARD_EXPIRATION_DATE:
+    case NATIONAL_ID_CARD_ISSUING_COUNTRY:
+    case REDRESS_NUMBER:
+    case KNOWN_TRAVELER_NUMBER:
+    case KNOWN_TRAVELER_NUMBER_EXPIRATION_DATE:
+    case FLIGHT_RESERVATION_FLIGHT_NUMBER:
+    case FLIGHT_RESERVATION_TICKET_NUMBER:
+    case FLIGHT_RESERVATION_CONFIRMATION_CODE:
+    case FLIGHT_RESERVATION_DEPARTURE_AIRPORT:
+    case FLIGHT_RESERVATION_ARRIVAL_AIRPORT:
+    case FLIGHT_RESERVATION_DEPARTURE_DATE:
+    case ORDER_ID:
+    case ORDER_DATE:
+    case ORDER_MERCHANT_NAME:
+    case SHIPMENT_TRACKING_NUMBER:
+      return FieldTypeGroup::kAutofillAi;
+
+    case PASSWORD:
+    case ACCOUNT_CREATION_PASSWORD:
+    case NOT_ACCOUNT_CREATION_PASSWORD:
+    case NEW_PASSWORD:
+    case PROBABLY_NEW_PASSWORD:
+    case NOT_NEW_PASSWORD:
+    case CONFIRMATION_PASSWORD:
+    case NOT_PASSWORD:
+    case SINGLE_USERNAME:
+    case NOT_USERNAME:
+    case SINGLE_USERNAME_FORGOT_PASSWORD:
+    case SINGLE_USERNAME_WITH_INTERMEDIATE_VALUES:
+      return FieldTypeGroup::kPasswordField;
+
+    case NO_SERVER_DATA:
+    case EMPTY_TYPE:
+    case AMBIGUOUS_TYPE:
+    case MERCHANT_EMAIL_SIGNUP:
+    case MERCHANT_PROMO_CODE:
+      return FieldTypeGroup::kNoGroup;
+
+    case ONE_TIME_CODE:
+      return FieldTypeGroup::kOneTimePassword;
+
+    case LOYALTY_MEMBERSHIP_ID:
+    case LOYALTY_MEMBERSHIP_PROGRAM:
+    case LOYALTY_MEMBERSHIP_PROVIDER:
+      return FieldTypeGroup::kLoyaltyCard;
+
+    case USERNAME:
+      return FieldTypeGroup::kUsernameField;
+
+    case PRICE:
+    case SEARCH_TERM:
+    case NUMERIC_QUANTITY:
+      return FieldTypeGroup::kUnfillable;
+
+    case UNKNOWN_TYPE:
+      return FieldTypeGroup::kNoGroup;
+
+    case MAX_VALID_FIELD_TYPE:
+      break;
+  }
+  NOTREACHED();
+}
+
+namespace internal {
+consteval std::array<FieldTypeSet,
+                     std::to_underlying(FieldTypeGroup::kMaxValue) + 1>
+FieldTypesByGroupHelper() {
+  constexpr auto kMaxValue = std::to_underlying(FieldTypeGroup::kMaxValue);
+  std::array<FieldTypeSet, kMaxValue + 1> map{};
+  for (FieldType field_type : FieldTypeSet::all()) {
+    auto index = std::to_underlying(GroupTypeOfFieldType(field_type));
+    map[index].insert(field_type);
+  }
+  return map;
+}
+}  // namespace internal
+
+constexpr FieldTypeSet FieldTypesOfGroup(FieldTypeGroup group) {
+  return internal::FieldTypesByGroupHelper()[std::to_underlying(group)];
+}
 
 }  // namespace autofill
 

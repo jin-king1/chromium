@@ -20,7 +20,7 @@
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "content/public/android/content_jni_headers/SyntheticGestureTarget_jni.h"
 
-using base::android::JavaParamRef;
+using base::android::JavaRef;
 using base::android::ScopedJavaLocalRef;
 using blink::WebGestureEvent;
 using blink::WebInputEvent;
@@ -119,21 +119,21 @@ void SyntheticGestureTargetAndroid::DispatchWebTouchEventToPlatform(
   }
   const unsigned num_touches = web_touch.touches_length;
   int touch_index = -1;
-  DCHECK_LE(num_touches, 2u);
+  CHECK_LE(num_touches, 2u, base::NotFatalUntil::M152);
   for (unsigned i = 0; i < num_touches; ++i) {
     const blink::WebTouchPoint* point = &web_touch.touches[i];
     if (point->state != blink::WebTouchPoint::State::kStateStationary) {
       if (action == MOTION_EVENT_ACTION_START ||
           action == MOTION_EVENT_ACTION_END) {
         // We should have only one non-stationary touch for start/end.
-        DCHECK_EQ(touch_index, -1);
+        CHECK_EQ(touch_index, -1, base::NotFatalUntil::M152);
       }
       touch_index = i;
     }
     TouchSetPointer(i, point->PositionInWidget().x(),
                     point->PositionInWidget().y(), point->id);
   }
-  DCHECK_GE(touch_index, 0);
+  CHECK_GE(touch_index, 0, base::NotFatalUntil::M152);
 
   TouchInject(action, num_touches, touch_index, web_touch.TimeStamp());
 }
@@ -154,9 +154,12 @@ void SyntheticGestureTargetAndroid::DispatchWebMouseWheelEventToPlatform(
 void SyntheticGestureTargetAndroid::DispatchWebGestureEventToPlatform(
     const WebGestureEvent& web_gesture,
     const ui::LatencyInfo& latency_info) {
-  DCHECK_EQ(blink::WebGestureDevice::kTouchpad, web_gesture.SourceDevice());
-  DCHECK(blink::WebInputEvent::IsPinchGestureEventType(web_gesture.GetType()) ||
-         blink::WebInputEvent::IsFlingGestureEventType(web_gesture.GetType()));
+  CHECK_EQ(blink::WebGestureDevice::kTouchpad, web_gesture.SourceDevice(),
+           base::NotFatalUntil::M152);
+  CHECK(
+      blink::WebInputEvent::IsPinchGestureEventType(web_gesture.GetType()) ||
+          blink::WebInputEvent::IsFlingGestureEventType(web_gesture.GetType()),
+      base::NotFatalUntil::M152);
   GetView()->SendGestureEvent(web_gesture);
 }
 
@@ -180,7 +183,8 @@ void SyntheticGestureTargetAndroid::GetVSyncParameters(
 
 void SyntheticGestureTargetAndroid::OnBeginFrame(
     base::TimeTicks frame_begin_time,
-    base::TimeDelta frame_interval) {
+    base::TimeDelta frame_interval,
+    std::optional<base::TimeTicks> first_coalesced_frame_begin_time) {
   vsync_timebase_ = frame_begin_time;
   vsync_interval_ = frame_interval;
 }
@@ -207,8 +211,10 @@ float SyntheticGestureTargetAndroid::GetMinScalingSpanInDips() const {
 RenderWidgetHostViewAndroid* SyntheticGestureTargetAndroid::GetView() const {
   auto* view = static_cast<RenderWidgetHostViewAndroid*>(
       render_widget_host()->GetView());
-  DCHECK(view);
+  CHECK(view, base::NotFatalUntil::M152);
   return view;
 }
 
 }  // namespace content
+
+DEFINE_JNI(SyntheticGestureTarget)

@@ -4,22 +4,33 @@
 
 #include "components/omnibox/browser/remote_suggestions_service.h"
 
+#include <map>
 #include <memory>
+#include <optional>
+#include <string>
 #include <utility>
 
 #include "base/functional/bind.h"
+#include "base/i18n/char_iterator.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/stringprintf.h"
+#include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
+#include "components/lens/lens_features.h"
 #include "components/lens/proto/server/lens_overlay_response.pb.h"
 #include "components/omnibox/browser/base_search_provider.h"
 #include "components/omnibox/browser/document_suggestions_service.h"
 #include "components/omnibox/browser/enterprise_search_aggregator_suggestions_service.h"
+#include "components/omnibox/browser/page_classification_functions.h"
 #include "components/search/search.h"
+#include "components/search_engines/template_url.h"
 #include "components/search_engines/template_url_service.h"
 #include "components/variations/net/variations_http_headers.h"
 #include "net/base/load_flags.h"
 #include "net/base/url_util.h"
+#include "net/http/http_response_headers.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -28,6 +39,30 @@
 #include "third_party/metrics_proto/omnibox_event.pb.h"
 
 namespace {
+
+// Maximum length of page title sent to Suggest via `pageTitle` CGI param,
+// expressed as number of Unicode characters (codepoints).
+const size_t kMaxPageTitleLength = 128;
+
+// Suggest query parameter for setting the SuggestInventory for the request.
+constexpr char kSuggestInventoryParam[] = "azi";
+
+// TODO(crbug.com/842922363): Combine with the similar function in
+// zero_suggest_provider.cc.
+std::u16string TruncateUTF16(const std::u16string& input, size_t max_length) {
+  if (input.empty()) {
+    return u"";
+  }
+
+  size_t num_chars = 0;
+  base::i18n::UTF16CharIterator it(input);
+  while (!it.end() && (num_chars < max_length)) {
+    it.Advance();
+    num_chars++;
+  }
+
+  return input.substr(0, it.array_pos());
+}
 
 std::string RequestTypeToString(RemoteRequestType request_type) {
   switch (request_type) {
@@ -54,22 +89,54 @@ std::string ResponseCodeToSuccessString(int response_code) {
   return response_code == 200 ? "Successful" : "Failed";
 }
 
-void LogRequestSent(RemoteRequestType request_type) {
+void LogRequestSent(
+    RemoteRequestType request_type,
+    metrics::OmniboxEventProto::PageClassification page_classification) {
   base::UmaHistogramEnumeration("Omnibox.SuggestRequestsSent", request_type);
+
+  // Don't slice by page classification for invalid page classifications.
+  if (page_classification == metrics::OmniboxEventProto::INVALID_SPEC) {
+    return;
+  }
+  const std::string page_context =
+      metrics::OmniboxEventProto::PageClassification_Name(page_classification);
+  base::UmaHistogramEnumeration(
+      base::StringPrintf("Omnibox.SuggestRequestsSent.%s", page_context),
+      request_type);
 }
 
-void LogResponseCode(RemoteRequestType request_type, int response_code) {
+void LogResponseCode(
+    RemoteRequestType request_type,
+    int response_code,
+    metrics::OmniboxEventProto::PageClassification page_classification) {
   base::UmaHistogramSparse("Omnibox.SuggestRequestsSent.HttpResponseCode",
                            response_code);
   base::UmaHistogramSparse(
       base::StringPrintf("Omnibox.SuggestRequestsSent.HttpResponseCode.%s",
                          RequestTypeToString(request_type)),
       response_code);
+
+  // Don't slice by page classification for invalid page classifications.
+  if (page_classification == metrics::OmniboxEventProto::INVALID_SPEC) {
+    return;
+  }
+  const std::string page_context =
+      metrics::OmniboxEventProto::PageClassification_Name(page_classification);
+  base::UmaHistogramSparse(
+      base::StringPrintf("Omnibox.SuggestRequestsSent.HttpResponseCode.%s",
+                         page_context),
+      response_code);
+  base::UmaHistogramSparse(
+      base::StringPrintf("Omnibox.SuggestRequestsSent.HttpResponseCode.%s.%s",
+                         page_context, RequestTypeToString(request_type)),
+      response_code);
 }
 
-void LogResponseTime(RemoteRequestType request_type,
-                     base::TimeDelta response_time,
-                     int response_code) {
+void LogResponseTimeAndCode(
+    metrics::OmniboxEventProto::PageClassification page_classification,
+    RemoteRequestType request_type,
+    base::TimeDelta response_time,
+    int response_code) {
   base::UmaHistogramTimes("Omnibox.SuggestRequestsSent.ResponseTime",
                           response_time);
   base::UmaHistogramTimes(
@@ -83,6 +150,24 @@ void LogResponseTime(RemoteRequestType request_type,
   base::UmaHistogramTimes(
       base::StringPrintf("Omnibox.SuggestRequestsSent.ResponseTime.%s.%s",
                          RequestTypeToString(request_type),
+                         ResponseCodeToSuccessString(response_code)),
+      response_time);
+
+  // Don't slice by page classification for invalid page classifications.
+  if (page_classification == metrics::OmniboxEventProto::INVALID_SPEC) {
+    return;
+  }
+  const std::string page_context =
+      metrics::OmniboxEventProto::PageClassification_Name(page_classification);
+
+  base::UmaHistogramTimes(
+      base::StringPrintf("Omnibox.SuggestRequestsSent.ResponseTime.%s",
+                         page_context),
+      response_time);
+
+  base::UmaHistogramTimes(
+      base::StringPrintf("Omnibox.SuggestRequestsSent.ResponseTime.%s.%s.%s",
+                         page_context, RequestTypeToString(request_type),
                          ResponseCodeToSuccessString(response_code)),
       response_time);
 }
@@ -113,32 +198,67 @@ GURL AddLensOverlaySuggestInputsDataToEndpointUrl(
   bool send_vit = false;
 
   if (search_terms_args.page_classification ==
-      metrics::OmniboxEventProto::CONTEXTUAL_SEARCHBOX) {
+          metrics::OmniboxEventProto::CONTEXTUAL_SEARCHBOX ||
+      search_terms_args.page_classification ==
+          metrics::OmniboxEventProto::NTP_REALBOX ||
+      (omnibox::IsComposebox(search_terms_args.page_classification) &&
+       search_terms_args.page_classification !=
+           metrics::OmniboxEventProto::LENS_SIDE_PANEL_COMPOSEBOX)) {
     send_request_and_session_ids =
         lens_overlay_suggest_inputs
             ->send_gsession_vsrid_for_contextual_suggest();
     send_vit = true;
     modified_url =
         net::AppendOrReplaceQueryParameter(modified_url, "gs_ps", "1");
+
+    if (lens_overlay_suggest_inputs->send_page_title_and_url()) {
+      if (lens_overlay_suggest_inputs->has_page_title()) {
+        std::u16string title_16 =
+            base::UTF8ToUTF16(lens_overlay_suggest_inputs->page_title());
+        std::u16string truncated_16 =
+            TruncateUTF16(title_16, kMaxPageTitleLength);
+        modified_url = net::AppendOrReplaceQueryParameter(
+            modified_url, "pageTitle", base::UTF16ToUTF8(truncated_16));
+      }
+      if (lens_overlay_suggest_inputs->has_page_url()) {
+        modified_url = net::AppendOrReplaceQueryParameter(
+            modified_url, "url", lens_overlay_suggest_inputs->page_url());
+      }
+    }
   } else if (search_terms_args.page_classification ==
-             metrics::OmniboxEventProto::LENS_SIDE_PANEL_SEARCHBOX) {
-    if (lens_overlay_suggest_inputs
-            ->send_gsession_vsrid_vit_for_lens_suggest()) {
-      send_request_and_session_ids = true;
-      send_vit = true;
-    }
-    if (lens_overlay_suggest_inputs->has_encoded_image_signals()) {
-      modified_url = net::AppendOrReplaceQueryParameter(
-          modified_url, "iil",
-          lens_overlay_suggest_inputs->encoded_image_signals());
-    }
-    if (lens_overlay_suggest_inputs->send_vsint_for_lens_suggest() &&
-        lens_overlay_suggest_inputs
-            ->has_encoded_visual_search_interaction_log_data()) {
-      modified_url = net::AppendOrReplaceQueryParameter(
-          modified_url, "vsint",
+                 metrics::OmniboxEventProto::LENS_SIDE_PANEL_SEARCHBOX ||
+             search_terms_args.page_classification ==
+                 metrics::OmniboxEventProto::LENS_SIDE_PANEL_COMPOSEBOX) {
+    if (lens::features::GetLensAimSuggestionsType() ==
+        lens::features::LensAimSuggestionsType::kContextual) {
+      send_request_and_session_ids =
           lens_overlay_suggest_inputs
-              ->encoded_visual_search_interaction_log_data());
+              ->send_gsession_vsrid_for_contextual_suggest();
+      send_vit = true;
+    } else {
+      if (lens_overlay_suggest_inputs
+              ->send_gsession_vsrid_vit_for_lens_suggest()) {
+        send_request_and_session_ids = true;
+        send_vit = true;
+      }
+      if (lens_overlay_suggest_inputs->has_encoded_image_signals()) {
+        modified_url = net::AppendOrReplaceQueryParameter(
+            modified_url, "iil",
+            lens_overlay_suggest_inputs->encoded_image_signals());
+      }
+      if (lens_overlay_suggest_inputs->send_vsint_for_lens_suggest() &&
+          lens_overlay_suggest_inputs
+              ->has_encoded_visual_search_interaction_log_data()) {
+        modified_url = net::AppendOrReplaceQueryParameter(
+            modified_url, "vsint",
+            lens_overlay_suggest_inputs
+                ->encoded_visual_search_interaction_log_data());
+      }
+    }
+
+    if (omnibox::IsComposebox(search_terms_args.page_classification)) {
+      modified_url =
+          net::AppendOrReplaceQueryParameter(modified_url, "gs_ps", "1");
     }
   }
 
@@ -164,6 +284,100 @@ GURL AddLensOverlaySuggestInputsDataToEndpointUrl(
   return modified_url;
 }
 
+GURL AddAimInputStateParamsToEndpointUrl(
+    TemplateURLRef::SearchTermsArgs search_terms_args,
+    const GURL& url_to_modify) {
+  GURL modified_url = GURL(url_to_modify);
+  if (search_terms_args.input_state.active_tool !=
+      omnibox::ToolMode::TOOL_MODE_UNSPECIFIED) {
+    // Override IMAGE_GEN tool mode if image gen upload is active.
+    omnibox::ToolMode tool_mode =
+        search_terms_args.input_state.image_gen_upload_active
+            ? omnibox::ToolMode::TOOL_MODE_IMAGE_GEN_UPLOAD
+            : search_terms_args.input_state.active_tool;
+    modified_url = net::AppendOrReplaceQueryParameter(
+        url_to_modify, "azm",
+        base::NumberToString(
+            static_cast<int>(tool_mode)));
+  }
+  if (search_terms_args.input_state.active_model !=
+      omnibox::ModelMode::MODEL_MODE_UNSPECIFIED) {
+    modified_url = net::AppendOrReplaceQueryParameter(
+        modified_url, "sam",
+        base::NumberToString(
+            static_cast<int>(search_terms_args.input_state.active_model)));
+  }
+  return modified_url;
+}
+
+GURL AddSmartComposePreviousQueryToEndpointUrl(
+    TemplateURLRef::SearchTermsArgs search_terms_args,
+    const GURL& url_to_modify) {
+  GURL modified_url = GURL(url_to_modify);
+  if (!search_terms_args.previous_query.empty()) {
+    modified_url = net::AppendOrReplaceQueryParameter(
+        modified_url, "pq", search_terms_args.previous_query);
+  }
+  return modified_url;
+}
+
+GURL AddSuggestInventoryParamToEndpointUrl(
+    const TemplateURLRef::SearchTermsArgs& search_terms_args,
+    const GURL& url_to_modify) {
+  GURL modified_url = GURL(url_to_modify);
+  if (search_terms_args.suggest_inventory !=
+      omnibox::SuggestInventory::SUGGEST_INVENTORY_DEFAULT) {
+    modified_url = net::AppendOrReplaceQueryParameter(
+        modified_url, kSuggestInventoryParam,
+        base::NumberToString(
+            static_cast<int>(search_terms_args.suggest_inventory)));
+  }
+  return modified_url;
+}
+
+GURL AddQueryBuilderStatsToEndpointUrl(
+    const TemplateURLRef::SearchTermsArgs& search_terms_args,
+    const GURL& url_to_modify) {
+  GURL modified_url = GURL(url_to_modify);
+  if (search_terms_args.input_method > 0) {
+    modified_url = net::AppendOrReplaceQueryParameter(
+        modified_url, "qbi.m",
+        base::NumberToString(search_terms_args.input_method));
+    modified_url = net::AppendOrReplaceQueryParameter(
+        modified_url, "qbi.l",
+        base::NumberToString(search_terms_args.search_terms.length()));
+  }
+  return modified_url;
+}
+
+GURL ReplaceLensSuggestPathPlaceholderInEndpointUrl(
+    const TemplateURLRef::SearchTermsArgs& search_terms_args,
+    const GURL& url_to_modify) {
+  if (search_terms_args.request_source !=
+      SearchTermsData::RequestSource::LENS_OVERLAY) {
+    return url_to_modify;
+  }
+
+  std::string current_client;
+  if (!net::GetValueForKeyInQuery(url_to_modify, "client", &current_client) ||
+      current_client.empty()) {
+    return url_to_modify;
+  }
+
+  std::string modified_url = url_to_modify.spec();
+  base::ReplaceSubstringsAfterOffset(
+      &modified_url, 0, TemplateURLService::kLensOverlaySuggestPathPlaceholder,
+      TemplateURL::GetSuggestionPath(current_client));
+
+  const bool found_placeholder =
+      modified_url.find(
+          TemplateURLService::kLensOverlaySuggestPathPlaceholder) !=
+      std::string::npos;
+  CHECK(!found_placeholder);
+
+  return GURL(modified_url);
+}
+
 }  // namespace
 
 RemoteSuggestionsService::Delegate::Delegate() = default;
@@ -184,16 +398,24 @@ RemoteSuggestionsService::RemoteSuggestionsService(
 
 RemoteSuggestionsService::~RemoteSuggestionsService() = default;
 
+// TODO(crbug.com/404591650): Create a struct to automate the lifecycle of
+//   `time_request_sent_`.
+void RemoteSuggestionsService::SetTimeRequestSent(
+    RemoteRequestType request_type,
+    base::TimeTicks time) {
+  time_request_sent_[request_type] = time;
+}
+
 // static
 GURL RemoteSuggestionsService::EndpointUrl(
-    const TemplateURL* template_url,
-    TemplateURLRef::SearchTermsArgs search_terms_args,
+    const TemplateURL& template_url,
+    const TemplateURLRef::SearchTermsArgs& search_terms_args,
     const SearchTermsData& search_terms_data) {
-  GURL url = GURL(template_url->suggestions_url_ref().ReplaceSearchTerms(
+  GURL url = GURL(template_url.suggestions_url_ref().ReplaceSearchTerms(
       search_terms_args, search_terms_data));
 
   // Return early for non-Google template URLs.
-  if (!search::TemplateURLIsGoogle(template_url, search_terms_data)) {
+  if (!search::TemplateURLIsGoogle(&template_url, search_terms_data)) {
     return url;
   }
 
@@ -217,10 +439,44 @@ GURL RemoteSuggestionsService::EndpointUrl(
                                                "chrome-multimodal");
       break;
     }
+    case metrics::OmniboxEventProto::COMPOSEBOX_EVERYWHERE:
+    case metrics::OmniboxEventProto::NTP_REALBOX:
+    case metrics::OmniboxEventProto::NTP_COMPOSEBOX:
+    case metrics::OmniboxEventProto::CO_BROWSING_COMPOSEBOX:
+    case metrics::OmniboxEventProto::NTP_OMNIBOX_COMPOSEBOX:
+    case metrics::OmniboxEventProto::OMNIBOX_EVERYWHERE:
+    case metrics::OmniboxEventProto::SRP_OMNIBOX_COMPOSEBOX:
+    case metrics::OmniboxEventProto::OTHER_OMNIBOX_COMPOSEBOX:
+      if (search_terms_args.lens_overlay_suggest_inputs.has_value() &&
+          search_terms_args.input_state.active_tool ==
+              omnibox::ToolMode::TOOL_MODE_UNSPECIFIED) {
+        url = net::AppendOrReplaceQueryParameter(url, "client",
+                                                 "chrome-contextual");
+      }
+      break;
+    case metrics::OmniboxEventProto::LENS_SIDE_PANEL_COMPOSEBOX:
+      if (search_terms_args.lens_overlay_suggest_inputs.has_value()) {
+        if (lens::features::GetLensAimSuggestionsType() ==
+            lens::features::LensAimSuggestionsType::kContextual) {
+          url = net::AppendOrReplaceQueryParameter(url, "client",
+                                                   "chrome-contextual");
+        } else if (lens::features::GetLensAimSuggestionsType() ==
+                   lens::features::LensAimSuggestionsType::kMultimodal) {
+          url = net::AppendOrReplaceQueryParameter(url, "client",
+                                                   "chrome-multimodal");
+        }
+      }
+      break;
     default:
       break;
   }
   url = AddLensOverlaySuggestInputsDataToEndpointUrl(search_terms_args, url);
+  url = AddAimInputStateParamsToEndpointUrl(search_terms_args, url);
+  url = AddSmartComposePreviousQueryToEndpointUrl(search_terms_args, url);
+  url = ReplaceLensSuggestPathPlaceholderInEndpointUrl(search_terms_args, url);
+  url = AddSuggestInventoryParamToEndpointUrl(search_terms_args, url);
+  url = AddQueryBuilderStatsToEndpointUrl(search_terms_args, url);
+
   return url;
 }
 
@@ -235,7 +491,7 @@ RemoteSuggestionsService::StartSuggestionsRequest(
   DCHECK(template_url);
 
   const GURL suggest_url =
-      EndpointUrl(template_url, search_terms_args, search_terms_data);
+      EndpointUrl(*template_url, search_terms_args, search_terms_data);
   if (!suggest_url.is_valid()) {
     return nullptr;
   }
@@ -289,10 +545,12 @@ RemoteSuggestionsService::StartSuggestionsRequest(
       url_loader_factory_.get(),
       base::BindOnce(&RemoteSuggestionsService::OnRequestCompleted,
                      weak_ptr_factory_.GetWeakPtr(), request_id, request_type,
-                     std::move(request_timer), std::move(completion_callback),
-                     loader.get()));
+                     std::move(request_timer),
+                     search_terms_args.page_classification,
+                     std::move(completion_callback), loader.get()));
 
-  OnRequestStarted(request_id, request_type, loader.get(),
+  OnRequestStarted(request_id, request_type,
+                   search_terms_args.page_classification, loader.get(),
                    /*request_body*/ "");
   return loader;
 }
@@ -304,11 +562,12 @@ RemoteSuggestionsService::StartZeroPrefixSuggestionsRequest(
     const TemplateURL* template_url,
     TemplateURLRef::SearchTermsArgs search_terms_args,
     const SearchTermsData& search_terms_data,
-    CompletionCallback completion_callback) {
+    CompletionCallback completion_callback,
+    base::optional_ref<const base::TimeDelta> timeout) {
   DCHECK(template_url);
 
   const GURL suggest_url =
-      EndpointUrl(template_url, search_terms_args, search_terms_data);
+      EndpointUrl(*template_url, search_terms_args, search_terms_data);
   if (!suggest_url.is_valid()) {
     return nullptr;
   }
@@ -363,14 +622,19 @@ RemoteSuggestionsService::StartZeroPrefixSuggestionsRequest(
   base::ElapsedTimer request_timer;
   std::unique_ptr<network::SimpleURLLoader> loader =
       network::SimpleURLLoader::Create(std::move(request), traffic_annotation);
+  if (timeout.has_value()) {
+    loader->SetTimeoutDuration(*timeout);
+  }
   loader->DownloadToStringOfUnboundedSizeUntilCrashAndDie(
       url_loader_factory_.get(),
       base::BindOnce(&RemoteSuggestionsService::OnRequestCompleted,
                      weak_ptr_factory_.GetWeakPtr(), request_id, request_type,
-                     std::move(request_timer), std::move(completion_callback),
-                     loader.get()));
+                     std::move(request_timer),
+                     search_terms_args.page_classification,
+                     std::move(completion_callback), loader.get()));
 
-  OnRequestStarted(request_id, request_type, loader.get(),
+  OnRequestStarted(request_id, request_type,
+                   search_terms_args.page_classification, loader.get(),
                    /*request_body*/ "");
   return loader;
 }
@@ -378,6 +642,7 @@ RemoteSuggestionsService::StartZeroPrefixSuggestionsRequest(
 void RemoteSuggestionsService::CreateDocumentSuggestionsRequest(
     const std::u16string& query,
     bool is_off_the_record,
+    metrics::OmniboxEventProto::PageClassification page_classification,
     StartCallback start_callback,
     CompletionCallback completion_callback) {
   if (!document_suggestions_service_) {
@@ -395,11 +660,12 @@ void RemoteSuggestionsService::CreateDocumentSuggestionsRequest(
       base::BindOnce(&RemoteSuggestionsService::OnRequestStartedAsync,
                      weak_ptr_factory_.GetWeakPtr(), request_id,
                      /*request_type=*/RemoteRequestType::kDocumentSuggest,
-                     std::move(start_callback)),
+                     page_classification, std::move(start_callback)),
       base::BindOnce(&RemoteSuggestionsService::OnRequestCompleted,
                      weak_ptr_factory_.GetWeakPtr(), request_id,
                      /*request_type=*/RemoteRequestType::kDocumentSuggest,
-                     std::move(request_timer), std::move(completion_callback)));
+                     std::move(request_timer), page_classification,
+                     std::move(completion_callback)));
 }
 
 void RemoteSuggestionsService::StopCreatingDocumentSuggestionsRequest() {
@@ -412,9 +678,11 @@ void RemoteSuggestionsService::
     CreateEnterpriseSearchAggregatorSuggestionsRequest(
         const std::u16string& query,
         const GURL& suggest_url,
-        StartCallback start_callback,
-        CompletionCallback completion_callback,
-        bool in_keyword_mode) {
+        metrics::OmniboxEventProto::PageClassification page_classification,
+        std::vector<int> callback_indexes,
+        std::vector<std::vector<int>> suggestion_types,
+        IndexedStartCallback start_callback,
+        IndexedCompletionCallback completion_callback) {
   if (!enterprise_search_aggregator_suggestions_service_) {
     return;
   }
@@ -422,24 +690,32 @@ void RemoteSuggestionsService::
   // Create a unique identifier for the request.
   const base::UnguessableToken request_id = base::UnguessableToken::Create();
 
-  base::ElapsedTimer request_timer;
   enterprise_search_aggregator_suggestions_service_
       ->CreateEnterpriseSearchAggregatorSuggestionsRequest(
-          query, suggest_url,
-          base::BindOnce(&RemoteSuggestionsService::OnRequestCreated,
-                         weak_ptr_factory_.GetWeakPtr(), request_id),
-          base::BindOnce(&RemoteSuggestionsService::OnRequestStartedAsync,
-                         weak_ptr_factory_.GetWeakPtr(), request_id,
-                         /*request_type=*/
-                         RemoteRequestType::kEnterpriseSearchAggregatorSuggest,
-                         std::move(start_callback)),
-          base::BindOnce(&RemoteSuggestionsService::OnRequestCompleted,
-                         weak_ptr_factory_.GetWeakPtr(), request_id,
-                         /*request_type=*/
-                         RemoteRequestType::kEnterpriseSearchAggregatorSuggest,
-                         std::move(request_timer),
-                         std::move(completion_callback)),
-          in_keyword_mode);
+          query, suggest_url, callback_indexes, suggestion_types,
+          base::BindRepeating(&RemoteSuggestionsService::OnRequestCreated,
+                              weak_ptr_factory_.GetWeakPtr(), request_id),
+          base::BindRepeating(
+              &RemoteSuggestionsService::OnIndexedRequestStartedAsync,
+              weak_ptr_factory_.GetWeakPtr(), request_id,
+              /*request_type=*/
+              RemoteRequestType::kEnterpriseSearchAggregatorSuggest,
+              page_classification, start_callback),
+          base::BindRepeating(
+              &RemoteSuggestionsService::OnIndexedRequestCompleted,
+              weak_ptr_factory_.GetWeakPtr(), request_id,
+              /*request_type=*/
+              RemoteRequestType::kEnterpriseSearchAggregatorSuggest,
+              metrics::OmniboxEventProto::INVALID_SPEC, base::TimeTicks::Now(),
+              std::move(completion_callback)));
+}
+
+void RemoteSuggestionsService::
+    StopCreatingEnterpriseSearchAggregatorSuggestionsRequest() {
+  if (enterprise_search_aggregator_suggestions_service_) {
+    enterprise_search_aggregator_suggestions_service_
+        ->StopCreatingEnterpriseSearchAggregatorSuggestionsRequest();
+  }
 }
 
 std::unique_ptr<network::SimpleURLLoader>
@@ -506,11 +782,12 @@ RemoteSuggestionsService::StartDeletionRequest(
       base::BindOnce(&RemoteSuggestionsService::OnRequestCompleted,
                      weak_ptr_factory_.GetWeakPtr(), request_id,
                      /*request_type=*/RemoteRequestType::kDeletion,
-                     std::move(request_timer), std::move(completion_callback),
-                     loader.get()));
+                     std::move(request_timer),
+                     metrics::OmniboxEventProto::INVALID_SPEC,
+                     std::move(completion_callback), loader.get()));
 
   OnRequestStarted(request_id, /*request_type=*/RemoteRequestType::kDeletion,
-                   loader.get(),
+                   metrics::OmniboxEventProto::INVALID_SPEC, loader.get(),
                    /*request_body*/ "");
   return loader;
 }
@@ -542,31 +819,48 @@ void RemoteSuggestionsService::OnRequestCreated(
 void RemoteSuggestionsService::OnRequestStarted(
     const base::UnguessableToken& request_id,
     RemoteRequestType request_type,
+    metrics::OmniboxEventProto::PageClassification page_classification,
     network::SimpleURLLoader* loader,
     const std::string& request_body) {
   // Notify the observers that the transfer started.
   observers_.Notify(&Observer::OnRequestStarted, request_id, loader,
                     request_body);
-  LogRequestSent(request_type);
+  LogRequestSent(request_type, page_classification);
 }
 
 void RemoteSuggestionsService::OnRequestStartedAsync(
     const base::UnguessableToken& request_id,
     RemoteRequestType request_type,
+    metrics::OmniboxEventProto::PageClassification page_classification,
     StartCallback start_callback,
     std::unique_ptr<network::SimpleURLLoader> loader,
     const std::string& request_body) {
-  OnRequestStarted(request_id, request_type, loader.get(), request_body);
+  OnRequestStarted(request_id, request_type, page_classification, loader.get(),
+                   request_body);
   std::move(start_callback).Run(std::move(loader));
+}
+
+void RemoteSuggestionsService::OnIndexedRequestStartedAsync(
+    const base::UnguessableToken& request_id,
+    RemoteRequestType request_type,
+    metrics::OmniboxEventProto::PageClassification page_classification,
+    IndexedStartCallback start_callback,
+    int request_index,
+    std::unique_ptr<network::SimpleURLLoader> loader,
+    const std::string& request_body) {
+  OnRequestStarted(request_id, request_type, page_classification, loader.get(),
+                   request_body);
+  std::move(start_callback).Run(request_index, std::move(loader));
 }
 
 void RemoteSuggestionsService::OnRequestCompleted(
     const base::UnguessableToken& request_id,
     RemoteRequestType request_type,
     base::ElapsedTimer request_timer,
+    metrics::OmniboxEventProto::PageClassification page_classification,
     CompletionCallback completion_callback,
     const network::SimpleURLLoader* source,
-    std::unique_ptr<std::string> response_body) {
+    std::optional<std::string> response_body) {
   const int response_code =
       source->ResponseInfo() && source->ResponseInfo()->headers
           ? source->ResponseInfo()->headers->response_code()
@@ -574,9 +868,10 @@ void RemoteSuggestionsService::OnRequestCompleted(
 
   // Notify the observers that the transfer is done.
   observers_.Notify(&Observer::OnRequestCompleted, request_id, response_code,
-                    response_body);
-  LogResponseCode(request_type, response_code);
-  LogResponseTime(request_type, request_timer.Elapsed(), response_code);
+                    base::optional_ref(response_body));
+  LogResponseCode(request_type, response_code, page_classification);
+  LogResponseTimeAndCode(page_classification, request_type,
+                         request_timer.Elapsed(), response_code);
 
   // Call the completion callback or delegate it.
   if (delegate_) {
@@ -586,5 +881,36 @@ void RemoteSuggestionsService::OnRequestCompleted(
   } else {
     std::move(completion_callback)
         .Run(source, response_code, std::move(response_body));
+  }
+}
+
+void RemoteSuggestionsService::OnIndexedRequestCompleted(
+    const base::UnguessableToken& request_id,
+    RemoteRequestType request_type,
+    metrics::OmniboxEventProto::PageClassification page_classification,
+    base::TimeTicks start_time,
+    IndexedCompletionCallback completion_callback,
+    const network::SimpleURLLoader* source,
+    int request_index,
+    std::optional<std::string> response_body) {
+  const int response_code =
+      source->ResponseInfo() && source->ResponseInfo()->headers
+          ? source->ResponseInfo()->headers->response_code()
+          : 0;
+  // Notify the observers that the transfer is done.
+  observers_.Notify(&Observer::OnRequestCompleted, request_id, response_code,
+                    base::optional_ref(response_body));
+  LogResponseCode(request_type, response_code, page_classification);
+  LogResponseTimeAndCode(page_classification, request_type,
+                         base::TimeTicks::Now() - start_time, response_code);
+
+  // Call the completion callback or delegate it.
+  if (delegate_) {
+    delegate_->OnIndexedRequestCompleted(request_index, source, response_code,
+                                         std::move(response_body),
+                                         completion_callback);
+  } else {
+    std::move(completion_callback)
+        .Run(request_index, source, response_code, std::move(response_body));
   }
 }

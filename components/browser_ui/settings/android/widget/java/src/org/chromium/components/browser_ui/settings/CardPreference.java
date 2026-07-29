@@ -4,11 +4,12 @@
 
 package org.chromium.components.browser_ui.settings;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
+import static org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils.parseContainmentAttributes;
 
 import android.content.Context;
 import android.graphics.drawable.Drawable;
 import android.text.method.LinkMovementMethod;
+import android.text.style.ClickableSpan;
 import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.View.OnClickListener;
@@ -19,6 +20,7 @@ import androidx.preference.PreferenceViewHolder;
 
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.widget.containment.ContainmentUiUtils;
 import org.chromium.ui.widget.ChromeImageView;
 import org.chromium.ui.widget.TextViewWithClickableSpans;
 
@@ -37,24 +39,35 @@ public class CardPreference extends TextMessagePreference {
     private @Nullable ChromeImageView mIcon;
     private @Nullable ChromeImageView mCloseIcon;
     private boolean mShouldCenterIcon;
+    private final int mBackgroundStyle;
+    private final int mBackgroundColor;
 
     /** Constructor for inflating from XML. */
     public CardPreference(Context context, AttributeSet attrs) {
         super(context, attrs);
         setLayoutResource(R.layout.card_preference);
         setSelectable(false);
+
+        ContainmentUiUtils.ContainmentAttributes containmentAttributes =
+                parseContainmentAttributes(context, attrs);
+        mBackgroundStyle = containmentAttributes.backgroundStyle;
+        mBackgroundColor = containmentAttributes.backgroundColor;
     }
 
     @Override
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
-        mDescriptionView =
-                (TextViewWithClickableSpans) assumeNonNull(holder.findViewById(R.id.summary));
-        mIcon = (ChromeImageView) assumeNonNull(holder.findViewById(R.id.icon));
-        mCloseIcon = (ChromeImageView) assumeNonNull(holder.findViewById(R.id.close_icon));
+        mDescriptionView = (TextViewWithClickableSpans) holder.findViewById(R.id.summary);
+        mIcon = (ChromeImageView) holder.findViewById(R.id.icon);
+        mCloseIcon = (ChromeImageView) holder.findViewById(R.id.close_icon);
 
         mDescriptionView.setText(mSummary);
-        mDescriptionView.setMovementMethod(LinkMovementMethod.getInstance());
+        ClickableSpan[] spans = mDescriptionView.getClickableSpans();
+        // Set the movement method, only if there is an interactive element. This avoids the element
+        // being keyboard focusable if there isn't any focusable element.
+        if (spans != null && spans.length > 0) {
+            mDescriptionView.setMovementMethod(LinkMovementMethod.getInstance());
+        }
 
         mIcon.setImageDrawable(mIconDrawable);
         if (mShouldCenterIcon) {
@@ -67,8 +80,8 @@ public class CardPreference extends TextMessagePreference {
         mCloseIcon.setVisibility(mCloseIconVisibility);
         mCloseIcon.setOnClickListener(mOnCloseClickListener);
 
-        TextView titleView = (TextView) assumeNonNull(holder.findViewById(android.R.id.title));
-        titleView.setTextAppearance(R.style.TextAppearance_Headline2Thick);
+        TextView titleView = (TextView) holder.findViewById(android.R.id.title);
+        titleView.setTextAppearance(R.style.TextAppearance_Headline2Thick_Primary);
     }
 
     /**
@@ -113,5 +126,15 @@ public class CardPreference extends TextMessagePreference {
      */
     public void setShouldCenterIcon(boolean shouldCenterIcon) {
         mShouldCenterIcon = shouldCenterIcon;
+    }
+
+    @Override
+    public @BackgroundStyle int getCustomBackgroundStyle() {
+        return mBackgroundStyle;
+    }
+
+    @Override
+    public int getCustomBackgroundColor() {
+        return mBackgroundColor;
     }
 }

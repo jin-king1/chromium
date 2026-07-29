@@ -18,7 +18,7 @@
 #include "chrome/browser/extensions/external_provider_impl.h"
 #include "chrome/browser/extensions/forced_extensions/force_installed_test_base.h"
 #include "chrome/browser/extensions/forced_extensions/force_installed_tracker.h"
-#include "chrome/browser/extensions/forced_extensions/install_stage_tracker.h"
+#include "chrome/browser/extensions/forced_extensions/install_stage_tracker_factory.h"
 #include "chrome/browser/extensions/test_extension_system.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/testing_browser_process.h"
@@ -27,12 +27,15 @@
 #include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/browser/forced_extensions/install_stage_tracker.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/browser/install/sandboxed_unpacker_failure_reason.h"
 #include "extensions/browser/pref_names.h"
 #include "extensions/browser/updater/safe_manifest_parser.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
+#include "extensions/common/switches.h"
 #include "net/base/net_errors.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -42,8 +45,18 @@
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chromeos/ash/experiences/arc/arc_prefs.h"
 #include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "components/user_manager/user_names.h"
 #endif  // BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+#include "chrome/browser/enterprise/browser_management/management_service_factory.h"
+#include "components/policy/core/common/management/management_service.h"
+#include "components/policy/core/common/management/scoped_management_service_override_for_testing.h"
+#include "extensions/browser/blocklist_extension_prefs.h"
+#endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace {
 
@@ -137,10 +150,10 @@ constexpr char kManifestDownloadTimeStats[] =
 constexpr char kCRXDownloadTimeStats[] =
     "Extensions.ForceInstalledTime.ManifestDownloadCompleteTo."
     "CRXDownloadComplete";
-constexpr char kVerificationTimeStats[] =
-    "Extensions.ForceInstalledTime.VerificationStartTo.CopyingStart";
 constexpr char kCopyingTimeStats[] =
-    "Extensions.ForceInstalledTime.CopyingStartTo.UnpackingStart";
+    "Extensions.ForceInstalledTime.CopyingStartTo.VerificationStart";
+constexpr char kVerificationTimeStats[] =
+    "Extensions.ForceInstalledTime.VerificationStartTo.UnpackingStart";
 constexpr char kUnpackingTimeStats[] =
     "Extensions.ForceInstalledTime.UnpackingStartTo.CheckingExpectationsStart";
 constexpr char kCheckingExpectationsTimeStats[] =
@@ -154,7 +167,6 @@ constexpr char kCrxHeaderInvalidFailureFromCache[] =
 constexpr char kStuckInCreatedStageAreExtensionsEnabled[] =
     "Extensions."
     "ForceInstalledFailureStuckInInitialCreationStageAreExtensionsEnabled";
-
 }  // namespace
 
 namespace extensions {
@@ -182,19 +194,19 @@ class ForceInstalledMetricsTest : public ForceInstalledTestBase {
   }
 
   void SetupExtensionManagementPref() {
-    base::Value::Dict extension_entry =
-        base::Value::Dict()
+    base::DictValue extension_entry =
+        base::DictValue()
             .Set("installation_mode", "allowed")
             .Set(ExternalProviderImpl::kExternalUpdateUrl, kExtensionUpdateUrl);
     prefs()->SetManagedPref(
         pref_names::kExtensionManagement,
-        base::Value::Dict().Set(kExtensionId1, std::move(extension_entry)));
+        base::DictValue().Set(kExtensionId1, std::move(extension_entry)));
   }
 
   void CreateExtensionService(bool extensions_enabled) {
     base::CommandLine command_line(base::CommandLine::NO_PROGRAM);
     if (!extensions_enabled) {
-      command_line.AppendSwitch(::switches::kDisableExtensions);
+      command_line.AppendSwitch(switches::kDisableExtensions);
     }
     extensions::TestExtensionSystem* test_ext_system =
         static_cast<extensions::TestExtensionSystem*>(
@@ -380,12 +392,12 @@ TEST_F(ForceInstalledMetricsTest, ExtensionsReportInstallationStageTimes) {
   ReportDownloadingManifestStage();
   ReportInstallationStarted(std::nullopt);
   install_stage_tracker()->ReportCRXInstallationStage(
-      kExtensionId1, InstallationStage::kVerification);
+      kExtensionId1, InstallationStage::kCopying);
 
   const base::TimeDelta installation_stage_time = base::Milliseconds(200);
   task_environment_.FastForwardBy(installation_stage_time);
   install_stage_tracker()->ReportCRXInstallationStage(
-      kExtensionId1, InstallationStage::kCopying);
+      kExtensionId1, InstallationStage::kVerification);
 
   task_environment_.FastForwardBy(installation_stage_time);
   install_stage_tracker()->ReportCRXInstallationStage(
@@ -410,11 +422,11 @@ TEST_F(ForceInstalledMetricsTest, ExtensionsReportInstallationStageTimes) {
   // ForceInstalledMetrics shuts down timer because all extension are either
   // loaded or failed.
   EXPECT_FALSE(fake_timer_->IsRunning());
-  histogram_tester_.ExpectTotalCount(kVerificationTimeStats, 1);
-  histogram_tester_.ExpectTimeBucketCount(kVerificationTimeStats,
-                                          installation_stage_time, 1);
   histogram_tester_.ExpectTotalCount(kCopyingTimeStats, 1);
   histogram_tester_.ExpectTimeBucketCount(kCopyingTimeStats,
+                                          installation_stage_time, 1);
+  histogram_tester_.ExpectTotalCount(kVerificationTimeStats, 1);
+  histogram_tester_.ExpectTimeBucketCount(kVerificationTimeStats,
                                           installation_stage_time, 1);
   histogram_tester_.ExpectTotalCount(kUnpackingTimeStats, 1);
   histogram_tester_.ExpectTimeBucketCount(kUnpackingTimeStats,
@@ -902,11 +914,9 @@ TEST_F(ForceInstalledMetricsTest, ReportManagedGuestSessionOnExtensionFailure) {
       base::WrapUnique(fake_user_manager));
   const AccountId account_id =
       AccountId::FromUserEmail(profile()->GetProfileUserName());
-  user_manager::User* user =
-      fake_user_manager->AddPublicAccountUser(account_id);
-  fake_user_manager->UserLoggedIn(account_id, user->username_hash(),
-                                  false /* browser_restart */,
-                                  false /* is_child */);
+  fake_user_manager->AddPublicAccountUser(account_id);
+  fake_user_manager->UserLoggedIn(
+      account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
   SetupForceList(ExtensionOrigin::kWebStore);
   install_stage_tracker()->ReportFailure(
       kExtensionId1, InstallStageTracker::FailureReason::INVALID_ID);
@@ -927,9 +937,9 @@ TEST_F(ForceInstalledMetricsTest, ReportGuestSessionOnExtensionFailure) {
   user_manager::ScopedUserManager scoped_user_manager(
       base::WrapUnique(fake_user_manager));
   user_manager::User* user = fake_user_manager->AddGuestUser();
-  fake_user_manager->UserLoggedIn(user->GetAccountId(), user->username_hash(),
-                                  false /* browser_restart */,
-                                  false /* is_child */);
+  fake_user_manager->UserLoggedIn(
+      user->GetAccountId(),
+      user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
   SetupForceList(ExtensionOrigin::kWebStore);
   install_stage_tracker()->ReportFailure(
       kExtensionId1, InstallStageTracker::FailureReason::INVALID_ID);
@@ -953,9 +963,9 @@ TEST_F(ForceInstalledMetricsTest,
   user_manager::ScopedUserManager scoped_user_manager(
       base::WrapUnique(fake_user_manager));
   user_manager::User* user = fake_user_manager->AddGuestUser();
-  fake_user_manager->UserLoggedIn(user->GetAccountId(), user->username_hash(),
-                                  false /* browser_restart */,
-                                  false /* is_child */);
+  fake_user_manager->UserLoggedIn(
+      user->GetAccountId(),
+      user_manager::TestHelper::GetFakeUsernameHash(user->GetAccountId()));
 
   SetupForceList(ExtensionOrigin::kWebStore);
   CreateExtensionService(/*extensions_enabled=*/true);
@@ -1359,15 +1369,14 @@ TEST_F(ForceInstalledMetricsTest,
        NonMisconfigurationFailureNotPresentDisallowedByPolicyTypeError) {
   SetupForceList(ExtensionOrigin::kWebStore);
   // Set TYPE_EXTENSION and TYPE_THEME as the allowed extension types.
-  base::Value::List list =
-      base::Value::List().Append("extension").Append("theme");
+  base::ListValue list = base::ListValue().Append("extension").Append("theme");
   prefs()->SetManagedPref(pref_names::kAllowedTypes, std::move(list));
 
   scoped_refptr<const Extension> ext1 = CreateNewExtension(
       kExtensionName1, kExtensionId1, ExtensionStatus::kLoaded);
   // Hosted app is not a valid extension type, so this should report an error.
   install_stage_tracker()->ReportExtensionType(kExtensionId2,
-                                               Manifest::Type::TYPE_HOSTED_APP);
+                                               Manifest::Type::kHostedApp);
   install_stage_tracker()->ReportCrxInstallError(
       kExtensionId2,
       InstallStageTracker::FailureReason::CRX_INSTALL_ERROR_DECLINED,
@@ -1389,14 +1398,13 @@ TEST_F(ForceInstalledMetricsTest,
   SetupForceList(ExtensionOrigin::kWebStore);
 
   // Set TYPE_EXTENSION and TYPE_THEME as the allowed extension types.
-  base::Value::List list =
-      base::Value::List().Append("extension").Append("theme");
+  base::ListValue list = base::ListValue().Append("extension").Append("theme");
   prefs()->SetManagedPref(pref_names::kAllowedTypes, std::move(list));
 
   scoped_refptr<const Extension> ext1 = CreateNewExtension(
       kExtensionName1, kExtensionId1, ExtensionStatus::kLoaded);
   install_stage_tracker()->ReportExtensionType(kExtensionId2,
-                                               Manifest::Type::TYPE_EXTENSION);
+                                               Manifest::Type::kExtension);
   install_stage_tracker()->ReportCrxInstallError(
       kExtensionId2,
       InstallStageTracker::FailureReason::CRX_INSTALL_ERROR_DECLINED,
@@ -1554,5 +1562,123 @@ TEST_F(ForceInstalledMetricsTest, CachedExtensions) {
       kInstallationFailureCacheStatus,
       ExtensionDownloaderDelegate::CacheStatus::CACHE_MISS, 1);
 }
+
+#if BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC)
+class ManagementAuthorityTrustworthinessMetricsTest
+    : public ForceInstalledMetricsTest,
+      public testing::WithParamInterface<
+          policy::EnterpriseManagementAuthority> {
+ protected:
+  std::map<policy::EnterpriseManagementAuthority,
+           policy::ManagementAuthorityTrustworthiness>
+      authority_map_ = {
+          {policy::EnterpriseManagementAuthority::NONE,
+           policy::ManagementAuthorityTrustworthiness::NONE},
+          {policy::EnterpriseManagementAuthority::COMPUTER_LOCAL,
+           policy::ManagementAuthorityTrustworthiness::LOW},
+          {policy::EnterpriseManagementAuthority::CLOUD,
+           policy::ManagementAuthorityTrustworthiness::TRUSTED},
+          {policy::EnterpriseManagementAuthority::CLOUD_DOMAIN,
+           policy::ManagementAuthorityTrustworthiness::FULLY_TRUSTED}};
+
+  base::HistogramTester histograms_;
+};
+
+TEST_P(ManagementAuthorityTrustworthinessMetricsTest, HistogramLogged) {
+  SetupForceList(ExtensionOrigin::kWebStore);
+  policy::ScopedManagementServiceOverrideForTesting browser_management(
+      policy::ManagementServiceFactory::GetForPlatform(), GetParam());
+
+  scoped_refptr<const Extension> ext1 = CreateNewExtension(
+      kExtensionName1, kExtensionId1, ExtensionStatus::kReady);
+  scoped_refptr<const Extension> ext2 = CreateNewExtension(
+      kExtensionName2, kExtensionId2, ExtensionStatus::kReady);
+
+  histograms_.ExpectUniqueSample(
+      "Extensions.ForceInstalledManagementAuthorityTrustworthiness",
+      authority_map_[GetParam()], 1);
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    ManagementAuthorityTrustworthinessMetricsTest,
+    testing::Values(policy::EnterpriseManagementAuthority::NONE,
+                    policy::EnterpriseManagementAuthority::COMPUTER_LOCAL,
+                    policy::EnterpriseManagementAuthority::CLOUD,
+                    policy::EnterpriseManagementAuthority::CLOUD_DOMAIN));
+
+class GreylistedForceInstalledMetricsTest
+    : public ForceInstalledMetricsTest,
+      public testing::WithParamInterface<
+          std::tuple<policy::EnterpriseManagementAuthority, bool>> {
+ public:
+  GreylistedForceInstalledMetricsTest() {
+    std::tie(management_authority_, enabled_) = GetParam();
+  }
+
+ protected:
+  policy::EnterpriseManagementAuthority management_authority_;
+  bool enabled_;
+};
+
+TEST_P(GreylistedForceInstalledMetricsTest,
+       ReportsEnabledStateForGreylistedExtension) {
+  SetupForceList(ExtensionOrigin::kWebStore);
+  policy::ScopedManagementServiceOverrideForTesting browser_management(
+      policy::ManagementServiceFactory::GetForPlatform(),
+      management_authority_);
+  scoped_refptr<const Extension> extension = CreateNewExtension(
+      kExtensionName1, kExtensionId1, ExtensionStatus::kPending);
+  // Greylist the extension by setting a non-malware blocklist state.
+  blocklist_prefs::SetSafeBrowsingExtensionBlocklistState(
+      kExtensionId1, BitMapBlocklistState::BLOCKLISTED_CWS_POLICY_VIOLATION,
+      ExtensionPrefs::Get(profile()));
+  if (enabled_) {
+    registry()->AddEnabled(extension.get());
+  } else {
+    registry()->AddDisabled(extension.get());
+  }
+
+  // Create a second extension with loaded status to trigger the
+  // OnForceInstalledExtensionsLoaded() callback which invokes the
+  // ReportMetrics() that logs the greylist histograms.
+  scoped_refptr<const Extension> extension2 = CreateNewExtension(
+      kExtensionName2, kExtensionId2, ExtensionStatus::kLoaded);
+
+  // ForceInstalledMetrics should still keep running as kExtensionId1 is
+  // installed but not loaded.
+  EXPECT_TRUE(fake_timer_->IsRunning());
+  fake_timer_->Fire();
+
+  std::string trust_level;
+  switch (management_authority_) {
+    case policy::EnterpriseManagementAuthority::NONE:
+    case policy::EnterpriseManagementAuthority::COMPUTER_LOCAL:
+      trust_level = "LowTrust";
+      break;
+    case policy::EnterpriseManagementAuthority::DOMAIN_LOCAL:
+    case policy::EnterpriseManagementAuthority::CLOUD:
+    case policy::EnterpriseManagementAuthority::CLOUD_DOMAIN:
+      trust_level = "HighTrust";
+      break;
+  }
+  histogram_tester_.ExpectUniqueSample(
+      "Extensions.GreylistedForceInstalled." + trust_level + ".Enabled",
+      enabled_, 1);
+}
+
+// Note: It should not be possible for greylisted force installed extensions
+// to be disabled in high trust environments. If we see the metric being logged
+// in this case, it indicates a bug and should be investigated.
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    GreylistedForceInstalledMetricsTest,
+    testing::Combine(
+        testing::Values(policy::EnterpriseManagementAuthority::NONE,
+                        policy::EnterpriseManagementAuthority::COMPUTER_LOCAL,
+                        policy::EnterpriseManagementAuthority::CLOUD,
+                        policy::EnterpriseManagementAuthority::CLOUD_DOMAIN),
+        testing::Bool()));
+#endif
 
 }  // namespace extensions

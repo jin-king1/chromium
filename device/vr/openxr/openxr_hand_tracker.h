@@ -5,10 +5,12 @@
 #ifndef DEVICE_VR_OPENXR_OPENXR_HAND_TRACKER_H_
 #define DEVICE_VR_OPENXR_OPENXR_HAND_TRACKER_H_
 
+#include <array>
 #include <optional>
 
 #include "base/memory/raw_ref.h"
 #include "device/vr/openxr/openxr_extension_handler_factory.h"
+#include "device/vr/openxr/openxr_util.h"
 #include "device/vr/public/mojom/openxr_interaction_profile_type.mojom-forward.h"
 #include "device/vr/public/mojom/xr_hand_tracking_data.mojom-forward.h"
 #include "device/vr/public/mojom/xr_session.mojom-shared.h"
@@ -62,6 +64,8 @@ class OpenXrHandTracker {
   // Must not be overridden by subclasses.
   mojom::XRHandTrackingDataPtr GetHandTrackingData() const;
 
+  std::optional<gfx::Transform> GetMojoFromJoint(XrHandJointEXT joint) const;
+
   // Gets an `OpenXrHandController` for this hand tracker if it supports parsing
   // data separately from any interaction profile implementation. A hand tracker
   // should either always return null or always return non-null.
@@ -70,8 +74,9 @@ class OpenXrHandTracker {
  protected:
   bool IsDataValid() const;
 
-  // Used to allow subclasses to append to the `next` chain.
-  virtual void ExtendHandTrackingNextChain(void** next) {}
+  // Used to allow subclasses to append to the `next` chain of
+  // XrHandJointLocationsEXT.
+  virtual void ExtendLocationsNextChain(XrNextChainBuilder& next_chain) {}
 
   // Gets the `base_from_grip` transform, where the `base` space is the one that
   // was passed in to "Update". This is calculated based on the palm position,
@@ -108,11 +113,13 @@ class OpenXrHandTrackerFactory : public OpenXrExtensionHandlerFactory {
 
   const base::flat_set<std::string_view>& GetRequestedExtensions()
       const override;
-  std::set<device::mojom::XRSessionFeature> GetSupportedFeatures(
-      const OpenXrExtensionEnumeration* extension_enum) const override;
+  std::set<device::mojom::XRSessionFeature> GetSupportedFeatures()
+      const override;
 
-  bool IsEnabled(
-      const OpenXrExtensionEnumeration* extension_enum) const override;
+  void CheckAndUpdateEnabledState(
+      const OpenXrExtensionEnumeration* extension_enum,
+      XrInstance instance,
+      XrSystemId system) override;
   std::unique_ptr<OpenXrHandTracker> CreateHandTracker(
       const OpenXrExtensionHelper& extension_helper,
       XrSession session,

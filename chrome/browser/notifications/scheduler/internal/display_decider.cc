@@ -7,12 +7,11 @@
 #include <algorithm>
 
 #include "base/memory/raw_ptr.h"
-#include "base/not_fatal_until.h"
 #include "base/time/clock.h"
 #include "chrome/browser/notifications/scheduler/internal/impression_types.h"
-#include "chrome/browser/notifications/scheduler/internal/notification_entry.h"
 #include "chrome/browser/notifications/scheduler/internal/scheduler_config.h"
 #include "chrome/browser/notifications/scheduler/internal/scheduler_utils.h"
+#include "chrome/browser/notifications/scheduler/public/notification_entry.h"
 
 using Notifications = notifications::DisplayDecider::Notifications;
 using Results = notifications::DisplayDecider::Results;
@@ -84,9 +83,8 @@ class DecisionHelper {
 
     DCHECK(entry->schedule_params.deliver_time_end.has_value());
     bool meet_deliver_time_end =
-        entry->schedule_params.deliver_time_end.has_value()
-            ? now <= entry->schedule_params.deliver_time_end.value()
-            : false;
+        entry->schedule_params.deliver_time_end.has_value() &&
+        now <= entry->schedule_params.deliver_time_end.value();
     if (meet_deliver_time_start && meet_deliver_time_end) {
       return false;
     }
@@ -115,7 +113,7 @@ class DecisionHelper {
     // Circling around all clients to find new notification to show.
     do {
       // Move the iterator to next client type.
-      CHECK(it != clients_.end(), base::NotFatalUntil::M130);
+      CHECK(it != clients_.end());
       if (++it == clients_.end())
         it = clients_.begin();
       ++steps;

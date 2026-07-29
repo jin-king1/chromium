@@ -4,28 +4,28 @@
 
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 
-NSString* const kSkipSigninAccessibilityIdentifier =
-    @"SkipSigninAccessibilityIdentifier";
-NSString* const kAddAccountAccessibilityIdentifier =
-    @"AddAccountAccessibilityIdentifier";
-NSString* const kConfirmationAccessibilityIdentifier =
-    @"ConfirmationAccessibilityIdentifier";
 NSString* const kHistorySyncViewAccessibilityIdentifier =
     @"HistorySyncViewAccessibilityIdentifier";
-NSString* const kMoreAccessibilityIdentifier = @"MoreAccessibilityIdentifier";
-NSString* const kWebSigninAccessibilityIdentifier =
+NSString* const kConsistencySigninAccessibilityIdentifier =
     @"WebSigninAccessibilityIdentifier";
-NSString* const kWebSigninPrimaryButtonAccessibilityIdentifier =
+NSString* const kConsistencySigninPrimaryButtonAccessibilityIdentifier =
     @"WebSigninPrimaryButtonAccessibilityIdentifier";
-NSString* const kWebSigninSkipButtonAccessibilityIdentifier =
+NSString* const kConsistencySigninSkipButtonAccessibilityIdentifier =
     @"WebSigninSkipButtonAccessibilityIdentifier";
-NSString* const kTangibleSyncViewAccessibilityIdentifier =
-    @"TangibleSyncViewAccessibilityIdentifier";
 NSString* const kConsistencyAccountChooserAddAccountIdentifier =
     @"ConsistencyAccountChooserAddAccountIdentifier";
 
 NSString* const kManagedProfileCreationScreenAccessibilityIdentifier =
     @"ManagedProfileCreationScreenAccessibilityIdentifier";
+
+NSString* const kBrowsingDataManagementScreenAccessibilityIdentifier =
+    @"BrowsingDataManagementScreenAccessibilityIdentifier";
+
+NSString* const kManagedProfileCreationNavigationBarAccessibilityIdentifier =
+    @"ManagedProfileCreationNavigationBarAccessibilityIdentifier";
+
+NSString* const kBrowsingDataButtonAccessibilityIdentifier =
+    @"BrowsingDataButtonAccessibilityIdentifier";
 
 NSString* const kKeepBrowsingDataSeparateCellId =
     @"KeepBrowsingDataSeparateCellId";

@@ -7,18 +7,16 @@
 #include <utility>
 
 #include "build/build_config.h"
+#include "chrome/browser/ui/views/apps/app_info_dialog/app_info_dialog_views.h"
 #include "chrome/common/buildflags.h"
-#include "ui/base/accelerators/accelerator.h"
+#include "components/constrained_window/constrained_window_views.h"
+#include "content/public/browser/web_contents.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
-#include "ui/base/resource/resource_bundle.h"
-#include "ui/base/ui_base_types.h"
-#include "ui/events/event_constants.h"
-#include "ui/events/keycodes/keyboard_codes.h"
 #include "ui/gfx/canvas.h"
-#include "ui/gfx/color_palette.h"
+#include "ui/gfx/geometry/size.h"
 #include "ui/views/border.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -26,8 +24,8 @@
 #include "ui/views/widget/widget.h"
 #include "ui/views/window/client_view.h"
 #include "ui/views/window/dialog_delegate.h"
+#include "ui/views/window/frame_view.h"
 #include "ui/views/window/native_frame_view.h"
-#include "ui/views/window/non_client_view.h"
 
 namespace {
 
@@ -39,6 +37,8 @@ const ui::mojom::ModalType kModalType = ui::mojom::ModalType::kWindow;
 const views::BubbleBorder::Shadow kShadowType =
     views::BubbleBorder::STANDARD_SHADOW;
 #endif
+
+constexpr gfx::Size kDialogSize = gfx::Size(380, 490);
 
 // A BubbleFrameView that allows its client view to extend all the way to the
 // top of the dialog, overlapping the BubbleFrameView's close button. This
@@ -62,6 +62,8 @@ class FullSizeBubbleFrameView : public views::BubbleFrameView {
 
 BEGIN_METADATA(FullSizeBubbleFrameView)
 END_METADATA
+
+}  // namespace
 
 // A container view for a native dialog, which sizes to the given fixed |size|.
 class NativeDialogContainer : public views::DialogDelegateView {
@@ -87,7 +89,7 @@ class NativeDialogContainer : public views::DialogDelegateView {
 
  private:
   // Overridden from views::WidgetDelegate:
-  std::unique_ptr<views::NonClientFrameView> CreateNonClientFrameView(
+  std::unique_ptr<views::FrameView> CreateFrameView(
       views::Widget* widget) override {
     auto frame = std::make_unique<FullSizeBubbleFrameView>();
     frame->SetBubbleBorder(std::make_unique<views::BubbleBorder>(
@@ -99,12 +101,21 @@ class NativeDialogContainer : public views::DialogDelegateView {
 BEGIN_METADATA(NativeDialogContainer)
 END_METADATA
 
-}  // namespace
-
-views::DialogDelegateView* CreateDialogContainerForView(
-    std::unique_ptr<views::View> view,
-    const gfx::Size& size,
-    base::OnceClosure close_callback) {
-  return new NativeDialogContainer(std::move(view), size,
-                                   std::move(close_callback));
+void ShowAppInfoInNativeDialog(content::WebContents* web_contents,
+                               Profile* profile,
+                               const extensions::Extension* app,
+                               base::OnceClosure close_callback) {
+  views::DialogDelegate* dialog =
+      new NativeDialogContainer(std::make_unique<AppInfoDialog>(profile, app),
+                                kDialogSize, std::move(close_callback));
+  views::Widget* dialog_widget;
+  if (dialog->GetModalType() == ui::mojom::ModalType::kChild) {
+    dialog_widget =
+        constrained_window::ShowWebModalDialogViews(dialog, web_contents);
+  } else {
+    gfx::NativeWindow window = web_contents->GetTopLevelNativeWindow();
+    dialog_widget =
+        constrained_window::CreateBrowserModalDialogViews(dialog, window);
+    dialog_widget->Show();
+  }
 }

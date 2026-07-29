@@ -6,6 +6,7 @@
 
 #include <limits.h>
 #include <stdint.h>
+
 #include <memory>
 
 #include "base/functional/bind.h"
@@ -25,8 +26,8 @@ HistoryCounter::HistoryCounter(history::HistoryService* history_service,
       web_history_service_callback_(callback),
       sync_tracker_(this, sync_service),
       has_synced_visits_(false),
-      local_counting_finished_(false),
-      web_counting_finished_(false) {
+      web_counting_finished_(false),
+      domain_fetching_finished_(false) {
   DCHECK(history_service_);
 }
 
@@ -42,14 +43,13 @@ bool HistoryCounter::HasTrackedTasksForTesting() {
 }
 
 const char* HistoryCounter::GetPrefName() const {
-  return GetTab() == ClearBrowsingDataTab::BASIC
-             ? browsing_data::prefs::kDeleteBrowsingHistoryBasic
-             : browsing_data::prefs::kDeleteBrowsingHistory;
+  return browsing_data::prefs::kDeleteBrowsingHistory;
 }
 
 history::WebHistoryService* HistoryCounter::GetWebHistoryService() {
-  if (web_history_service_callback_)
+  if (web_history_service_callback_) {
     return web_history_service_callback_.Run();
+  }
   return nullptr;
 }
 
@@ -64,13 +64,14 @@ void HistoryCounter::Count() {
 
   history::WebHistoryService* web_history = GetWebHistoryService();
 
-  local_counting_finished_ = false;
   web_counting_finished_ = !web_history;
+  domain_fetching_finished_ = false;
 
   // Count the locally stored items.
-  history_service_->GetHistoryCount(
+  history_service_->GetUniqueDomainsVisited(
       GetPeriodStart(), GetPeriodEnd(),
-      base::BindOnce(&HistoryCounter::OnGetLocalHistoryCount,
+      history::VisitQuery404sPolicy::kInclude404s,
+      base::BindOnce(&HistoryCounter::OnGetUniqueDomains,
                      weak_ptr_factory_.GetWeakPtr()),
       &cancelable_task_tracker_);
 
@@ -119,51 +120,50 @@ void HistoryCounter::Count() {
   // TODO(msramek): Include web history count when there is an API for it.
 }
 
-void HistoryCounter::OnGetLocalHistoryCount(
-    history::HistoryCountResult result) {
-  // Ensure that all callbacks are on the same thread, so that we do not need
-  // a mutex for |MergeResults|.
-  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  if (!result.success) {
-    return;
-  }
-
-  local_result_ = result.count;
-  local_counting_finished_ = true;
-  MergeResults();
-}
-
 void HistoryCounter::OnGetWebHistoryCount(
     history::WebHistoryService::Request* request,
-    base::optional_ref<const base::Value::Dict> result) {
+    base::optional_ref<const history::WebHistoryService::QueryHistoryResult>
+        result) {
   // Ensure that all callbacks are on the same thread, so that we do not need
-  // a mutex for |MergeResults|.
+  // a mutex for `MergeResults`.
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // If the timeout for this request already fired, ignore the result.
-  if (!web_history_timeout_.IsRunning())
+  if (!web_history_timeout_.IsRunning()) {
     return;
+  }
 
   web_history_timeout_.Stop();
 
   // If the query failed, err on the safe side and inform the user that they
   // may have history items stored in Sync. Otherwise, we expect at least one
-  // entry in the "event" list.
+  // entry in the "events" list.
   if (!result.has_value()) {
     has_synced_visits_ = true;
-  } else if (const base::Value::List* events = result->FindList("event")) {
-    has_synced_visits_ = !events->empty();
   } else {
-    has_synced_visits_ = false;
+    has_synced_visits_ = !result->visits.empty();
   }
   web_counting_finished_ = true;
   MergeResults();
 }
 
+void HistoryCounter::OnGetUniqueDomains(history::DomainsVisitedResult result) {
+  // Ensure that all callbacks are on the same thread, so that we do not need
+  // a mutex for `MergeResults`.
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+  unique_domains_result_ = result.all_visited_domains.size();
+  last_visited_domain_ = result.all_visited_domains.empty()
+                             ? ""
+                             : result.all_visited_domains.front();
+
+  domain_fetching_finished_ = true;
+  MergeResults();
+}
+
 void HistoryCounter::OnWebHistoryTimeout() {
   // Ensure that all callbacks are on the same thread, so that we do not need
-  // a mutex for |MergeResults|.
+  // a mutex for `MergeResults`.
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // If the query timed out, err on the safe side and inform the user that they
@@ -175,11 +175,13 @@ void HistoryCounter::OnWebHistoryTimeout() {
 }
 
 void HistoryCounter::MergeResults() {
-  if (!local_counting_finished_ || !web_counting_finished_)
+  if (!web_counting_finished_ || !domain_fetching_finished_) {
     return;
+  }
 
   ReportResult(std::make_unique<HistoryResult>(
-      this, local_result_, sync_tracker_.IsSyncActive(), has_synced_visits_));
+      this, unique_domains_result_, sync_tracker_.IsSyncActive(),
+      has_synced_visits_, last_visited_domain_));
 }
 
 bool HistoryCounter::IsHistorySyncEnabled(
@@ -190,9 +192,11 @@ bool HistoryCounter::IsHistorySyncEnabled(
 HistoryCounter::HistoryResult::HistoryResult(const HistoryCounter* source,
                                              ResultInt value,
                                              bool is_sync_enabled,
-                                             bool has_synced_visits)
+                                             bool has_synced_visits,
+                                             std::string last_visited_domain)
     : SyncResult(source, value, is_sync_enabled),
-      has_synced_visits_(has_synced_visits) {}
+      has_synced_visits_(has_synced_visits),
+      last_visited_domain_(std::move(last_visited_domain)) {}
 
 HistoryCounter::HistoryResult::~HistoryResult() = default;
 

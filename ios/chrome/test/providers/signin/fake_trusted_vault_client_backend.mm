@@ -47,14 +47,11 @@ NSString* const kFakeTrustedVaultClientBackendErrorDomain =
 }
 
 - (void)simulateUserCancel {
-  __weak __typeof(self) weakSelf = self;
-  [self.presentingViewController
-      dismissViewControllerAnimated:YES
-                         completion:^() {
-                           if (weakSelf.completion) {
-                             weakSelf.completion(NO, nil);
-                           }
-                         }];
+  [self.presentingViewController dismissViewControllerAnimated:YES
+                                                    completion:nil];
+  if (self.completion) {
+    self.completion(NO, nil);
+  }
 }
 
 - (void)viewDidLoad {
@@ -67,11 +64,6 @@ NSString* const kFakeTrustedVaultClientBackendErrorDomain =
 FakeTrustedVaultClientBackend::FakeTrustedVaultClientBackend() = default;
 
 FakeTrustedVaultClientBackend::~FakeTrustedVaultClientBackend() = default;
-
-void FakeTrustedVaultClientBackend::
-    SetDeviceRegistrationPublicKeyVerifierForUMA(VerifierCallback verifier) {
-  // Do nothing.
-}
 
 void FakeTrustedVaultClientBackend::FetchKeys(
     id<SystemIdentity> identity,
@@ -110,6 +102,7 @@ FakeTrustedVaultClientBackend::CancelDialogCallback
 FakeTrustedVaultClientBackend::Reauthentication(
     id<SystemIdentity> identity,
     trusted_vault::SecurityDomainId security_domain_id,
+    trusted_vault::TrustedVaultUserActionTriggerForUMA trigger,
     UIViewController* presenting_view_controller,
     CompletionBlock completion) {
   DCHECK(!view_controller_);

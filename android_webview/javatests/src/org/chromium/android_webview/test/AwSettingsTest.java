@@ -27,10 +27,9 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 
 import org.chromium.android_webview.AwContents;
-import org.chromium.android_webview.AwFeatureMap;
 import org.chromium.android_webview.AwSettings;
-import org.chromium.android_webview.AwSettings.LayoutAlgorithm;
-import org.chromium.android_webview.ManifestMetadataUtil;
+import org.chromium.android_webview.AwWebResourceRequest;
+import org.chromium.android_webview.common.AwFeatureMap;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.test.AwActivityTestRule.TestDependencyFactory;
 import org.chromium.android_webview.test.TestAwContentsClient.DoUpdateVisitedHistoryHelper;
@@ -47,12 +46,12 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.RequiresRestart;
+import org.chromium.base.test.util.Features.DisableFeatures;
+import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.TestFileUtil;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.blink_public.common.BlinkFeatures;
 import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
-import org.chromium.content_public.browser.ContentFeatureList;
-import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.WebContents;
 import org.chromium.content_public.browser.WebContentsObserver;
 import org.chromium.content_public.browser.test.util.HistoryUtils;
@@ -68,9 +67,6 @@ import org.chromium.ui.display.DisplayUtil;
 import java.io.File;
 import java.io.FileInputStream;
 import java.net.URLEncoder;
-import java.util.Collections;
-import java.util.Map;
-import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -155,7 +151,7 @@ public class AwSettingsTest {
 
         protected abstract void doEnsureSettingHasValue(T value) throws Throwable;
 
-        protected String getTitleOnUiThread() throws Exception {
+        protected String getTitleOnUiThread() {
             return mActivityTestRule.getTitleOnUiThread(mAwContents);
         }
 
@@ -353,7 +349,7 @@ public class AwSettingsTest {
     }
 
     class AwSettingsLoadImagesAutomaticallyTestHelper extends AwSettingsTestHelper<Boolean> {
-        private ImagePageGenerator mGenerator;
+        private final ImagePageGenerator mGenerator;
 
         AwSettingsLoadImagesAutomaticallyTestHelper(
                 AwTestContainerView containerView,
@@ -440,8 +436,8 @@ public class AwSettingsTest {
                     getTitleOnUiThread());
         }
 
-        private TestWebServer mWebServer;
-        private ImagePageGenerator mGenerator;
+        private final TestWebServer mWebServer;
+        private final ImagePageGenerator mGenerator;
     }
 
     class AwSettingsDefaultTextEncodingTestHelper extends AwSettingsTestHelper<String> {
@@ -588,49 +584,6 @@ public class AwSettingsTest {
             loadUrlSync(UrlUtils.getIsolatedTestFileUrl(TEST_FILE));
             Assert.assertEquals(
                     value == ENABLED ? HAS_LOCAL_STORAGE : NO_LOCAL_STORAGE, getTitleOnUiThread());
-        }
-    }
-
-    class AwSettingsDatabaseTestHelper extends AwSettingsTestHelper<Boolean> {
-        private static final String TEST_FILE = "android_webview/test/data/database_access.html";
-        private static final String NO_DATABASE = "No database";
-        private static final String HAS_DATABASE = "Has database";
-
-        AwSettingsDatabaseTestHelper(
-                AwTestContainerView containerView, TestAwContentsClient contentViewClient)
-                throws Throwable {
-            super(containerView, contentViewClient, true);
-            AwSettingsTest.assertFileIsReadable(UrlUtils.getIsolatedTestFilePath(TEST_FILE));
-        }
-
-        @Override
-        protected Boolean getAlteredValue() {
-            return ENABLED;
-        }
-
-        @Override
-        protected Boolean getInitialValue() {
-            return DISABLED;
-        }
-
-        @Override
-        protected Boolean getCurrentValue() {
-            return mAwSettings.getDatabaseEnabled();
-        }
-
-        @Override
-        protected void setCurrentValue(Boolean value) {
-            mAwSettings.setDatabaseEnabled(value);
-        }
-
-        @Override
-        protected void doEnsureSettingHasValue(Boolean value) throws Throwable {
-            // It seems accessing the database through a data scheme is not
-            // supported, and fails with a DOM exception (likely a cross-domain
-            // violation).
-            loadUrlSync(UrlUtils.getIsolatedTestFileUrl(TEST_FILE));
-            Assert.assertEquals(
-                    value == ENABLED ? HAS_DATABASE : NO_DATABASE, getTitleOnUiThread());
         }
     }
 
@@ -951,7 +904,7 @@ public class AwSettingsTest {
         }
 
         private int mIndex;
-        private String mTempDir;
+        private final String mTempDir;
     }
 
     // This class provides helper methods for testing of settings related to
@@ -1025,56 +978,8 @@ public class AwSettingsTest {
             return sb.toString();
         }
 
-        private boolean mNeedToWaitForFontSizeChange;
+        protected boolean mNeedToWaitForFontSizeChange;
         private float mOldFontSize;
-    }
-
-    class AwSettingsLayoutAlgorithmTestHelper extends AwSettingsTextAutosizingTestHelper<Integer> {
-        AwSettingsLayoutAlgorithmTestHelper(
-                AwTestContainerView containerView, TestAwContentsClient contentViewClient)
-                throws Throwable {
-            super(containerView, contentViewClient);
-            // Font autosizing doesn't step in for narrow layout widths.
-            mAwSettings.setUseWideViewPort(true);
-        }
-
-        @LayoutAlgorithm
-        @Override
-        protected Integer getAlteredValue() {
-            return AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING;
-        }
-
-        @LayoutAlgorithm
-        @Override
-        protected Integer getInitialValue() {
-            return AwSettings.LAYOUT_ALGORITHM_NARROW_COLUMNS;
-        }
-
-        @LayoutAlgorithm
-        @Override
-        protected Integer getCurrentValue() {
-            return mAwSettings.getLayoutAlgorithm();
-        }
-
-        @Override
-        protected void setCurrentValue(@LayoutAlgorithm Integer value) throws Throwable {
-            super.setCurrentValue(value);
-            mAwSettings.setLayoutAlgorithm(value);
-        }
-
-        @Override
-        protected void doEnsureSettingHasValue(@LayoutAlgorithm Integer value) throws Throwable {
-            final float actualFontSize = getActualFontSize();
-            if (value == AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING) {
-                Assert.assertFalse(
-                        "Actual font size: " + actualFontSize,
-                        actualFontSize == PARAGRAPH_FONT_SIZE);
-            } else {
-                Assert.assertTrue(
-                        "Actual font size: " + actualFontSize,
-                        actualFontSize == PARAGRAPH_FONT_SIZE);
-            }
-        }
     }
 
     class AwSettingsTextZoomTestHelper extends AwSettingsTextAutosizingTestHelper<Integer> {
@@ -1085,66 +990,6 @@ public class AwSettingsTest {
                 AwTestContainerView containerView, TestAwContentsClient contentViewClient)
                 throws Throwable {
             super(containerView, contentViewClient);
-            mInitialActualFontSize = getActualFontSize();
-        }
-
-        @Override
-        protected Integer getAlteredValue() {
-            return INITIAL_TEXT_ZOOM * 2;
-        }
-
-        @Override
-        protected Integer getInitialValue() {
-            return INITIAL_TEXT_ZOOM;
-        }
-
-        @Override
-        protected Integer getCurrentValue() {
-            return mAwSettings.getTextZoom();
-        }
-
-        @Override
-        protected void setCurrentValue(Integer value) throws Throwable {
-            super.setCurrentValue(value);
-            mAwSettings.setTextZoom(value);
-        }
-
-        @Override
-        protected void doEnsureSettingHasValue(Integer value) throws Throwable {
-            final float actualFontSize = getActualFontSize();
-            // Ensure that actual vs. initial font size ratio is similar to actual vs. initial
-            // text zoom values ratio.
-            final float ratiosDelta =
-                    Math.abs(
-                            (actualFontSize / mInitialActualFontSize)
-                                    - (value / (float) INITIAL_TEXT_ZOOM));
-            Assert.assertTrue(
-                    "|("
-                            + actualFontSize
-                            + " / "
-                            + mInitialActualFontSize
-                            + ") - ("
-                            + value
-                            + " / "
-                            + INITIAL_TEXT_ZOOM
-                            + ")| = "
-                            + ratiosDelta,
-                    ratiosDelta <= 0.2f);
-        }
-    }
-
-    class AwSettingsTextZoomAutosizingTestHelper
-            extends AwSettingsTextAutosizingTestHelper<Integer> {
-        private static final int INITIAL_TEXT_ZOOM = 100;
-        private final float mInitialActualFontSize;
-
-        AwSettingsTextZoomAutosizingTestHelper(
-                AwTestContainerView containerView, TestAwContentsClient contentViewClient)
-                throws Throwable {
-            super(containerView, contentViewClient);
-            mAwSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING);
-            // The initial font size can be adjusted by font autosizer depending on the page's
-            // viewport width.
             mInitialActualFontSize = getActualFontSize();
         }
 
@@ -1279,7 +1124,7 @@ public class AwSettingsTest {
                     + "<body onload='tryOpenWindow()'></body></html>";
         }
 
-        private boolean mOpenTwice;
+        private final boolean mOpenTwice;
     }
 
     class AwSettingsCacheModeTestHelper extends AwSettingsTestHelper<Integer> {
@@ -1332,7 +1177,7 @@ public class AwSettingsTest {
         }
 
         private int mIndex;
-        private TestWebServer mWebServer;
+        private final TestWebServer mWebServer;
     }
 
     // To verify whether UseWideViewport works, we check, if the page width specified
@@ -1594,6 +1439,8 @@ public class AwSettingsTest {
         private static final String BAD_SCHEME_URL = "htt://nonsense";
         private static final String PREV_TITLE = "cuencpobgjhfdmdovhmfdkjf";
         private static final int MAX_TIME_LOADING_ERROR_PAGE = 1000;
+
+        @SuppressWarnings("HidingField")
         private final AwContents mAwContents;
 
         AwSettingsWillSuppressErrorPageTestHelper(
@@ -1700,7 +1547,10 @@ public class AwSettingsTest {
 
         private final TestAwContentsClient mContentClient;
         private final AwTestContainerView mTestContainerView;
+
+        @SuppressWarnings("HidingField")
         private final AwContents mAwContents;
+
         private final AwSettings mAwSettings;
 
         public final String mContentMainUrl;
@@ -2174,53 +2024,6 @@ public class AwSettingsTest {
                         views.getContainer0(), views.getClient0()),
                 new AwSettingsDomStorageEnabledTestHelper(
                         views.getContainer1(), views.getClient1()));
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    @RequiresRestart("setDatabaseEnabled is ignored after the first use of WebView in the process")
-    @CommandLineFlags.Add({"enable-features=WebSQLWebViewAccess"})
-    // TODO(crbug.com/395838064): Cleanup test with WebSQLWebViewAccess flag removal.
-    public void testDatabaseInitialValue() throws Throwable {
-        TestAwContentsClient client = new TestAwContentsClient();
-        final AwTestContainerView testContainerView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(client);
-        AwSettingsDatabaseTestHelper helper =
-                new AwSettingsDatabaseTestHelper(testContainerView, client);
-        helper.ensureSettingHasInitialValue();
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    @RequiresRestart("setDatabaseEnabled is ignored after the first use of WebView in the process")
-    @CommandLineFlags.Add({"enable-features=WebSQLWebViewAccess"})
-    // TODO(crbug.com/395838064): Cleanup test with WebSQLWebViewAccess flag removal.
-    public void testDatabaseEnabled() throws Throwable {
-        TestAwContentsClient client = new TestAwContentsClient();
-        final AwTestContainerView testContainerView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(client);
-        AwSettingsDatabaseTestHelper helper =
-                new AwSettingsDatabaseTestHelper(testContainerView, client);
-        helper.setAlteredSettingValue();
-        helper.ensureSettingHasAlteredValue();
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    @RequiresRestart("setDatabaseEnabled is ignored after the first use of WebView in the process")
-    @CommandLineFlags.Add({"enable-features=WebSQLWebViewAccess"})
-    // TODO(crbug.com/395838064): Cleanup test with WebSQLWebViewAccess flag removal.
-    public void testDatabaseDisabled() throws Throwable {
-        TestAwContentsClient client = new TestAwContentsClient();
-        final AwTestContainerView testContainerView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(client);
-        AwSettingsDatabaseTestHelper helper =
-                new AwSettingsDatabaseTestHelper(testContainerView, client);
-        helper.setInitialSettingValue();
-        helper.ensureSettingHasInitialValue();
     }
 
     @Test
@@ -2828,9 +2631,9 @@ public class AwSettingsTest {
     }
 
     private static class AudioEvent {
-        private CallbackHelper mCallback;
+        private final CallbackHelper mCallback;
 
-        public AudioEvent(CallbackHelper callback) {
+        AudioEvent(CallbackHelper callback) {
             mCallback = callback;
         }
 
@@ -2987,33 +2790,11 @@ public class AwSettingsTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "Preferences"})
-    public void testLayoutAlgorithmWithTwoViews() throws Throwable {
-        ViewPair views = createViews();
-        runPerViewSettingsTest(
-                new AwSettingsLayoutAlgorithmTestHelper(views.getContainer0(), views.getClient0()),
-                new AwSettingsLayoutAlgorithmTestHelper(views.getContainer1(), views.getClient1()));
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    public void testTextZoomWithTwoViews() throws Throwable {
+    public void testTextZoomWithTwoViewsWithTextAutosizingDisabled() throws Throwable {
         ViewPair views = createViews();
         runPerViewSettingsTest(
                 new AwSettingsTextZoomTestHelper(views.getContainer0(), views.getClient0()),
                 new AwSettingsTextZoomTestHelper(views.getContainer1(), views.getClient1()));
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    public void testTextZoomAutosizingWithTwoViews() throws Throwable {
-        ViewPair views = createViews();
-        runPerViewSettingsTest(
-                new AwSettingsTextZoomAutosizingTestHelper(
-                        views.getContainer0(), views.getClient0()),
-                new AwSettingsTextZoomAutosizingTestHelper(
-                        views.getContainer1(), views.getClient1()));
     }
 
     @Test
@@ -3549,7 +3330,7 @@ public class AwSettingsTest {
                     @Override
                     public WebResourceResponseInfo shouldInterceptRequest(
                             AwWebResourceRequest request) {
-                        if (request.url.equals(defaultVideoPosterUrl)) {
+                        if (request.getUrl().equals(defaultVideoPosterUrl)) {
                             videoPosterAccessedCallbackHelper.notifyCalled();
                         }
                         return null;
@@ -3702,21 +3483,6 @@ public class AwSettingsTest {
     @Test
     @SmallTest
     @Feature({"AndroidWebView", "Preferences"})
-    @CommandLineFlags.Add({"enable-features=DIPS"})
-    public void testDipsSettingsForWebView() {
-        Map<String, String> mapDipsTtl =
-                ContentFeatureMap.getInstance()
-                        .getFieldTrialParamsForFeature(ContentFeatureList.DIPS_TTL);
-        Assert.assertTrue(mapDipsTtl.size() > 0);
-
-        String expectedTtl = "30d";
-        String gotDipsTtl = mapDipsTtl.get("interaction_ttl");
-        Assert.assertEquals(expectedTtl, gotDipsTtl);
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
     public void testUpdatingUserAgentWhileLoadingCausesReload() throws Throwable {
         final TestAwContentsClient contentClient = new TestAwContentsClient();
         final AwTestContainerView testContainerView =
@@ -3761,16 +3527,22 @@ public class AwSettingsTest {
 
     private static class EmptyDocumentPersistenceTestDependencyFactory
             extends TestDependencyFactory {
-        private boolean mAllow;
+        private final boolean mAllow;
 
-        public EmptyDocumentPersistenceTestDependencyFactory(boolean allow) {
+        EmptyDocumentPersistenceTestDependencyFactory(boolean allow) {
             mAllow = allow;
         }
 
         @Override
-        public AwSettings createAwSettings(Context context, boolean supportsLegacyQuirks) {
+        public AwSettings createAwSettings(
+                AwContents awContents,
+                boolean isAccessFromFileUrlsGrantedByDefault,
+                boolean supportsLegacyQuirks,
+                boolean allowEmptyDocumentPersistence,
+                boolean allowGeolocationOnInsecureOrigins,
+                boolean doNotUpdateSelectionOnMutatingSelectionRange) {
             return new AwSettings(
-                    context,
+                    awContents,
                     /* isAccessFromFileUrlsGrantedByDefault= */ false,
                     supportsLegacyQuirks,
                     mAllow,
@@ -3783,9 +3555,9 @@ public class AwSettingsTest {
         mOverriddenFactory = new EmptyDocumentPersistenceTestDependencyFactory(allow);
 
         final TestAwContentsClient client = new TestAwContentsClient();
-        final AwTestContainerView mContainerView =
+        final AwTestContainerView containerView =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(client);
-        final AwContents awContents = mContainerView.getAwContents();
+        final AwContents awContents = containerView.getAwContents();
         AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
         JSUtils.executeJavaScriptAndWaitForResult(
                 InstrumentationRegistry.getInstrumentation(),
@@ -3819,17 +3591,16 @@ public class AwSettingsTest {
         doAllowEmptyDocumentPersistenceTest(false);
     }
 
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    public void testCssHexAlphaColorEnabled() throws Throwable {
+    private void doTestCssHexAlphaColor(boolean enabled) throws Throwable {
         final TestAwContentsClient client = new TestAwContentsClient();
         final AwTestContainerView view =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(client);
         final AwContents awContents = view.getAwContents();
+        InstrumentationRegistry.getInstrumentation()
+                .runOnMainSync(() -> awContents.getSettings().setCssHexAlphaColorEnabled(enabled));
         CallbackHelper onPageFinishedHelper = client.getOnPageFinishedHelper();
         AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
-        final String expectedTitle = "false"; // https://crbug.com/618472
+        final String expectedTitle = enabled ? "true" : "false"; // https://crbug.com/618472
         final String page =
                 "<!doctype html>"
                         + "<script>"
@@ -3844,17 +3615,37 @@ public class AwSettingsTest {
         Assert.assertEquals(expectedTitle, actualTitle);
     }
 
-    private static class SelectionRangeTestDependencyFactory extends TestDependencyFactory {
-        private boolean mDoNotUpdate;
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testCssHexAlphaColorEnabled() throws Throwable {
+        doTestCssHexAlphaColor(true);
+    }
 
-        public SelectionRangeTestDependencyFactory(boolean doNotUpdate) {
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testCssHexAlphaColorDisabled() throws Throwable {
+        doTestCssHexAlphaColor(false);
+    }
+
+    private static class SelectionRangeTestDependencyFactory extends TestDependencyFactory {
+        private final boolean mDoNotUpdate;
+
+        SelectionRangeTestDependencyFactory(boolean doNotUpdate) {
             mDoNotUpdate = doNotUpdate;
         }
 
         @Override
-        public AwSettings createAwSettings(Context context, boolean supportsLegacyQuirks) {
+        public AwSettings createAwSettings(
+                AwContents awContents,
+                boolean isAccessFromFileUrlsGrantedByDefault,
+                boolean supportsLegacyQuirks,
+                boolean allowEmptyDocumentPersistence,
+                boolean allowGeolocationOnInsecureOrigins,
+                boolean doNotUpdateSelectionOnMutatingSelectionRange) {
             return new AwSettings(
-                    context,
+                    awContents,
                     /* isAccessFromFileUrlsGrantedByDefault= */ false,
                     supportsLegacyQuirks,
                     /* allowEmptyDocumentPersistence= */ false,
@@ -3867,9 +3658,9 @@ public class AwSettingsTest {
         mOverriddenFactory = new SelectionRangeTestDependencyFactory(doNotUpdate);
 
         final TestAwContentsClient client = new TestAwContentsClient();
-        final AwTestContainerView mContainerView =
+        final AwTestContainerView containerView =
                 mActivityTestRule.createAwTestContainerViewOnMainSync(client);
-        final AwContents awContents = mContainerView.getAwContents();
+        final AwContents awContents = containerView.getAwContents();
         AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
         final String testPageHtml =
                 "<html><head></head><body><div id='a' contenteditable></div><script>"
@@ -3958,42 +3749,6 @@ public class AwSettingsTest {
         selectionUpdateOnMutatingSelectionRangeTest(false);
     }
 
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    public void testGetUpdatedXrwAllowList() throws Throwable {
-        TestAwContentsClient contentClient = new TestAwContentsClient();
-        AwTestContainerView testContainerView =
-                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
-        AwContents awContents = testContainerView.getAwContents();
-        AwSettings awSettings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
-
-        final Set<String> allowList = Set.of("https://*.example.com", "https://*.google.com");
-
-        Assert.assertEquals(
-                Collections.emptySet(), awSettings.getRequestedWithHeaderOriginAllowList());
-
-        awSettings.setRequestedWithHeaderOriginAllowList(allowList);
-
-        Assert.assertEquals(allowList, awSettings.getRequestedWithHeaderOriginAllowList());
-    }
-
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView", "Preferences"})
-    public void testXRequestedWithAllowListSetByManifest() throws Throwable {
-        final Set<String> allowList = Set.of("https://*.example.com", "https://*.google.com");
-        try (var a = ManifestMetadataUtil.setXRequestedWithAllowListScopedForTesting(allowList)) {
-            TestAwContentsClient contentClient = new TestAwContentsClient();
-            AwTestContainerView testContainerView =
-                    mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
-            AwContents awContents = testContainerView.getAwContents();
-            AwSettings awSettings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
-            Set<String> changedList = awSettings.getRequestedWithHeaderOriginAllowList();
-            Assert.assertEquals(allowList, changedList);
-        }
-    }
-
     static class ViewPair {
         private final AwTestContainerView mContainer0;
         private final TestAwContentsClient mClient0;
@@ -4036,12 +3791,15 @@ public class AwSettingsTest {
         }
     }
 
-    /*
+    /**
      * Verifies the following statements about a setting:
+     *
+     * <pre>
      *  - initially, the setting has a default value;
      *  - the setting can be switched to an alternate value and back;
      *  - switching a setting in the first WebView doesn't affect the setting
      *    state in the second WebView and vice versa.
+     * </pre>
      *
      * @param helper0 Test helper for the first ContentView
      * @param helper1 Test helper for the second ContentView
@@ -4116,8 +3874,9 @@ public class AwSettingsTest {
         }
     }
 
-    /*
+    /**
      * Verifies the number of resource requests made to the content provider.
+     *
      * @param resource Resource name
      * @param expectedCount Expected resource requests count
      */
@@ -4151,5 +3910,226 @@ public class AwSettingsTest {
 
     private boolean isTablet() {
         return DeviceFormFactor.isNonMultiDisplayContextOnTablet(mActivityTestRule.getActivity());
+    }
+
+    class AwSettingsTextScaleMetaTagTestHelper extends AwSettingsTextAutosizingTestHelper<Integer> {
+        protected final float mInitialActualFontSize;
+        protected static final int INITIAL_TEXT_ZOOM = 100;
+
+        AwSettingsTextScaleMetaTagTestHelper(
+                AwTestContainerView containerView, TestAwContentsClient contentViewClient)
+                throws Throwable {
+            super(containerView, contentViewClient);
+            // Enable JavaScript for reading font size.
+            mAwSettings.setJavaScriptEnabled(true);
+            // Always set autosizing here, but we control it via flags later.
+            mAwSettings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING);
+            mInitialActualFontSize = getActualFontSize();
+        }
+
+        @Override
+        protected String getData() {
+            return "<html>"
+                    + "<head>"
+                    + "<meta name=\"text-scale\" content=\"scale\">"
+                    + "<script>"
+                    + "function setTitleToActualFontSize() {"
+                    + "  document.title = parseFloat(getComputedStyle("
+                    + "    document.getElementById('par'))"
+                    + ".getPropertyValue('font-size'));"
+                    + "}</script></head>"
+                    + "<body>"
+                    + "<p id=\"par\">"
+                    + "Hello, World! Hello, World! "
+                    + "</p>"
+                    + "<p id=\"fixed\" style=\"font-size: 20px\">Fixed Text</p>"
+                    + "<div id=\"env-test\" style=\"width: calc(100px *"
+                    + " env(preferred-text-scale));\"></div>"
+                    + "</body></html>";
+        }
+
+        @Override
+        protected Integer getAlteredValue() {
+            return INITIAL_TEXT_ZOOM * 2;
+        }
+
+        @Override
+        protected Integer getInitialValue() {
+            return INITIAL_TEXT_ZOOM;
+        }
+
+        @Override
+        protected Integer getCurrentValue() {
+            return mAwSettings.getTextZoom();
+        }
+
+        @Override
+        protected void setCurrentValue(Integer value) throws Throwable {
+            super.setCurrentValue(value);
+            mAwSettings.setTextZoom(value);
+        }
+
+        @Override
+        protected void doEnsureSettingHasValue(Integer value) throws Throwable {
+            final float actualFontSize = getActualFontSize();
+            // With OR without the meta tag, setTextZoom should scale the default font size of
+            // medium.
+            float expectedRatio = value / (float) INITIAL_TEXT_ZOOM;
+
+            final float ratiosDelta =
+                    Math.abs((actualFontSize / mInitialActualFontSize) - expectedRatio);
+            Assert.assertTrue(
+                    "|("
+                            + actualFontSize
+                            + " / "
+                            + mInitialActualFontSize
+                            + ") - ("
+                            + expectedRatio
+                            + ")| = "
+                            + ratiosDelta,
+                    ratiosDelta <= 0.2f);
+
+            // Retrieve the size of the text that had a fixed font size.
+            String fixedSizeStr =
+                    executeJavaScriptAndWaitForResult(
+                            "parseFloat(getComputedStyle(document.getElementById('fixed'))"
+                                    + ".getPropertyValue('font-size'))");
+            float fixedSize = Float.parseFloat(fixedSizeStr);
+
+            // Retrieve the value of the environment variable.
+            String envWidthStr =
+                    executeJavaScriptAndWaitForResult(
+                            "parseFloat(getComputedStyle(document.getElementById"
+                                    + "('env-test')).width)");
+            float envWidth = Float.parseFloat(envWidthStr);
+
+            if (AwFeatureMap.isEnabled(BlinkFeatures.TEXT_SCALE_META_TAG)) {
+                Assert.assertEquals("Fixed font size should NOT scale", 20.0f, fixedSize, 0.5f);
+
+                // The meta tag makes us populate env(preferred-text-scale).
+                float expectedWidth = value;
+                Assert.assertEquals(
+                        "env(preferred-text-scale) width", expectedWidth, envWidth, 1.0f);
+
+            } else {
+                // TextScaleMetaTag Disabled: Fixed font size SHOULD scale (legacy behavior).
+                float expectedFixedSize = 20.0f * (value / (float) INITIAL_TEXT_ZOOM);
+                Assert.assertEquals(
+                        "Fixed font size should scale", expectedFixedSize, fixedSize, 2.0f);
+
+                Assert.assertEquals(
+                        "no meta & no autosizing? env(preferred-text-scale) should be 1 ",
+                        100.0f,
+                        envWidth,
+                        1.0f);
+            }
+        }
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(BlinkFeatures.TEXT_SCALE_META_TAG)
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testTextScaleMetaTagWithTwoViews() throws Throwable {
+        ViewPair views = createViews();
+        runPerViewSettingsTest(
+                new AwSettingsTextScaleMetaTagTestHelper(views.getContainer0(), views.getClient0()),
+                new AwSettingsTextScaleMetaTagTestHelper(
+                        views.getContainer1(), views.getClient1()));
+    }
+
+    @Test
+    @SmallTest
+    @DisableFeatures(BlinkFeatures.TEXT_SCALE_META_TAG)
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testTextScaleMetaTagWithTwoViewsDisabled() throws Throwable {
+        ViewPair views = createViews();
+        runPerViewSettingsTest(
+                new AwSettingsTextScaleMetaTagTestHelper(views.getContainer0(), views.getClient0()),
+                new AwSettingsTextScaleMetaTagTestHelper(
+                        views.getContainer1(), views.getClient1()));
+    }
+
+    @Test
+    @SmallTest
+    @EnableFeatures(AwFeatures.WEBVIEW_GATE_TEXT_SIZE_ADJUST_ON_TEXT_AUTOSIZING)
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testTextSizeAdjustGatedByTextAutosizing() throws Throwable {
+        final TestAwContentsClient contentClient = new TestAwContentsClient();
+        final AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        final AwContents awContents = testContainerView.getAwContents();
+        final AwSettings settings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+
+        // Enable JS to read computed styles.
+        settings.setJavaScriptEnabled(true);
+
+        final String html =
+                "<html><head><style>"
+                        + "body { font-size: 10px; text-size-adjust: 200%; }"
+                        + "</style></head><body><div id='target'>test</div></body></html>";
+
+        mActivityTestRule.loadDataSync(
+                awContents, contentClient.getOnPageFinishedHelper(), html, "text/html", false);
+
+        String fontSizeStr =
+                mActivityTestRule.executeJavaScriptAndWaitForResult(
+                        awContents,
+                        contentClient,
+                        "window.getComputedStyle(document.getElementById('target')).fontSize");
+
+        Assert.assertEquals(
+                "Before LAYOUT_ALGORITHM_TEXT_AUTOSIZING is set, text-size-adjust is ignored.",
+                "\"10px\"",
+                fontSizeStr);
+
+        settings.setLayoutAlgorithm(AwSettings.LAYOUT_ALGORITHM_TEXT_AUTOSIZING);
+
+        // We must reload the page so the WebPreferences update applies.
+        mActivityTestRule.loadDataSync(
+                awContents, contentClient.getOnPageFinishedHelper(), html, "text/html", false);
+
+        fontSizeStr =
+                mActivityTestRule.executeJavaScriptAndWaitForResult(
+                        awContents,
+                        contentClient,
+                        "window.getComputedStyle(document.getElementById('target')).fontSize");
+
+        Assert.assertEquals(
+                "After LAYOUT_ALGORITHM_TEXT_AUTOSIZING is set, text-size-adjust is obeyed.",
+                "\"20px\"",
+                fontSizeStr);
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView", "Preferences"})
+    public void testTextSizeAdjustAlwaysObeyed() throws Throwable {
+        final TestAwContentsClient contentClient = new TestAwContentsClient();
+        final AwTestContainerView testContainerView =
+                mActivityTestRule.createAwTestContainerViewOnMainSync(contentClient);
+        final AwContents awContents = testContainerView.getAwContents();
+        final AwSettings settings = mActivityTestRule.getAwSettingsOnUiThread(awContents);
+
+        settings.setJavaScriptEnabled(true);
+
+        final String html =
+                "<html><head><style>"
+                        + "body { font-size: 10px; text-size-adjust: 200%; }"
+                        + "</style></head><body><div id='target'>test</div></body></html>";
+
+        mActivityTestRule.loadDataSync(
+                awContents, contentClient.getOnPageFinishedHelper(), html, "text/html", false);
+
+        String fontSizeStr =
+                mActivityTestRule.executeJavaScriptAndWaitForResult(
+                        awContents,
+                        contentClient,
+                        "window.getComputedStyle(document.getElementById('target')).fontSize");
+
+        Assert.assertEquals(
+                "Even without LAYOUT_ALGORITHM_TEXT_AUTOSIZING set, text-size-adjust is obeyed.",
+                "\"20px\"",
+                fontSizeStr);
     }
 }

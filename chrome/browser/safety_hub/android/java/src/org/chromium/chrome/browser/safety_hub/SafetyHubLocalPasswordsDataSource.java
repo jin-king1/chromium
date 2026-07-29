@@ -5,9 +5,10 @@
 package org.chromium.chrome.browser.safety_hub;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 
+import org.chromium.base.ObserverList;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.password_manager.PasswordStoreBridge;
 import org.chromium.chrome.browser.password_manager.PasswordStoreCredential;
@@ -21,10 +22,11 @@ import java.lang.annotation.RetentionPolicy;
  * DataSource for the Safety Hub local password module. Listens to changes of local passwords and
  * their state, and notifies its observer of the current module type.
  */
+@NullMarked
 public class SafetyHubLocalPasswordsDataSource
         implements SafetyHubFetchService.Observer, PasswordStoreBridge.PasswordStoreObserver {
     interface Observer {
-        void stateChanged(@ModuleType int moduleType);
+        void localPasswordsStateChanged(@ModuleType int moduleType);
     }
 
     /**
@@ -52,59 +54,78 @@ public class SafetyHubLocalPasswordsDataSource
         int HAS_REUSED_PASSWORDS = 5;
     };
 
-    @NonNull private final SafetyHubModuleDelegate mModuleDelegate;
-    @NonNull private final PrefService mPrefService;
-    @NonNull private final SafetyHubFetchService mSafetyHubFetchService;
-    @Nullable private final PasswordStoreBridge mPasswordStoreBridge;
-
-    private Observer mObserver;
+    private final SafetyHubModuleDelegate mModuleDelegate;
+    private final PrefService mPrefService;
+    private final SafetyHubFetchService mSafetyHubFetchService;
+    private final @Nullable PasswordStoreBridge mPasswordStoreBridge;
+    private final ObserverList<Observer> mObservers;
 
     private int mCompromisedPasswordCount;
     private int mReusedPasswordCount;
     private int mWeakPasswordCount;
+    private @ModuleType int mModuleType;
+
+    private boolean mSavedPasswordsAvailable;
+    private boolean mLocalPasswordCountsAvailable;
 
     SafetyHubLocalPasswordsDataSource(
-            @NonNull SafetyHubModuleDelegate moduleDelegate,
-            @NonNull PrefService prefService,
-            @NonNull SafetyHubFetchService safetyHubFetchService,
+            SafetyHubModuleDelegate moduleDelegate,
+            PrefService prefService,
+            SafetyHubFetchService safetyHubFetchService,
             @Nullable PasswordStoreBridge passwordStoreBridge) {
         mModuleDelegate = moduleDelegate;
         mPrefService = prefService;
         mSafetyHubFetchService = safetyHubFetchService;
         mPasswordStoreBridge = passwordStoreBridge;
+        mObservers = new ObserverList<>();
     }
 
     public void setUp() {
         mSafetyHubFetchService.addObserver(this);
         if (mPasswordStoreBridge != null) {
-            mPasswordStoreBridge.addObserver(this, true);
+            mPasswordStoreBridge.addObserver(this, /* callImmediatelyIfReady= */ true);
         }
     }
 
+    /**
+     * Attempts to trigger a password check in the background.
+     *
+     * @return {@code true} if the checkup will be performed. Otherwise, returns {@code false}, e.g.
+     *     when the last checkup results are within the cool down period.
+     */
     public boolean maybeTriggerPasswordCheckup() {
-        // TODO(crbug.com/388788969): Only trigger the checkup if it can be ran.
         // After triggering the checkup, this data source will be notified of
         // changes to the count values via @{link localPasswordCountsChanged}.
-        mSafetyHubFetchService.runLocalPasswordCheckup();
-        return true;
+        return mSafetyHubFetchService.runLocalPasswordCheckup();
     }
 
     public void updateState() {
+        if (!canUpdateState()) {
+            return;
+        }
+
         updateCompromisedPasswordCount();
         updateReusedPasswordCount();
         updateWeakPasswordCount();
+        mModuleType = calculateModuleType();
 
-        if (mObserver != null) {
-            mObserver.stateChanged(getModuleType());
+        for (Observer observer : mObservers) {
+            observer.localPasswordsStateChanged(mModuleType);
         }
     }
 
-    public void setObserver(Observer observer) {
-        mObserver = observer;
+    public void addObserver(Observer observer) {
+        mObservers.addObserver(observer);
+    }
+
+    public @ModuleType int getModuleType() {
+        return mModuleType;
     }
 
     // Returns the password module type according to the application state.
-    private @ModuleType int getModuleType() {
+    private @ModuleType int calculateModuleType() {
+        assert canUpdateState();
+
         if (getTotalPasswordCount() == 0) {
             return ModuleType.NO_SAVED_PASSWORDS;
         }
@@ -131,6 +152,10 @@ public class SafetyHubLocalPasswordsDataSource
 
     public int getCompromisedPasswordCount() {
         return mCompromisedPasswordCount;
+    }
+
+    private boolean canUpdateState() {
+        return mSavedPasswordsAvailable && mLocalPasswordCountsAvailable;
     }
 
     private void updateCompromisedPasswordCount() {
@@ -170,7 +195,7 @@ public class SafetyHubLocalPasswordsDataSource
         if (mPasswordStoreBridge != null) {
             mPasswordStoreBridge.removeObserver(this);
         }
-        mObserver = null;
+        mObservers.clear();
     }
 
     @Override
@@ -185,11 +210,13 @@ public class SafetyHubLocalPasswordsDataSource
 
     @Override
     public void localPasswordCountsChanged() {
+        mLocalPasswordCountsAvailable = true;
         updateState();
     }
 
     @Override
     public void onSavedPasswordsChanged(int count) {
+        mSavedPasswordsAvailable = true;
         updateState();
     }
 
@@ -205,5 +232,9 @@ public class SafetyHubLocalPasswordsDataSource
 
     private boolean passwordSavingEnabled() {
         return mPrefService.getBoolean(Pref.CREDENTIALS_ENABLE_SERVICE);
+    }
+
+    public void triggerNewCredentialFetch() {
+        mSafetyHubFetchService.fetchLocalCredentialsCount();
     }
 }

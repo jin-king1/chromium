@@ -86,6 +86,27 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
   return self;
 }
 
+#pragma mark - NSObject
+
+// Overriden to return NO for
+// -webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:
+// if there is no delegate or `delegate->CanRunOpenPanel()` returns false.
+- (BOOL)respondsToSelector:(SEL)selector {
+  SEL runOpenPanelWithParametersSelector = @selector
+      (webView:runOpenPanelWithParameters:initiatedByFrame:completionHandler:);
+  if (selector == runOpenPanelWithParametersSelector) {
+    if (@available(iOS 18.4, *)) {
+      return self.webStateImpl->IsCustomOpenPanelSupported() &&
+             web::GetWebClient()->CanRunOpenPanel(self.webStateImpl);
+    } else {
+      NOTREACHED() << "@selector(-webView:runOpenPanelWithParameters:"
+                      "initiatedByFrame:completionHandler:) only exists on "
+                      "18.4+ so it should not be used in former versions.";
+    }
+  }
+  return [super respondsToSelector:selector];
+}
+
 #pragma mark - CRWWebViewHandler
 
 - (void)close {
@@ -224,8 +245,9 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
     return;
   }
 
+  url::Origin origin = web::OriginWithWKSecurityOrigin(frame.securityOrigin);
   self.webStateImpl->RunJavaScriptAlertDialog(
-      requestURL, message, base::BindOnce(completionHandler));
+      origin, message, base::BindOnce(completionHandler));
 }
 
 - (void)webView:(WKWebView*)webView
@@ -242,8 +264,9 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
     return;
   }
 
+  url::Origin origin = web::OriginWithWKSecurityOrigin(frame.securityOrigin);
   self.webStateImpl->RunJavaScriptConfirmDialog(
-      requestURL, message, base::BindOnce(completionHandler));
+      origin, message, base::BindOnce(completionHandler));
 }
 
 - (void)webView:(WKWebView*)webView
@@ -252,8 +275,8 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
                          initiatedByFrame:(WKFrameInfo*)frame
                         completionHandler:
                             (void (^)(NSString* result))completionHandler {
-  GURL origin(web::GURLOriginWithWKSecurityOrigin(frame.securityOrigin));
-  if (web::GetWebClient()->IsAppSpecificURL(origin)) {
+  GURL origin_url(web::GURLOriginWithWKSecurityOrigin(frame.securityOrigin));
+  if (web::GetWebClient()->IsAppSpecificURL(origin_url)) {
     std::string mojoResponse =
         self.mojoFacade->HandleMojoMessage(base::SysNSStringToUTF8(prompt));
     completionHandler(base::SysUTF8ToNSString(mojoResponse));
@@ -269,8 +292,9 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
     return;
   }
 
+  url::Origin origin = web::OriginWithWKSecurityOrigin(frame.securityOrigin);
   self.webStateImpl->RunJavaScriptPromptDialog(
-      requestURL, prompt, defaultText, base::BindOnce(completionHandler));
+      origin, prompt, defaultText, base::BindOnce(completionHandler));
 }
 
 - (void)webView:(WKWebView*)webView
@@ -303,6 +327,25 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
   delegate->ContextMenuWillCommitWithAnimator(self.webStateImpl, animator);
 }
 
+- (void)webView:(WKWebView*)webView
+    runOpenPanelWithParameters:(WKOpenPanelParameters*)parameters
+              initiatedByFrame:(WKFrameInfo*)frame
+             completionHandler:(void (^)(NSArray<NSURL*>*))completionHandler
+    API_AVAILABLE(ios(18.4)) {
+  CHECK(self.webStateImpl->IsCustomOpenPanelSupported())
+      << "-[CRWWKUIHandler "
+         "webView:runOpenPanelWithParameters:initiatedByFrame:"
+         "completionHandler:] was called while "
+         "self.webStateImpl->IsCustomOpenPanelSupported() returned false.";
+  CHECK(web::GetWebClient()->CanRunOpenPanel(self.webStateImpl))
+      << "-[CRWWKUIHandler "
+         "webView:runOpenPanelWithParameters:initiatedByFrame:"
+         "completionHandler:] was called while "
+         "web::GetWebClient()->CanRunOpenPanel() returned false.";
+  web::GetWebClient()->RunOpenPanel(self.webStateImpl, parameters, frame,
+                                    base::BindOnce(completionHandler));
+}
+
 #pragma mark - CRWMediaCapturePermissionPresenter
 
 - (web::WebStateImpl*)presentingWebState {
@@ -320,6 +363,10 @@ void RecordHistogramForPermissionRequestForWKMediaCaptureType(
   // JavaScript dialogs should not be presented if there is no information about
   // the requesting page's URL.
   if (!requestURL.is_valid()) {
+    return NO;
+  }
+
+  if (!self.webStateImpl->IsVisible()) {
     return NO;
   }
 

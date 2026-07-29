@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "media/audio/audio_input_device.h"
 
 #include <utility>
@@ -20,10 +15,8 @@
 #include "base/synchronization/waitable_event.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/gmock_callback_support.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "media/base/audio_glitch_info.h"
-#include "media/base/media_switches.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -105,7 +98,7 @@ class AssertingCaptureCallback : public AudioCapturerSource::CaptureCallback {
   base::WaitableEvent capture_called_event_;
 };
 
-}  // namespace.
+}  // namespace
 
 class AudioInputDeviceTest
     : public ::testing::TestWithParam<AudioInputDevice::DeadStreamDetection> {
@@ -120,7 +113,7 @@ class AudioInputDeviceTest
     shared_memory_ = base::UnsafeSharedMemoryRegion::Create(memory_size);
     shared_memory_mapping_ = shared_memory_.Map();
     ASSERT_TRUE(shared_memory_.IsValid());
-    memset(shared_memory_mapping_.memory(), 0xff, memory_size);
+    std::ranges::fill(shared_memory_mapping_, 0xff);
 
     ASSERT_TRUE(
         CancelableSyncSocket::CreatePair(&browser_socket_, &renderer_socket_));
@@ -166,7 +159,6 @@ class AudioInputDeviceTest
   const AudioGlitchInfo glitch_info_{.duration = base::Microseconds(20000),
                                      .count = 2};
   raw_ptr<AudioInputBuffer> buffer_;
-  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Regular construction.
@@ -214,42 +206,13 @@ TEST_P(AudioInputDeviceTest, CreateStream) {
 
 TEST_P(AudioInputDeviceTest, CaptureCallback) {
   base::test::TaskEnvironment ste;
-  CreateInputDevice();
-
-  uint32_t buffer_index = 0;
-  browser_socket_.Send(base::byte_span_from_ref(buffer_index));
-
-  EXPECT_CALL(*capture_callback_, OnCaptureError(_, _)).Times(0);
-  EXPECT_CALL(*capture_callback_, VerifyCapture(capture_time_, glitch_info_));
-
-  device_->Start();
-  ste.RunUntilIdle();
-
-  // The capture occurs on another thread, wait for it.
-  capture_callback_->WaitForCapture();
-
-  // We expect to get 1 as the confirmation that the AudioInputDevice has read
-  // the buffer.
-  uint32_t confirmation_signal;
-  size_t bytes_read =
-      browser_socket_.Receive(base::byte_span_from_ref(confirmation_signal));
-  EXPECT_EQ(bytes_read, sizeof(confirmation_signal));
-  EXPECT_EQ(confirmation_signal, 1u);
-
-  device_->Stop();
-}
-
-TEST_P(AudioInputDeviceTest, ConfirmReadsViaShmemFlag) {
-  base::test::TaskEnvironment ste;
-
-  scoped_feature_list_.InitWithFeatures(
-      {base::test::FeatureRef(media::kAudioInputConfirmReadsViaShmem)}, {});
 
   CreateInputDevice();
 
   // Set the confirmation flag to 1. The AudioInputDevice should reset this to 0
   // after delivering audio.
-  base::subtle::Release_Store(&(buffer_->params.has_unread_data), 1);
+  std::atomic_ref<uint32_t> has_unread_data(buffer_->params.has_unread_data);
+  has_unread_data.store(1, std::memory_order_release);
   uint32_t buffer_index = 0;
   browser_socket_.Send(base::byte_span_from_ref(buffer_index));
 
@@ -270,11 +233,11 @@ TEST_P(AudioInputDeviceTest, ConfirmReadsViaShmemFlag) {
   while (!got_confirmation_signal &&
          base::TimeTicks::Now() - started_wait < base::Seconds(10)) {
     got_confirmation_signal =
-        base::subtle::NoBarrier_Load(&(buffer_->params.has_unread_data)) == 0;
+        has_unread_data.load(std::memory_order_relaxed) == 0;
   }
   EXPECT_TRUE(got_confirmation_signal);
 
-  // When the optimization is enabled, we don't send confirmation signals.
+  // We don't send confirmation signals via the socket.
   EXPECT_EQ(browser_socket_.Peek(), 0u);
 
   device_->Stop();
@@ -309,4 +272,4 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(AudioInputDevice::DeadStreamDetection::kDisabled,
                       AudioInputDevice::DeadStreamDetection::kEnabled));
 
-}  // namespace media.
+}  // namespace media

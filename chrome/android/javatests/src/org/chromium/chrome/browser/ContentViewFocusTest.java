@@ -20,6 +20,7 @@ import org.junit.runner.RunWith;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
@@ -27,13 +28,14 @@ import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.base.test.util.Restriction;
 import org.chromium.base.test.util.UrlUtils;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.compositor.layouts.LayoutManagerImpl;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.layouts.LayoutTestUtils;
 import org.chromium.chrome.browser.layouts.LayoutType;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.AutoResetCtaTransitTestRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.browser_ui.widget.gesture.SwipeGestureListener.ScrollDirection;
 import org.chromium.components.browser_ui.widget.gesture.SwipeGestureListener.SwipeHandler;
@@ -50,13 +52,15 @@ import java.util.ArrayDeque;
 /** Test suite for ContentView focus and its interaction with Tab switcher, Tab swiping, etc. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
+@Batch(Batch.PER_CLASS)
 public class ContentViewFocusTest {
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public AutoResetCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.autoResetCtaActivityRule();
 
     private static final int WAIT_RESPONSE_MS = 2000;
 
-    private final ArrayDeque<Boolean> mFocusChanges = new ArrayDeque<Boolean>();
+    private final ArrayDeque<Boolean> mFocusChanges = new ArrayDeque<>();
 
     private String mTitle;
 
@@ -111,16 +115,16 @@ public class ContentViewFocusTest {
      *     Exception @MediumTest @Feature({"TabContents"}) @Restriction(UiRestriction.RESTRICTION_TYPE_PHONE)
      */
     @Test
-    @DisabledTest(message = "http://crbug.com/172473")
+    @DisabledTest(message = "http://crbug.com/40961297")
     public void testHideSelectionOnPhoneTabSwiping() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         // Setup
         ChromeTabUtils.newTabsFromMenu(
                 InstrumentationRegistry.getInstrumentation(), mActivityTestRule.getActivity(), 2);
         String url =
                 UrlUtils.getIsolatedTestFileUrl(
                         "chrome/test/data/android/content_view_focus/content_view_focus_long_text.html");
-        mActivityTestRule.loadUrl(url);
+        mActivityTestRule.getActivityTestRule().loadUrl(url);
         View view = mActivityTestRule.getActivity().getActivityTab().getContentView();
 
         // Give the content view focus
@@ -177,9 +181,9 @@ public class ContentViewFocusTest {
     @MediumTest
     @Feature({"TabContents"})
     @Restriction(DeviceFormFactor.PHONE)
-    @DisabledTest(message = "http://crbug.com/967128")
+    @DisabledTest(message = "http://crbug.com/40629209")
     public void testHideSelectionOnPhoneTabSwitcher() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         // Setup
         View currentView = mActivityTestRule.getActivity().getActivityTab().getContentView();
         addFocusChangedListener(currentView);
@@ -191,7 +195,7 @@ public class ContentViewFocusTest {
         TouchCommon.singleClickView(
                 mActivityTestRule.getActivity().findViewById(R.id.tab_switcher_button));
         LayoutTestUtils.waitForLayout(
-                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.TAB_SWITCHER);
+                mActivityTestRule.getActivity().getLayoutManager(), LayoutType.HUB);
 
         // Make sure the view loses focus. It is immediately given focus back
         // because it's the only focusable view.
@@ -213,7 +217,7 @@ public class ContentViewFocusTest {
     @Test
     @MediumTest
     public void testPauseTriggersBlur() throws Exception {
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mActivityTestRule.startOnBlankPage();
         final WebContents webContents = mActivityTestRule.getWebContents();
         final CallbackHelper onTitleUpdatedHelper = new CallbackHelper();
         final WebContentsObserver observer =
@@ -231,7 +235,7 @@ public class ContentViewFocusTest {
         String url =
                 UrlUtils.getIsolatedTestFileUrl(
                         "chrome/test/data/android/content_view_focus/content_view_blur_focus.html");
-        mActivityTestRule.loadUrl(url);
+        mActivityTestRule.getActivityTestRule().loadUrl(url);
         ViewEventSink eventSink = WebContentsUtils.getViewEventSink(webContents);
         onTitleUpdatedHelper.waitForCallback(callCount);
         // The document can start out as focused or not focused at first, depending on whether a
@@ -239,12 +243,15 @@ public class ContentViewFocusTest {
         Assert.assertTrue("initial".equals(mTitle) || "focused".equals(mTitle));
         callCount = onTitleUpdatedHelper.getCallCount();
 
-        PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, () -> eventSink.onPauseForTesting());
+        PostTask.runOrPostTask(
+                TaskTraits.UI_DEFAULT,
+                () -> eventSink.onActivityTopResumedChangedForTesting(false));
         onTitleUpdatedHelper.waitForCallback(callCount);
         Assert.assertEquals("blurred", mTitle);
         callCount = onTitleUpdatedHelper.getCallCount();
 
-        PostTask.runOrPostTask(TaskTraits.UI_DEFAULT, () -> eventSink.onResumeForTesting());
+        PostTask.runOrPostTask(
+                TaskTraits.UI_DEFAULT, () -> eventSink.onActivityTopResumedChangedForTesting(true));
         onTitleUpdatedHelper.waitForCallback(callCount);
         Assert.assertEquals("focused", mTitle);
         ThreadUtils.runOnUiThreadBlocking(() -> observer.observe(null));

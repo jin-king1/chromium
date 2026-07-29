@@ -31,12 +31,11 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_SVG_PROPERTIES_SVG_PROPERTY_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_SVG_PROPERTIES_SVG_PROPERTY_H_
 
+#include <concepts>
+
 #include "third_party/blink/renderer/core/svg/properties/svg_property_info.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
-
-namespace WTF {
-class String;
-}  // namespace WTF
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 
 namespace blink {
 
@@ -53,12 +52,7 @@ class SVGPropertyBase : public GarbageCollected<SVGPropertyBase> {
 
   virtual ~SVGPropertyBase() = default;
 
-  // FIXME: remove this in WebAnimations transition.
-  // This is used from SVGAnimatedNewPropertyAnimator for its animate-by-string
-  // implementation.
-  virtual SVGPropertyBase* CloneForAnimation(const WTF::String&) const = 0;
-
-  virtual WTF::String ValueAsString() const = 0;
+  virtual String ValueAsString() const = 0;
 
   // Set the initial value based on a per-type defined (encoded) value. Overload
   // this in the specific subclass to handle initial values, and set
@@ -68,7 +62,8 @@ class SVGPropertyBase : public GarbageCollected<SVGPropertyBase> {
 
   // FIXME: remove below and just have this inherit AnimatableValue in
   // WebAnimations transition.
-  virtual void Add(const SVGPropertyBase*, const SVGElement*) = 0;
+  // Returns false if addition fails (e.g. structurally incompatible values).
+  virtual bool Add(const SVGPropertyBase*, const SVGElement*) = 0;
   virtual void CalculateAnimatedValue(
       const SMILAnimationEffectParameters&,
       float percentage,
@@ -89,8 +84,8 @@ class SVGPropertyBase : public GarbageCollected<SVGPropertyBase> {
 };
 
 template <typename T>
-struct ThreadingTrait<T,
-                      std::enable_if_t<std::is_base_of_v<SVGPropertyBase, T>>> {
+  requires(std::derived_from<T, SVGPropertyBase>)
+struct ThreadingTrait<T> {
   static constexpr ThreadAffinity kAffinity = kMainThreadOnly;
 };
 

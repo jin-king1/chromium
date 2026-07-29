@@ -13,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
 #include "build/chromeos_buildflags.h"
@@ -47,7 +48,7 @@ const char kSimpleArticleIFramePath[] =
 const char kArticlePath[] = "/dom_distiller/og_article.html";
 const char kNonArticlePath[] = "/dom_distiller/non_og_article.html";
 
-auto kAllPaths = std::to_array<const char*>({
+constexpr auto kAllPaths = std::to_array<const char*>({
     kSimpleArticlePath,
     kSimpleArticleIFramePath,
     kArticlePath,

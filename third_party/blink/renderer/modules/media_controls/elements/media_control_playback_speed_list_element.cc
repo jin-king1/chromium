@@ -6,7 +6,6 @@
 
 #include <array>
 
-#include "base/metrics/histogram_functions.h"
 #include "third_party/blink/public/strings/grit/blink_strings.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_scroll_into_view_options.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_union_boolean_scrollintoviewoptions.h"
@@ -31,22 +30,6 @@ namespace blink {
 
 namespace {
 
-// This enum is used to record histograms. Do not reorder.
-enum class MediaControlsPlaybackSpeed {
-  k0_25X = 0,
-  k0_5X,
-  k0_75X,
-  k1X,
-  k1_25X,
-  k1_5X,
-  k1_75X,
-  k2X,
-  kMaxValue = k2X,
-};
-
-void RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed playback_speed) {
-  base::UmaHistogramEnumeration("Media.Controls.PlaybackSpeed", playback_speed);
-}
 
 struct PlaybackSpeed {
   const int display_name;
@@ -100,7 +83,7 @@ MediaControlPlaybackSpeedListElement::MediaControlPlaybackSpeedListElement(
     : MediaControlPopupMenuElement(media_controls) {
   setAttribute(html_names::kRoleAttr, AtomicString("menu"));
   setAttribute(html_names::kAriaLabelAttr,
-               WTF::AtomicString(GetLocale().QueryString(
+               AtomicString(GetLocale().QueryString(
                    IDS_MEDIA_OVERFLOW_MENU_PLAYBACK_SPEED_SUBMENU_TITLE)));
   SetShadowPseudoId(
       AtomicString("-internal-media-controls-playback-speed-list"));
@@ -128,7 +111,7 @@ void MediaControlPlaybackSpeedListElement::DefaultEventHandler(Event& event) {
     event.SetDefaultHandled();
   } else if (event.type() == event_type_names::kChange) {
     // Identify which input element was selected and update playback speed
-    Node* target = event.target()->ToNode();
+    Node* target = event.RawTarget()->ToNode();
     if (!target || !target->IsElementNode())
       return;
 
@@ -137,25 +120,6 @@ void MediaControlPlaybackSpeedListElement::DefaultEventHandler(Event& event) {
     MediaElement().setDefaultPlaybackRate(playback_rate);
     MediaElement().setPlaybackRate(playback_rate);
 
-    if (playback_rate == 0.25) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k0_25X);
-    } else if (playback_rate == 0.5) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k0_5X);
-    } else if (playback_rate == 0.75) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k0_75X);
-    } else if (playback_rate == 1.0) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k1X);
-    } else if (playback_rate == 1.25) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k1_25X);
-    } else if (playback_rate == 1.5) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k1_5X);
-    } else if (playback_rate == 1.75) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k1_75X);
-    } else if (playback_rate == 2.0) {
-      RecordPlaybackSpeedUMA(MediaControlsPlaybackSpeed::k2X);
-    } else {
-      NOTREACHED();
-    }
 
     // Close the playback speed list.
     SetIsWanted(false);
@@ -199,7 +163,7 @@ Element* MediaControlPlaybackSpeedListElement::CreatePlaybackSpeedListItem(
   playback_speed_label_span->setAttribute(html_names::kAriaHiddenAttr,
                                           keywords::kTrue);
   playback_speed_item->setAttribute(html_names::kAriaLabelAttr,
-                                    WTF::AtomicString(playback_speed_label));
+                                    AtomicString(playback_speed_label));
   playback_speed_item->ParserAppendChild(playback_speed_label_span);
   playback_speed_item->ParserAppendChild(playback_speed_item_input);
 
@@ -214,7 +178,7 @@ Element* MediaControlPlaybackSpeedListElement::CreatePlaybackSpeedHeaderItem() {
       Text::Create(GetDocument(),
                    GetLocale().QueryString(
                        IDS_MEDIA_OVERFLOW_MENU_PLAYBACK_SPEED_SUBMENU_TITLE)));
-  header_item->setAttribute(html_names::kRoleAttr, AtomicString("button"));
+  header_item->setAttribute(html_names::kRoleAttr, keywords::kButton);
   header_item->setAttribute(html_names::kAriaLabelAttr,
                             AtomicString(GetLocale().QueryString(
                                 IDS_AX_MEDIA_BACK_TO_OPTIONS_BUTTON)));
@@ -224,7 +188,7 @@ Element* MediaControlPlaybackSpeedListElement::CreatePlaybackSpeedHeaderItem() {
 
 void MediaControlPlaybackSpeedListElement::RefreshPlaybackSpeedListMenu() {
   EventDispatchForbiddenScope::AllowUserAgentEvents allow_events;
-  RemoveChildren(kOmitSubtreeModifiedEvent);
+  RemoveChildren();
 
   ParserAppendChild(CreatePlaybackSpeedHeaderItem());
 
@@ -237,23 +201,23 @@ void MediaControlPlaybackSpeedListElement::RefreshPlaybackSpeedListMenu() {
         playback_speed.display_name, playback_speed.playback_rate);
     playback_speed_item->setAttribute(
         html_names::kAriaSetsizeAttr,
-        WTF::AtomicString::Number(std::size(kPlaybackSpeeds)));
+        AtomicString::Number(std::size(kPlaybackSpeeds)));
     playback_speed_item->setAttribute(html_names::kAriaPosinsetAttr,
-                                      WTF::AtomicString::Number(i + 1));
+                                      AtomicString::Number(i + 1));
     playback_speed_item->setAttribute(html_names::kRoleAttr,
                                       AtomicString("menuitemcheckbox"));
     ParserAppendChild(playback_speed_item);
   }
   RequestAnimationFrameCallback* callback =
       MakeGarbageCollected<RequestAnimationFrameCallback>(this);
-  GetDocument().RequestAnimationFrame(callback);
+  GetDocument().RequestAnimationFrame(callback, FrameCallbackType::kInternal);
 }
 
 void MediaControlPlaybackSpeedListElement::CenterCheckedItem() {
   if (!checked_item_)
     return;
   ScrollIntoViewOptions* options = ScrollIntoViewOptions::Create();
-  options->setBlock("center");
+  options->setBlock(V8ScrollLogicalPosition::Enum::kCenter);
   checked_item_->scrollIntoViewWithOptions(options);
   checked_item_->Focus(FocusParams(FocusTrigger::kUserGesture));
 }

@@ -11,7 +11,7 @@
 #include <string>
 
 #include "extensions/common/extension_id.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 class Browser;
 
@@ -50,10 +50,11 @@ class ExtensionActionTestHelper {
 
   virtual gfx::NativeView GetPopupNativeView() = 0;
 
-  // Spins a RunLoop until the NativeWindow hosting |GetPopupNativeView()| is
-  // reported as active by the OS. This method is strange: it's not overridden
-  // by subclasses, and instead the implementation is selected at compile-time
-  // depending on the windowing system in use.
+  // Spins a RunLoop until the NativeWindow hosting
+  // |GetPopupNativeViewForTesting()| is reported as active by the OS. This
+  // method is strange: it's not overridden by subclasses, and instead the
+  // implementation is selected at compile-time depending on the windowing
+  // system in use.
   void WaitForPopup();
 
   // Returns whether a browser action popup is being shown currently.

@@ -20,8 +20,9 @@ import androidx.preference.PreferenceCategory;
 import org.chromium.base.Callback;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -29,6 +30,7 @@ import org.chromium.components.browser_ui.settings.CustomDividerFragment;
 import org.chromium.components.browser_ui.settings.EmbeddableSettingsPage;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.settings.TextMessagePreference;
+import org.chromium.components.browser_ui.settings.search.BaseSearchIndexProvider;
 import org.chromium.components.browsing_data.DeleteBrowsingDataAction;
 
 /** Shows the permissions and other settings for a group of websites. */
@@ -42,6 +44,7 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
     // Preference keys, see grouped_websites_preferences.xml.
     public static final String PREF_SITE_TITLE = "site_title";
     public static final String PREF_CLEAR_DATA = "clear_data";
+    public static final String PREF_USAGE = "site_usage";
     public static final String PREF_RELATED_SITES = "related_sites";
     public static final String PREF_SITES_IN_GROUP = "sites_in_group";
     public static final String PREF_RESET_GROUP = "reset_group_button";
@@ -52,7 +55,8 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
 
     private @Nullable Dialog mConfirmationDialog;
 
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
 
     /**
      * Returns a paused instance of GroupedWebsitesSettings, if any.
@@ -86,9 +90,9 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
 
         // Preferences screen
         SettingsUtils.addPreferencesFromResource(this, R.xml.grouped_websites_preferences);
-        Preference siteTitlePref = assumeNonNull(findPreference(PREF_SITE_TITLE));
+        Preference siteTitlePref = findPreference(PREF_SITE_TITLE);
         siteTitlePref.setTitle(domainAndRegistry);
-        Preference siteInGroupPref = assumeNonNull(findPreference(PREF_SITES_IN_GROUP));
+        Preference siteInGroupPref = findPreference(PREF_SITES_IN_GROUP);
         siteInGroupPref.setTitle(
                 activity.getString(R.string.domain_settings_sites_in_group, domainAndRegistry));
         setUpClearDataPreference();
@@ -103,7 +107,7 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
@@ -219,7 +223,6 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
 
     private void setUpClearDataPreference() {
         ClearWebsiteStorage preference = findPreference(PREF_CLEAR_DATA);
-        assumeNonNull(preference);
         long storage = mSiteGroup.getTotalUsage();
         int cookies = mSiteGroup.getNumberOfCookies();
         if (storage > 0 || cookies > 0) {
@@ -242,7 +245,6 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
 
     private void setUpResetGroupPreference() {
         Preference preference = findPreference(PREF_RESET_GROUP);
-        assumeNonNull(preference);
         if (mSiteGroup.isCookieDeletionDisabled(
                 getSiteSettingsDelegate().getBrowserContextHandle())) {
             preference.setEnabled(false);
@@ -251,28 +253,17 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
     }
 
     private void setUpRelatedSitesPreferences() {
-        PreferenceCategory relatedSitesHeader = findPreference(PREF_RELATED_SITES);
-        assumeNonNull(relatedSitesHeader);
+        PreferenceCategory relatedSitesSection = findPreference(PREF_RELATED_SITES);
         TextMessagePreference relatedSitesText = new TextMessagePreference(getContext(), null);
         var rwsInfo = mSiteGroup.getRwsInfo();
         boolean shouldRelatedSitesPrefBeVisible =
-                getSiteSettingsDelegate().isPrivacySandboxFirstPartySetsUiFeatureEnabled()
-                        && getSiteSettingsDelegate().isRelatedWebsiteSetsDataAccessEnabled()
+                getSiteSettingsDelegate().isRelatedWebsiteSetsDataAccessEnabled()
                         && rwsInfo != null;
         relatedSitesText.setVisible(shouldRelatedSitesPrefBeVisible);
-        relatedSitesHeader.setVisible(shouldRelatedSitesPrefBeVisible);
+        relatedSitesSection.setVisible(shouldRelatedSitesPrefBeVisible);
 
         if (shouldRelatedSitesPrefBeVisible) {
             assumeNonNull(rwsInfo);
-
-            relatedSitesText.setTitle(
-                    getContext()
-                            .getResources()
-                            .getQuantityString(
-                                    R.plurals.allsites_rws_summary,
-                                    rwsInfo.getMembersCount(),
-                                    Integer.toString(rwsInfo.getMembersCount()),
-                                    rwsInfo.getOwner()));
             relatedSitesText.setManagedPreferenceDelegate(
                     new ForwardingManagedPreferenceDelegate(
                             getSiteSettingsDelegate().getManagedPreferenceDelegate()) {
@@ -288,27 +279,21 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
                             return false;
                         }
                     });
-            relatedSitesHeader.addPreference(relatedSitesText);
 
-            if (getSiteSettingsDelegate().shouldShowPrivacySandboxRwsUi()) {
-                relatedSitesHeader.removeAll();
-                relatedSitesHeader.addPreference(relatedSitesText);
-                for (Website site : rwsInfo.getMembers()) {
-                    WebsiteRowPreference preference =
-                            new RwsRowPreference(
-                                    relatedSitesHeader.getContext(),
-                                    getSiteSettingsDelegate(),
-                                    site,
-                                    getActivity().getLayoutInflater());
-                    relatedSitesHeader.addPreference(preference);
-                }
-            }
+            relatedSitesText.setTitle(
+                    getContext()
+                            .getResources()
+                            .getQuantityString(
+                                    R.plurals.allsites_rws_summary,
+                                    rwsInfo.getMembersCount(),
+                                    Integer.toString(rwsInfo.getMembersCount()),
+                                    rwsInfo.getOwner()));
+            relatedSitesSection.addPreference(relatedSitesText);
         }
     }
 
     private void updateSitesInGroup() {
         PreferenceCategory category = findPreference(PREF_SITES_IN_GROUP);
-        assumeNonNull(category);
         category.removeAll();
         for (Website site : mSiteGroup.getWebsites()) {
             WebsiteRowPreference preference =
@@ -316,7 +301,8 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
                             category.getContext(),
                             getSiteSettingsDelegate(),
                             site,
-                            getActivity().getLayoutInflater());
+                            getActivity().getLayoutInflater(),
+                            /* isClickable= */ true);
             preference.setOnDeleteCallback(
                     () -> {
                         category.removePreference(preference);
@@ -324,4 +310,13 @@ public class GroupedWebsitesSettings extends BaseSiteSettingsFragment
             category.addPreference(preference);
         }
     }
+
+    @Override
+    public @AnimationType int getAnimationType() {
+        return AnimationType.PROPERTY;
+    }
+
+    public static final BaseSearchIndexProvider SEARCH_INDEX_DATA_PROVIDER =
+            new BaseSearchIndexProvider(
+                    GroupedWebsitesSettings.class.getName(), BaseSearchIndexProvider.INDEX_OPT_OUT);
 }

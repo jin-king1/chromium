@@ -10,16 +10,16 @@
 
 #include "base/i18n/rtl.h"
 #include "base/memory/raw_ptr.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/supports_user_data.h"
 #include "build/build_config.h"
 #include "chrome/browser/hang_monitor/hang_crash_dump.h"
 #include "chrome/browser/platform_util.h"
-#include "chrome/browser/ui/browser_dialogs.h"
-#include "chrome/browser/ui/browser_finder.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/chrome_web_modal_dialog_manager_delegate.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/hung_renderer/hung_renderer_core.h"
 #include "chrome/browser/ui/tab_contents/core_tab_helper.h"
 #include "chrome/browser/ui/tab_contents/tab_contents_iterator.h"
@@ -50,6 +50,21 @@
 #include "ui/views/widget/widget.h"
 
 using content::WebContents;
+
+namespace {
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+//
+// This enum is used for the HungRendererDialog.UserAction histogram.
+enum class HungRendererDialogUserAction {
+  kAccept = 0,
+  kCancel = 1,
+  kClose = 2,
+  kMaxValue = kClose,
+};
+
+}  // namespace
 
 ///////////////////////////////////////////////////////////////////////////////
 // HungPagesTableModel, public:
@@ -249,7 +264,7 @@ void HungRendererDialogView::Show(
   }
 
   // Only show for WebContents in a browser window.
-  if (!chrome::FindBrowserWithTab(contents)) {
+  if (!GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(contents)) {
     return;
   }
 
@@ -311,11 +326,11 @@ HungRendererDialogView::HungRendererDialogView(WebContents* web_contents)
       ui::mojom::DialogButton::kOk,
       l10n_util::GetStringUTF16(IDS_BROWSER_HANGMONITOR_RENDERER_WAIT));
 
-  SetAcceptCallback(base::BindOnce(&HungRendererDialogView::RestartHangTimer,
+  SetAcceptCallback(base::BindOnce(&HungRendererDialogView::OnDialogAccepted,
                                    base::Unretained(this)));
   SetCancelCallback(base::BindOnce(
-      &HungRendererDialogView::ForceCrashHungRenderer, base::Unretained(this)));
-  SetCloseCallback(base::BindOnce(&HungRendererDialogView::RestartHangTimer,
+      &HungRendererDialogView::OnDialogCancelled, base::Unretained(this)));
+  SetCloseCallback(base::BindOnce(&HungRendererDialogView::OnDialogClosed,
                                   base::Unretained(this)));
 
   DialogModelChanged();
@@ -380,6 +395,24 @@ void HungRendererDialogView::EndDialog(
       hung_pages_table_model_->GetRenderWidgetHost() == render_widget_host) {
     CloseDialogWithNoAction();
   }
+}
+
+void HungRendererDialogView::OnDialogAccepted() {
+  base::UmaHistogramEnumeration("Renderer.HungRendererDialog.UserAction",
+                                HungRendererDialogUserAction::kAccept);
+  RestartHangTimer();
+}
+
+void HungRendererDialogView::OnDialogCancelled() {
+  base::UmaHistogramEnumeration("Renderer.HungRendererDialog.UserAction",
+                                HungRendererDialogUserAction::kCancel);
+  ForceCrashHungRenderer();
+}
+
+void HungRendererDialogView::OnDialogClosed() {
+  base::UmaHistogramEnumeration("Renderer.HungRendererDialog.UserAction",
+                                HungRendererDialogUserAction::kClose);
+  RestartHangTimer();
 }
 
 ///////////////////////////////////////////////////////////////////////////////

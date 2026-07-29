@@ -10,8 +10,8 @@
 #include "base/functional/bind.h"
 #include "base/run_loop.h"
 #include "base/uuid.h"
-#include "content/browser/child_process_security_policy_impl.h"
 #include "content/browser/origin_agent_cluster_isolation_state.h"
+#include "content/browser/security/cpsp/child_process_security_policy_impl.h"
 #include "content/browser/site_instance_impl.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/test_browser_context.h"
@@ -24,8 +24,8 @@
 
 namespace content {
 
-constexpr const int kTestProcessIdOrigin1 = 11;
-constexpr const int kTestProcessIdOrigin2 = 12;
+constexpr const ChildProcessId kTestProcessIdOrigin1(11);
+constexpr const ChildProcessId kTestProcessIdOrigin2(12);
 
 class DOMStorageContextWrapperTest : public testing::Test {
  public:
@@ -77,7 +77,7 @@ class DOMStorageContextWrapperTest : public testing::Test {
   }
 
   ChildProcessSecurityPolicyImpl::Handle CreateSecurityPolicyHandle(
-      int process_id) {
+      ChildProcessId process_id) {
     return ChildProcessSecurityPolicyImpl::GetInstance()->CreateHandle(
         process_id);
   }

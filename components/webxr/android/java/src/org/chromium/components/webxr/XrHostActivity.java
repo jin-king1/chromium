@@ -8,9 +8,13 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.Intent;
 import android.os.Bundle;
+import android.view.KeyEvent;
 import android.view.SurfaceView;
+import android.widget.FrameLayout;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 
 // TODO(crbug.com/40904930): Investigate if this would benefit from
 // extending ChromeBaseAppCompatActivity
@@ -20,9 +24,12 @@ import org.chromium.base.Log;
  * separate activity than that of the main browser makes lifetime tracking and returning to the 2D
  * browser when done cleaner.
  */
+@NullMarked
 public class XrHostActivity extends Activity {
     private static final String TAG = "XrHostActivity";
     private static final boolean DEBUG_LOGS = false;
+
+    private @Nullable XrHostProxyInputView mProxyInputView;
 
     /**
      * Creates an Intent to start the {@link XrHostActivity}.
@@ -39,7 +46,7 @@ public class XrHostActivity extends Activity {
     }
 
     @Override
-    public void onCreate(Bundle savedInstanceState) {
+    public void onCreate(@Nullable Bundle savedInstanceState) {
         if (DEBUG_LOGS) Log.i(TAG, "onCreate");
         super.onCreate(savedInstanceState);
 
@@ -50,8 +57,19 @@ public class XrHostActivity extends Activity {
             return;
         }
 
+        // We create a FrameLayout to host both the default SurfaceView (which WebXR
+        // uses for stereoscopic rendering) and our invisible proxy input view.
+        FrameLayout layout = new FrameLayout(this);
         SurfaceView defaultView = new SurfaceView(this);
-        setContentView(defaultView);
+        layout.addView(defaultView);
+
+        mProxyInputView = new XrHostProxyInputView(this);
+        mProxyInputView.addToLayout(layout);
+        setContentView(layout);
+    }
+
+    public @Nullable XrHostProxyInputView getProxyInputView() {
+        return mProxyInputView;
     }
 
     @Override
@@ -61,6 +79,17 @@ public class XrHostActivity extends Activity {
 
         boolean result = XrSessionCoordinator.onXrHostActivityReady(this);
         assert result;
+    }
+
+    @Override
+    public void onResume() {
+        if (DEBUG_LOGS) Log.i(TAG, "onResume");
+        super.onResume();
+
+        if (!XrSessionCoordinator.hasActiveSession()) {
+            Log.i(TAG, "Finishing XrHostActivity in onResume: no active XR session");
+            finishAndRemoveTask();
+        }
     }
 
     @Override
@@ -74,10 +103,18 @@ public class XrHostActivity extends Activity {
     }
 
     @Override
+    @SuppressWarnings("GestureBackNavigation")
     public void onBackPressed() {
         if (DEBUG_LOGS) Log.i(TAG, "onBackPressed");
         super.onBackPressed();
 
         XrSessionCoordinator.endActiveSessionFromXrHost();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (DEBUG_LOGS) Log.e(TAG, "dispatchKeyEvent");
+
+        return XrSessionCoordinator.dispatchKeyEvent(event) || super.dispatchKeyEvent(event);
     }
 }

@@ -56,14 +56,17 @@ public class AndroidPaymentApp extends PaymentApp
     private final SupportedDelegations mSupportedDelegations;
     private final boolean mShowReadyToPayDebugInfo;
     private final boolean mRemoveDeprecatedFields;
+    private final int mPaymentDetailsUpdateServiceMaxRetryNumber;
 
     private @Nullable IsReadyToPayCallback mIsReadyToPayCallback;
     private @Nullable InstrumentDetailsCallback mInstrumentDetailsCallback;
     private @Nullable IsReadyToPayServiceHelper mIsReadyToPayServiceHelper;
     private @Nullable PaymentDetailsUpdateConnection mPaymentDetailsUpdateConnection;
-    private @Nullable String mApplicationIdentifierToHide;
+    private final @Nullable String mApplicationIdentifierToHide;
     private boolean mBypassIsReadyToPayServiceInTest;
+    private boolean mIsReadyToPayResponseInTest = true;
     private boolean mIsPreferred;
+    private boolean mHasEnrolledInstrumentResult;
 
     // Set inside launchPaymentApp and used to validate the received response.
     private WebPaymentIntentHelperType.@Nullable PaymentOptions mPaymentOptions;
@@ -89,6 +92,9 @@ public class AndroidPaymentApp extends PaymentApp
      * @param showReadyToPayDebugInfo Whether IS_READY_TO_PAY intent should be displayed in a debug
      *     dialog.
      * @param removeDeprecatedFields Whether intents should omit deprecated fields.
+     * @param paymentDetailsUpdateServiceMaxRetryNumber The maximum number of times to attempt to
+     *     reconnect to the UPDATE_PAYMENT_DETAILS service in the payment app, if it unexpectedly
+     *     disconnects during payment.
      */
     public AndroidPaymentApp(
             AndroidIntentLauncher launcher,
@@ -103,7 +109,8 @@ public class AndroidPaymentApp extends PaymentApp
             @Nullable String appToHide,
             SupportedDelegations supportedDelegations,
             boolean showReadyToPayDebugInfo,
-            boolean removeDeprecatedFields) {
+            boolean removeDeprecatedFields,
+            int paymentDetailsUpdateServiceMaxRetryNumber) {
         super(packageName, label, null, icon);
         ThreadUtils.assertOnUiThread();
         mHandler = new Handler();
@@ -125,7 +132,9 @@ public class AndroidPaymentApp extends PaymentApp
         mSupportedDelegations = supportedDelegations;
         mShowReadyToPayDebugInfo = showReadyToPayDebugInfo;
         mRemoveDeprecatedFields = removeDeprecatedFields;
+        mPaymentDetailsUpdateServiceMaxRetryNumber = paymentDetailsUpdateServiceMaxRetryNumber;
         mIsPreferred = false;
+        mHasEnrolledInstrumentResult = false;
     }
 
     /** @param methodName A payment method that this app supports, e.g., "https://bobpay.com". */
@@ -209,8 +218,10 @@ public class AndroidPaymentApp extends PaymentApp
 
         Intent isReadyToPayIntent =
                 WebPaymentIntentHelper.createIsReadyToPayIntent(
-                        /* packageName= */ mPackageName,
-                        /* serviceName= */ mIsReadyToPayServiceName,
+                        /* callerPackageName= */ ContextUtils.getApplicationContext()
+                                .getPackageName(),
+                        /* paymentAppPackageName= */ mPackageName,
+                        /* paymentAppServiceName= */ mIsReadyToPayServiceName,
                         removeUrlScheme(origin),
                         removeUrlScheme(iframeOrigin),
                         certificateChain,
@@ -221,7 +232,7 @@ public class AndroidPaymentApp extends PaymentApp
                         /* clearIdFields= */ false,
                         mRemoveDeprecatedFields);
         if (mBypassIsReadyToPayServiceInTest) {
-            respondToIsReadyToPayQuery(true);
+            respondToIsReadyToPayQuery(mIsReadyToPayResponseInTest);
             return;
         }
         mIsReadyToPayServiceHelper =
@@ -235,6 +246,11 @@ public class AndroidPaymentApp extends PaymentApp
     @VisibleForTesting
     public void bypassIsReadyToPayServiceInTest() {
         mBypassIsReadyToPayServiceInTest = true;
+    }
+
+    @VisibleForTesting
+    public void setIsReadyToPayResponseInTest(boolean isReadyToPay) {
+        mIsReadyToPayResponseInTest = isReadyToPay;
     }
 
     private void respondToIsReadyToPayQuery(boolean isReadyToPay) {
@@ -340,6 +356,19 @@ public class AndroidPaymentApp extends PaymentApp
         return mSupportedDelegations.getPayerPhone();
     }
 
+    @Override
+    public boolean hasEnrolledInstrument() {
+        return mHasEnrolledInstrumentResult;
+    }
+
+    /**
+     * @param hasEnrolledInstrumentResult Whether the payment app can support the current payment
+     *     request.
+     */
+    void setHasEnrolledInstrument(boolean hasEnrolledInstrumentResult) {
+        mHasEnrolledInstrumentResult = hasEnrolledInstrumentResult;
+    }
+
     private static String removeUrlScheme(String url) {
         return UrlFormatter.formatUrlForSecurityDisplay(url, SchemeDisplay.OMIT_HTTP_AND_HTTPS);
     }
@@ -389,26 +418,31 @@ public class AndroidPaymentApp extends PaymentApp
                     new PaymentDetailsUpdateConnection(
                             ContextUtils.getApplicationContext(),
                             WebPaymentIntentHelper.createPaymentDetailsUpdateServiceIntent(
-                                    mPackageName, mPaymentDetailsUpdateServiceName),
-                            new PaymentDetailsUpdateService().getBinder());
+                                    /* callerPackageName= */ ContextUtils.getApplicationContext()
+                                            .getPackageName(),
+                                    mPackageName,
+                                    mPaymentDetailsUpdateServiceName),
+                            new PaymentDetailsUpdateServiceImpl().getBinder(),
+                            mPaymentDetailsUpdateServiceMaxRetryNumber);
             mPaymentDetailsUpdateConnection.connectToService();
         }
     }
 
-    private void notifyErrorInvokingPaymentApp(String errorMessage) {
+    private void notifyErrorInvokingPaymentApp(PaymentAppError error) {
         assert mInstrumentDetailsCallback != null : "Callback should be invoked only once";
         mHandler.post(
                 () -> {
                     assert mInstrumentDetailsCallback != null
                             : "Callback should be invoked only once";
-                    mInstrumentDetailsCallback.onInstrumentDetailsError(errorMessage);
+                    mInstrumentDetailsCallback.onInstrumentDetailsError(
+                            error.responseType, error.errorMessage);
                     mInstrumentDetailsCallback = null;
                 });
     }
 
     // WindowAndroid.IntentCallback:
     @Override
-    public void onIntentCompleted(int resultCode, Intent data) {
+    public void onIntentCompleted(int resultCode, @Nullable Intent data) {
         assert mInstrumentDetailsCallback != null;
         ThreadUtils.assertOnUiThread();
         if (mPaymentDetailsUpdateConnection != null) {

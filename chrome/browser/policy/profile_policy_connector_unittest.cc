@@ -141,12 +141,14 @@ class ProfilePolicyConnectorTest : public testing::Test {
   ~ProfilePolicyConnectorTest() override = default;
 
   void SetUp() override {
-    auto cloud_policy_store = std::make_unique<MockCloudPolicyStore>();
+    auto cloud_policy_store = std::make_unique<MockCloudPolicyStore>(
+        dm_protocol::GetChromeUserPolicyType());
     cloud_policy_store_ = cloud_policy_store.get();
     const auto task_runner = task_environment_.GetMainThreadTaskRunner();
     cloud_policy_manager_ = std::make_unique<CloudPolicyManager>(
         std::string(), std::string(), std::move(cloud_policy_store),
-        task_runner, network::TestNetworkConnectionTracker::CreateGetter());
+        /*extension_install_store=*/nullptr, task_runner,
+        network::TestNetworkConnectionTracker::CreateGetter());
     cloud_policy_manager_->Init(&schema_registry_);
   }
 
@@ -157,7 +159,6 @@ class ProfilePolicyConnectorTest : public testing::Test {
     // it here to make sure the cleanup happens.
     BrowserPolicyConnectorBase::SetPolicyServiceForTesting(nullptr);
 
-    TestingBrowserProcess::GetGlobal()->ShutdownBrowserPolicyConnector();
     cloud_policy_manager_->Shutdown();
   }
 
@@ -583,5 +584,8 @@ TEST_F(ProfilePolicyConnectorTest, AffiliationMetrics_Affiliated) {
   // Cleanup.
   connector.Shutdown();
 }
+
+// TODO(crbug.com/452305191) Add test for extension install policies being
+// loaded in the right policy domain
 
 }  // namespace policy

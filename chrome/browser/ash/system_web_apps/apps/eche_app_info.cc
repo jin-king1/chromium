@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "ash/constants/ash_features.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "ash/webui/eche_app_ui/url_constants.h"
 #include "ash/webui/grit/ash_eche_bundle_resources.h"
 #include "base/strings/utf_string_conversions.h"
@@ -14,7 +15,6 @@
 #include "chrome/browser/web_applications/mojom/user_display_mode.mojom.h"
 #include "chrome/browser/web_applications/web_app_constants.h"
 #include "chrome/browser/web_applications/web_app_install_info.h"
-#include "chrome/grit/generated_resources.h"
 #include "third_party/blink/public/mojom/manifest/display_mode.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/display/screen.h"
@@ -83,11 +83,11 @@ bool EcheSystemAppDelegate::ShouldAllowScriptsToCloseWindows() const {
   return !base::FeatureList::IsEnabled(ash::features::kEcheSWADebugMode);
 }
 
-gfx::Rect EcheSystemAppDelegate::GetDefaultBounds(Browser*) const {
+gfx::Rect EcheSystemAppDelegate::GetDefaultBounds(ash::BrowserDelegate*) const {
   // Ensures the Eche bounds is always 16:9 portrait aspect ratio and not more
   // than half of the windows.
   gfx::Rect bounds =
-      display::Screen::GetScreen()->GetDisplayForNewWindows().work_area();
+      display::Screen::Get()->GetDisplayForNewWindows().work_area();
   const float bounds_aspect_ratio =
       static_cast<float>(bounds.width()) / bounds.height();
   const bool is_landscape = (bounds_aspect_ratio >= 1);

@@ -11,9 +11,8 @@
 #include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/supervised_user/chrome_supervised_user_web_content_handler_base.h"
-#include "chromeos/crosapi/mojom/parent_access.mojom.h"
+#include "chrome/browser/ui/webui/ash/parent_access/parent_access_dialog.h"
 #include "content/public/browser/frame_tree_node_id.h"
-#include "ui/gfx/image/image_skia.h"
 #include "url/gurl.h"
 
 class Profile;
@@ -21,10 +20,6 @@ class Profile;
 namespace favicon {
 class LargeIconService;
 }  // namespace favicon
-
-namespace supervised_user {
-class UrlFormatter;
-}  // namespace supervised_user
 
 class SupervisedUserFaviconRequestHandler;
 
@@ -47,18 +42,17 @@ class SupervisedUserWebContentHandlerImpl
 
   // ChromeSupervisedUserWebContentHandlerBase implementation:
   void RequestLocalApproval(
-      const GURL& url,
+      const GURL& target_url,
+      supervised_user::WebFilteringResult filtering_result,
       const std::u16string& child_display_name,
-      const supervised_user::UrlFormatter& url_formatter,
-      const supervised_user::FilteringBehaviorReason& filtering_behavior_reason,
       ApprovalRequestInitiatedCallback callback) override;
 
  private:
   void OnLocalApprovalRequestCompleted(
-      supervised_user::SupervisedUserSettingsService& settings_service,
+      supervised_user::FamilyLinkSettingsService& family_link_settings_service,
       const GURL& url,
       base::TimeTicks start_time,
-      crosapi::mojom::ParentAccessResultPtr result);
+      std::unique_ptr<ash::ParentAccessDialog::Result> result);
 
   // Helpers for private method testing.
   FRIEND_TEST_ALL_PREFIXES(SupervisedUserWebContentHandlerImplTest,
@@ -72,6 +66,7 @@ class SupervisedUserWebContentHandlerImpl
 
   std::unique_ptr<SupervisedUserFaviconRequestHandler> favicon_handler_;
   const raw_ref<Profile> profile_;
+  std::unique_ptr<ash::ParentAccessDialogProvider> dialog_provider_;
   base::WeakPtrFactory<SupervisedUserWebContentHandlerImpl> weak_ptr_factory_{
       this};
 };

@@ -8,13 +8,18 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import static org.chromium.base.ThreadUtils.runOnUiThreadBlocking;
+import static org.chromium.build.NullUtil.assertNonNull;
 import static org.chromium.chrome.browser.tab_group_sync.TabGroupSyncUtils.NEW_TAB_TITLE;
 
 import com.google.protobuf.InvalidProtocolBufferException;
 
+import org.chromium.base.Token;
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.sync.SyncTestRule;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.browser.tabmodel.TabGroupModelFilter;
 import org.chromium.chrome.browser.tabmodel.TabModel;
 import org.chromium.chrome.test.util.browser.sync.SyncTestUtil;
 import org.chromium.components.sync.DataType;
@@ -35,6 +40,7 @@ import java.util.Map;
 import java.util.Set;
 
 /** Helper class for integration tests. */
+@NullMarked
 public class TabGroupSyncIntegrationTestHelper {
     public static final String TAB_GROUP_SYNC_DATA_TYPE = "Saved Tab Group";
 
@@ -57,7 +63,7 @@ public class TabGroupSyncIntegrationTestHelper {
                     GUID_10);
 
     private Iterator<String> mGuidIterator;
-    private SyncTestRule mSyncTestRule;
+    private final SyncTestRule mSyncTestRule;
 
     /**
      * Helper for handling or asserting on changes to the fake sync server.
@@ -76,7 +82,7 @@ public class TabGroupSyncIntegrationTestHelper {
         public long position;
 
         // Required for connecting with tabs. We don't use it for validation.
-        public String syncId;
+        public @Nullable String syncId;
 
         /**
          * @param title The title of the tab.
@@ -97,7 +103,7 @@ public class TabGroupSyncIntegrationTestHelper {
         public List<TabInfo> tabs = new ArrayList<>();
 
         // Required for connecting with tabs. We don't use it for validation.
-        public String syncId;
+        public @Nullable String syncId;
 
         /**
          * @param title The title of the tab group.
@@ -131,6 +137,7 @@ public class TabGroupSyncIntegrationTestHelper {
     }
 
     /** Resets the GUID iterator for creating groups. */
+    @EnsuresNonNull("mGuidIterator")
     public void resetGuidIterator() {
         mGuidIterator = sGuids.iterator();
     }
@@ -185,7 +192,7 @@ public class TabGroupSyncIntegrationTestHelper {
      * @return a list of {@link GroupInfo} representing the synced groups.
      */
     public List<GroupInfo> constructGroupInfoFromSyncEntities(List<SyncEntity> syncEntities) {
-        Map<String, GroupInfo> groupInfos = new HashMap();
+        Map<String, GroupInfo> groupInfos = new HashMap<>();
 
         // Group specifics.
         for (SyncEntity entity : syncEntities) {
@@ -209,7 +216,7 @@ public class TabGroupSyncIntegrationTestHelper {
                             specifics.getTab().getTitle(),
                             specifics.getTab().getUrl(),
                             specifics.getTab().getPosition());
-            groupInfos.get(groupGuid).addTab(tabInfo);
+            assertNonNull(groupInfos.get(groupGuid)).addTab(tabInfo);
         }
 
         return new ArrayList<>(groupInfos.values());
@@ -271,17 +278,8 @@ public class TabGroupSyncIntegrationTestHelper {
         return mSyncTestRule.getActivity().getTabModelSelector().getModel(false);
     }
 
-    /** Returns the regular tab model filter. */
-    public TabGroupModelFilter getTabGroupFilter() {
-        return mSyncTestRule
-                .getActivity()
-                .getTabModelSelector()
-                .getTabGroupModelFilterProvider()
-                .getTabGroupModelFilter(false);
-    }
-
     /** Gets the {@link SyncEntity} for a particular sync GUID. */
-    public SyncEntity getSyncEntityWithUuid(String guid) {
+    public @Nullable SyncEntity getSyncEntityWithUuid(String guid) {
         List<SyncEntity> entities = getSyncEntities();
         for (SyncEntity entity : entities) {
             if (entity.getSpecifics().getSavedTabGroup().getGuid().equals(guid)) {
@@ -371,11 +369,12 @@ public class TabGroupSyncIntegrationTestHelper {
      * @param expectedGroup The expected tab group.
      */
     public void verifyGroupInfoMatchesLocalData(int index, GroupInfo expectedGroup) {
-        TabGroupModelFilter filter = getTabGroupFilter();
-        int rootId = getTabGroupRootIdAt(index);
-        String actualTitle = filter.getTabGroupTitle(rootId);
-        int actualColor = filter.getTabGroupColorWithFallback(rootId);
-        List<Tab> tabs = filter.getRelatedTabList(rootId);
+        TabModel tabModel = getTabModel();
+        Token tabGroupId = getTabGroupIdAt(index);
+        String actualTitle = runOnUiThreadBlocking(() -> tabModel.getTabGroupTitle(tabGroupId));
+        int actualColor =
+                runOnUiThreadBlocking(() -> tabModel.getTabGroupColorWithFallback(tabGroupId));
+        List<Tab> tabs = runOnUiThreadBlocking(() -> tabModel.getTabsInGroup(tabGroupId));
 
         // group details
         assertEquals(
@@ -396,21 +395,24 @@ public class TabGroupSyncIntegrationTestHelper {
         }
     }
 
-    private int getTabGroupRootIdAt(int index) {
-        List<Integer> rootIds = getTabGroupRootIds();
-        assertTrue(index < rootIds.size());
-        return rootIds.get(index);
+    private Token getTabGroupIdAt(int index) {
+        List<Token> tabGroupIds = getTabGroupIds();
+        assertTrue(index < tabGroupIds.size());
+        return tabGroupIds.get(index);
     }
 
-    private List<Integer> getTabGroupRootIds() {
-        Set<Integer> rootIds = new HashSet<>();
+    private List<Token> getTabGroupIds() {
+        Set<Token> tabGroupIds = new HashSet<>();
         TabModel tabModel = getTabModel();
-        for (int i = 0; i < tabModel.getCount(); i++) {
-            Tab tab = tabModel.getTabAt(i);
-            if (tab.getTabGroupId() == null) continue;
-            rootIds.add(tab.getRootId());
-        }
-        return new ArrayList<>(rootIds);
+        runOnUiThreadBlocking(
+                () -> {
+                    for (Tab tab : tabModel) {
+                        Token tabGroupId = tab.getTabGroupId();
+                        if (tabGroupId == null) continue;
+                        tabGroupIds.add(tabGroupId);
+                    }
+                });
+        return new ArrayList<>(tabGroupIds);
     }
 
     /**

@@ -10,7 +10,6 @@
 #include "cc/paint/filter_operations.h"
 #include "components/viz/common/quads/draw_quad.h"
 #include "components/viz/common/viz_common_export.h"
-
 #include "ui/gfx/geometry/point_f.h"
 #include "ui/gfx/geometry/rect_f.h"
 
@@ -18,6 +17,10 @@ namespace viz {
 
 class VIZ_COMMON_EXPORT RenderPassDrawQuadInternal : public DrawQuad {
  public:
+  void SetFilters(const gfx::Vector2dF& scale,
+                  const gfx::PointF& origin,
+                  const float backdrop_quality);
+
   gfx::RectF mask_uv_rect;
   gfx::Size mask_texture_size;
 
@@ -30,8 +33,6 @@ class VIZ_COMMON_EXPORT RenderPassDrawQuadInternal : public DrawQuad {
   // The origin for post-processing filters which will be used to offset
   // crop rects, lights, etc.
   gfx::PointF filters_origin;
-
-  gfx::RectF tex_coord_rect;
 
   float backdrop_filter_quality = 1.0f;
 

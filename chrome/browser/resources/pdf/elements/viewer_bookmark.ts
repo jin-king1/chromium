@@ -85,9 +85,9 @@ export class ViewerBookmarkElement extends CrLitElement {
     };
   }
 
-  bookmark: Bookmark = {title: '', children: []};
-  depth: number = 0;
-  protected childrenShown_: boolean = false;
+  accessor bookmark: Bookmark = {title: '', children: []};
+  accessor depth: number = 0;
+  protected accessor childrenShown_: boolean = false;
 
   override firstUpdated() {
     this.$.item.addEventListener('keydown', e => {
@@ -149,7 +149,7 @@ export class ViewerBookmarkElement extends CrLitElement {
     e.preventDefault();
   }
 
-  protected toggleChildren_(e: Event) {
+  protected onExpandClick_(e: Event) {
     this.childrenShown_ = !this.childrenShown_;
     e.stopPropagation();  // Prevent the above onClick_ handler from firing.
   }

@@ -10,6 +10,7 @@
 
 #import "base/apple/foundation_util.h"
 #import "base/check.h"
+#import "base/compiler_specific.h"
 #import "base/ios/crb_protocol_observers.h"
 #import "base/notreached.h"
 
@@ -32,7 +33,8 @@ NSInvocation* InvocationForBroadcasterSelector(SEL selector) {
   DCHECK(method.numberOfArguments == 3);
 
   // Methods should always return void.
-  DCHECK(strcmp(method.methodReturnType, @encode(void)) == 0);
+  DCHECK_EQ(std::string_view(method.methodReturnType),
+            std::string_view(@encode(void)));
 
   NSInvocation* invocation =
       [NSInvocation invocationWithMethodSignature:method];
@@ -158,17 +160,21 @@ NSInvocation* InvocationForBroadcasterSelector(SEL selector) {
         [[NSMutableDictionary<NSString*, NSInvocation*> alloc] init];
 
     unsigned int methodCount;
-    objc_method_description* instanceMethods =
+    objc_method_description* instanceMethodsRaw =
         protocol_copyMethodDescriptionList(
             @protocol(ChromeBroadcastObserver), NO /* not required methods */,
             YES /* instance methods */, &methodCount);
 
-    for (unsigned int i = 0; i < methodCount; i++) {
-      struct objc_method_description method = instanceMethods[i];
+    // SAFETY: protocol_copyMethodDescriptionList(...) set &methodCount to the
+    // length of the buffer returned.
+    base::span<const objc_method_description> instanceMethods = UNSAFE_BUFFERS(
+        base::span<objc_method_description>(instanceMethodsRaw, methodCount));
+
+    for (const objc_method_description& method : instanceMethods) {
       NSString* name = NSStringFromSelector(method.name);
       observerInvocations[name] = InvocationForBroadcasterSelector(method.name);
     }
-    free(instanceMethods);
+    free(instanceMethodsRaw);
 
     _observerInvocations = [observerInvocations copy];
   }
@@ -268,7 +274,7 @@ NSInvocation* InvocationForBroadcasterSelector(SEL selector) {
   // addition of a new object to the collection. That kind of KVO isn't
   // supported by ChromeBroadcaster.
   DCHECK([change[NSKeyValueChangeKindKey]
-      isEqualToValue:@(NSKeyValueChangeSetting)]);
+      isEqualToNumber:@(NSKeyValueChangeSetting)]);
 
   // If strings or other non-value types are being broadcast, then this will
   // need to change. Either value will be nil if they aren't actually NSValues.

@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
@@ -90,7 +91,7 @@ class GPU_GLES2_EXPORT Program : public base::RefCounted<Program> {
     std::string name;
   };
 
-  struct UniformInfo {
+  struct GPU_GLES2_EXPORT UniformInfo {
     UniformInfo();
     UniformInfo(const UniformInfo& other);
     UniformInfo(const std::string& client_name,
@@ -102,9 +103,10 @@ class GPU_GLES2_EXPORT Program : public base::RefCounted<Program> {
     bool IsSampler() const {
       switch (type) {
         case GL_SAMPLER_2D:
-        case GL_SAMPLER_2D_RECT_ARB:
+        case GL_SAMPLER_2D_RECT_ANGLE:
         case GL_SAMPLER_CUBE:
         case GL_SAMPLER_EXTERNAL_OES:
+        case GL_SAMPLER_EXTERNAL_2D_Y2Y_EXT:
         case GL_SAMPLER_3D:
         case GL_SAMPLER_2D_SHADOW:
         case GL_SAMPLER_2D_ARRAY:
@@ -334,6 +336,16 @@ class GPU_GLES2_EXPORT Program : public base::RefCounted<Program> {
     return use_count_ != 0;
   }
 
+  void IncrementActiveTransformFeedbackCount() {
+    ++active_transform_feedback_count_;
+  }
+
+  void DecrementActiveTransformFeedbackCount();
+
+  bool IsActiveForTransformFeedback() const {
+    return active_transform_feedback_count_ > 0;
+  }
+
   // Sets attribute-location binding from a glBindAttribLocation() call.
   void SetAttribLocationBinding(const std::string& attrib, GLint location) {
     bind_attrib_location_map_[attrib] = location;
@@ -545,6 +557,8 @@ class GPU_GLES2_EXPORT Program : public base::RefCounted<Program> {
 
   int use_count_;
 
+  int active_transform_feedback_count_;
+
   GLsizei max_attrib_name_length_;
 
   // Attrib by index.
@@ -568,8 +582,9 @@ class GPU_GLES2_EXPORT Program : public base::RefCounted<Program> {
   GLuint service_id_;
 
   // Shaders by type of shader.
-  scoped_refptr<Shader> attached_shaders_[kMaxAttachedShaders];
-  scoped_refptr<Shader> shaders_from_last_successful_link_[kMaxAttachedShaders];
+  std::array<scoped_refptr<Shader>, kMaxAttachedShaders> attached_shaders_;
+  std::array<scoped_refptr<Shader>, kMaxAttachedShaders>
+      shaders_from_last_successful_link_;
 
   // True if this program is marked as deleted.
   bool deleted_;

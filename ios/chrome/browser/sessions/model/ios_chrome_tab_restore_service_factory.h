@@ -24,7 +24,7 @@ class IOSChromeTabRestoreServiceFactory : public ProfileKeyedServiceFactoryIOS {
   static IOSChromeTabRestoreServiceFactory* GetInstance();
 
   // Returns the default factory used to build TabRestoreServices. Can be
-  // registered with SetTestingFactory to use real instances during testing.
+  // registered with AddTestingFactory to use real instances during testing.
   static TestingFactory GetDefaultFactory();
 
  private:
@@ -33,9 +33,9 @@ class IOSChromeTabRestoreServiceFactory : public ProfileKeyedServiceFactoryIOS {
   IOSChromeTabRestoreServiceFactory();
   ~IOSChromeTabRestoreServiceFactory() override;
 
-  // BrowserStateKeyedServiceFactory:
+  // ProfileKeyedServiceFactoryIOS:
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 };
 
 #endif  // IOS_CHROME_BROWSER_SESSIONS_MODEL_IOS_CHROME_TAB_RESTORE_SERVICE_FACTORY_H_

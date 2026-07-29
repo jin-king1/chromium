@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 // For some sample vp9 test videos, $filename, there is a file of golden value
 // of frame entropy, named $filename.context. These values are dumped from
@@ -73,10 +69,9 @@ class Vp9ParserTest : public TestWithParam<TestParams> {
   void TearDown() override {
     stream_.reset();
     vp9_parser_.reset();
-    context_file_.Close();
   }
 
-  void Initialize(std::string_view filename, bool parsing_compressed_header) {
+  void Initialize(std::string_view filename) {
     base::FilePath file_path = GetTestDataFilePath(filename);
 
     stream_ = std::make_unique<base::MemoryMappedFile>();
@@ -84,39 +79,15 @@ class Vp9ParserTest : public TestWithParam<TestParams> {
                                                 << file_path.MaybeAsASCII();
 
     IvfFileHeader ivf_file_header;
-    ASSERT_TRUE(ivf_parser_.Initialize(stream_->data(), stream_->length(),
-                                       &ivf_file_header));
+    ASSERT_TRUE(ivf_parser_.Initialize(stream_->bytes(), &ivf_file_header));
     ASSERT_EQ(ivf_file_header.fourcc, 0x30395056u);  // VP90
 
-    vp9_parser_ = std::make_unique<Vp9Parser>(parsing_compressed_header);
-
-    if (parsing_compressed_header) {
-      base::FilePath context_path =
-          GetTestDataFilePath(std::string(filename).append(".context"));
-      context_file_.Initialize(context_path,
-                               base::File::FLAG_OPEN | base::File::FLAG_READ);
-      ASSERT_TRUE(context_file_.IsValid());
-    }
-  }
-
-  bool ReadShouldContextUpdate() {
-    char should_update;
-    int read_num = context_file_.ReadAtCurrentPos(&should_update, 1);
-    EXPECT_EQ(1, read_num);
-    return should_update != 0;
-  }
-
-  void ReadContext(Vp9FrameContext* frame_context) {
-    ASSERT_EQ(
-        static_cast<int>(sizeof(*frame_context)),
-        context_file_.ReadAtCurrentPos(reinterpret_cast<char*>(frame_context),
-                                       sizeof(*frame_context)));
+    vp9_parser_ = std::make_unique<Vp9Parser>();
   }
 
   Vp9Parser::Result ParseNextFrame(struct Vp9FrameHeader* frame_hdr);
   void CheckSubsampleValues(
-      const uint8_t* superframe,
-      size_t framesize,
+      base::span<const uint8_t> superframe,
       std::unique_ptr<DecryptConfig> config,
       std::vector<std::unique_ptr<DecryptConfig>>& expected_split);
 
@@ -132,7 +103,6 @@ class Vp9ParserTest : public TestWithParam<TestParams> {
   std::unique_ptr<base::MemoryMappedFile> stream_;
 
   std::unique_ptr<Vp9Parser> vp9_parser_;
-  base::File context_file_;
 };
 
 Vp9Parser::Result Vp9ParserTest::ParseNextFrame(Vp9FrameHeader* fhdr) {
@@ -143,13 +113,13 @@ Vp9Parser::Result Vp9ParserTest::ParseNextFrame(Vp9FrameHeader* fhdr) {
         vp9_parser_->ParseNextFrame(fhdr, &allocate_size, &null_config);
     if (res == Vp9Parser::kEOStream) {
       IvfFrameHeader ivf_frame_header;
-      const uint8_t* ivf_payload;
-
-      if (!ivf_parser_.ParseNextFrame(&ivf_frame_header, &ivf_payload))
+      base::span<const uint8_t> ivf_payload =
+          ivf_parser_.ParseNextFrame(&ivf_frame_header);
+      if (ivf_payload.empty()) {
         return Vp9Parser::kEOStream;
+      }
 
-      vp9_parser_->SetStream(ivf_payload, ivf_frame_header.frame_size,
-                             nullptr);
+      vp9_parser_->SetStream(ivf_payload, nullptr);
       continue;
     }
 
@@ -158,11 +128,10 @@ Vp9Parser::Result Vp9ParserTest::ParseNextFrame(Vp9FrameHeader* fhdr) {
 }
 
 void Vp9ParserTest::CheckSubsampleValues(
-    const uint8_t* superframe,
-    size_t framesize,
+    base::span<const uint8_t> superframe,
     std::unique_ptr<DecryptConfig> config,
     std::vector<std::unique_ptr<DecryptConfig>>& expected_split) {
-  vp9_parser_->SetStream(superframe, framesize, std::move(config));
+  vp9_parser_->SetStream(superframe, std::move(config));
   for (auto& expected : expected_split) {
     std::unique_ptr<DecryptConfig> actual =
         vp9_parser_->NextFrameDecryptContextForTesting();
@@ -191,7 +160,7 @@ uint8_t make_marker_byte(bool is_superframe, const uint8_t frame_count) {
 // │ clear1 | cipher 1 │ clear 2 | cipher 2 │
 // └───────────────────┴────────────────────┘
 TEST_F(Vp9ParserTest, AlignedFrameSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(true, 2);
   const uint8_t kSuperframe[] = {
@@ -220,7 +189,7 @@ TEST_F(Vp9ParserTest, AlignedFrameSubsampleParsing) {
       kKeyID, kIVIncrementOne, {SubsampleEntry(16, 16)}, std::nullopt));
 
   CheckSubsampleValues(
-      kSuperframe, sizeof(kSuperframe),
+      kSuperframe,
       DecryptConfig::CreateCencConfig(
           kKeyID, kInitialIV, {SubsampleEntry(16, 16), SubsampleEntry(16, 16)}),
       expected);
@@ -232,7 +201,7 @@ TEST_F(Vp9ParserTest, AlignedFrameSubsampleParsing) {
 // │ clear1                  | cipher 1     │
 // └────────────────────────────────────────┘
 TEST_F(Vp9ParserTest, UnalignedFrameSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(true, 2);
   const uint8_t kSuperframe[] = {
@@ -260,7 +229,7 @@ TEST_F(Vp9ParserTest, UnalignedFrameSubsampleParsing) {
   expected.push_back(DecryptConfig::CreateCbcsConfig(
       kKeyID, kInitialIV, {SubsampleEntry(16, 16)}, std::nullopt));
 
-  CheckSubsampleValues(kSuperframe, sizeof(kSuperframe),
+  CheckSubsampleValues(kSuperframe,
                        DecryptConfig::CreateCencConfig(
                            kKeyID, kInitialIV, {SubsampleEntry(48, 16)}),
                        expected);
@@ -272,7 +241,7 @@ TEST_F(Vp9ParserTest, UnalignedFrameSubsampleParsing) {
 // │ clear1 | cipher 1 │ clear 2       | cipher 2 │
 // └───────────────────┴──────────────────────────┘
 TEST_F(Vp9ParserTest, ClearSectionRollsOverSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(true, 2);
   const uint8_t kSuperframe[] = {
@@ -303,7 +272,7 @@ TEST_F(Vp9ParserTest, ClearSectionRollsOverSubsampleParsing) {
       kKeyID, kIVIncrementOne, {SubsampleEntry(16, 16)}, std::nullopt));
 
   CheckSubsampleValues(
-      kSuperframe, sizeof(kSuperframe),
+      kSuperframe,
       DecryptConfig::CreateCencConfig(
           kKeyID, kInitialIV, {SubsampleEntry(16, 16), SubsampleEntry(32, 16)}),
       expected);
@@ -315,7 +284,7 @@ TEST_F(Vp9ParserTest, ClearSectionRollsOverSubsampleParsing) {
 // │ clear1 | cipher 1 │ clear 2 | cipher 2 │ clear 3 | cipher 3 │
 // └───────────────────┴────────────────────┴────────────────────┘
 TEST_F(Vp9ParserTest, FirstFrame2xSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(true, 2);
   const uint8_t kSuperframe[] = {
@@ -347,7 +316,7 @@ TEST_F(Vp9ParserTest, FirstFrame2xSubsampleParsing) {
   expected.push_back(DecryptConfig::CreateCbcsConfig(
       kKeyID, kIVIncrementTwo, {SubsampleEntry(16, 16)}, std::nullopt));
 
-  CheckSubsampleValues(kSuperframe, sizeof(kSuperframe),
+  CheckSubsampleValues(kSuperframe,
                        DecryptConfig::CreateCencConfig(
                            kKeyID, kInitialIV,
                            {SubsampleEntry(16, 16), SubsampleEntry(16, 16),
@@ -361,7 +330,7 @@ TEST_F(Vp9ParserTest, FirstFrame2xSubsampleParsing) {
 // │ clear1 | cipher 1 │ clear 2 | cipher 2 │ clear 3 | cipher 3 │
 // └───────────────────┴────────────────────┴────────────────────┘
 TEST_F(Vp9ParserTest, UnalignedBigFrameSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(true, 2);
   const uint8_t kSuperframe[] = {
@@ -395,7 +364,7 @@ TEST_F(Vp9ParserTest, UnalignedBigFrameSubsampleParsing) {
       kKeyID, kIVIncrementTwo, {SubsampleEntry(16, 16)}, std::nullopt));
 
   CheckSubsampleValues(
-      kSuperframe, sizeof(kSuperframe),
+      kSuperframe,
       DecryptConfig::CreateCencConfig(kKeyID, kInitialIV,
                                       {
                                           SubsampleEntry(16, 16),
@@ -411,7 +380,7 @@ TEST_F(Vp9ParserTest, UnalignedBigFrameSubsampleParsing) {
 // │ clear1      | cipher 1                 │
 // └────────────────────────────────────────┘
 TEST_F(Vp9ParserTest, UnalignedInvalidSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(true, 2);
   const uint8_t kSuperframe[] = {
@@ -432,9 +401,9 @@ TEST_F(Vp9ParserTest, UnalignedInvalidSubsampleParsing) {
       // marker again.
       superframe_marker_byte};
 
-  vp9_parser_->SetStream(kSuperframe, sizeof(kSuperframe),
-                         DecryptConfig::CreateCencConfig(
-                             kKeyID, kInitialIV, {SubsampleEntry(16, 32)}));
+  vp9_parser_->SetStream(
+      kSuperframe, DecryptConfig::CreateCencConfig(kKeyID, kInitialIV,
+                                                   {SubsampleEntry(16, 32)}));
 
   ASSERT_EQ(vp9_parser_->NextFrameDecryptContextForTesting().get(), nullptr);
 }
@@ -445,77 +414,7 @@ TEST_F(Vp9ParserTest, UnalignedInvalidSubsampleParsing) {
 // │ clear1 = 0  | cipher 1                        │
 // └───────────────────────────────────────────────┘
 TEST_F(Vp9ParserTest, CipherBytesCoverSuperframeMarkerSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
-
-  const uint8_t superframe_marker_byte = make_marker_byte(false, 1);
-  const uint8_t kSuperframe[] = {
-      // First frame; 44 bytes.
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      // Superframe marker goes before and after frame index.
-      superframe_marker_byte,
-      // First frame length (magnitude 1)
-      0x20,
-      // Second frame length (magnigude 1)
-      0x20,
-      // marker again.
-      superframe_marker_byte};
-
-  vp9_parser_->SetStream(kSuperframe, sizeof(kSuperframe),
-                         DecryptConfig::CreateCencConfig(
-                             kKeyID, kInitialIV, {SubsampleEntry(0, 48)}));
-
-  std::unique_ptr<DecryptConfig> actual =
-      vp9_parser_->NextFrameDecryptContextForTesting();
-
-  EXPECT_EQ(actual->iv(), kInitialIV);
-  EXPECT_EQ(actual->subsamples().size(), 1lu);
-}
-
-// ┌─────────────────────────────────────┬─────────┐
-// │ single frame in superframe          │ marker  │
-// ┝━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┷━━━━━━━━━┥
-// │ clear1                                        │
-// └───────────────────────────────────────────────┘
-TEST_F(Vp9ParserTest, ClearBytesCoverSuperframeMarkerSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
-
-  const uint8_t superframe_marker_byte = make_marker_byte(false, 1);
-  const uint8_t kSuperframe[] = {
-      // First frame; 44 bytes.
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-      // Superframe marker goes before and after frame index.
-      superframe_marker_byte,
-      // First frame length (magnitude 1)
-      0x20,
-      // Second frame length (magnigude 1)
-      0x20,
-      // marker again.
-      superframe_marker_byte};
-
-  vp9_parser_->SetStream(kSuperframe, sizeof(kSuperframe),
-                         DecryptConfig::CreateCencConfig(
-                             kKeyID, kInitialIV, {SubsampleEntry(48, 0)}));
-
-  std::unique_ptr<DecryptConfig> actual =
-      vp9_parser_->NextFrameDecryptContextForTesting();
-
-  EXPECT_EQ(actual->iv(), kInitialIV);
-  EXPECT_EQ(actual->subsamples().size(), 1lu);
-}
-
-// ┌─────────────────────────────────────┬─────────┐
-// │ single frame in superframe          │ marker  │
-// ┝━━━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━┷━━━━━━━━━┥
-// │ clear 1 | cipher 1 │ clear 2                  │
-// └────────────────────┴──────────────────────────┘
-TEST_F(Vp9ParserTest, SecondClearSubsampleSuperframeMarkerSubsampleParsing) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   const uint8_t superframe_marker_byte = make_marker_byte(false, 1);
   const uint8_t kSuperframe[] = {
@@ -534,12 +433,81 @@ TEST_F(Vp9ParserTest, SecondClearSubsampleSuperframeMarkerSubsampleParsing) {
       superframe_marker_byte};
 
   vp9_parser_->SetStream(
-      kSuperframe, sizeof(kSuperframe),
-      DecryptConfig::CreateCencConfig(kKeyID, kInitialIV,
-                                      {
-                                          SubsampleEntry(16, 16),
-                                          SubsampleEntry(16, 0),
-                                      }));
+      kSuperframe, DecryptConfig::CreateCencConfig(kKeyID, kInitialIV,
+                                                   {SubsampleEntry(0, 48)}));
+
+  std::unique_ptr<DecryptConfig> actual =
+      vp9_parser_->NextFrameDecryptContextForTesting();
+
+  EXPECT_EQ(actual->iv(), kInitialIV);
+  EXPECT_EQ(actual->subsamples().size(), 1lu);
+}
+
+// ┌─────────────────────────────────────┬─────────┐
+// │ single frame in superframe          │ marker  │
+// ┝━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┷━━━━━━━━━┥
+// │ clear1                                        │
+// └───────────────────────────────────────────────┘
+TEST_F(Vp9ParserTest, ClearBytesCoverSuperframeMarkerSubsampleParsing) {
+  vp9_parser_ = std::make_unique<Vp9Parser>();
+
+  const uint8_t superframe_marker_byte = make_marker_byte(false, 1);
+  const uint8_t kSuperframe[] = {
+      // First frame; 44 bytes.
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      // Superframe marker goes before and after frame index.
+      superframe_marker_byte,
+      // First frame length (magnitude 1)
+      0x20,
+      // Second frame length (magnigude 1)
+      0x20,
+      // marker again.
+      superframe_marker_byte};
+
+  vp9_parser_->SetStream(
+      kSuperframe, DecryptConfig::CreateCencConfig(kKeyID, kInitialIV,
+                                                   {SubsampleEntry(48, 0)}));
+
+  std::unique_ptr<DecryptConfig> actual =
+      vp9_parser_->NextFrameDecryptContextForTesting();
+
+  EXPECT_EQ(actual->iv(), kInitialIV);
+  EXPECT_EQ(actual->subsamples().size(), 1lu);
+}
+
+// ┌─────────────────────────────────────┬─────────┐
+// │ single frame in superframe          │ marker  │
+// ┝━━━━━━━━━━━━━━━━━━━━┯━━━━━━━━━━━━━━━━┷━━━━━━━━━┥
+// │ clear 1 | cipher 1 │ clear 2                  │
+// └────────────────────┴──────────────────────────┘
+TEST_F(Vp9ParserTest, SecondClearSubsampleSuperframeMarkerSubsampleParsing) {
+  vp9_parser_ = std::make_unique<Vp9Parser>();
+
+  const uint8_t superframe_marker_byte = make_marker_byte(false, 1);
+  const uint8_t kSuperframe[] = {
+      // First frame; 44 bytes.
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+      // Superframe marker goes before and after frame index.
+      superframe_marker_byte,
+      // First frame length (magnitude 1)
+      0x20,
+      // Second frame length (magnigude 1)
+      0x20,
+      // marker again.
+      superframe_marker_byte};
+
+  vp9_parser_->SetStream(
+      kSuperframe, DecryptConfig::CreateCencConfig(kKeyID, kInitialIV,
+                                                   {
+                                                       SubsampleEntry(16, 16),
+                                                       SubsampleEntry(16, 0),
+                                                   }));
 
   std::unique_ptr<DecryptConfig> actual =
       vp9_parser_->NextFrameDecryptContextForTesting();
@@ -549,7 +517,7 @@ TEST_F(Vp9ParserTest, SecondClearSubsampleSuperframeMarkerSubsampleParsing) {
 }
 
 TEST_F(Vp9ParserTest, TestIncrementIV) {
-  vp9_parser_ = std::make_unique<Vp9Parser>(false);
+  vp9_parser_ = std::make_unique<Vp9Parser>();
 
   std::vector<std::tuple<char const*, uint32_t, char const*>> input_output = {
       {"--------aaaaaaaa", 1, "--------aaaaaaab"},
@@ -567,7 +535,7 @@ TEST_F(Vp9ParserTest, TestIncrementIV) {
 }
 
 TEST_F(Vp9ParserTest, StreamFileParsingWithoutCompressedHeader) {
-  Initialize("test-25fps.vp9", /*parsing_compressed_header=*/false);
+  Initialize("test-25fps.vp9");
 
   // Number of frames in the test stream to be parsed.
   const int num_expected_frames = 269;
@@ -590,7 +558,7 @@ TEST_F(Vp9ParserTest, StreamFileParsingWithoutCompressedHeader) {
 }
 
 TEST_P(Vp9ParserTest, VerifyFirstFrame) {
-  Initialize(GetParam().file_name, /*parsing_compressed_header=*/false);
+  Initialize(GetParam().file_name);
   Vp9FrameHeader fhdr;
 
   ASSERT_EQ(Vp9Parser::kOk, ParseNextFrame(&fhdr));

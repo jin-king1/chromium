@@ -10,8 +10,9 @@
 #include <string>
 
 #include "base/files/file_path.h"
+#include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
 #include "base/types/expected.h"
@@ -54,6 +55,7 @@ class DriveUploadHandler
 
   DriveUploadHandler(Profile* profile,
                      const storage::FileSystemURL& source_url,
+                     UploadType upload_type,
                      UploadCallback callback,
                      base::SafeRef<CloudOpenMetrics> cloud_open_metrics);
   ~DriveUploadHandler() override;
@@ -129,6 +131,7 @@ class DriveUploadHandler
   // DriveIntegrationService::Observer implementation.
   void OnDriveConnectionStatusChanged(
       drive::util::ConnectionStatus status) override;
+  void OnDriveIntegrationServiceDestroyed() override;
 
   // Checks the alternate URL from the request file's metadata.
   void OnGetDriveMetadata(bool timed_out,
@@ -147,6 +150,9 @@ class DriveUploadHandler
   const UploadType upload_type_;
   scoped_refptr<CloudUploadNotificationManager> notification_manager_;
   const storage::FileSystemURL source_url_;
+  base::ScopedObservation<drive::DriveIntegrationService,
+                          drive::DriveIntegrationService::Observer>
+      drive_observation_{this};
   ::file_manager::io_task::IOTaskId observed_copy_task_id_;
   ::file_manager::io_task::IOTaskId observed_delete_task_id_;
   base::FilePath observed_absolute_dest_path_;

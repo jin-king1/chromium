@@ -9,17 +9,22 @@ import android.content.res.Resources;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.drawable.Drawable;
-import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.LayerDrawable;
+import android.text.method.LinkMovementMethod;
 import android.util.AttributeSet;
 import android.view.View;
 import android.widget.LinearLayout;
 
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.tab_ui.R;
 import org.chromium.components.browser_ui.styles.ChromeColors;
+import org.chromium.components.browser_ui.styles.SemanticColorUtils;
 import org.chromium.ui.widget.ButtonCompat;
 import org.chromium.ui.widget.ChromeImageView;
-import org.chromium.ui.widget.TextViewWithLeading;
+import org.chromium.ui.widget.OutlineOverlayHelper;
+import org.chromium.ui.widget.TextViewWithClickableSpans;
 
 import java.lang.ref.WeakReference;
 
@@ -27,28 +32,30 @@ import java.lang.ref.WeakReference;
  * Represents a secondary card view in Grid Tab Switcher. The view contains an icon, a description,
  * an action button for acceptance, and a close button for dismissal.
  */
+@NullMarked
 class MessageCardView extends LinearLayout {
-    private static WeakReference<Bitmap> sCloseButtonBitmapWeakRef;
+    private static @Nullable WeakReference<Bitmap> sCloseButtonBitmapWeakRef;
 
     /** An interface to get the icon to be shown inside the message card. */
     public interface IconProvider {
         void fetchIconDrawable(Callback<Drawable> drawable);
     }
 
-    /** An interface to handle the review action. */
-    public interface ReviewActionProvider {
-        void review();
+    /** An interface to handle a message action. */
+    public interface ActionProvider {
+        void action();
     }
 
     /** An interface to handle the dismiss action. */
-    public interface DismissActionProvider {
-        void dismiss(@MessageService.MessageType int messageType);
+    public interface ServiceDismissActionProvider<T> {
+        void dismiss(T messageType);
     }
 
     private ChromeImageView mIcon;
-    private TextViewWithLeading mDescription;
+    private TextViewWithClickableSpans mDescription;
     private ButtonCompat mActionButton;
     private ChromeImageView mCloseButton;
+    private OutlineOverlayHelper mOutlineOverlayHelper;
 
     public MessageCardView(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -60,6 +67,7 @@ class MessageCardView extends LinearLayout {
 
         mIcon = findViewById(R.id.icon);
         mDescription = findViewById(R.id.description);
+        mDescription.setMovementMethod(LinkMovementMethod.getInstance());
         mActionButton = findViewById(R.id.action_button);
         mCloseButton = findViewById(R.id.close_button);
 
@@ -73,6 +81,9 @@ class MessageCardView extends LinearLayout {
                                     bitmap, closeButtonSize, closeButtonSize, true));
         }
         mCloseButton.setImageBitmap(sCloseButtonBitmapWeakRef.get());
+        mOutlineOverlayHelper = OutlineOverlayHelper.attach(this);
+        mOutlineOverlayHelper.setStrokeColor(
+                ChromeColors.getKeyboardFocusRingColor(getContext(), false));
     }
 
     /**
@@ -170,9 +181,9 @@ class MessageCardView extends LinearLayout {
             return;
         }
         // Set dynamic color.
-        GradientDrawable gradientDrawable = (GradientDrawable) getBackground();
-        gradientDrawable.setColor(
-                ChromeColors.getSurfaceColor(getContext(), R.dimen.default_elevation_2));
+        LayerDrawable drawable = (LayerDrawable) getBackground();
+        drawable.findDrawableByLayerId(R.id.card_background_base)
+                .setTint(SemanticColorUtils.getCardBackgroundColor(getContext()));
     }
 
     /**
@@ -186,6 +197,9 @@ class MessageCardView extends LinearLayout {
         MessageCardViewUtils.setActionButtonTextAppearance(
                 mActionButton, isIncognito, /* isLargeMessageCard= */ false);
         MessageCardViewUtils.setCloseButtonTint(mCloseButton, isIncognito);
+
+        mOutlineOverlayHelper.setStrokeColor(
+                ChromeColors.getKeyboardFocusRingColor(getContext(), isIncognito));
     }
 
     /**

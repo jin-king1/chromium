@@ -10,10 +10,10 @@
 #include <optional>
 #include <string>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/scoped_feature_list.h"
@@ -29,11 +29,17 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/permission_controller_delegate.h"
 #include "extensions/buildflags/buildflags.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "chrome/browser/ash/settings/scoped_cros_settings_test_helper.h"
 #include "components/user_manager/scoped_user_manager.h"
+
+namespace ash {
+class ScopedCrosSettingsTestHelper;
+}  // namespace ash
+#endif
+
+#if BUILDFLAG(IS_WIN)
+class ProfileLoadTracker;
 #endif
 
 class ExtensionSpecialStoragePolicy;
@@ -80,7 +86,7 @@ class TestingProfile : public Profile {
   // Default constructor that cannot be used with multi-profiles.
   TestingProfile();
 
-  // Wrapper over absl::variant to help type deduction when calling
+  // Wrapper over std::variant to help type deduction when calling
   // AddTestingFactories(). See example call in the method's comment.
   struct TestingFactory {
     TestingFactory(
@@ -93,7 +99,7 @@ class TestingProfile : public Profile {
     TestingFactory& operator=(TestingFactory&&);
     ~TestingFactory();
 
-    absl::variant<
+    std::variant<
         std::pair<BrowserContextKeyedServiceFactory*,
                   BrowserContextKeyedServiceFactory::TestingFactory>,
         std::pair<RefcountedBrowserContextKeyedServiceFactory*,
@@ -243,7 +249,13 @@ class TestingProfile : public Profile {
 
     TestingProfile* BuildIncognito(TestingProfile* original_profile);
 
+#if BUILDFLAG(IS_WIN)
+    Builder& EnableProfileLoadTracker();
+#endif
+
     const base::FilePath& GetPath() const { return path_; }
+    const std::string& profile_name() const { return profile_name_; }
+    bool is_supervised_profile() const { return is_supervised_profile_; }
 
    private:
     // If true, Build() has already been called.
@@ -274,6 +286,9 @@ class TestingProfile : public Profile {
     std::string profile_name_{kDefaultProfileUserName};
     std::optional<bool> override_policy_connector_is_managed_;
     scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+#if BUILDFLAG(IS_WIN)
+    bool profile_load_tracker_enabled_ = false;
+#endif
   };
 
   // Multi-profile aware constructor that takes the path to a directory managed
@@ -309,8 +324,8 @@ class TestingProfile : public Profile {
 #if BUILDFLAG(IS_CHROMEOS)
       std::unique_ptr<policy::UserCloudPolicyManagerAsh> policy_manager,
 #else
-      absl::variant<std::unique_ptr<policy::UserCloudPolicyManager>,
-                    std::unique_ptr<policy::ProfileCloudPolicyManager>>
+      std::variant<std::unique_ptr<policy::UserCloudPolicyManager>,
+                   std::unique_ptr<policy::ProfileCloudPolicyManager>>
           policy_manager,
 #endif  // BUILDFLAG(IS_CHROMEOS)
       std::unique_ptr<policy::PolicyService> policy_service,
@@ -318,7 +333,12 @@ class TestingProfile : public Profile {
       const std::string& profile_name,
       std::optional<bool> override_policy_connector_is_managed,
       const OTRProfileID* otr_profile_id,
-      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+      scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory
+#if BUILDFLAG(IS_WIN)
+      ,
+      bool profile_load_tracker_enabled = false
+#endif
+  );
 
   ~TestingProfile() override;
 
@@ -342,7 +362,6 @@ class TestingProfile : public Profile {
   sync_preferences::TestingPrefServiceSyncable* GetTestingPrefService();
 
   // content::BrowserContext
-  base::FilePath GetPath() override;
   base::FilePath GetPath() const override;
   base::Time GetCreationTime() const override;
   std::unique_ptr<content::ZoomLevelDelegate> CreateZoomLevelDelegate(
@@ -371,6 +390,10 @@ class TestingProfile : public Profile {
 
   TestingProfile* AsTestingProfile() override;
 
+  base::WeakPtr<TestingProfile> GetWeakPtr() {
+    return weak_factory_.GetWeakPtr();
+  }
+
   // Profile
   std::string GetProfileUserName() const override;
 
@@ -383,7 +406,6 @@ class TestingProfile : public Profile {
   Profile* GetOriginalProfile() override;
   const Profile* GetOriginalProfile() const override;
   bool IsChild() const override;
-  bool AllowsBrowserWindows() const override;
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   void SetExtensionSpecialStoragePolicy(
       scoped_refptr<ExtensionSpecialStoragePolicy>
@@ -453,6 +475,10 @@ class TestingProfile : public Profile {
     permission_controller_delegate_ = std::move(delegate);
   }
 
+#if BUILDFLAG(IS_WIN)
+  void AckCrashForTracking() override;
+#endif
+
  private:
   // Called when profile is deleted.
   ProfileDestructionCallback profile_destruction_callback_;
@@ -484,10 +510,6 @@ class TestingProfile : public Profile {
   // Creates a TestingPrefService and associates it with the TestingProfile.
   void CreateTestingPrefService();
 
-  // Creates a pref service that uses SupervisedUserPrefStore and associates
-  // it with the TestingProfile.
-  void CreatePrefServiceForSupervisedUser();
-
   // Initializes |prefs_| for an incognito profile, derived from
   // |original_profile_|.
   void CreateIncognitoPrefService();
@@ -504,8 +526,6 @@ class TestingProfile : public Profile {
 
   bool guest_session_ = false;
 
-  bool allows_browser_windows_ = true;
-
   bool is_new_profile_ = false;
 
   scoped_refptr<HostContentSettingsMap> host_content_settings_map_;
@@ -515,7 +535,7 @@ class TestingProfile : public Profile {
 
   base::FilePath last_selected_directory_;
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
   scoped_refptr<ExtensionSpecialStoragePolicy>
       extension_special_storage_policy_;
 #endif
@@ -560,9 +580,14 @@ class TestingProfile : public Profile {
 
   std::unique_ptr<policy::PolicyService> policy_service_;
 
-  scoped_refptr<TestingPrefStore> supervised_user_pref_store_ = nullptr;
-
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
+#if BUILDFLAG(IS_WIN)
+  bool profile_load_tracker_enabled_ = false;
+  std::unique_ptr<ProfileLoadTracker> profile_load_tracker_;
+#endif
+
+  base::WeakPtrFactory<TestingProfile> weak_factory_{this};
 };
 
 #endif  // CHROME_TEST_BASE_TESTING_PROFILE_H_

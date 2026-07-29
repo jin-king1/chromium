@@ -59,7 +59,7 @@ NoPasskeysBottomSheetBridge::NoPasskeysBottomSheetBridge(
     : jni_delegate_(std::move(jni_delegate)) {}
 
 NoPasskeysBottomSheetBridge::NoPasskeysBottomSheetBridge(
-    base::PassKey<class TouchToFillControllerWebAuthnTest>,
+    base::PassKey<class TouchToFillPasswordManagerWebAuthnDelegateTest>,
     std::unique_ptr<JniDelegate> jni_delegate)
     : jni_delegate_(std::move(jni_delegate)) {}
 
@@ -99,3 +99,5 @@ void NoPasskeysBottomSheetBridge::OnClickUseAnotherDevice(JNIEnv* env) {
   CHECK(on_click_use_another_device_callback_);
   std::move(on_click_use_another_device_callback_).Run();
 }
+
+DEFINE_JNI(NoPasskeysBottomSheetBridge)

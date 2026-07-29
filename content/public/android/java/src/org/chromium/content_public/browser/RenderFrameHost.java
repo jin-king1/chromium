@@ -43,8 +43,7 @@ public interface RenderFrameHost {
      *
      * @return The last committed URL of the frame or null when being destroyed.
      */
-    @Nullable
-    GURL getLastCommittedURL();
+    @Nullable GURL getLastCommittedURL();
 
     /**
      * Get the last committed Origin of the frame. This is not always the same as scheme/host/port
@@ -53,8 +52,7 @@ public interface RenderFrameHost {
      *
      * @return The last committed Origin of the frame or null when being destroyed.
      */
-    @Nullable
-    Origin getLastCommittedOrigin();
+    @Nullable Origin getLastCommittedOrigin();
 
     /**
      * Returns the eldest parent of this RenderFrameHost.
@@ -71,28 +69,31 @@ public interface RenderFrameHost {
      *     https://crsrc.org/c/content/public/browser/render_frame_host.h?q=symbol:%5Cbcontent::RenderFrameHost::GetMainFrame%5Cb%20case:yes
      * @return The eldest parent frame or null when this frame is being destroyed.
      */
-    @Nullable
-    RenderFrameHost getMainFrame();
+    @Nullable RenderFrameHost getMainFrame();
+
+    /**
+     * @return Whether the frame is an outermost main frame.
+     */
+    boolean isOutermostMainFrame();
 
     /**
      * Fetch the canonical URL associated with the fame.
      *
      * @param callback The callback to be notified once the canonical URL has been fetched.
      */
-    void getCanonicalUrlForSharing(Callback<GURL> callback);
+    void getCanonicalUrlForSharing(Callback<@Nullable GURL> callback);
 
     /**
      * Fetch all RenderFramesHosts from the current frame.
      *
      * @return A list of RenderFramesHosts including the current frame and all descendents.
      */
-    public @Nullable List<RenderFrameHost> getAllRenderFrameHosts();
+    List<RenderFrameHost> getAllRenderFrameHosts();
 
     /**
      * Returns whether the feature policy allows the feature in this frame.
      *
      * @param feature A feature controlled by feature policy.
-     *
      * @return Whether the feature policy allows the feature in this frame.
      */
     boolean isFeatureEnabled(@PermissionsPolicyFeature int feature);
@@ -167,27 +168,58 @@ public interface RenderFrameHost {
      * the callback is an object containing (1) the status code indicating the result of the
      * GetAssertion request security checks, and (2) whether the effectiveOrigin is a cross-origin
      * with any frame in this frame's ancestor chain.
+     *
+     * <p>`remoteDesktopClientOverrideOrigin` is the origin from the RemoteDesktopClientOverride
+     * client extension for this request, if present.
+     *
+     * <p>`appId` is the URL from the AppId extension for this request, if present. It is passed as
+     * a string because conversion and validation are done as part of the checks.
      */
     void performGetAssertionWebAuthSecurityChecks(
             String relyingPartyId,
             Origin effectiveOrigin,
             boolean isPaymentCredentialGetAssertion,
+            @Nullable Origin remoteDesktopClientOverrideOrigin,
+            @Nullable String appId,
             Callback<WebAuthSecurityChecksResults> callback);
 
     /**
-     * Runs security checks associated with a Web Authentication MakeCredential request for the the
+     * Runs security checks associated with a Web Authentication MakeCredential request for the
      * given relying party ID, an effective origin and whether MakeCredential is making the payment
      * credential. See performGetAssertionWebAuthSecurityChecks for more on |effectiveOrigin|.
      *
      * <p>This operation may trigger network fetches and thus it takes a `Callback`. The argument to
      * the callback is an object containing (1) the status code indicating the result of the
-     * GetAssertion request security checks, and (2) whether the effectiveOrigin is a cross-origin
+     * MakeCredential request security checks, and (2) whether the effectiveOrigin is a cross-origin
      * with any frame in this frame's ancestor chain.
+     *
+     * <p>`remoteDesktopClientOverrideOrigin` is the origin from the RemoteDesktopClientOverride
+     * client extension for this request, if present.
+     *
+     * <p>`appId` is the origin from the AppId extension for this request, if present. It is passed
+     * as a string because conversion and validation are done as part of the checks.
      */
     void performMakeCredentialWebAuthSecurityChecks(
             String relyingPartyId,
             Origin effectiveOrigin,
             boolean isPaymentCredentialCreation,
+            @Nullable Origin remoteDesktopClientOverrideOrigin,
+            @Nullable String appId,
+            Callback<WebAuthSecurityChecksResults> callback);
+
+    /**
+     * Runs security checks associated with a Web Authentication Report request for the given
+     * relying party ID and an effective origin. See performGetAssertionWebAuthSecurityChecks for
+     * more on |effectiveOrigin|.
+     *
+     * <p>This operation may trigger network fetches and thus it takes a `Callback`. The argument to
+     * the callback is an object containing (1) the status code indicating the result of the Report
+     * request security checks, and (2) whether the effectiveOrigin is a cross-origin with any frame
+     * in this frame's ancestor chain.
+     */
+    void performReportWebAuthSecurityChecks(
+            String relyingPartyId,
+            Origin effectiveOrigin,
             Callback<WebAuthSecurityChecksResults> callback);
 
     /**
@@ -238,4 +270,12 @@ public interface RenderFrameHost {
      */
     void executeJavaScriptInIsolatedWorld(
             String script, int worldId, @Nullable JavaScriptCallback callback);
+
+    /**
+     * @return whether hit test data is available for this Frame.
+     */
+    boolean hasHitTestDataForTesting();
+
+    /** Opens view-source tab for the document last committed in this RenderFrameHost. */
+    void viewSource();
 }

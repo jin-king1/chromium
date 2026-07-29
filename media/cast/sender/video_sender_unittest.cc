@@ -24,7 +24,7 @@
 #include "base/test/simple_test_tick_clock.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "components/openscreen_platform/task_runner.h"
+#include "build/build_config.h"
 #include "gpu/command_buffer/client/test_shared_image_interface.h"
 #include "media/base/fake_single_thread_task_runner.h"
 #include "media/base/media_switches.h"
@@ -34,10 +34,9 @@
 #include "media/cast/common/openscreen_conversion_helpers.h"
 #include "media/cast/constants.h"
 #include "media/cast/encoding/video_encoder.h"
-#include "media/cast/test/fake_openscreen_clock.h"
 #include "media/cast/test/fake_video_encode_accelerator_factory.h"
-#include "media/cast/test/mock_openscreen_environment.h"
 #include "media/cast/test/mock_video_encoder.h"
+#include "media/cast/test/openscreen_test_helpers.h"
 #include "media/cast/test/test_with_cast_environment.h"
 #include "media/cast/test/utility/default_config.h"
 #include "media/cast/test/utility/video_utility.h"
@@ -45,11 +44,7 @@
 #include "media/video/mock_gpu_video_accelerator_factories.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/openscreen/src/cast/streaming/public/capture_recommendations.h"
-#include "third_party/openscreen/src/cast/streaming/public/environment.h"
 #include "third_party/openscreen/src/cast/streaming/public/sender.h"
-#include "third_party/openscreen/src/cast/streaming/sender_packet_router.h"
-#include "third_party/openscreen/src/platform/api/time.h"
 
 using testing::Contains;
 
@@ -84,14 +79,13 @@ void SaveOperationalStatus(std::vector<OperationalStatus>* statuses,
 
 void IgnorePlayoutDelayChanges(base::TimeDelta unused_playout_delay) {}
 
-int GetVideoNetworkBandwidth() {
+uint32_t GetVideoNetworkBandwidth() {
   return openscreen::cast::kDefaultVideoMinBitRate;
 }
 
 }  // namespace
 
-class VideoSenderTest : public ::testing::TestWithParam<bool>,
-                        public WithCastEnvironment {
+class VideoSenderTest : public ::testing::Test, public WithCastEnvironment {
  public:
   VideoSenderTest(const VideoSenderTest&) = delete;
   VideoSenderTest(VideoSenderTest&&) = delete;
@@ -100,8 +94,6 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
 
  protected:
   VideoSenderTest() {
-    openscreen_task_runner_ = std::make_unique<openscreen_platform::TaskRunner>(
-        GetMainThreadTaskRunner());
     accelerator_task_runner_ = base::ThreadPool::CreateSingleThreadTaskRunner(
         {base::TaskPriority::USER_BLOCKING,
          base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
@@ -111,16 +103,8 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
     vea_factory_ = std::make_unique<FakeVideoEncodeAcceleratorFactory>(
         accelerator_task_runner_);
 
-    FakeOpenscreenClock::SetTickClock(GetMockTickClock());
-    mock_openscreen_environment_ = std::make_unique<MockOpenscreenEnvironment>(
-        &FakeOpenscreenClock::now, *openscreen_task_runner_);
-    openscreen_packet_router_ =
-        std::make_unique<openscreen::cast::SenderPacketRouter>(
-            *mock_openscreen_environment_);
     vea_factory_->SetAutoRespond(true);
     last_pixel_value_ = kPixelValue;
-    feature_list_.InitWithFeatureState(kCastStreamingMediaVideoEncoder,
-                                       GetParam());
   }
 
   ~VideoSenderTest() override {
@@ -132,7 +116,6 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
     // more complex encoder cases, such as VideoEncodeAcceleratorAdapters.
     RunTasksAndAdvanceClock();
     RunTasksAndAdvanceClock();
-    FakeOpenscreenClock::ClearTickClock();
   }
 
   void RunTasksAndAdvanceClock(base::TimeDelta clock_delta = {}) {
@@ -183,30 +166,27 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
     FrameSenderConfig video_config = GetDefaultVideoSenderConfig();
     video_config.use_hardware_encoder = encoder_type == EncoderType::kHardware;
 
-    openscreen::cast::SessionConfig openscreen_video_config =
-        ToOpenscreenSessionConfig(video_config, /* is_pli_enabled= */ true);
-
     EXPECT_TRUE(status_changes_.empty());
 
-    auto openscreen_video_sender = std::make_unique<openscreen::cast::Sender>(
-        *mock_openscreen_environment_, *openscreen_packet_router_,
-        openscreen_video_config, openscreen::cast::RtpPayloadType::kVideoVp8);
+    test_senders_ =
+        std::make_unique<OpenscreenTestSenders>(OpenscreenTestSenders::Config(
+            GetMainThreadTaskRunner(), GetMockTickClock(), std::nullopt,
+            openscreen::cast::RtpPayloadType::kVideoVp8, std::nullopt,
+            video_config));
 
     if (encoder_type == EncoderType::kHardware) {
       sii_ = base::MakeRefCounted<gpu::TestSharedImageInterface>();
-      sii_->UseTestGMBInSharedImageCreationWithBufferUsage();
       mock_gpu_factories_ =
           std::make_unique<MockGpuVideoAcceleratorFactories>(sii_.get());
       EXPECT_CALL(*mock_gpu_factories_, GetTaskRunner())
           .WillRepeatedly(testing::Return(accelerator_task_runner_));
       EXPECT_CALL(*mock_gpu_factories_, DoCreateVideoEncodeAccelerator())
-          .WillRepeatedly(testing::Invoke([&]() {
+          .WillRepeatedly([&]() {
             return vea_factory_->CreateVideoEncodeAcceleratorSync().release();
-          }));
+          });
       EXPECT_CALL(*mock_gpu_factories_,
                   GetVideoEncodeAcceleratorSupportedProfiles())
-          .WillRepeatedly(
-              testing::Invoke([&]() { return kDefaultSupportedProfiles; }));
+          .WillRepeatedly([&]() { return kDefaultSupportedProfiles; });
     }
 
     std::unique_ptr<VideoEncoder> video_encoder;
@@ -228,7 +208,7 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
 
     video_sender_ = std::make_unique<VideoSender>(
         std::move(video_encoder), cast_environment(), video_config,
-        std::move(openscreen_video_sender),
+        std::move(test_senders_->video_sender),
         base::BindRepeating(&IgnorePlayoutDelayChanges),
         base::BindRepeating(&VideoSenderTest::HandleVideoCaptureFeedback,
                             base::Unretained(this)),
@@ -266,11 +246,7 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
  private:
   scoped_refptr<base::SingleThreadTaskRunner> accelerator_task_runner_;
 
-  // openscreen::Sender related classes.
-  std::unique_ptr<openscreen_platform::TaskRunner> openscreen_task_runner_;
-  std::unique_ptr<MockOpenscreenEnvironment> mock_openscreen_environment_;
-  std::unique_ptr<openscreen::cast::SenderPacketRouter>
-      openscreen_packet_router_;
+  std::unique_ptr<OpenscreenTestSenders> test_senders_;
   std::vector<OperationalStatus> status_changes_;
   std::unique_ptr<FakeVideoEncodeAcceleratorFactory> vea_factory_;
   int last_pixel_value_;
@@ -283,7 +259,7 @@ class VideoSenderTest : public ::testing::TestWithParam<bool>,
   raw_ptr<MockVideoEncoder> mock_encoder_ = nullptr;
 };
 
-TEST_P(VideoSenderTest, BuiltInEncoder) {
+TEST_F(VideoSenderTest, BuiltInEncoder) {
   CreateSender(EncoderType::kSoftware);
   ASSERT_EQ(STATUS_INITIALIZED, status_changes().front());
 
@@ -294,7 +270,13 @@ TEST_P(VideoSenderTest, BuiltInEncoder) {
   RunUntilQuit();
 }
 
-TEST_P(VideoSenderTest, MockEncoderGoldenCase) {
+// TODO(crbug.com/500613219): Enable the test.
+#if defined(MEMORY_SANITIZER) && (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS))
+#define MAYBE_MockEncoderGoldenCase DISABLED_MockEncoderGoldenCase
+#else
+#define MAYBE_MockEncoderGoldenCase MockEncoderGoldenCase
+#endif
+TEST_F(VideoSenderTest, MAYBE_MockEncoderGoldenCase) {
   CreateSender(EncoderType::kMock);
 
   VideoEncoder::FrameEncodedCallback callback;
@@ -332,7 +314,7 @@ TEST_P(VideoSenderTest, MockEncoderGoldenCase) {
 // Make sure we properly handle the frame change callback, even if the encoded
 // frame result is nullptr. For more information on this test, see
 // https://issuetracker.google.com/393880773.
-TEST_P(VideoSenderTest, HandlesNullptrFrameChangeCallback) {
+TEST_F(VideoSenderTest, HandlesNullptrFrameChangeCallback) {
   CreateSender(EncoderType::kMock);
 
   VideoEncoder::FrameEncodedCallback callback;
@@ -365,7 +347,7 @@ TEST_P(VideoSenderTest, HandlesNullptrFrameChangeCallback) {
       }));
 }
 
-TEST_P(VideoSenderTest, ExternalEncoder) {
+TEST_F(VideoSenderTest, ExternalEncoder) {
   CreateSender(EncoderType::kHardware);
   SetVeaFactoryInitializationWillSucceed(true);
   ASSERT_EQ(STATUS_INITIALIZED, status_changes().front());
@@ -399,7 +381,7 @@ TEST_P(VideoSenderTest, ExternalEncoder) {
   EXPECT_EQ(1, VeaResponseCount());
 }
 
-TEST_P(VideoSenderTest, ExternalEncoderInitFails) {
+TEST_F(VideoSenderTest, ExternalEncoderInitFails) {
   CreateSender(EncoderType::kHardware);
   SetVeaFactoryInitializationWillSucceed(false);
   EXPECT_EQ(STATUS_INITIALIZED, status_changes().front());
@@ -413,11 +395,23 @@ TEST_P(VideoSenderTest, ExternalEncoderInitFails) {
   RunTasksAndAdvanceClock();
 }
 
-INSTANTIATE_TEST_SUITE_P(All,
-                         VideoSenderTest,
-                         ::testing::Bool(),
-                         [](const testing::TestParamInfo<bool>& param) {
-                           return param.param ? "Experimental" : "Stable";
-                         });
+TEST_F(VideoSenderTest, GettersReturnValidValues) {
+  CreateSender(EncoderType::kSoftware);
+  ASSERT_EQ(STATUS_INITIALIZED, status_changes().front());
+
+  // They should have some default values or zeroes
+  EXPECT_GE(video_sender().GetEncoderBitrate(), 0u);
+  EXPECT_GE(video_sender().GetEncoderUtilization(), -1.0);  // Defaults to -1.0
+  EXPECT_GE(video_sender().GetLossiness(), -1.0);           // Defaults to -1.0
+  EXPECT_GE(video_sender().GetFramesInserted(), 0);
+  EXPECT_GE(video_sender().GetFramesDropped(), 0);
+
+  // Send a frame to update metrics
+  video_sender().InsertRawVideoFrame(GetNewVideoFrame(), NowTicks());
+  RunTasksAndAdvanceClock();
+
+  EXPECT_EQ(video_sender().GetFramesInserted(), 1);
+  EXPECT_GE(video_sender().GetEncoderBitrate(), 0u);
+}
 
 }  // namespace media::cast

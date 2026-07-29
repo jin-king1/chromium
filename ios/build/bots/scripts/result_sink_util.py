@@ -8,6 +8,7 @@ import cgi
 import json
 import logging
 import os
+import re
 import requests
 import sys
 import traceback
@@ -33,7 +34,7 @@ LOGGER = logging.getLogger(__name__)
 # https://source.chromium.org/chromium/infra/infra/+/main:go/src/go.chromium.org/luci/resultdb/proto/v1/test_result.proto;drc=ca12b9f52b27f064b0fa47c39baa3b011ffa5790;l=151-174
 VALID_STATUSES = {"PASS", "FAIL", "CRASH", "ABORT", "SKIP"}
 
-EXTENDED_PROPERTIES_KEY = 'extended_properties'
+EXTENDED_PROPERTIES_KEY = 'extendedProperties'
 
 def format_exception_stacktrace(e: Exception):
   exception_trace = traceback.format_exception(type(e), e, e.__traceback__)
@@ -64,7 +65,7 @@ def _compose_test_result(test_id,
         report as artifact.
 
   Returns:
-    A dict of test results with input information, confirming to
+    A dict of test results with input information, conforming to
       https://source.chromium.org/chromium/infra/infra/+/main:go/src/go.chromium.org/luci/resultdb/sink/proto/v1/test_result.proto
   """
   tags = tags or []
@@ -88,6 +89,7 @@ def _compose_test_result(test_id,
           'key': key,
           'value': value
       } for (key, value) in tags],
+      'testIdStructured': _get_struct_test_dict(test_id),
       'testMetadata': {
           'name': test_id,
           'location': test_loc,
@@ -129,6 +131,83 @@ def _compose_test_result(test_id,
 
   return test_result
 
+
+def _get_struct_test_dict(test_id):
+  """Returns a structured_test_dict with filled in fields.
+
+  Args:
+    test_id: A string of the test_id.
+
+  Returns:
+    A dictionary with the struct fields filled in.
+  """
+  # Source comes from:
+  # infra/go/src/go.chromium.org/luci/resultdb/sink/proto/v1/test_result.proto
+  struct_test_dict = {
+      'coarseName': None,  # Not used for gtests or xctests.
+      'fineName': None,
+      'caseNameComponents': [''],
+  }
+
+  found_match = False
+  # We may encounter gtests or XCTests which are parsed differently.
+  # Attempt to parse gtests based on:
+  #     infra/go/src/infra/tools/result_adapter/gtest.go
+  # Type-parameterised test (e.g. MyInstantiation/FooTest/MyType.DoesBar)
+  re_match = re.search(r'^((\w+)/)?(\w+)/(\w+)\.(\w+)$', test_id)
+  if re_match:
+    suite = re_match.group(3)
+    name = re_match.group(5)
+    instantiation = re_match.group(2)
+    case_id = re_match.group(4)
+    found_match = True
+
+  # Value-parameterised test (e.g. MyInstantiation/FooTest.DoesBar/TestValue)
+  re_match = re.search(r'^((\w+)/)?(\w+)\.(\w+)/(\w+)$', test_id)
+  if not found_match and re_match:
+    suite = re_match.group(3)
+    name = re_match.group(4)
+    instantiation = re_match.group(2)
+    case_id = re_match.group(5)
+    found_match = True
+
+  # Neither type nor value-parameterised (e.g. FooTest.DoesBar)
+  re_match = re.search(r'^(\w+)\.(\w+)$', test_id)
+  if not found_match and re_match:
+    suite = re_match.group(1)
+    name = re_match.group(2)
+    instantiation = ""
+    case_id = ""
+    found_match = True
+
+  if found_match:
+    struct_test_dict['fineName'] = suite
+    if not case_id:
+      struct_test_dict['caseNameComponents'] = [name]
+    elif not instantiation:
+      struct_test_dict['caseNameComponents'] = ['%s/%s' % (name, case_id)]
+    else:
+      struct_test_dict['caseNameComponents'] = ['%s/%s.%s' % (name, instantiation, case_id)]
+
+  # XCTests format.
+  re_match = re.search(r'(.*)/(.*)', test_id)
+  if not found_match and re_match:
+    struct_test_dict['fineName'] = re_match.group(1)
+    struct_test_dict['caseNameComponents'] = [re_match.group(2)]
+    found_match = True
+
+  # Assume it's a flat test format otherwise.
+  if not found_match:
+    struct_test_dict['caseNameComponents'] = [test_id]
+
+  return struct_test_dict
+
+
+def _to_camel_case(s):
+  """Converts the string s from snake_case to lowerCamelCase."""
+
+  elems = s.split('_')
+  return elems[0] + ''.join(elem.capitalize() for elem in elems[1:])
 
 
 class ResultSinkClient(object):
@@ -245,20 +324,25 @@ class ResultSinkClient(object):
     invocation = {EXTENDED_PROPERTIES_KEY: {}}
     paths = []
 
+    # Sink server by default decodes payload with protojson, i.e. codecJSONV2
+    # in https://source.chromium.org/search?q=f:server.go%20func:requestCodec
+    # which requires loweCamelCase names in the json request.
+    # For the value for update mask, see "JSON Encoding of Field Masks" in
+    # https://protobuf.dev/reference/protobuf/google.protobuf/#field-masks
     if exception_recorder.size() > 0:
       invocation[EXTENDED_PROPERTIES_KEY][
           exception_recorder.EXCEPTION_OCCURRENCES_KEY] = \
             exception_recorder.to_dict()
       paths.append('%s.%s' % (EXTENDED_PROPERTIES_KEY,
-                              exception_recorder.EXCEPTION_OCCURRENCES_KEY))
+                              _to_camel_case(exception_recorder.EXCEPTION_OCCURRENCES_KEY)))
 
     if measures.size() > 0:
       invocation[EXTENDED_PROPERTIES_KEY][measures.TEST_SCRIPT_METRICS_KEY] = \
         measures.to_dict()
       paths.append('%s.%s' %
-                   (EXTENDED_PROPERTIES_KEY, measures.TEST_SCRIPT_METRICS_KEY))
+                   (EXTENDED_PROPERTIES_KEY, _to_camel_case(measures.TEST_SCRIPT_METRICS_KEY)))
 
-    req = {'invocation': invocation, 'update_mask': {'paths': paths}}
+    req = {'invocation': invocation, 'updateMask': ','.join(paths)}
 
     inv_data = json.dumps(req, sort_keys=True)
 

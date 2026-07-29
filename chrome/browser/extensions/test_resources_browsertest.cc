@@ -6,10 +6,11 @@
 
 #include "base/path_service.h"
 #include "base/strings/stringprintf.h"
-#include "chrome/browser/extensions/extension_platform_browsertest.h"
+#include "chrome/browser/extensions/extension_browsertest.h"
 #include "chrome/common/chrome_paths.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest.h"
 #include "extensions/common/manifest_constants.h"
@@ -17,27 +18,17 @@
 #include "extensions/common/url_pattern.h"
 #include "extensions/test/test_extension_dir.h"
 
-#if !BUILDFLAG(IS_ANDROID)
-#include "chrome/browser/extensions/extension_browsertest.h"
-#endif
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
-#if BUILDFLAG(IS_ANDROID)
-using ExtensionBrowserTestBase = ExtensionPlatformBrowserTest;
-#else
-using ExtensionBrowserTestBase = ExtensionBrowserTest;
-#endif
-
 namespace {
 
-#if !BUILDFLAG(IS_ANDROID)
 constexpr char kComponentExtensionKey[] =
     "MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQC+uU63MD6T82Ldq5wjrDFn5mGmPnnnj"
     "WZBWxYXfpG4kVf0s+p24VkXwTXsxeI12bRm8/ft9sOq0XiLfgQEh5JrVUZqvFlaZYoS+g"
     "iZfUqzKFGMLa4uiSMDnvv+byxrqAepKz5G8XX/q5Wm5cvpdjwgiu9z9iM768xJy+Ca/G5"
     "qQwIDAQAB";
-#endif
 
 // The value set by the script
 // in chrome/test/data/extensions/test_resources_test/script.js.
@@ -49,7 +40,7 @@ int RetrieveSentinelValue(content::WebContents* web_contents) {
 }
 
 class ExtensionBrowserTestWithCustomTestResourcesLocation
-    : public ExtensionBrowserTestBase {
+    : public ExtensionBrowserTest {
  public:
   ExtensionBrowserTestWithCustomTestResourcesLocation() = default;
 
@@ -74,7 +65,7 @@ class ExtensionBrowserTestWithCustomTestResourcesLocation
 
 // A simple test to ensure resources can be served from _test_resources/, and
 // properly load.
-IN_PROC_BROWSER_TEST_F(ExtensionBrowserTestBase, TestResourcesLoad) {
+IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest, TestResourcesLoad) {
   TestExtensionDir test_dir;
   test_dir.WriteManifest(
       R"({
@@ -98,9 +89,6 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTestBase, TestResourcesLoad) {
   EXPECT_EQ(kSentinelValue, RetrieveSentinelValue(GetActiveWebContents()));
 }
 
-// TODO(crbug.com/356905053): Enable the tests for component extensions on
-// desktop android.
-#if !BUILDFLAG(IS_ANDROID)
 // Tests that resources from _test_resources work in component extensions
 // (which have a slightly different load path).
 IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest,
@@ -110,7 +98,7 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest,
       R"({
            "name": "Test Extension",
            "version": "0.1",
-           "manifest_version": 2,
+           "manifest_version": 3,
            "key": "%s"
          })";
   test_dir.WriteManifest(
@@ -163,8 +151,8 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest,
   ASSERT_TRUE(extension1);
   EXPECT_EQ(mojom::ManifestLocation::kComponent, extension1->location());
 
-  ExternallyConnectableInfo* info1 = static_cast<ExternallyConnectableInfo*>(
-      extension1->GetManifestData(manifest_keys::kExternallyConnectable));
+  const ExternallyConnectableInfo* info1 =
+      ExternallyConnectableInfo::Get(extension1);
   ASSERT_TRUE(info1);
   EXPECT_EQ(1ul, info1->matches.size());
 
@@ -179,15 +167,14 @@ IN_PROC_BROWSER_TEST_F(ExtensionBrowserTest,
   ASSERT_TRUE(extension2);
   EXPECT_EQ(mojom::ManifestLocation::kComponent, extension2->location());
 
-  ExternallyConnectableInfo* info2 = static_cast<ExternallyConnectableInfo*>(
-      extension2->GetManifestData(manifest_keys::kExternallyConnectable));
+  const ExternallyConnectableInfo* info2 =
+      ExternallyConnectableInfo::Get(extension2);
   ASSERT_TRUE(info2);
   EXPECT_EQ(1ul, info2->matches.size());
 
   EXPECT_EQ(URLPattern(URLPattern::SCHEME_ALL, test_domain2),
             *info2->matches.begin());
 }
-#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Tests that resources from _test_resources can be loaded from different
 // directories. Though the default is chrome/test/data/extensions, a test class

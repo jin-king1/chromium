@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "content/browser/tracing/tracing_ui.h"
 
 #include <stddef.h>
@@ -29,6 +24,7 @@
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
+#include "base/trace_event/trace_config.h"
 #include "base/trace_event/trace_event.h"
 #include "base/values.h"
 #include "content/browser/tracing/grit/tracing_resources.h"
@@ -57,13 +53,13 @@ perfetto::TracingSession* g_tracing_session = nullptr;
 
 void OnGotCategories(WebUIDataSource::GotDataCallback callback,
                      const std::set<std::string>& category_set) {
-  base::Value::List category_list;
+  base::ListValue category_list;
   for (const std::string& category : category_set) {
     category_list.Append(category);
   }
 
   auto res = base::MakeRefCounted<base::RefCountedString>();
-  base::JSONWriter::Write(category_list, &res->as_string());
+  res->as_string() = base::WriteJson(category_list).value_or("");
   std::move(callback).Run(res);
 }
 
@@ -262,12 +258,13 @@ bool TracingUI::GetTracingOptions(const std::string& data64,
     return false;
   }
 
-  std::optional<base::Value> options = base::JSONReader::Read(data);
+  std::optional<base::Value> options =
+      base::JSONReader::Read(data, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!options) {
     LOG(ERROR) << "Options were not valid JSON";
     return false;
   }
-  base::Value::Dict* options_dict = options->GetIfDict();
+  base::DictValue* options_dict = options->GetIfDict();
   if (!options_dict) {
     LOG(ERROR) << "Options must be dict";
     return false;

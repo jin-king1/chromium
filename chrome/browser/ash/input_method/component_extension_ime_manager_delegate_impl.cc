@@ -24,9 +24,7 @@
 #include "base/trace_event/trace_event.h"
 #include "build/branding_buildflags.h"
 #include "chrome/browser/extensions/component_loader.h"
-#include "chrome/browser/extensions/extension_service.h"
 #include "chrome/common/chrome_paths.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/grit/browser_resources.h"
 #include "chromeos/ash/components/settings/cros_settings.h"
 #include "chromeos/ash/components/settings/cros_settings_names.h"
@@ -36,11 +34,9 @@
 #include "extensions/browser/extension_pref_value_map_factory.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
-#include "extensions/browser/extension_system.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/manifest_constants.h"
 #include "net/base/url_util.h"
-#include "ui/accessibility/accessibility_features.h"
 #include "ui/base/ime/ash/extension_ime_util.h"
 #include "ui/base/resource/resource_bundle.h"
 
@@ -105,15 +101,6 @@ struct AllowlistedComponentExtensionIME {
 
 const char kImePathKeyName[] = "ime_path";
 
-extensions::ComponentLoader* GetComponentLoader(
-    content::BrowserContext* context) {
-  extensions::ExtensionSystem* extension_system =
-      extensions::ExtensionSystem::Get(context);
-  extensions::ExtensionService* extension_service =
-      extension_system->extension_service();
-  return extension_service->component_loader();
-}
-
 void DoLoadExtension(content::BrowserContext* context,
                      const std::string& extension_id,
                      const std::string& manifest,
@@ -128,7 +115,7 @@ void DoLoadExtension(content::BrowserContext* context,
     return;
   }
   const std::string loaded_extension_id =
-      GetComponentLoader(context)->Add(manifest, file_path);
+      extensions::ComponentLoader::Get(context)->Add(manifest, file_path);
   if (loaded_extension_id.empty()) {
     LOG(ERROR) << "Failed to add an IME extension(id=\"" << extension_id
                << ", path=\"" << file_path.LossyDisplayName()
@@ -208,7 +195,7 @@ void ComponentExtensionIMEManagerDelegateImpl::Load(
   auto* copied_file_path = new base::FilePath(file_path);
   base::ThreadPool::PostTaskAndReplyWithResult(
       // USER_BLOCKING because it is on the critical path of displaying the
-      // virtual keyboard. See https://crbug.com/976542
+      // virtual keyboard. See https://crbug.com/137685106
       FROM_HERE, {base::MayBlock(), base::TaskPriority::USER_BLOCKING},
       base::BindOnce(&CheckFilePath, base::Unretained(copied_file_path)),
       base::BindOnce(&OnFilePathChecked, base::Unretained(context),
@@ -221,11 +208,12 @@ bool ComponentExtensionIMEManagerDelegateImpl::IsInLoginLayoutAllowlist(
   return login_layout_set_.find(layout) != login_layout_set_.end();
 }
 
-std::optional<base::Value::Dict>
+std::optional<base::DictValue>
 ComponentExtensionIMEManagerDelegateImpl::ParseManifest(
     std::string_view manifest_string) {
   base::JSONReader::Result result =
-      base::JSONReader::ReadAndReturnValueWithError(manifest_string);
+      base::JSONReader::ReadAndReturnValueWithError(
+          manifest_string, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!result.has_value()) {
     LOG(ERROR) << "Failed to parse manifest: " << result.error().message
                << " at line " << result.error().line << " column "
@@ -253,7 +241,7 @@ bool ComponentExtensionIMEManagerDelegateImpl::IsIMEExtensionID(
 // static
 bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
     const ComponentExtensionIME& component_extension,
-    const base::Value::Dict& dict,
+    const base::DictValue& dict,
     ComponentExtensionEngine* out) {
   DCHECK(out);
   const std::string* engine_id =
@@ -296,15 +284,13 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
   // supports one layout per input method. Thus use the "first" layout if
   // specified, else default to "us". CrOS IME extension manifests should
   // specify one and only one layout per input method to avoid confusion.
-  const base::Value::List* layouts =
+  const base::ListValue* layouts =
       dict.FindList(extensions::manifest_keys::kLayouts);
   if (!layouts) {
     return false;
   }
 
-  if (*engine_id == "ko-t-i0-und" &&
-      base::FeatureList::IsEnabled(
-          features::kImeKoreanOnlyModeSwitchOnRightAlt)) {
+  if (*engine_id == "ko-t-i0-und") {
     out->layout = "kr(cros)";
   } else if (!layouts->empty() && layouts->front().is_string()) {
     out->layout = layouts->front().GetString();
@@ -314,15 +300,11 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
 
   std::string url_string;
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
-  bool is_global_emoji_preferences_enabled = base::FeatureList::IsEnabled(
-      features::kVirtualKeyboardGlobalEmojiPreferences);
   GURL url = extensions::Extension::GetResourceURL(
       extensions::Extension::GetBaseURLFromExtensionId(component_extension.id),
       "inputview.html");
   url = net::AppendOrReplaceQueryParameter(url, "jelly", "true");
-  url = net::AppendOrReplaceQueryParameter(
-      url, "globalemojipreferences",
-      base::ToString(is_global_emoji_preferences_enabled));
+  url = net::AppendOrReplaceQueryParameter(url, "globalemojipreferences", "false");
   // Information is managed on VK extension side so just use a default value
   // here.
   url = net::AppendOrReplaceRef(url, "id=default");
@@ -349,11 +331,7 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
   const std::string* option_page =
       dict.FindString(extensions::manifest_keys::kOptionsPage);
 
-  bool flag_allows_settings_page =
-      (*engine_id != "vkd_vi_vni" && *engine_id != "vkd_vi_telex") ||
-      base::FeatureList::IsEnabled(features::kFirstPartyVietnameseInput);
-
-  if (option_page && flag_allows_settings_page) {
+  if (option_page) {
     url_string = *option_page;
     GURL options_page_url = extensions::Extension::GetResourceURL(
         extensions::Extension::GetBaseURLFromExtensionId(
@@ -382,7 +360,7 @@ bool ComponentExtensionIMEManagerDelegateImpl::ReadEngineComponent(
 
 // static
 bool ComponentExtensionIMEManagerDelegateImpl::ReadExtensionInfo(
-    const base::Value::Dict& manifest,
+    const base::DictValue& manifest,
     const std::string& extension_id,
     ComponentExtensionIME* out) {
   const std::string* description =
@@ -416,13 +394,6 @@ void ComponentExtensionIMEManagerDelegateImpl::ReadComponentExtensionsInfo(
     std::vector<ComponentExtensionIME>* out_imes) {
   DCHECK(out_imes);
   for (auto& extension : allowlisted_component_extensions) {
-    // TODO(crbug.com/384675323): Remove this check and update
-    // `allowlisted_component_extensions` when flag is removed.
-    if (extension.manifest_resource_id == IDR_BRAILLE_MANIFEST &&
-        ::features::IsAccessibilityManifestV3EnabledForBrailleIme()) {
-      extension.manifest_resource_id = IDR_BRAILLE_MANIFEST_MV3;
-    }
-
     ComponentExtensionIME component_ime;
     component_ime.manifest =
         ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
@@ -433,14 +404,14 @@ void ComponentExtensionIMEManagerDelegateImpl::ReadComponentExtensionsInfo(
       continue;
     }
 
-    std::optional<base::Value::Dict> maybe_manifest =
+    std::optional<base::DictValue> maybe_manifest =
         ParseManifest(component_ime.manifest);
     if (!maybe_manifest.has_value()) {
       LOG(ERROR) << "Failed to load invalid manifest: "
                  << component_ime.manifest;
       continue;
     }
-    const base::Value::Dict& manifest = maybe_manifest.value();
+    const base::DictValue& manifest = maybe_manifest.value();
 
     if (!ReadExtensionInfo(manifest, extension.id, &component_ime)) {
       LOG(ERROR) << "manifest doesn't have needed information for IME.";
@@ -457,7 +428,7 @@ void ComponentExtensionIMEManagerDelegateImpl::ReadComponentExtensionsInfo(
       component_ime.path = resources_path.Append(component_ime.path);
     }
 
-    const base::Value::List* component_list =
+    const base::ListValue* component_list =
         manifest.FindList(extensions::manifest_keys::kInputComponents);
     if (!component_list) {
       LOG(ERROR) << "No input_components is found in manifest.";
@@ -469,7 +440,7 @@ void ComponentExtensionIMEManagerDelegateImpl::ReadComponentExtensionsInfo(
         continue;
       }
 
-      const base::Value::Dict& dictionary = value.GetDict();
+      const base::DictValue& dictionary = value.GetDict();
       ComponentExtensionEngine engine;
       ReadEngineComponent(component_ime, dictionary, &engine);
 

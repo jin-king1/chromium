@@ -13,7 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/threading/thread_checker.h"
 #include "chrome/test/chromedriver/command.h"
@@ -234,13 +234,13 @@ bool MatchesCommand(const std::string& method,
                     const std::string& path,
                     const CommandMapping& command,
                     std::string* session_id,
-                    base::Value::Dict* out_params);
+                    base::DictValue* out_params);
 
 bool IsNewSession(const CommandMapping& command);
 
-Status ParseBidiCommand(const std::string& data, base::Value::Dict& parsed);
+Status ParseBidiCommand(const std::string& data, base::DictValue& parsed);
 
-base::Value::Dict CreateBidiErrorResponse(
+base::DictValue CreateBidiErrorResponse(
     Status status,
     std::optional<base::Value> maybe_id = std::nullopt);
 

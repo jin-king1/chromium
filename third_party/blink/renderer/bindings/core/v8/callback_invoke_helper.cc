@@ -12,8 +12,6 @@
 #include "third_party/blink/renderer/platform/bindings/callback_function_base.h"
 #include "third_party/blink/renderer/platform/bindings/callback_interface_base.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
-#include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
 
 namespace blink {
 
@@ -28,11 +26,6 @@ bool CallbackInvokeHelper<CallbackBase, mode, return_type_is_promise>::
   if (ScriptForbiddenScope::IsScriptForbidden()) [[unlikely]] {
     ScriptForbiddenScope::ThrowScriptForbiddenException(isolate);
     return Abort();
-  }
-  if (RuntimeEnabledFeatures::BlinkLifecycleScriptForbiddenEnabled()) {
-    CHECK(!ScriptForbiddenScope::WillBeScriptForbidden());
-  } else {
-    DCHECK(!ScriptForbiddenScope::WillBeScriptForbidden());
   }
 
   if constexpr (mode == CallbackInvokeHelperMode::kConstructorCall) {
@@ -67,10 +60,8 @@ bool CallbackInvokeHelper<CallbackBase, mode, return_type_is_promise>::
       function_ = callback_->CallbackObject().template As<v8::Function>();
     } else {
       // step 10. If ! IsCallable(O) is false, then:
-      v8::MicrotaskQueue* microtask_queue =
-          ToMicrotaskQueue(callback_->CallbackRelevantScriptState());
-      v8::MicrotasksScope microtasks_scope(isolate, microtask_queue,
-                                           v8::MicrotasksScope::kRunMicrotasks);
+      V8RunMicrotasksScope microtasks_scope(
+          callback_->CallbackRelevantScriptState());
 
       v8::Local<v8::Value> value;
       if (!callback_->CallbackObject()
@@ -103,16 +94,6 @@ bool CallbackInvokeHelper<CallbackBase, mode, return_type_is_promise>::
     } else {
       callback_this_ =
           callback_this.V8Value(callback_->CallbackRelevantScriptState());
-    }
-    if (auto* tracker = scheduler::TaskAttributionTracker::From(isolate)) {
-      scheduler::TaskAttributionInfo* task_state_to_propagate = nullptr;
-      if constexpr (std::is_same<
-                        CallbackBase,
-                        CallbackFunctionWithTaskAttributionBase>::value) {
-        task_state_to_propagate = callback_->GetParentTask();
-      }
-      task_attribution_scope_ = tracker->MaybeCreateTaskScopeForCallback(
-          callback_->CallbackRelevantScriptState(), task_state_to_propagate);
     }
   }
 

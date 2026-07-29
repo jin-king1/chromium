@@ -36,6 +36,8 @@ class TestLayerTreeFrameSink::TestCompositorFrameSinkSupport
     : public viz::CompositorFrameSinkSupport {
  public:
   TestCompositorFrameSinkSupport(viz::mojom::CompositorFrameSinkClient* client,
+                                 TestLayerTreeFrameSinkClient* test_client,
+                                 TaskRunnerProvider* task_runner_provider,
                                  viz::FrameSinkManagerImpl* frame_sink_manager,
                                  const viz::FrameSinkId& frame_sink_id,
                                  bool is_root,
@@ -44,14 +46,31 @@ class TestLayerTreeFrameSink::TestCompositorFrameSinkSupport
                                         frame_sink_manager,
                                         frame_sink_id,
                                         is_root),
-        display_(display) {}
+        display_(display),
+        test_client_(test_client),
+        task_runner_provider_(task_runner_provider) {}
   ~TestCompositorFrameSinkSupport() override = default;
 
-  void SubmitCompositorFrame(
+  viz::SubmitResult MaybeSubmitCompositorFrame(
       const viz::LocalSurfaceId& local_surface_id,
       viz::CompositorFrame frame,
       std::optional<viz::HitTestRegionList> hit_test_region_list,
       uint64_t submit_time) override {
+    DebugScopedSetImplThread impl(task_runner_provider_);
+    test_client_->DisplayReceivedCompositorFrame(frame);
+
+    CHECK(local_surface_id.is_valid()) << "Tests should ensure a valid LSIid";
+
+    if (last_submitted_display_size_ != frame.size_in_pixels() ||
+        last_submitted_device_scale_factor_ != frame.device_scale_factor()) {
+      CHECK_NE(last_submitted_local_surface_id_, local_surface_id)
+          << "Tests should update LSIid when changing display size or scale";
+      last_submitted_display_size_ = frame.size_in_pixels();
+      last_submitted_device_scale_factor_ = frame.device_scale_factor();
+    }
+
+    last_submitted_local_surface_id_ = local_surface_id;
+
     // Ensure that the display's local surface ID and its size are initialized
     // (note that these calls will be no-ops if already called for this surface
     // ID/device scale factor/frame size on a previous invocation of
@@ -59,12 +78,37 @@ class TestLayerTreeFrameSink::TestCompositorFrameSinkSupport
     display_->SetLocalSurfaceId(local_surface_id, frame.device_scale_factor());
     display_->Resize(frame.size_in_pixels());
 
-    viz::CompositorFrameSinkSupport::SubmitCompositorFrame(
+    auto result = viz::CompositorFrameSinkSupport::MaybeSubmitCompositorFrame(
         local_surface_id, std::move(frame), hit_test_region_list, submit_time);
+
+    if (!display_->has_scheduler()) {
+      // In synchronous mode, we manually issue DrawAndSwap.
+      viz::DrawAndSwapParams params;
+      params.expected_display_time = base::TimeTicks::Now();
+      display_->DrawAndSwap(params);
+    }
+    return result;
+  }
+
+  void SetParams(viz::mojom::CompositorFrameSinkParamsPtr params) {
+    if (params->wants_animate_only_begin_frames) {
+      SetWantsAnimateOnlyBeginFrames();
+    }
+    if (params->auto_needs_begin_frame) {
+      SetAutoNeedsBeginFrame();
+    }
+    if (params->no_compositor_frame_acks) {
+      SetNoCompositorFrameAcks();
+    }
   }
 
  private:
   raw_ptr<viz::Display> display_;
+  raw_ptr<TestLayerTreeFrameSinkClient> test_client_ = nullptr;
+  raw_ptr<TaskRunnerProvider> task_runner_provider_;
+  gfx::Size last_submitted_display_size_;
+  float last_submitted_device_scale_factor_;
+  viz::LocalSurfaceId last_submitted_local_surface_id_;
 };
 
 class TestLayerTreeFrameSink::TestCompositorFrameSinkImpl
@@ -78,25 +122,17 @@ class TestLayerTreeFrameSink::TestCompositorFrameSinkImpl
 
  private:
   // viz::mojom::CompositorFrameSink:
+  void SetParams(viz::mojom::CompositorFrameSinkParamsPtr params) override {}
   void SetNeedsBeginFrame(bool needs_begin_frame) override {}
-  void SetWantsAnimateOnlyBeginFrames() override {}
-  void SetWantsBeginFrameAcks() override {}
-  void SetAutoNeedsBeginFrame() override {}
   void SubmitCompositorFrame(
       const viz::LocalSurfaceId& local_surface_id,
       viz::CompositorFrame frame,
       std::optional<viz::HitTestRegionList> hit_test_region_list,
       uint64_t submit_time) override {}
   void DidNotProduceFrame(const viz::BeginFrameAck& begin_frame_ack) override {}
-  void SubmitCompositorFrameSync(
-      const viz::LocalSurfaceId& local_surface_id,
-      viz::CompositorFrame frame,
-      std::optional<viz::HitTestRegionList> hit_test_region_list,
-      uint64_t submit_time,
-      SubmitCompositorFrameSyncCallback callback) override {}
-  void InitializeCompositorFrameSinkType(
-      viz::mojom::CompositorFrameSinkType type) override {}
-  void BindLayerContext(viz::mojom::PendingLayerContextPtr context) override;
+  void NotifyNewLocalSurfaceIdExpectedWhilePaused() override {}
+  void BindLayerContext(viz::mojom::PendingLayerContextPtr context,
+                        viz::mojom::LayerContextSettingsPtr settings) override;
 #if BUILDFLAG(IS_ANDROID)
   void SetThreads(const std::vector<viz::Thread>& threads) override {}
 #endif
@@ -106,8 +142,9 @@ class TestLayerTreeFrameSink::TestCompositorFrameSinkImpl
 };
 
 void TestLayerTreeFrameSink::TestCompositorFrameSinkImpl::BindLayerContext(
-    viz::mojom::PendingLayerContextPtr context) {
-  support_->BindLayerContext(*context);
+    viz::mojom::PendingLayerContextPtr context,
+    viz::mojom::LayerContextSettingsPtr settings) {
+  support_->BindLayerContext(*context, std::move(settings));
 }
 
 static constexpr viz::FrameSinkId kLayerTreeFrameSinkId(1, 1);
@@ -125,13 +162,7 @@ TestLayerTreeFrameSink::TestLayerTreeFrameSink(
     viz::BeginFrameSource* begin_frame_source)
     : LayerTreeFrameSink(
           std::move(compositor_context_provider),
-          worker_context_provider
-              ? base::MakeRefCounted<RasterContextProviderWrapper>(
-                    std::move(worker_context_provider),
-                    /*dark_mode_filter=*/nullptr,
-                    ImageDecodeCacheUtils::GetWorkingSetBytesForImageDecode(
-                        /*for_renderer=*/false))
-              : nullptr,
+          std::move(worker_context_provider),
           task_runner_provider->HasImplThread()
               ? task_runner_provider->ImplThreadTaskRunner()
               : task_runner_provider->MainThreadTaskRunner(),
@@ -145,8 +176,6 @@ TestLayerTreeFrameSink::TestLayerTreeFrameSink(
       debug_settings_(debug_settings),
       refresh_rate_(refresh_rate),
       frame_sink_id_(kLayerTreeFrameSinkId),
-      parent_local_surface_id_allocator_(
-          new viz::ParentLocalSurfaceIdAllocator),
       client_provided_begin_frame_source_(begin_frame_source),
       external_begin_frame_source_(this),
       task_runner_provider_(task_runner_provider),
@@ -155,7 +184,6 @@ TestLayerTreeFrameSink::TestLayerTreeFrameSink(
               ? std::make_unique<viz::TestSharedImageInterfaceProvider>(
                     shared_image_interface)
               : std::make_unique<viz::TestSharedImageInterfaceProvider>()) {
-  parent_local_surface_id_allocator_->GenerateId();
 }
 
 TestLayerTreeFrameSink::~TestLayerTreeFrameSink() = default;
@@ -165,6 +193,10 @@ void TestLayerTreeFrameSink::SetDisplayColorSpace(
   display_color_spaces_ = gfx::DisplayColorSpaces(display_color_space);
   if (display_)
     display_->SetDisplayColorSpaces(display_color_spaces_);
+}
+
+viz::CompositorFrameSinkSupport* TestLayerTreeFrameSink::support() const {
+  return support_.get();
 }
 
 bool TestLayerTreeFrameSink::BindToClient(LayerTreeFrameSinkClient* client) {
@@ -239,8 +271,13 @@ bool TestLayerTreeFrameSink::BindToClient(LayerTreeFrameSinkClient* client) {
 
   constexpr bool is_root = true;
   support_ = std::make_unique<TestCompositorFrameSinkSupport>(
-      this, frame_sink_manager_.get(), frame_sink_id_, is_root, display_.get());
-  support_->SetWantsAnimateOnlyBeginFrames();
+      this, test_client_, task_runner_provider_, frame_sink_manager_.get(),
+      frame_sink_id_, is_root, display_.get());
+  auto params = viz::mojom::CompositorFrameSinkParams::New();
+  params->wants_animate_only_begin_frames = true;
+  params->no_compositor_frame_acks =
+      base::FeatureList::IsEnabled(::features::kNoCompositorFrameAcks);
+  support_->SetParams(std::move(params));
   client_->SetBeginFrameSource(&external_begin_frame_source_);
   if (display_begin_frame_source_) {
     frame_sink_manager_->RegisterBeginFrameSource(display_begin_frame_source_,
@@ -276,7 +313,6 @@ void TestLayerTreeFrameSink::DetachFromClient() {
   support_ = nullptr;
   display_ = nullptr;
   begin_frame_source_ = nullptr;
-  parent_local_surface_id_allocator_ = nullptr;
   frame_sink_manager_ = nullptr;
   test_client_ = nullptr;
   LayerTreeFrameSink::DetachFromClient();
@@ -285,6 +321,7 @@ void TestLayerTreeFrameSink::DetachFromClient() {
 void TestLayerTreeFrameSink::SetLocalSurfaceId(
     const viz::LocalSurfaceId& local_surface_id) {
   DebugScopedSetImplThread impl(task_runner_provider_);
+  local_surface_id_ = local_surface_id;
   test_client_->DisplayReceivedLocalSurfaceId(local_surface_id);
 }
 
@@ -302,26 +339,11 @@ void TestLayerTreeFrameSink::SubmitCompositorFrame(viz::CompositorFrame frame,
   DebugScopedSetImplThread impl(task_runner_provider_);
   DCHECK(frame.metadata.begin_frame_ack.has_damage);
   DCHECK(frame.metadata.begin_frame_ack.frame_id.IsSequenceValid());
-  test_client_->DisplayReceivedCompositorFrame(frame);
 
-  gfx::Size frame_size = frame.size_in_pixels();
-  float device_scale_factor = frame.device_scale_factor();
-
-  if (frame_size != display_size_ ||
-      device_scale_factor != device_scale_factor_) {
-    parent_local_surface_id_allocator_->GenerateId();
-    display_size_ = frame_size;
-    device_scale_factor_ = device_scale_factor;
-  }
-
-  viz::LocalSurfaceId local_surface_id =
-      parent_local_surface_id_allocator_->GetCurrentLocalSurfaceId();
-
-  support_->SubmitCompositorFrame(local_surface_id, std::move(frame),
+  support_->SubmitCompositorFrame(local_surface_id_, std::move(frame),
                                   std::nullopt, 0);
 
   if (!display_->has_scheduler()) {
-    display_->DrawAndSwap({base::TimeTicks::Now(), base::TimeTicks::Now()});
     // Post this to get a new stack frame so that we exit this function before
     // calling the client to tell it that it is done.
     compositor_task_runner_->PostTask(
@@ -336,7 +358,13 @@ void TestLayerTreeFrameSink::DidNotProduceFrame(const viz::BeginFrameAck& ack,
   DebugScopedSetImplThread impl(task_runner_provider_);
   DCHECK(!ack.has_damage);
   DCHECK(ack.frame_id.IsSequenceValid());
-  support_->DidNotProduceFrame(ack);
+  // When this sink is detached, it'll destroy it's support_ and then
+  // TestInProcessContextProvider, which then destroys RasterInProcessContext,
+  // where a runloop can deliver a DidNotProduceFrame call to this sink class
+  // and trigger a nullptr crash without this check.
+  if (support_) {
+    support_->DidNotProduceFrame(ack);
+  }
 }
 
 void TestLayerTreeFrameSink::DidReceiveCompositorFrameAck(
@@ -353,16 +381,9 @@ void TestLayerTreeFrameSink::DidReceiveCompositorFrameAck(
 void TestLayerTreeFrameSink::OnBeginFrame(
     const viz::BeginFrameArgs& args,
     const viz::FrameTimingDetailsMap& timing_details,
-    bool frame_ack,
     std::vector<viz::ReturnedResource> resources) {
-  // We do not want to Ack the first OnBeginFrame. Only deliver Acks once there
-  // is a valid activated surface, and we have pending frames.
-  if (features::IsOnBeginFrameAcksEnabled()) {
-    if (frame_ack) {
-      DidReceiveCompositorFrameAck(std::move(resources));
-    } else if (!resources.empty()) {
-      ReclaimResources(std::move(resources));
-    }
+  if (!resources.empty()) {
+    ReclaimResources(std::move(resources));
   }
   DebugScopedSetImplThread impl(task_runner_provider_);
   for (const auto& pair : timing_details)
@@ -398,7 +419,7 @@ void TestLayerTreeFrameSink::DisplayDidDrawAndSwap() {
 }
 
 void TestLayerTreeFrameSink::DisplayDidReceiveCALayerParams(
-    const gfx::CALayerParams& ca_layer_params) {}
+    gfx::CALayerParams ca_layer_params) {}
 
 void TestLayerTreeFrameSink::DisplayDidCompleteSwapWithSize(
     const gfx::Size& pixel_Size) {}
@@ -413,12 +434,6 @@ void TestLayerTreeFrameSink::OnNeedsBeginFrames(bool needs_begin_frames) {
 void TestLayerTreeFrameSink::SendCompositorFrameAckToClient() {
   DebugScopedSetImplThread impl(task_runner_provider_);
   client_->DidReceiveCompositorFrameAck();
-}
-
-base::TimeDelta TestLayerTreeFrameSink::GetPreferredFrameIntervalForFrameSinkId(
-    const viz::FrameSinkId& id,
-    viz::mojom::CompositorFrameSinkType* type) {
-  return viz::BeginFrameArgs::MinInterval();
 }
 
 }  // namespace cc

@@ -5,9 +5,15 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_PAYMENTS_VIRTUAL_CARD_ENROLLMENT_STRIKE_DATABASE_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_STRIKE_DATABASES_PAYMENTS_VIRTUAL_CARD_ENROLLMENT_STRIKE_DATABASE_H_
 
-#include <string>
+#include <stddef.h>
 
-#include "components/autofill/core/browser/strike_databases/simple_autofill_strike_database.h"
+#include <optional>
+#include <string>
+#include <string_view>
+
+#include "base/time/time.h"
+#include "components/strike_database/strike_database_base.h"
+#include "components/strike_database/simple_strike_database.h"
 
 namespace autofill {
 
@@ -17,22 +23,25 @@ constexpr int kEnrollmentEnforcedDelayInDays = 7;
 
 struct VirtualCardEnrollmentStrikeDatabaseTraits {
   static constexpr std::string_view kName = "VirtualCardEnrollment";
-  static constexpr size_t kMaxStrikeEntities = 50;
-  static constexpr size_t kMaxStrikeEntitiesAfterCleanup = 30;
+  static constexpr std::optional<size_t> kMaxStrikeEntities = 50;
+  static constexpr std::optional<size_t> kMaxStrikeEntitiesAfterCleanup = 30;
   static constexpr size_t kMaxStrikeLimit = 3;
-  static constexpr base::TimeDelta kExpiryTimeDelta = base::Days(180);
+  static constexpr std::optional<base::TimeDelta> kExpiryTimeDelta =
+      base::Days(180);
   static constexpr bool kUniqueIdRequired = true;
 };
 
+// This is essentially a strike_database::SimpleStrikeDatabase except that
+// GetExpiryTimeDelta() depends on a feature.
 class VirtualCardEnrollmentStrikeDatabase
-    : public SimpleAutofillStrikeDatabase<
+    : public strike_database::SimpleStrikeDatabase<
           VirtualCardEnrollmentStrikeDatabaseTraits> {
  public:
-  using SimpleAutofillStrikeDatabase<
-      VirtualCardEnrollmentStrikeDatabaseTraits>::SimpleAutofillStrikeDatabase;
+  using SimpleStrikeDatabase<
+      VirtualCardEnrollmentStrikeDatabaseTraits>::SimpleStrikeDatabase;
 
   // Whether bubble to be shown is the last offer for the card with
-  // |instrument_id|.
+  // `instrument_id`.
   bool IsLastOffer(const std::string& instrument_id) const;
 
   std::optional<base::TimeDelta> GetRequiredDelaySinceLastStrike()

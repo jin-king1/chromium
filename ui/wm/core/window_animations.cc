@@ -12,11 +12,9 @@
 #include "base/check_op.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "ui/aura/client/aura_constants.h"
@@ -31,7 +29,6 @@
 #include "ui/compositor/layer_animation_sequence.h"
 #include "ui/compositor/layer_animator.h"
 #include "ui/compositor/layer_tree_owner.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/compositor/scoped_layer_animation_settings.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/geometry/rect_conversions.h"
@@ -39,13 +36,19 @@
 #include "ui/gfx/geometry/vector2d.h"
 #include "ui/gfx/geometry/vector3d_f.h"
 #include "ui/gfx/interpolated_transform.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/wm/core/window_properties.h"
 #include "ui/wm/core/window_util.h"
 #include "ui/wm/core/wm_core_switches.h"
 #include "ui/wm/public/animation_host.h"
 
+DEFINE_UI_CLASS_PROPERTY_TYPE(wm::WindowVisibilityAnimationCallback*)
+
 namespace wm {
 namespace {
+
+DEFINE_OWNED_UI_CLASS_PROPERTY_KEY(wm::WindowVisibilityAnimationCallback,
+                                   kWindowVisibilityCustomAnimationKey)
 
 // A base class for hiding animation observer which has two roles:
 // 1) Notifies AnimationHost at the end of hiding animation.
@@ -104,12 +107,12 @@ class HidingWindowAnimationObserverBase : public aura::WindowObserver {
       const aura::Window::Windows& transient_children =
           GetTransientChildren(window_);
       auto iter = std::ranges::find(window_->parent()->children(), window_);
-      CHECK(iter != window_->parent()->children().end(),
-            base::NotFatalUntil::M130);
+      CHECK(iter != window_->parent()->children().end());
       aura::Window* topmost_transient_child = nullptr;
       for (++iter; iter != window_->parent()->children().end(); ++iter) {
-        if (base::Contains(transient_children, *iter))
+        if (std::ranges::contains(transient_children, *iter)) {
           topmost_transient_child = *iter;
+        }
       }
       if (topmost_transient_child) {
         window_->parent()->layer()->StackAbove(
@@ -557,6 +560,12 @@ bool AnimateShowWindow(aura::Window* window) {
     case WINDOW_VISIBILITY_ANIMATION_TYPE_ROTATE:
       AnimateShowWindow_Rotate(window);
       return true;
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_CUSTOM: {
+      auto* callback = window->GetProperty(kWindowVisibilityCustomAnimationKey);
+      CHECK(callback);
+      (*callback).Run(window, /*visible=*/true);
+    }
+      return true;
     default:
       return false;
   }
@@ -586,6 +595,12 @@ bool AnimateHideWindow(aura::Window* window) {
     case WINDOW_VISIBILITY_ANIMATION_TYPE_ROTATE:
       AnimateHideWindow_Rotate(window);
       return true;
+    case WINDOW_VISIBILITY_ANIMATION_TYPE_CUSTOM: {
+      auto* callback = window->GetProperty(kWindowVisibilityCustomAnimationKey);
+      CHECK(callback);
+      (*callback).Run(window, /*visible=*/false);
+      return true;
+    }
     default:
       return false;
   }
@@ -631,6 +646,15 @@ void SetWindowVisibilityAnimationType(aura::Window* window, int type) {
 
 int GetWindowVisibilityAnimationType(aura::Window* window) {
   return window->GetProperty(kWindowVisibilityAnimationTypeKey);
+}
+
+void SetWindowVisibilityCustomAnimation(
+    aura::Window* window,
+    WindowVisibilityAnimationCallback callback) {
+  SetWindowVisibilityAnimationType(
+      window,
+      WindowVisibilityAnimationType::WINDOW_VISIBILITY_ANIMATION_TYPE_CUSTOM);
+  window->SetProperty(kWindowVisibilityCustomAnimationKey, callback);
 }
 
 void SetWindowVisibilityAnimationTransition(
@@ -703,9 +727,10 @@ bool WindowAnimationsDisabled(aura::Window* window) {
 
   // Tests of animations themselves should still run even if the machine is
   // being accessed via Remote Desktop.
-  if (ui::ScopedAnimationDurationScaleMode::duration_multiplier() ==
-      ui::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION)
+  if (gfx::ScopedAnimationDurationScaleMode::duration_multiplier() ==
+      gfx::ScopedAnimationDurationScaleMode::NON_ZERO_DURATION) {
     return false;
+  }
 
   // Let the user decide whether or not to play the animation.
   return !gfx::Animation::ShouldRenderRichAnimation();

@@ -11,7 +11,6 @@
 #include <functional>
 #include <memory>
 #include <optional>
-#include <queue>
 #include <set>
 #include <utility>
 #include <vector>
@@ -148,6 +147,7 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
   void SetTaskExecutionTraceLogger(TaskExecutionTraceLogger logger) override;
   std::unique_ptr<QueueEnabledVoter> CreateQueueEnabledVoter() override;
   void RemoveCancelledTasks() override;
+  bool IsBlockedByScopedExecutionFences() override;
 
   void SetQueueEnabled(bool enabled);
   void UnregisterTaskQueue();
@@ -167,7 +167,7 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
   // Must only be called from the thread this task queue was created on.
   void ReloadEmptyImmediateWorkQueue();
 
-  Value::Dict AsValue(TimeTicks now, bool force_verbose) const;
+  DictValue AsValue(TimeTicks now, bool force_verbose) const;
 
   bool GetQuiescenceMonitored() const { return should_monitor_quiescence_; }
   bool GetShouldNotifyObservers() const { return should_notify_observers_; }
@@ -184,11 +184,6 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
   bool HasTaskToRunImmediately() const;
   bool HasTaskToRunImmediatelyLocked() const
       EXCLUSIVE_LOCKS_REQUIRED(any_thread_lock_);
-
-  bool has_pending_high_resolution_tasks() const {
-    return main_thread_only()
-        .delayed_incoming_queue.has_pending_high_resolution_tasks();
-  }
 
   WorkQueue* delayed_work_queue() {
     return main_thread_only().delayed_work_queue.get();
@@ -323,9 +318,9 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
 
   class TaskRunner final : public SingleThreadTaskRunner {
    public:
-    explicit TaskRunner(scoped_refptr<GuardedTaskPoster> task_poster,
-                        scoped_refptr<AssociatedThreadId> associated_thread,
-                        TaskType task_type);
+    TaskRunner(scoped_refptr<GuardedTaskPoster> task_poster,
+               scoped_refptr<AssociatedThreadId> associated_thread,
+               TaskType task_type);
 
     bool PostDelayedTask(const Location& location,
                          OnceClosure callback,
@@ -397,23 +392,16 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
     const Task& top() const LIFETIME_BOUND { return queue_.top(); }
     void swap(DelayedIncomingQueue* other);
 
-    bool has_pending_high_resolution_tasks() const {
-      return pending_high_res_tasks_;
-    }
-
     // TODO(crbug.com/40735653): we pass SequenceManager to be able to record
     // crash keys. Remove this parameter after chasing down this crash.
     void SweepCancelledTasks(SequenceManagerImpl* sequence_manager);
-    Value::List AsValue(TimeTicks now) const;
+    ListValue AsValue(TimeTicks now) const;
 
    private:
     struct Compare {
       bool operator()(const Task& lhs, const Task& rhs) const;
     };
     IntrusiveHeap<Task, Compare> queue_;
-
-    // Number of pending tasks in the queue that need high resolution timing.
-    int pending_high_res_tasks_ = 0;
   };
 
   struct MainThreadOnly {
@@ -429,6 +417,7 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
     DelayedIncomingQueue delayed_incoming_queue;
     ObserverList<TaskObserver>::UncheckedAndDanglingUntriaged task_observers;
     HeapHandle heap_handle;
+    bool unregistered = false;
     bool is_enabled = true;
     std::optional<Fence> current_fence;
     std::optional<TimeTicks> delayed_fence;
@@ -507,8 +496,8 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
   void TakeImmediateIncomingQueueTasks(TaskDeque* queue);
 
   void TraceQueueSize() const;
-  static Value::List QueueAsValue(const TaskDeque& queue, TimeTicks now);
-  static Value::Dict TaskAsValue(const Task& task, TimeTicks now);
+  static ListValue QueueAsValue(const TaskDeque& queue, TimeTicks now);
+  static DictValue TaskAsValue(const Task& task, TimeTicks now);
 
   // Returns a Task representation for `delayed_task`.
   Task MakeDelayedTask(PostedTask delayed_task, LazyNow* lazy_now) const;
@@ -520,8 +509,6 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
   // Updates state protected by any_thread_lock_.
   void UpdateCrossThreadQueueStateLocked()
       EXCLUSIVE_LOCKS_REQUIRED(any_thread_lock_);
-
-  TimeDelta GetTaskDelayAdjustment(CurrentThread current_thread);
 
   // Reports the task if it was due to IPC and was posted to a disabled queue.
   // This should be called after WillQueueTask has been called for the task.
@@ -619,6 +606,7 @@ class BASE_EXPORT TaskQueueImpl : public TaskQueue {
   const bool should_monitor_quiescence_;
   const bool should_notify_observers_;
   const bool delayed_fence_allowed_;
+  const bool scoped_execution_fence_allowed_;
 
   const scoped_refptr<SingleThreadTaskRunner> default_task_runner_;
 

@@ -32,27 +32,29 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_LINE_ENDING_H_
 #define THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_LINE_ENDING_H_
 
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 #include "third_party/blink/renderer/platform/wtf/wtf_export.h"
 
-namespace WTF {
+namespace blink {
 
-class String;
+// Normalize all line-endings in the given string to CR LF.
+WTF_EXPORT String NormalizeLineEndingsToCrLf(const String& from);
 
-// Normalize all line-endings in the given string to CRLF.
-WTF_EXPORT String NormalizeLineEndingsToCRLF(const String& from);
+// Normalize all line-endings in the given string to LF.
+WTF_EXPORT String NormalizeLineEndingsToLf(const String& from);
 
 // Normalize all line-endings in the given string to LF and append the result to
 // the given buffer.
-WTF_EXPORT void NormalizeLineEndingsToLF(const std::string& from,
-                                         Vector<char>& result);
+WTF_EXPORT void NormalizeLineEndingsToLf(const std::string& from,
+                                         Vector<uint8_t>& result);
 
 // Normalize all line-endings in the given string to the native line-endings and
 // append the result to the given buffer.
 // (Normalize to CRLF on Windows and normalize to LF on all other platforms.)
 WTF_EXPORT void NormalizeLineEndingsToNative(const std::string& from,
-                                             Vector<char>& result);
+                                             Vector<uint8_t>& result);
 
-}  // namespace WTF
+}  // namespace blink
 
 #endif  // THIRD_PARTY_BLINK_RENDERER_PLATFORM_WTF_TEXT_LINE_ENDING_H_

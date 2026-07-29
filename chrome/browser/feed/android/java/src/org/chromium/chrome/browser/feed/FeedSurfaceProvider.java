@@ -8,13 +8,17 @@ import android.graphics.Canvas;
 import android.view.View;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ui.native_page.TouchEnabledDelegate;
 import org.chromium.components.browser_ui.widget.displaystyle.UiConfig;
 
+import java.util.List;
+
 /** Provides a surface that displays a list of interest feeds. */
+@NullMarked
 public interface FeedSurfaceProvider {
 
     /**
@@ -68,12 +72,16 @@ public interface FeedSurfaceProvider {
     /**
      * @return The surface's FeedReliabilityLogger which may be null.
      */
-    @Nullable
-    FeedReliabilityLogger getReliabilityLogger();
+    @Nullable FeedReliabilityLogger getReliabilityLogger();
 
     /** Reloads the contents. */
     void reload();
 
     /** Supplier of the state of the feed stream being restored. See {@link RestoringState}. */
-    ObservableSupplier<Integer> getRestoringStateSupplier();
+    NonNullObservableSupplier<Integer> getRestoringStateSupplier();
+
+    /**
+     * @return The list of feed article urls.
+     */
+    List<String> getFeedUrls();
 }

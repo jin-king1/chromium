@@ -12,6 +12,8 @@ import org.jni_zero.NativeMethods;
 
 import org.chromium.base.CollectionUtil;
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabLaunchType;
@@ -29,6 +31,7 @@ import java.util.List;
  * This class exposes to Java information about sessions, windows, and tabs on the user's synced
  * devices.
  */
+@NullMarked
 public class ForeignSessionHelper {
     private long mNativeForeignSessionHelper;
 
@@ -40,7 +43,7 @@ public class ForeignSessionHelper {
          * It's a good place to call {@link ForeignSessionHelper#getForeignSessions()} to get the
          * updated information.
          */
-        @CalledByNative("ForeignSessionCallback")
+        @CalledByNative
         void onUpdated();
     }
 
@@ -53,7 +56,7 @@ public class ForeignSessionHelper {
         public final String tag;
         public final String name;
         public final long modifiedTime;
-        public final List<ForeignSessionWindow> windows = new ArrayList<ForeignSessionWindow>();
+        public final List<ForeignSessionWindow> windows = new ArrayList<>();
         public final @FormFactor int formFactor;
 
         private ForeignSession(
@@ -83,7 +86,7 @@ public class ForeignSessionHelper {
     public static class ForeignSessionWindow {
         public final long timestamp;
         public final int sessionId;
-        public final List<ForeignSessionTab> tabs = new ArrayList<ForeignSessionTab>();
+        public final List<ForeignSessionTab> tabs = new ArrayList<>();
 
         private ForeignSessionWindow(long timestamp, int sessionId) {
             this(timestamp, sessionId, new ArrayList<>());
@@ -195,7 +198,7 @@ public class ForeignSessionHelper {
         if (!isTabSyncEnabled()) {
             return Collections.emptyList();
         }
-        List<ForeignSession> result = new ArrayList<ForeignSession>();
+        List<ForeignSession> result = new ArrayList<>();
         boolean received =
                 ForeignSessionHelperJni.get()
                         .getForeignSessions(mNativeForeignSessionHelper, result);
@@ -214,7 +217,7 @@ public class ForeignSessionHelper {
         if (!isTabSyncEnabled()) {
             return Collections.emptyList();
         }
-        List<ForeignSession> result = new ArrayList<ForeignSession>();
+        List<ForeignSession> result = new ArrayList<>();
         boolean received =
                 ForeignSessionHelperJni.get()
                         .getMobileAndTabletForeignSessions(mNativeForeignSessionHelper, result);
@@ -227,6 +230,7 @@ public class ForeignSessionHelper {
 
     /**
      * Opens the given foreign tab in a new tab.
+     *
      * @param tab Tab to load the session into.
      * @param session Session that the target tab belongs to.
      * @param foreignTab Target tab to open.
@@ -238,20 +242,31 @@ public class ForeignSessionHelper {
             ForeignSession session,
             ForeignSessionTab foreignTab,
             int windowOpenDisposition) {
+        return openForeignSessionTab(tab, session.tag, foreignTab.id, windowOpenDisposition);
+    }
+
+    /**
+     * Opens the given foreign tab in a new tab.
+     *
+     * @param tab Tab to load the session into.
+     * @param sessionTag Tag of the session that the target tab belongs to.
+     * @param tabId ID of the target tab to open.
+     * @param windowOpenDisposition The WindowOpenDisposition flag.
+     * @return {@code True} iff the tab is successfully opened.
+     */
+    public boolean openForeignSessionTab(
+            Tab tab, String sessionTag, int tabId, int windowOpenDisposition) {
         return ForeignSessionHelperJni.get()
                 .openForeignSessionTab(
-                        mNativeForeignSessionHelper,
-                        tab,
-                        session.tag,
-                        foreignTab.id,
-                        windowOpenDisposition);
+                        mNativeForeignSessionHelper, tab, sessionTag, tabId, windowOpenDisposition);
     }
 
     /**
      * Remove Foreign session to display. Note that it will be reappear on the next sync.
      *
-     * This is mainly for when user wants to delete very old session that won't be used or syned in
-     * the future.
+     * <p>This is mainly for when user wants to delete very old session that won't be used or synced
+     * in the future.
+     *
      * @param session Session to be deleted.
      */
     public void deleteForeignSession(ForeignSession session) {
@@ -332,6 +347,9 @@ public class ForeignSessionHelper {
         void setInvalidationsForSessionsEnabled(long nativeForeignSessionHelper, boolean enabled);
 
         int openForeignSessionTabsAsBackgroundTabs(
-                long nativeForeignSessionHelper, Tab tab, int[] tabIds, String sessionTag);
+                long nativeForeignSessionHelper,
+                @Nullable Tab tab,
+                int[] tabIds,
+                String sessionTag);
     }
 }

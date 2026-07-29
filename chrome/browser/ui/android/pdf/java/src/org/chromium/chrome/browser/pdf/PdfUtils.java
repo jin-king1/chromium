@@ -4,12 +4,17 @@
 
 package org.chromium.chrome.browser.pdf;
 
+import android.content.ContentResolver;
+import android.content.Context;
 import android.net.Uri;
 import android.os.Build;
 import android.os.ext.SdkExtensions;
 import android.text.TextUtils;
+import android.view.View;
 
 import androidx.annotation.IntDef;
+import androidx.annotation.VisibleForTesting;
+import androidx.fragment.app.FragmentActivity;
 
 import org.jni_zero.CalledByNative;
 
@@ -21,16 +26,18 @@ import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.ui.native_page.NativePage;
 import org.chromium.chrome.browser.util.ChromeFileProvider;
+import org.chromium.chrome.modules.on_demand.OnDemandModule;
 import org.chromium.components.embedder_support.util.UrlConstants;
-import org.chromium.content_public.browser.ContentFeatureList;
-import org.chromium.content_public.browser.ContentFeatureMap;
 import org.chromium.content_public.browser.LoadUrlParams;
+import org.chromium.ui.base.MimeTypeUtils;
 import org.chromium.url.GURL;
 
 import java.io.File;
+import java.io.UnsupportedEncodingException;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.net.URLEncoder;
+import java.util.List;
 import java.util.Set;
 
 /** Utilities for inline pdf support. */
@@ -67,10 +74,80 @@ public class PdfUtils {
         int NUM_ENTRIES = 3;
     }
 
+    // LINT.IfChange(PdfToolbarAction)
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        PdfToolbarAction.OTHER,
+        PdfToolbarAction.ZOOM_IN,
+        PdfToolbarAction.ZOOM_OUT,
+        PdfToolbarAction.FIT_TO_PAGE_VERTICAL,
+        PdfToolbarAction.FIT_TO_PAGE_HORIZONTAL,
+        PdfToolbarAction.PAGE_NAVIGATION,
+        PdfToolbarAction.PRINT,
+        PdfToolbarAction.TWO_PAGE_VIEW,
+        PdfToolbarAction.SINGLE_PAGE_VIEW,
+        PdfToolbarAction.DOCUMENT_PROPERTIES,
+        PdfToolbarAction.NUM_ENTRIES
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface PdfToolbarAction {
+        int OTHER = 0;
+        int ZOOM_IN = 1;
+        int ZOOM_OUT = 2;
+        int FIT_TO_PAGE_VERTICAL = 3;
+        int FIT_TO_PAGE_HORIZONTAL = 4;
+        int PAGE_NAVIGATION = 5;
+        int PRINT = 6;
+        int TWO_PAGE_VIEW = 7;
+        int SINGLE_PAGE_VIEW = 8;
+        int DOCUMENT_PROPERTIES = 9;
+
+        int NUM_ENTRIES = 10;
+    }
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfToolbarAction)
+
+    // LINT.IfChange(PdfSelectionMenuItem)
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        PdfSelectionMenuItem.OTHER,
+        PdfSelectionMenuItem.SHARE,
+        PdfSelectionMenuItem.WEB_SEARCH,
+        PdfSelectionMenuItem.TRANSLATE,
+        PdfSelectionMenuItem.NUM_ENTRIES
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface PdfSelectionMenuItem {
+        int OTHER = 0;
+        int SHARE = 1;
+        int WEB_SEARCH = 2;
+        int TRANSLATE = 3;
+
+        int NUM_ENTRIES = 4;
+    }
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfSelectionMenuItem)
+
+    // LINT.IfChange(PdfHyperlinkClickResult)
+    // These values are persisted to logs. Entries should not be renumbered and
+    // numeric values should never be reused.
+    @IntDef({
+        PdfHyperlinkClickResult.SUCCESS_LOAD_INITIATED,
+        PdfHyperlinkClickResult.BLOCKED_INVALID_SCHEME,
+        PdfHyperlinkClickResult.IGNORED_V2_DISABLED,
+        PdfHyperlinkClickResult.NUM_ENTRIES
+    })
+    @Retention(RetentionPolicy.SOURCE)
+    public @interface PdfHyperlinkClickResult {
+        int SUCCESS_LOAD_INITIATED = 0;
+        int BLOCKED_INVALID_SCHEME = 1;
+        int IGNORED_V2_DISABLED = 2;
+
+        int NUM_ENTRIES = 3;
+    }
+    // LINT.ThenChange(//tools/metrics/histograms/metadata/android/enums.xml:AndroidPdfHyperlinkClickResult)
+
     private static final String TAG = "PdfUtils";
-    private static final String PARAM_ANDROID_INLINE_PDF_IN_INCOGNITO = "inline_pdf_in_incognito";
-    private static final String PARAM_ANDROID_INLINE_PDF_BACKPORT_IN_INCOGNITO =
-            "inline_pdf_backport_in_incognito";
     private static final Set<String> TRANSIENT_PDF_SCHEMES =
             Set.of(
                     UrlConstants.HTTP_SCHEME,
@@ -136,35 +213,18 @@ public class PdfUtils {
     @CalledByNative
     public static boolean shouldOpenPdfInline(boolean isIncognito) {
         if (sShouldOpenPdfInlineForTesting) return true;
+        if (isIncognito) {
+            return ChromeFeatureList.sInlinePdfV2Incognito.isEnabled();
+        }
+        return isPlatformSupported();
+    }
+
+    private static boolean isPlatformSupported() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.VANILLA_ICE_CREAM) {
-            if (!ContentFeatureMap.isEnabled(ContentFeatureList.ANDROID_OPEN_PDF_INLINE)) {
-                return false;
-            }
-            if (isIncognito
-                    && !ContentFeatureMap.getInstance()
-                            .getFieldTrialParamByFeatureAsBoolean(
-                                    ContentFeatureList.ANDROID_OPEN_PDF_INLINE,
-                                    PARAM_ANDROID_INLINE_PDF_IN_INCOGNITO,
-                                    false)) {
-                return false;
-            }
             return true;
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
-                && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 13) {
-            if (!ChromeFeatureList.isEnabled(ChromeFeatureList.ANDROID_OPEN_PDF_INLINE_BACKPORT)) {
-                return false;
-            }
-            if (isIncognito
-                    && !ChromeFeatureList.getFieldTrialParamByFeatureAsBoolean(
-                            ChromeFeatureList.ANDROID_OPEN_PDF_INLINE_BACKPORT,
-                            PARAM_ANDROID_INLINE_PDF_BACKPORT_IN_INCOGNITO,
-                            false)) {
-                return false;
-            }
-            return true;
-        }
-        return false;
+        return Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
+                && SdkExtensions.getExtensionVersion(Build.VERSION_CODES.S) >= 13;
     }
 
     /**
@@ -173,7 +233,7 @@ public class PdfUtils {
      * @param nativePage The NativePage being used to retrieve pdf information.
      * @return Pdf information including filename, filepath etc.
      */
-    public static @Nullable PdfInfo getPdfInfo(NativePage nativePage) {
+    public static @Nullable PdfInfo getPdfInfo(@Nullable NativePage nativePage) {
         if (nativePage == null || !nativePage.isPdf()) {
             return null;
         }
@@ -220,11 +280,11 @@ public class PdfUtils {
     }
 
     /** Return the type of the pdf page. */
-    public static @PdfPageType int getPdfPageType(NativePage pdfPage) {
+    public static @PdfPageType int getPdfPageType(@Nullable NativePage pdfPage) {
         if (pdfPage == null || !pdfPage.isPdf()) {
             return PdfPageType.NONE;
         }
-        assert pdfPage instanceof PdfPage;
+
         GURL url = new GURL(pdfPage.getUrl());
         return getPdfPageTypeInternal(url, pdfPage.isDownloadSafe());
     }
@@ -253,6 +313,34 @@ public class PdfUtils {
         sShouldOpenPdfInlineForTesting = shouldOpenPdfInlineForTesting;
     }
 
+    /**
+     * Generates a content URI for accessing the PDF. For Incognito mode, it creates a secure,
+     * thread-safe in-memory stream URI.
+     *
+     * @param pdfFilePath Path to the PDF file (might be a /proc/ path in Incognito).
+     * @param pdfFileName Name of the PDF file.
+     * @param tabId Unique identifier for the tab.
+     * @param isIncognito Whether the request is in Incognito mode.
+     * @return A Uri to access the PDF.
+     */
+    public static @Nullable Uri getContentUri(
+            String pdfFilePath, String pdfFileName, String tabId, boolean isIncognito) {
+        if (isIncognito) {
+            Uri uri = Uri.parse(pdfFilePath);
+            String scheme = uri.getScheme();
+            if (UrlConstants.CONTENT_SCHEME.equals(scheme)
+                    || UrlConstants.FILE_SCHEME.equals(scheme)) {
+                // PDF androidx library accepts file or content URI for local PDF opened in
+                // incognito.
+                return uri;
+            }
+            return PdfContentProvider.registerStream(tabId, pdfFilePath, pdfFileName);
+        } else {
+            return getUriFromFilePath(pdfFilePath);
+        }
+    }
+
+    @VisibleForTesting
     static @Nullable Uri getUriFromFilePath(String pdfFilePath) {
         Uri uri = Uri.parse(pdfFilePath);
         String scheme = uri.getScheme();
@@ -278,7 +366,7 @@ public class PdfUtils {
      * @param nativePage When the native page is a pdf page, record whether it is frozen before the
      *     tab is displayed.
      */
-    public static void recordIsPdfFrozen(NativePage nativePage) {
+    public static void recordIsPdfFrozen(@Nullable NativePage nativePage) {
         if (nativePage == null) {
             return;
         }
@@ -303,7 +391,7 @@ public class PdfUtils {
                             + URLEncoder.encode(downloadUrl, "UTF-8");
             recordIsPdfDownloadUrlEncoded(true);
             return pdfPageUrl;
-        } catch (java.io.UnsupportedEncodingException e) {
+        } catch (UnsupportedEncodingException e) {
             recordIsPdfDownloadUrlEncoded(false);
             Log.e(TAG, "Unsupported encoding: " + e.getMessage());
             return null;
@@ -316,7 +404,7 @@ public class PdfUtils {
      * @param originalUrl The url to be decoded.
      * @return the decoded download url; or null if the original url is not a pdf page url.
      */
-    public static @Nullable String decodePdfPageUrl(String originalUrl) {
+    public static @Nullable String decodePdfPageUrl(@Nullable String originalUrl) {
         if (originalUrl == null || !originalUrl.startsWith(UrlConstants.PDF_URL)) {
             return null;
         }
@@ -333,44 +421,131 @@ public class PdfUtils {
         }
     }
 
-    static void recordPdfLoad() {
+    /**
+     * Extracts a valid HTTP(S) URL from a PDF page URL for re-downloading.
+     *
+     * <p>This method decodes the provided {@code originalUrl} and verifies that the result uses a
+     * supported scheme (HTTP or HTTPS).
+     *
+     * @param originalUrl The original, potentially encoded, URL string to process.
+     * @return The decoded URL string if it is a valid HTTP(S) URL; {@code null} otherwise.
+     */
+    public static @Nullable String getPdfReDownloadUrl(String originalUrl) {
+        String decodedUrl = decodePdfPageUrl(originalUrl);
+
+        if (decodedUrl == null) {
+            return null;
+        }
+
+        if (decodedUrl.startsWith(UrlConstants.HTTP_URL_PREFIX)
+                || decodedUrl.startsWith(UrlConstants.HTTPS_URL_PREFIX)) {
+            return decodedUrl;
+        }
+
+        return null;
+    }
+
+    /**
+     * Encode content uri if it is PDF MIME type.
+     *
+     * @param uri The uri to be encoded.
+     * @param context The {@link Context} to retrieve {@link ContentResolver}.
+     * @return the encoded content uri if it is PDF MIME type; or null otherwise.
+     */
+    public static @Nullable String getEncodedContentUri(@Nullable String uri, Context context) {
+        if (TextUtils.isEmpty(uri)
+                || !UrlConstants.CONTENT_SCHEME.equals(Uri.parse(uri).getScheme())) {
+            return null;
+        }
+        ContentResolver contentResolver = context.getContentResolver();
+        String mimeType = contentResolver.getType(Uri.parse(uri));
+        if (MimeTypeUtils.PDF_MIME_TYPE.equals(mimeType)) {
+            return PdfUtils.encodePdfPageUrl(uri);
+        }
+        return null;
+    }
+
+    /** Collects all the View objects for PdfViewerFragment found after activity restart. */
+    public static List<View> findAllPdfFragmentViews(FragmentActivity activity) {
+        return OnDemandModule.getImpl().getPdfEntryPoint().findAllPdfFragmentViews(activity);
+    }
+
+    /**
+     * Checks whether the inline PDF V2 feature is enabled.
+     *
+     * @return {@code true} if the inline PDF V2 feature is enabled, {@code false} otherwise.
+     */
+    public static boolean isInlinePdfV2Enabled() {
+        if (!ChromeFeatureList.sInlinePdfV2.isEnabled()) {
+            return false;
+        }
+        return isPlatformSupported();
+    }
+
+    /**
+     * Checks whether the inline PDF V2 download feature is enabled.
+     *
+     * @return {@code true} if the inline PDF V2 download feature is enabled, {@code false}
+     *     otherwise.
+     */
+    public static boolean isInlinePdfV2DownloadEnabled() {
+        return isInlinePdfV2Enabled() && ChromeFeatureList.sInlinePdfV2Download.isEnabled();
+    }
+
+    /** Returns {@code true} if {@link PdfViewFragment} is reused on activity restart. */
+    public static boolean isReuseFragmentEnabled() {
+        return ChromeFeatureList.sPdfReuseFragment.isEnabled();
+    }
+
+    public static void recordPdfLoad() {
         RecordHistogram.recordBooleanHistogram("Android.Pdf.DocumentLoad", true);
     }
 
-    static void recordPdfLoadResult(boolean isLoadSuccess) {
-        RecordHistogram.recordBooleanHistogram("Android.Pdf.DocumentLoadResult", isLoadSuccess);
+    public static void recordToolbarAction(@PdfToolbarAction int action) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.Pdf.ToolbarAction", action, PdfToolbarAction.NUM_ENTRIES);
     }
 
-    static void recordPdfLoadResultPaired(boolean isLoadSuccess) {
-        RecordHistogram.recordBooleanHistogram(
-                "Android.Pdf.DocumentLoadResult.Paired", isLoadSuccess);
+    public static void recordSelectionMenuItem(@PdfSelectionMenuItem int menuItem) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.Pdf.SelectionMenuItem", menuItem, PdfSelectionMenuItem.NUM_ENTRIES);
     }
 
-    static void recordPdfLoadResultDetail(@PdfLoadResult int loadResult) {
+    public static void recordHyperlinkClickResult(@PdfHyperlinkClickResult int result) {
+        RecordHistogram.recordEnumeratedHistogram(
+                "Android.Pdf.Hyperlink.ClickResult", result, PdfHyperlinkClickResult.NUM_ENTRIES);
+    }
+
+    public static void recordPdfLoadResultDetail(@PdfLoadResult int loadResult) {
         RecordHistogram.recordEnumeratedHistogram(
                 "Android.Pdf.DocumentLoadResult.Detail", loadResult, PdfLoadResult.NUM_ENTRIES);
     }
 
-    static void recordPdfLoadTime(long duration) {
-        RecordHistogram.recordTimesHistogram("Android.Pdf.DocumentLoadTime", duration);
-    }
-
-    static void recordPdfLoadTimePaired(long duration) {
-        RecordHistogram.recordTimesHistogram("Android.Pdf.DocumentLoadTime.Paired", duration);
-    }
-
-    static void recordPdfLoadTimeFirstPaired(long duration) {
+    public static void recordPdfLoadTimeFirstPaired(long duration) {
         RecordHistogram.recordTimesHistogram("Android.Pdf.DocumentLoadTime.FirstPaired", duration);
     }
 
-    static void recordFindInPage(int findInPageCounts) {
+    public static void recordPdfLoadInterval(long duration) {
+        RecordHistogram.recordMediumTimesHistogram("Android.Pdf.DocumentLoadInterval", duration);
+    }
+
+    static void recordPdfTransientDownloadTime(long duration) {
+        RecordHistogram.recordTimesHistogram("Android.Pdf.DownloadTime.Transient", duration);
+    }
+
+    public static void recordFindInPage(int findInPageCounts) {
         RecordHistogram.recordExactLinearHistogram(
                 "Android.Pdf.FindInPageCounts", findInPageCounts, /* max= */ 9);
     }
 
-    static void recordIsWorkProfile(boolean isWorkProfile) {
+    public static void recordIsWorkProfile(boolean isWorkProfile) {
         RecordHistogram.recordBooleanHistogram(
                 "Android.Pdf.AssistContent.IsWorkProfile", isWorkProfile);
+    }
+
+    public static void recordGetAssistantPackageResult(boolean success) {
+        RecordHistogram.recordBooleanHistogram(
+                "Android.Pdf.AssistContent.GetAssistantPackageResult", success);
     }
 
     private static void recordIsPdfDownloadUrlEncoded(boolean encodeResult) {
@@ -379,5 +554,77 @@ public class PdfUtils {
 
     private static void recordIsPdfDownloadUrlDecoded(boolean decodeResult) {
         RecordHistogram.recordBooleanHistogram("Android.Pdf.DownloadUrlDecoded", decodeResult);
+    }
+
+    public static void recordIsUriNull(boolean isNull) {
+        RecordHistogram.recordBooleanHistogram("Android.Pdf.UriIsNull", isNull);
+    }
+
+    /**
+     * Checks if the given URI is valid and safe for sharing with external applications.
+     * Specifically, if the URI belongs to one of Chrome's internal content providers, we restrict
+     * sharing to only designated safe paths (like downloaded PDFs).
+     *
+     * @param uri The URI to validate.
+     * @param context The context to retrieve package and provider info.
+     * @return True if the URI is safe for sharing, false otherwise.
+     */
+    public static boolean isUriSafeForSharing(@Nullable Uri uri, Context context) {
+        if (uri == null) {
+            return false;
+        }
+
+        String scheme = uri.getScheme();
+        // Non-content URIs (like file:// or https://) are safe because they either rely on the OS
+        // sandbox to restrict access (file://) or do not expose local files (https://).
+        if (!UrlConstants.CONTENT_SCHEME.equals(scheme)) {
+            return true;
+        }
+
+        String authority = uri.getAuthority();
+        if (TextUtils.isEmpty(authority)) {
+            return false;
+        }
+
+        if (!ContentUriUtils.isUriFromThisApp(uri, context)) {
+            return true;
+        }
+
+        // Chrome's main FileProvider (uses file_paths.xml). We only allow sharing from the
+        // temporary PDF cache ("pdfs") and the public downloads folder ("downloads").
+        // Sensitive directories like "passwords" or "cache" (net-export) are blocked.
+        if (authority.endsWith(".FileProvider")) {
+            List<String> pathSegments = uri.getPathSegments();
+            if (pathSegments == null || pathSegments.isEmpty()) {
+                return false;
+            }
+            String firstSegment = pathSegments.get(0);
+            return "pdfs".equals(firstSegment) || "downloads".equals(firstSegment);
+        }
+
+        // Chrome's custom DownloadFileProvider (used for SD cards).
+        // It programmatically restricts access to download directories only. We whitelist
+        // its valid path segments: "download" (primary storage fallback), "download_external"
+        // (legacy SD card), and "external_volume" (Android R+ SD card).
+        if (authority.endsWith(".DownloadFileProvider")) {
+            List<String> pathSegments = uri.getPathSegments();
+            if (pathSegments == null || pathSegments.isEmpty()) {
+                return false;
+            }
+            String firstSegment = pathSegments.get(0);
+            return "download".equals(firstSegment)
+                    || "download_external".equals(firstSegment)
+                    || "external_volume".equals(firstSegment);
+        }
+
+        // PdfContentProvider is a dedicated, unexported provider designed solely for serving
+        // PDF content safely. All its paths are safe.
+        if (authority.endsWith(".PdfContentProvider")) {
+            return true;
+        }
+
+        // Fallback: block any other internal Chrome providers to prevent accidental exposure of
+        // sensitive data (e.g. ChromeBrowserProvider).
+        return false;
     }
 }

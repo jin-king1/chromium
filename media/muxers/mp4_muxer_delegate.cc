@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/muxers/mp4_muxer_delegate.h"
 
 #include "base/logging.h"
@@ -16,6 +11,7 @@
 #include "media/base/decoder_buffer.h"
 #include "media/base/video_codecs.h"
 #include "media/formats/mp4/avc.h"
+#include "media/formats/mp4/box_constants.h"
 #include "media/formats/mp4/box_definitions.h"
 #include "media/formats/mp4/fourccs.h"
 #include "media/formats/mp4/mp4_status.h"
@@ -190,8 +186,7 @@ void Mp4MuxerDelegate::BuildMovieVideoTrack(
 
     mp4::writable_boxes::AVCDecoderConfiguration avc_config;
     mp4::AVCDecoderConfigurationRecord avc_config_record;
-    bool result = avc_config_record.Parse(codec_description.value().data(),
-                                          codec_description.value().size());
+    bool result = avc_config_record.Parse(codec_description.value());
     DCHECK(result);
 
     avc_config.avc_config_record = std::move(avc_config_record);
@@ -208,8 +203,7 @@ void Mp4MuxerDelegate::BuildMovieVideoTrack(
 
     mp4::writable_boxes::HEVCDecoderConfiguration hevc_config;
     mp4::HEVCDecoderConfigurationRecord hevc_config_record;
-    bool result = hevc_config_record.Parse(codec_description.value().data(),
-                                           codec_description.value().size());
+    bool result = hevc_config_record.Parse(codec_description.value());
     DCHECK(result);
 
     hevc_config.hevc_config_record = std::move(hevc_config_record);
@@ -239,13 +233,14 @@ void Mp4MuxerDelegate::BuildMovieVideoTrack(
 
     mp4::writable_boxes::AV1CodecConfiguration av1_config;
     size_t config_size = 0;
+    auto encoded_data_span = base::span(encoded_data);
     auto codec_descriptions = libgav1::ObuParser::GetAV1CodecConfigurationBox(
-        encoded_data.data(), encoded_data.size(), &config_size);
+        encoded_data_span.data(), encoded_data_span.size(), &config_size);
     CHECK(codec_descriptions);
     CHECK_GT(config_size, 0u);
 
     av1_config.av1_decoder_configuration_data.assign(
-        &codec_descriptions[0], &codec_descriptions[config_size]);
+        &codec_descriptions[0], UNSAFE_TODO(&codec_descriptions[config_size]));
     visual_sample_entry.av1_decoder_configuration = std::move(av1_config);
   } else {
     NOTREACHED();
@@ -269,6 +264,18 @@ void Mp4MuxerDelegate::BuildMovieVideoTrack(
 
   // `tkhd`.
   video_track.header.natural_size = params.visible_rect_size;
+  if (params.transformation) {
+    auto mat = params.transformation->GetMatrix();
+    video_track.header.matrix[0] = mat[0];
+    video_track.header.matrix[1] = mat[1];
+    video_track.header.matrix[3] = mat[2];
+    video_track.header.matrix[4] = mat[3];
+  } else {
+    // If VideoParameters do not have a VideoTransformation, we should provide a
+    // default matrix that has zero rotations, zero mirroring, normal zoom.
+    std::copy(std::begin(kDisplayIdentityMatrix),
+              std::end(kDisplayIdentityMatrix), video_track.header.matrix);
+  }
 
   // `hdlr`
   mp4::writable_boxes::MediaHandler media_handler(/*is_audio=*/false);
@@ -746,4 +753,4 @@ void Mp4MuxerDelegate::LogBoxInfo() const {
   DVLOG(1) << __func__ << ", " << s.str();
 }
 
-}  // namespace media.
+}  // namespace media

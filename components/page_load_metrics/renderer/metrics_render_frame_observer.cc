@@ -4,13 +4,17 @@
 
 #include "components/page_load_metrics/renderer/metrics_render_frame_observer.h"
 
+#include <map>
 #include <string>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
+#include "components/page_load_metrics/common/features.h"
+#include "components/page_load_metrics/renderer/features.h"
 #include "components/page_load_metrics/renderer/page_timing_metrics_sender.h"
 #include "components/page_load_metrics/renderer/page_timing_sender.h"
 #include "content/public/renderer/render_frame.h"
@@ -20,7 +24,9 @@
 #include "third_party/blink/public/web/web_document.h"
 #include "third_party/blink/public/web/web_document_loader.h"
 #include "third_party/blink/public/web/web_local_frame.h"
+#include "third_party/blink/public/web/web_local_frame_client.h"
 #include "third_party/blink/public/web/web_performance_metrics_for_reporting.h"
+#include "third_party/icu/source/common/unicode/uscript.h"
 #include "url/gurl.h"
 
 namespace page_load_metrics {
@@ -43,6 +49,36 @@ base::TimeTicks ClampToStart(base::TimeTicks event, base::TimeTicks start) {
   return event < start ? start : event;
 }
 
+mojom::ScriptType MapToMojoScriptType(UScriptCode script_code, bool is_emoji) {
+  if (is_emoji) {
+    return mojom::ScriptType::kEmoji;
+  }
+  switch (script_code) {
+    case USCRIPT_LATIN:
+      return mojom::ScriptType::kLatin;
+    case USCRIPT_HAN:
+      return mojom::ScriptType::kHan;
+    case USCRIPT_HANGUL:
+      return mojom::ScriptType::kHangul;
+    case USCRIPT_HIRAGANA:
+      return mojom::ScriptType::kHiragana;
+    case USCRIPT_KATAKANA:
+      return mojom::ScriptType::kKatakana;
+    case USCRIPT_ARABIC:
+      return mojom::ScriptType::kArabic;
+    case USCRIPT_BENGALI:
+      return mojom::ScriptType::kBengali;
+    case USCRIPT_DEVANAGARI:
+      return mojom::ScriptType::kDevanagari;
+    case USCRIPT_CYRILLIC:
+      return mojom::ScriptType::kCyrillic;
+    case USCRIPT_COMMON:
+      return mojom::ScriptType::kCommon;
+    default:
+      return mojom::ScriptType::kOther;
+  }
+}
+
 class MojoPageTimingSender : public PageTimingSender {
  public:
   explicit MojoPageTimingSender(content::RenderFrame* render_frame,
@@ -62,25 +98,22 @@ class MojoPageTimingSender : public PageTimingSender {
       std::vector<mojom::ResourceDataUpdatePtr> resources,
       const mojom::FrameRenderDataUpdate& render_data,
       const mojom::CpuTimingPtr& cpu_timing,
-      mojom::InputTimingPtr input_timing_delta,
+      std::vector<mojom::EventTimingPtr> event_timings,
       const std::optional<blink::SubresourceLoadMetrics>&
           subresource_load_metrics,
-      const mojom::SoftNavigationMetricsPtr& soft_navigation_metrics) override {
+      std::vector<mojom::SoftNavigationMetricsPtr> soft_navigation_metrics,
+      std::vector<mojom::LargestContentfulPaintTimingPtr>
+          soft_largest_contentful_paint,
+      std::vector<mojom::CustomUserTimingMarkPtr> user_timings,
+      const mojom::FontLoadingMetricsPtr& font_loading_metrics) override {
     DCHECK(page_load_metrics_);
     page_load_metrics_->UpdateTiming(
         limited_sending_mode_ ? CreatePageLoadTiming() : timing->Clone(),
         metadata->Clone(), new_features, std::move(resources),
-        render_data.Clone(), cpu_timing->Clone(), std::move(input_timing_delta),
-        subresource_load_metrics, soft_navigation_metrics->Clone());
-  }
-
-  void SetUpUkmReporting(
-      base::ReadOnlySharedMemoryRegion shared_memory_smoothness,
-      base::ReadOnlySharedMemoryRegion shared_memory_dropped_frames) override {
-    DCHECK(page_load_metrics_);
-    page_load_metrics_->SetUpSharedMemoryForUkms(
-        std::move(shared_memory_smoothness),
-        std::move(shared_memory_dropped_frames));
+        render_data.Clone(), cpu_timing->Clone(), std::move(event_timings),
+        subresource_load_metrics, std::move(soft_navigation_metrics),
+        std::move(soft_largest_contentful_paint), std::move(user_timings),
+        font_loading_metrics.Clone());
   }
 
   void SendCustomUserTiming(mojom::CustomUserTimingMarkPtr timing) override {
@@ -107,7 +140,37 @@ MetricsRenderFrameObserver::MetricsRenderFrameObserver(
     content::RenderFrame* render_frame)
     : content::RenderFrameObserver(render_frame),
       blink::WebLocalFrameObserver(render_frame ? render_frame->GetWebFrame()
-                                                : nullptr) {}
+                                                : nullptr) {
+  if (base::FeatureList::IsEnabled(
+          features::kMetricsRenderFrameObserverImprovement) &&
+      render_frame) {
+    // If the optimization is enabled, `DidObserveNewFeatureUsage()` will be
+    // called as a callback instead of the observer interface.
+    render_frame->SetNewFeatureUsageCallback(base::BindRepeating(
+        &MetricsRenderFrameObserver::DidObserveNewFeatureUsage,
+        weak_factory_.GetWeakPtr()));
+    // If the optimization is enabled, `DidObserveSubresourceLoad()` will be
+    // called as a callback instead of the observer interface.
+    render_frame->SetSubresourceLoadCallback(base::BindRepeating(
+        &MetricsRenderFrameObserver::DidObserveSubresourceLoad,
+        weak_factory_.GetWeakPtr()));
+    // If the optimization is enabled, `DidLoadResourceFromMemoryCache()` will
+    // be called as a callback instead of the observer interface.
+    render_frame->SetLoadFromMemoryCacheCallback(base::BindRepeating(
+        &MetricsRenderFrameObserver::DidLoadResourceFromMemoryCache,
+        weak_factory_.GetWeakPtr()));
+
+    render_frame->SetDidStartResponseCallback(
+        base::BindRepeating(&MetricsRenderFrameObserver::DidStartResponse,
+                            weak_factory_.GetWeakPtr()));
+    render_frame->SetDidCompleteResponseCallback(
+        base::BindRepeating(&MetricsRenderFrameObserver::DidCompleteResponse,
+                            weak_factory_.GetWeakPtr()));
+    render_frame->SetDidCancelResponseCallback(
+        base::BindRepeating(&MetricsRenderFrameObserver::DidCancelResponse,
+                            weak_factory_.GetWeakPtr()));
+  }
+}
 
 MetricsRenderFrameObserver::~MetricsRenderFrameObserver() {
   if (page_timing_metrics_sender_) {
@@ -122,6 +185,7 @@ void MetricsRenderFrameObserver::DidChangePerformanceTiming() {
 void MetricsRenderFrameObserver::DidObserveUserInteraction(
     base::TimeTicks max_event_start,
     base::TimeTicks max_event_queued_main_thread,
+    base::TimeTicks max_event_processing_start,
     base::TimeTicks max_event_commit_finish,
     base::TimeTicks max_event_end,
     uint64_t interaction_offset) {
@@ -129,8 +193,8 @@ void MetricsRenderFrameObserver::DidObserveUserInteraction(
     return;
   }
   page_timing_metrics_sender_->DidObserveUserInteraction(
-      max_event_start, max_event_queued_main_thread, max_event_commit_finish,
-      max_event_end, interaction_offset);
+      max_event_start, max_event_queued_main_thread, max_event_processing_start,
+      max_event_commit_finish, max_event_end, interaction_offset);
 }
 
 void MetricsRenderFrameObserver::DidChangeCpuTiming(base::TimeDelta time) {
@@ -173,20 +237,95 @@ void MetricsRenderFrameObserver::DidObserveNewFeatureUsage(
 }
 
 void MetricsRenderFrameObserver::DidObserveSoftNavigation(
-    blink::SoftNavigationMetrics soft_nav_metrics) {
+    blink::SoftNavigationMetricsForReporting soft_nav_metrics) {
   if (page_timing_metrics_sender_) {
-    const blink::WebPerformanceMetricsForReporting& metrics =
-        render_frame()->GetWebFrame()->PerformanceMetricsForReporting();
-
     // Make soft navigation start time relative to navigation start.
     soft_nav_metrics.start_time = CreateTimeDeltaFromTimestampsInSeconds(
-        soft_nav_metrics.start_time.InSecondsF(), metrics.NavigationStart());
-
-    // (crbug.com/40074158): will non-fatally dump in official builds if the
-    // start_time is 0.
-    DUMP_WILL_BE_CHECK(!soft_nav_metrics.start_time.is_zero());
-
+        soft_nav_metrics.start_time.InSecondsF(), GetNavigationStart());
     page_timing_metrics_sender_->DidObserveSoftNavigation(soft_nav_metrics);
+  }
+}
+
+void MetricsRenderFrameObserver::DidObserveSoftLargestContentfulPaint(
+    const blink::LargestContentfulPaintDetailsForReporting& lcp) {
+  if (page_timing_metrics_sender_) {
+    // The lcp object we pass to the sender is a mojom type that is relative
+    // to the (hard) navigation start time.
+    mojom::LargestContentfulPaintTimingPtr relative_lcp =
+        CreateLargestContentfulPaintTiming();
+    relative_lcp->soft_navigation_offset = lcp.soft_navigation_offset;
+
+    if (lcp.image_paint_size > 0) {
+      // Set largest image time.
+      // Note that size can be nonzero while the time is 0 since a time of 0 is
+      // sent when the image is painting. We assign the time even when it is 0
+      // so that it's not ignored, but need to be careful when doing operations
+      // on the value.
+      if (lcp.image_paint_time == 0.0) {
+        relative_lcp->largest_image_paint = base::TimeDelta();
+      } else {
+        relative_lcp->largest_image_paint =
+            CreateTimeDeltaFromTimestampsInSeconds(lcp.image_paint_time,
+                                                   GetNavigationStart());
+      }
+      // Set largest image size.
+      relative_lcp->largest_image_paint_size = lcp.image_paint_size;
+
+      // Set largest image load type.
+      relative_lcp->type = LargestContentfulPaintTypeToUKMFlags(lcp.type);
+
+      // Set largest image bpp value.
+      relative_lcp->image_bpp = lcp.image_bpp;
+
+      // Set largest image request priority.
+      if (lcp.image_request_priority.has_value()) {
+        relative_lcp->image_request_priority_valid = true;
+        relative_lcp->image_request_priority_value =
+            blink::WebURLRequest::ConvertToNetPriority(
+                lcp.image_request_priority.value());
+      } else {
+        relative_lcp->image_request_priority_valid = false;
+      }
+
+      // Set largest image discovery time.
+      if (lcp.resource_load_timings.discovery_time.has_value()) {
+        relative_lcp->resource_load_timings->discovery_time =
+            CreateTimeDeltaFromTimestampsInSeconds(
+                lcp.resource_load_timings.discovery_time.value().InSecondsF(),
+                GetNavigationStart());
+      }
+
+      // Set largest image load start.
+      if (lcp.resource_load_timings.load_start.has_value()) {
+        relative_lcp->resource_load_timings->load_start =
+            CreateTimeDeltaFromTimestampsInSeconds(
+                lcp.resource_load_timings.load_start.value().InSecondsF(),
+                GetNavigationStart());
+      }
+
+      // Set largest image load end.
+      if (lcp.resource_load_timings.load_end.has_value()) {
+        relative_lcp->resource_load_timings->load_end =
+            CreateTimeDeltaFromTimestampsInSeconds(
+                lcp.resource_load_timings.load_end.value().InSecondsF(),
+                GetNavigationStart());
+      }
+    }
+    if (lcp.text_paint_size > 0) {
+      // LargestTextPaint and LargestTextPaintSize should be available at the
+      // same time. This is a renderer side DCHECK to ensure this.
+      DCHECK(lcp.text_paint_time);
+
+      relative_lcp->largest_text_paint = CreateTimeDeltaFromTimestampsInSeconds(
+          lcp.text_paint_time, GetNavigationStart());
+
+      relative_lcp->largest_text_paint_size = lcp.text_paint_size;
+
+      relative_lcp->type = LargestContentfulPaintTypeToUKMFlags(lcp.type);
+    }
+
+    page_timing_metrics_sender_->DidObserveSoftLargestContentfulPaint(
+        std::move(relative_lcp));
   }
 }
 
@@ -207,10 +346,6 @@ void MetricsRenderFrameObserver::DidStartResponse(
     bool is_ad_resource) {
   if (provisional_frame_resource_data_use_ &&
       blink::IsRequestDestinationFrame(request_destination)) {
-    // TODO(rajendrant): This frame request might start before the provisional
-    // load starts, and data use of the frame request might be missed in that
-    // case. There should be a guarantee that DidStartProvisionalLoad be called
-    // before DidStartResponse for the frame request.
     provisional_frame_resource_data_use_->DidStartResponse(
         final_response_url, request_id, response_head, request_destination,
         is_ad_resource);
@@ -246,7 +381,7 @@ void MetricsRenderFrameObserver::DidCancelResponse(int request_id) {
 
 void MetricsRenderFrameObserver::DidReceiveTransferSizeUpdate(
     int request_id,
-    int received_data_length) {
+    base::ByteSize received_data_length) {
   if (provisional_frame_resource_data_use_ &&
       provisional_frame_resource_data_use_->resource_id() == request_id) {
     provisional_frame_resource_data_use_->DidReceiveTransferSizeUpdate(
@@ -261,7 +396,7 @@ void MetricsRenderFrameObserver::DidReceiveTransferSizeUpdate(
 void MetricsRenderFrameObserver::DidLoadResourceFromMemoryCache(
     const GURL& response_url,
     int request_id,
-    int64_t encoded_body_length,
+    base::ByteSize encoded_body_length,
     const std::string& mime_type,
     bool from_archive) {
   // Resources from archives, such as subresources from a MHTML archive, do not
@@ -303,7 +438,7 @@ void MetricsRenderFrameObserver::DidStartNavigation(
 }
 
 void MetricsRenderFrameObserver::DidSetPageLifecycleState(
-    bool restoring_from_bfcache) {
+    blink::BFCacheStateChange bfcache_change) {
   // Send current metrics, as this RenderFrame might be replaced by a new
   // RenderFrame or its process might be killed, and this might be the last
   // point we can send the metrics to the browser. See crbug.com/1150242 for
@@ -388,16 +523,14 @@ void MetricsRenderFrameObserver::DidCommitProvisionalLoad(
   OnMetricsSenderCreated();
 }
 
-void MetricsRenderFrameObserver::OnMainFrameIntersectionChanged(
-    const gfx::Rect& main_frame_intersection_rect) {
+void MetricsRenderFrameObserver::OnMainFrameRectangleChanged(
+    const gfx::Rect& main_frame_rect) {
   if (page_timing_metrics_sender_) {
-    page_timing_metrics_sender_->OnMainFrameIntersectionChanged(
-        main_frame_intersection_rect);
+    page_timing_metrics_sender_->OnMainFrameRectangleChanged(main_frame_rect);
     return;
   }
 
-  main_frame_intersection_rect_before_metrics_sender_created_ =
-      main_frame_intersection_rect;
+  main_frame_rect_before_metrics_sender_created_ = main_frame_rect;
 }
 
 void MetricsRenderFrameObserver::OnMainFrameViewportRectangleChanged(
@@ -408,31 +541,17 @@ void MetricsRenderFrameObserver::OnMainFrameViewportRectangleChanged(
   }
 }
 
-void MetricsRenderFrameObserver::OnMainFrameImageAdRectangleChanged(
+void MetricsRenderFrameObserver::OnMainFrameAdRectangleChanged(
     int element_id,
-    const gfx::Rect& image_ad_rect) {
+    const gfx::Rect& ad_rect) {
   if (page_timing_metrics_sender_) {
-    page_timing_metrics_sender_->OnMainFrameImageAdRectangleChanged(
-        element_id, image_ad_rect);
+    page_timing_metrics_sender_->OnMainFrameAdRectangleChanged(element_id,
+                                                               ad_rect);
   }
 }
 
 void MetricsRenderFrameObserver::OnFrameDetached() {
   WillDetach(blink::DetachReason::kNavigation);
-}
-
-bool MetricsRenderFrameObserver::SetUpUkmReporting(
-    base::ReadOnlySharedMemoryRegion& shared_memory_smoothness,
-    base::ReadOnlySharedMemoryRegion& shared_memory_dropped_frames) {
-  if (page_timing_metrics_sender_) {
-    page_timing_metrics_sender_->SetUpUkmReporting(
-        std::move(shared_memory_smoothness),
-        std::move(shared_memory_dropped_frames));
-  } else {
-    ukm_smoothness_data_ = std::move(shared_memory_smoothness);
-    ukm_dropped_frames_data_ = std::move(shared_memory_dropped_frames);
-  }
-  return true;
 }
 
 MetricsRenderFrameObserver::Timing::Timing(
@@ -471,188 +590,39 @@ void MetricsRenderFrameObserver::SendMetrics() {
     return;
   }
   Timing timing = GetTiming();
-  page_timing_metrics_sender_->UpdateSoftNavigationMetrics(
-      GetSoftNavigationMetrics());
+  mojom::FontLoadingMetricsPtr font_metrics = GetFontLoadingMetrics();
   page_timing_metrics_sender_->Update(std::move(timing.relative_timing),
-                                      timing.monotonic_timing);
+                                      timing.monotonic_timing,
+                                      std::move(font_metrics));
 
   mojom::CustomUserTimingMarkPtr user_timing = GetCustomUserTimingMark();
   if (user_timing) {
-    page_timing_metrics_sender_->SendCustomUserTimingMark(
-        std::move(user_timing));
+    if (base::FeatureList::IsEnabled(
+            features::kThrottleSendingCustomUserTimings)) {
+      page_timing_metrics_sender_->UpdateCustomUserTimings(
+          std::move(user_timing));
+    } else {
+      page_timing_metrics_sender_->SendCustomUserTimingMark(
+          std::move(user_timing));
+    }
   }
 }
 
 void MetricsRenderFrameObserver::OnMetricsSenderCreated() {
-  if (ukm_smoothness_data_.IsValid() && ukm_dropped_frames_data_.IsValid()) {
-    page_timing_metrics_sender_->SetUpUkmReporting(
-        std::move(ukm_smoothness_data_), std::move(ukm_dropped_frames_data_));
-  }
-
   // Send the latest the frame intersection update, as otherwise we may miss
   // this information for a frame completely if there are no future updates.
-  if (main_frame_intersection_rect_before_metrics_sender_created_) {
-    page_timing_metrics_sender_->OnMainFrameIntersectionChanged(
-        *main_frame_intersection_rect_before_metrics_sender_created_);
-    main_frame_intersection_rect_before_metrics_sender_created_.reset();
+  if (main_frame_rect_before_metrics_sender_created_) {
+    page_timing_metrics_sender_->OnMainFrameRectangleChanged(
+        *main_frame_rect_before_metrics_sender_created_);
+    main_frame_rect_before_metrics_sender_created_.reset();
   }
 }
 
-mojom::SoftNavigationMetricsPtr
-MetricsRenderFrameObserver::GetSoftNavigationMetrics() const {
-  CHECK(render_frame());
-  CHECK(render_frame()->GetWebFrame());
-  const blink::WebPerformanceMetricsForReporting& metrics =
-      render_frame()->GetWebFrame()->PerformanceMetricsForReporting();
-  CHECK(page_timing_metrics_sender_.get());
-  auto soft_navigation_metrics =
-      page_timing_metrics_sender_->GetSoftNavigationMetrics();
-
-  CHECK(!soft_navigation_metrics.is_null());
-
-  soft_navigation_metrics->largest_contentful_paint =
-      CreateLargestContentfulPaintTiming();
-
-  auto soft_navigation_lcp_details_ =
-      metrics.SoftNavigationLargestContentfulDetailsForMetrics();
-
-  double soft_navigation_start_relative_to_navigation_start =
-      soft_navigation_metrics->start_time.InSecondsF();
-
-  double navigation_start = metrics.NavigationStart();
-
-  if (soft_navigation_lcp_details_.image_paint_size > 0) {
-    // Set largest image time.
-    // Note that size can be nonzero while the time is 0 since a time of 0 is
-    // sent when the image is painting. We assign the time even when it is 0 so
-    // that it's not ignored, but need to be careful when doing operations on
-    // the value.
-    if (soft_navigation_lcp_details_.image_paint_time == 0.0) {
-      soft_navigation_metrics->largest_contentful_paint->largest_image_paint =
-          base::TimeDelta();
-    } else {
-      base::TimeDelta image_paint_time_relative_to_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              soft_navigation_lcp_details_.image_paint_time, navigation_start);
-
-      base::TimeDelta image_paint_time_relative_to_soft_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              image_paint_time_relative_to_navigation_start.InSecondsF(),
-              soft_navigation_start_relative_to_navigation_start);
-
-      soft_navigation_metrics->largest_contentful_paint->largest_image_paint =
-          image_paint_time_relative_to_soft_navigation_start;
-    }
-    // Set largest image size.
-    soft_navigation_metrics->largest_contentful_paint
-        ->largest_image_paint_size =
-        soft_navigation_lcp_details_.image_paint_size;
-
-    // Set largest image load type.
-    soft_navigation_metrics->largest_contentful_paint->type =
-        LargestContentfulPaintTypeToUKMFlags(soft_navigation_lcp_details_.type);
-
-    // Set largest image bpp value.
-    soft_navigation_metrics->largest_contentful_paint->image_bpp =
-        soft_navigation_lcp_details_.image_bpp;
-
-    // Set largest image request priority.
-    if (soft_navigation_lcp_details_.image_request_priority.has_value()) {
-      soft_navigation_metrics->largest_contentful_paint
-          ->image_request_priority_valid = true;
-      soft_navigation_metrics->largest_contentful_paint
-          ->image_request_priority_value =
-          blink::WebURLRequest::ConvertToNetPriority(
-              soft_navigation_lcp_details_.image_request_priority.value());
-    } else {
-      soft_navigation_metrics->largest_contentful_paint
-          ->image_request_priority_valid = false;
-    }
-
-    // Set largest image discovery time.
-    if (soft_navigation_lcp_details_.resource_load_timings.discovery_time
-            .has_value()) {
-      base::TimeDelta image_discovery_time_relative_to_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              (soft_navigation_lcp_details_.resource_load_timings.discovery_time
-                   .value())
-                  .InSecondsF(),
-              navigation_start);
-
-      base::TimeDelta image_discovery_time_relative_to_soft_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              image_discovery_time_relative_to_navigation_start.InSecondsF(),
-              soft_navigation_start_relative_to_navigation_start);
-
-      soft_navigation_metrics->largest_contentful_paint->resource_load_timings
-          ->discovery_time =
-          image_discovery_time_relative_to_soft_navigation_start;
-    }
-
-    // Set largest image load start.
-    if (soft_navigation_lcp_details_.resource_load_timings.load_start
-            .has_value()) {
-      base::TimeDelta image_load_start_relative_to_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              (soft_navigation_lcp_details_.resource_load_timings.load_start
-                   .value())
-                  .InSecondsF(),
-              navigation_start);
-
-      base::TimeDelta image_load_start_relative_to_soft_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              image_load_start_relative_to_navigation_start.InSecondsF(),
-              soft_navigation_start_relative_to_navigation_start);
-
-      soft_navigation_metrics->largest_contentful_paint->resource_load_timings
-          ->load_start = image_load_start_relative_to_soft_navigation_start;
-    }
-
-    // Set largest image load end.
-    if (soft_navigation_lcp_details_.resource_load_timings.load_end
-            .has_value()) {
-      base::TimeDelta image_load_end_relative_to_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              (soft_navigation_lcp_details_.resource_load_timings.load_end
-                   .value())
-                  .InSecondsF(),
-              navigation_start);
-
-      base::TimeDelta image_load_end_relative_to_soft_navigation_start =
-          CreateTimeDeltaFromTimestampsInSeconds(
-              image_load_end_relative_to_navigation_start.InSecondsF(),
-              soft_navigation_start_relative_to_navigation_start);
-
-      soft_navigation_metrics->largest_contentful_paint->resource_load_timings
-          ->load_end = image_load_end_relative_to_soft_navigation_start;
-    }
-  }
-
-  if (soft_navigation_lcp_details_.text_paint_size > 0) {
-    // LargestTextPaint and LargestTextPaintSize should be available at the
-    // same time. This is a renderer side DCHECK to ensure this.
-    DCHECK(soft_navigation_lcp_details_.text_paint_time);
-
-    base::TimeDelta text_paint_time_relative_to_navigation_start =
-        CreateTimeDeltaFromTimestampsInSeconds(
-            soft_navigation_lcp_details_.text_paint_time, navigation_start);
-
-    base::TimeDelta text_paint_time_relative_to_soft_navigation_start =
-        CreateTimeDeltaFromTimestampsInSeconds(
-            text_paint_time_relative_to_navigation_start.InSecondsF(),
-            soft_navigation_start_relative_to_navigation_start);
-
-    soft_navigation_metrics->largest_contentful_paint->largest_text_paint =
-        text_paint_time_relative_to_soft_navigation_start;
-
-    soft_navigation_metrics->largest_contentful_paint->largest_text_paint_size =
-        soft_navigation_lcp_details_.text_paint_size;
-
-    soft_navigation_metrics->largest_contentful_paint->type =
-        LargestContentfulPaintTypeToUKMFlags(soft_navigation_lcp_details_.type);
-  }
-
-  return soft_navigation_metrics;
+double MetricsRenderFrameObserver::GetNavigationStart() const {
+  return render_frame()
+      ->GetWebFrame()
+      ->PerformanceMetricsForReporting()
+      .NavigationStart();
 }
 
 MetricsRenderFrameObserver::Timing MetricsRenderFrameObserver::GetTiming()
@@ -914,7 +884,54 @@ MetricsRenderFrameObserver::Timing MetricsRenderFrameObserver::GetTiming()
     timing->user_timing_mark_interactive = perf.UserTimingMarkInteractive();
   }
 
+  blink::WebLocalFrame* web_frame = render_frame()->GetWebFrame();
+  if (web_frame->Client()->IsForInitialWebUI()) {
+    if (!perf.FirstPaintAsMonotonicTime().is_null()) {
+      if (!timing->monotonic_paint_timing) {
+        timing->monotonic_paint_timing = mojom::MonotonicPaintTiming::New();
+      }
+      timing->monotonic_paint_timing->first_paint =
+          perf.FirstPaintAsMonotonicTime();
+    }
+    if (!perf.FirstContentfulPaintAsMonotonicTime().is_null()) {
+      if (!timing->monotonic_paint_timing) {
+        timing->monotonic_paint_timing = mojom::MonotonicPaintTiming::New();
+      }
+      timing->monotonic_paint_timing->first_contentful_paint =
+          perf.FirstContentfulPaintAsMonotonicTime();
+    }
+  }
+
   return Timing(std::move(timing), monotonic_timing);
+}
+
+mojom::FontLoadingMetricsPtr MetricsRenderFrameObserver::GetFontLoadingMetrics()
+    const {
+  const blink::WebPerformanceMetricsForReporting& perf =
+      render_frame()->GetWebFrame()->PerformanceMetricsForReporting();
+  if (perf.SystemFallbackFontCount() > 0 || perf.ShapeCacheHitCount() > 0 ||
+      perf.ShapeCacheMissCount() > 0) {
+    auto font_metrics = mojom::FontLoadingMetrics::New();
+    font_metrics->fallback_duration = perf.SystemFallbackFontTime();
+    font_metrics->fallback_count = perf.SystemFallbackFontCount();
+    font_metrics->fallback_initial_duration =
+        perf.SystemFallbackFontInitialDuration();
+    font_metrics->shape_cache_hit_count = perf.ShapeCacheHitCount();
+    font_metrics->shape_cache_miss_count = perf.ShapeCacheMissCount();
+    std::map<mojom::ScriptType, size_t> aggregated;
+    for (const auto& details : perf.GetScriptFontFallbackDetails()) {
+      aggregated[MapToMojoScriptType(details.script_code, details.is_emoji)] +=
+          details.fallback_count;
+    }
+    for (const auto& [type, count] : aggregated) {
+      auto info = mojom::ScriptFallbackInfo::New();
+      info->script_type = type;
+      info->fallback_count = static_cast<uint32_t>(count);
+      font_metrics->script_fallback_metrics.push_back(std::move(info));
+    }
+    return font_metrics;
+  }
+  return nullptr;
 }
 
 mojom::CustomUserTimingMarkPtr

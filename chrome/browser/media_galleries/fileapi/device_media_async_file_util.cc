@@ -13,6 +13,7 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/ptr_util.h"
+#include "base/notimplemented.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/media_galleries/fileapi/media_path_filter.h"
@@ -80,7 +81,7 @@ void OnCreateDirectoryError(AsyncFileUtil::StatusCallback callback,
 
 // Called when ReadDirectory method call failed to enumerate the directory
 // objects. |callback| is invoked to notify the caller about the |error|
-// that occured while reading the directory objects.
+// that occurred while reading the directory objects.
 void OnReadDirectoryError(AsyncFileUtil::ReadDirectoryCallback callback,
                           base::File::Error error) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::IO);

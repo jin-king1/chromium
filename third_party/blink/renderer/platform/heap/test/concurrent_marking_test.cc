@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #if defined(THREAD_SANITIZER)
 
+#include "base/compiler_specific.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/platform/bindings/script_forbidden_scope.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_deque.h"
@@ -116,7 +112,7 @@ void RemoveFromMiddleOfCollection() {
     auto iterator = collection->begin();
     // Move iterator to middle of collection.
     for (size_t i = 0; i < collection->size() / 2; ++i) {
-      ++iterator;
+      UNSAFE_TODO(++iterator);
     }
     return iterator;
   });
@@ -126,7 +122,7 @@ template <typename C>
 void RemoveFromEndOfCollection() {
   RemoveFromCollectionAtLocation<C>([](C* collection) {
     auto iterator = collection->end();
-    return --iterator;
+    return UNSAFE_TODO(--iterator);
   });
 }
 
@@ -172,13 +168,13 @@ void SwapCollections() {
 // HeapHashMap
 
 template <typename T>
-using IdentityHashMap = HeapHashMap<T, T>;
+using IdentityHashMap = GCedHeapHashMap<T, T>;
 
 template <typename T>
-struct MethodAdapter<HeapHashMap<T, T>>
-    : public MethodAdapterBase<HeapHashMap<T, T>> {
+struct MethodAdapter<GCedHeapHashMap<T, T>>
+    : public MethodAdapterBase<GCedHeapHashMap<T, T>> {
   template <typename U>
-  static void insert(HeapHashMap<T, T>& map, U&& u) {
+  static void insert(GCedHeapHashMap<T, T>& map, U&& u) {
     map.insert(u, u);
   }
 };
@@ -205,49 +201,50 @@ TEST_F(ConcurrentMarkingTest, SwapHashMap) {
 // HeapHashSet
 
 TEST_F(ConcurrentMarkingTest, AddToHashSet) {
-  AddToCollection<HeapHashSet<Member<IntegerObject>>>();
+  AddToCollection<GCedHeapHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromBeginningOfHashSet) {
-  RemoveFromBeginningOfCollection<HeapHashSet<Member<IntegerObject>>>();
+  RemoveFromBeginningOfCollection<GCedHeapHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromMiddleOfHashSet) {
-  RemoveFromMiddleOfCollection<HeapHashSet<Member<IntegerObject>>>();
+  RemoveFromMiddleOfCollection<GCedHeapHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromEndOfHashSet) {
-  RemoveFromEndOfCollection<HeapHashSet<Member<IntegerObject>>>();
+  RemoveFromEndOfCollection<GCedHeapHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, ClearHashSet) {
-  ClearCollection<HeapHashSet<Member<IntegerObject>>>();
+  ClearCollection<GCedHeapHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, SwapHashSet) {
-  SwapCollections<HeapHashSet<Member<IntegerObject>>>();
+  SwapCollections<GCedHeapHashSet<Member<IntegerObject>>>();
 }
 
 template <typename T>
-struct MethodAdapter<HeapLinkedHashSet<T>>
-    : public MethodAdapterBase<HeapLinkedHashSet<T>> {
-  static void Swap(HeapLinkedHashSet<T>& a, HeapLinkedHashSet<T>& b) {
+struct MethodAdapter<GCedHeapLinkedHashSet<T>>
+    : public MethodAdapterBase<GCedHeapLinkedHashSet<T>> {
+  static void Swap(GCedHeapLinkedHashSet<T>& a, GCedHeapLinkedHashSet<T>& b) {
     a.Swap(b);
   }
 };
 
 TEST_F(ConcurrentMarkingTest, AddToLinkedHashSet) {
-  AddToCollection<HeapLinkedHashSet<Member<IntegerObject>>>();
+  AddToCollection<GCedHeapLinkedHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromBeginningOfLinkedHashSet) {
-  RemoveFromBeginningOfCollection<HeapLinkedHashSet<Member<IntegerObject>>>();
+  RemoveFromBeginningOfCollection<
+      GCedHeapLinkedHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromMiddleOfLinkedHashSet) {
-  RemoveFromMiddleOfCollection<HeapLinkedHashSet<Member<IntegerObject>>>();
+  RemoveFromMiddleOfCollection<GCedHeapLinkedHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromEndOfLinkedHashSet) {
-  RemoveFromEndOfCollection<HeapLinkedHashSet<Member<IntegerObject>>>();
+  RemoveFromEndOfCollection<GCedHeapLinkedHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, ClearLinkedHashSet) {
-  ClearCollection<HeapLinkedHashSet<Member<IntegerObject>>>();
+  ClearCollection<GCedHeapLinkedHashSet<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, SwapLinkedHashSet) {
-  SwapCollections<HeapLinkedHashSet<Member<IntegerObject>>>();
+  SwapCollections<GCedHeapLinkedHashSet<Member<IntegerObject>>>();
 }
 
 // HeapHashCountedSet
@@ -296,40 +293,40 @@ void PopFromCollection() {
 }
 
 template <typename T, wtf_size_t inlineCapacity>
-struct MethodAdapter<HeapVector<T, inlineCapacity>>
-    : public MethodAdapterBase<HeapVector<T, inlineCapacity>> {
+struct MethodAdapter<GCedHeapVector<T, inlineCapacity>>
+    : public MethodAdapterBase<GCedHeapVector<T, inlineCapacity>> {
   template <typename U>
-  static void insert(HeapVector<T, inlineCapacity>& vector, U&& u) {
+  static void insert(GCedHeapVector<T, inlineCapacity>& vector, U&& u) {
     vector.push_back(std::forward<U>(u));
   }
 };
 
 TEST_F(ConcurrentMarkingTest, AddToVector) {
-  AddToCollection<HeapVector<Member<IntegerObject>>>();
+  AddToCollection<GCedHeapVector<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromBeginningOfVector) {
-  RemoveFromBeginningOfCollection<HeapVector<Member<IntegerObject>>>();
+  RemoveFromBeginningOfCollection<GCedHeapVector<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromMiddleOfVector) {
-  RemoveFromMiddleOfCollection<HeapVector<Member<IntegerObject>>>();
+  RemoveFromMiddleOfCollection<GCedHeapVector<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, RemoveFromEndOfVector) {
-  RemoveFromEndOfCollection<HeapVector<Member<IntegerObject>>>();
+  RemoveFromEndOfCollection<GCedHeapVector<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, ClearVector) {
-  ClearCollection<HeapVector<Member<IntegerObject>>>();
+  ClearCollection<GCedHeapVector<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, SwapVector) {
-  SwapCollections<HeapVector<Member<IntegerObject>>>();
+  SwapCollections<GCedHeapVector<Member<IntegerObject>>>();
 }
 TEST_F(ConcurrentMarkingTest, PopFromVector) {
-  PopFromCollection<HeapVector<Member<IntegerObject>>>();
+  PopFromCollection<GCedHeapVector<Member<IntegerObject>>>();
 }
 
 // HeapVector with inlined buffer
 
 template <typename T>
-using HeapVectorWithInlineStorage = HeapVector<T, 10>;
+using HeapVectorWithInlineStorage = GCedHeapVector<T, 10>;
 
 TEST_F(ConcurrentMarkingTest, AddToInlinedVector) {
   AddToCollection<HeapVectorWithInlineStorage<Member<IntegerObject>>>();
@@ -359,13 +356,14 @@ TEST_F(ConcurrentMarkingTest, PopFromInlinedVector) {
 // HeapVector of std::pairs
 
 template <typename T>
-using HeapVectorOfPairs = HeapVector<std::pair<T, T>>;
+using HeapVectorOfPairs = GCedHeapVector<std::pair<T, T>>;
 
 template <typename T, wtf_size_t inlineCapacity>
-struct MethodAdapter<HeapVector<std::pair<T, T>, inlineCapacity>>
-    : public MethodAdapterBase<HeapVector<std::pair<T, T>, inlineCapacity>> {
+struct MethodAdapter<GCedHeapVector<std::pair<T, T>, inlineCapacity>>
+    : public MethodAdapterBase<
+          GCedHeapVector<std::pair<T, T>, inlineCapacity>> {
   template <typename U>
-  static void insert(HeapVector<std::pair<T, T>, inlineCapacity>& vector,
+  static void insert(GCedHeapVector<std::pair<T, T>, inlineCapacity>& vector,
                      U&& u) {
     vector.push_back(std::make_pair<U&, U&>(u, u));
   }
@@ -438,7 +436,7 @@ namespace {
 class RegisteredMixin;
 
 class CollectsMixins : public GarbageCollected<CollectsMixins> {
-  using MixinSet = HeapHashSet<Member<RegisteredMixin>>;
+  using MixinSet = GCedHeapHashSet<Member<RegisteredMixin>>;
 
  public:
   CollectsMixins() : set_(MakeGarbageCollected<MixinSet>()) {}

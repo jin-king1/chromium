@@ -22,6 +22,8 @@
 #include "extensions/browser/api/web_request/extension_web_request_event_router.h"
 #include "extensions/browser/api/web_request/web_request_api.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
+#include "extensions/buildflags/buildflags.h"
+#include "ipc/constants.mojom-forward.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
@@ -30,8 +32,10 @@
 #include "net/base/auth.h"
 #include "net/base/completion_once_callback.h"
 #include "net/base/request_priority.h"
+#include "net/ssl/ssl_info.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
+#include "services/network/public/cpp/http_request_headers_update_params.h"
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
@@ -39,6 +43,8 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "url/gurl.h"
 #include "url/origin.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace content {
 class BrowserContext;
@@ -73,8 +79,9 @@ class WebRequestProxyingURLLoaderFactory
     // For usual requests
     InProgressRequest(
         WebRequestProxyingURLLoaderFactory* factory,
-        uint64_t request_id,
-        int32_t network_service_request_id,
+        uint64_t profile_request_id,
+        int32_t request_id_for_network_service,
+        int32_t request_id_from_client,
         int32_t view_routing_id,
         int32_t frame_routing_id,
         uint32_t options,
@@ -87,7 +94,7 @@ class WebRequestProxyingURLLoaderFactory
             navigation_response_task_runner);
     // For CORS preflights
     InProgressRequest(WebRequestProxyingURLLoaderFactory* factory,
-                      uint64_t request_id,
+                      uint64_t profile_request_id,
                       int32_t frame_routing_id,
                       const network::ResourceRequest& request);
 
@@ -100,9 +107,7 @@ class WebRequestProxyingURLLoaderFactory
 
     // network::mojom::URLLoader:
     void FollowRedirect(
-        const std::vector<std::string>& removed_headers,
-        const net::HttpRequestHeaders& modified_headers,
-        const net::HttpRequestHeaders& modified_cors_exempt_headers,
+        network::HttpRequestHeadersUpdateParams headers_update_params,
         const std::optional<GURL>& new_url) override;
     void SetPriority(net::RequestPriority priority,
                      int32_t intra_priority_value) override;
@@ -131,10 +136,12 @@ class WebRequestProxyingURLLoaderFactory
         mojo::PendingReceiver<network::mojom::TrustedHeaderClient> receiver);
 
     // network::mojom::TrustedHeaderClient:
-    void OnBeforeSendHeaders(const net::HttpRequestHeaders& headers,
+    void OnBeforeSendHeaders(const GURL& request_url,
+                             const net::HttpRequestHeaders& headers,
                              OnBeforeSendHeadersCallback callback) override;
     void OnHeadersReceived(const std::string& headers,
                            const net::IPEndPoint& endpoint,
+                           const std::optional<net::SSLInfo>& ssl_info,
                            OnHeadersReceivedCallback callback) override;
 
     // Erases all DNR actions in `info_` that are associated with
@@ -210,10 +217,19 @@ class WebRequestProxyingURLLoaderFactory
     const raw_ptr<WebRequestProxyingURLLoaderFactory> factory_;
     network::ResourceRequest request_;
     const std::optional<url::Origin> original_initiator_;
-    const uint64_t request_id_ = 0;
-    const int32_t network_service_request_id_ = 0;
-    const int32_t view_routing_id_ = MSG_ROUTING_NONE;
-    const int32_t frame_routing_id_ = MSG_ROUTING_NONE;
+    // The request ID unique per BrowserContext. Used by the WebRequest API and
+    // extensions to identify this request across event callbacks.
+    const uint64_t profile_request_id_ = 0;
+    // The request ID forwarded to `target_factory_`. Used to correlate
+    // network-stack callbacks (such as `TrustedHeaderClient` and auth events)
+    // with this request.
+    const int32_t request_id_for_network_service_ = 0;
+    // The request ID supplied by the caller of `CreateLoaderAndStart()`. Used
+    // solely to preserve the extension-visible WebRequest ID across a request
+    // restart (e.g., via `ThrottlingURLLoader`).
+    const int32_t request_id_from_client_ = 0;
+    const int32_t view_routing_id_ = IPC::mojom::kRoutingIdNone;
+    const int32_t frame_routing_id_ = IPC::mojom::kRoutingIdNone;
     const uint32_t options_ = 0;
     const ukm::SourceIdObj ukm_source_id_;
     const net::MutableNetworkTrafficAnnotationTag traffic_annotation_;
@@ -252,6 +268,12 @@ class WebRequestProxyingURLLoaderFactory
     // is only set to true if there is a listener that needs to view or modify
     // headers set in the network process.
     const bool has_any_extra_headers_listeners_ = false;
+
+    // Similar to the |has_any_extra_headers_listeners_|, setting
+    // |has_any_security_info_listeners_| also will make the request to use
+    // network::mojom::kURLLoadOptionUseHeaderClient option.
+    const bool has_any_security_info_listeners_ = false;
+
     bool current_request_uses_header_client_ = false;
     OnBeforeSendHeadersCallback on_before_send_headers_callback_;
     OnHeadersReceivedCallback on_headers_received_callback_;
@@ -268,13 +290,15 @@ class WebRequestProxyingURLLoaderFactory
       FollowRedirectParams(const FollowRedirectParams&) = delete;
       FollowRedirectParams& operator=(const FollowRedirectParams&) = delete;
       ~FollowRedirectParams();
-      std::vector<std::string> removed_headers;
-      net::HttpRequestHeaders modified_headers;
-      net::HttpRequestHeaders modified_cors_exempt_headers;
+      network::HttpRequestHeadersUpdateParams headers_update_params;
       std::optional<GURL> new_url;
     };
     std::unique_ptr<FollowRedirectParams> pending_follow_redirect_params_;
     State state_ = State::kInProgress;
+
+    // Whether URLLoaderClient's OnReceiveResponse() has been called. It must be
+    // called at most once. It is added to debug crbug.com/463388771.
+    bool has_forwarded_response_ = false;
 
     // A task runner that should be used for the request when non-null. Non-null
     // when this was created for a navigation request.
@@ -359,13 +383,15 @@ class WebRequestProxyingURLLoaderFactory
 
   bool IsForServiceWorkerScript() const;
   bool IsForDownload() const;
+  bool IsForPrefetch() const;
 
   static void EnsureAssociatedFactoryBuilt();
 
  private:
   void OnTargetFactoryError();
   void OnProxyBindingError();
-  void RemoveRequest(int32_t network_service_request_id, uint64_t request_id);
+  void RemoveRequest(int32_t request_id_for_network_service,
+                     uint64_t profile_request_id);
   void MaybeRemoveProxy();
 
   const raw_ptr<content::BrowserContext> browser_context_;

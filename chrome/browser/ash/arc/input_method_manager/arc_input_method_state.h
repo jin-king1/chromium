@@ -5,11 +5,9 @@
 #ifndef CHROME_BROWSER_ASH_ARC_INPUT_METHOD_MANAGER_ARC_INPUT_METHOD_STATE_H_
 #define CHROME_BROWSER_ASH_ARC_INPUT_METHOD_MANAGER_ARC_INPUT_METHOD_STATE_H_
 
-#include <set>
 #include <string>
 #include <vector>
 
-#include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
 #include "chromeos/ash/experiences/arc/mojom/input_method_manager.mojom-forward.h"
 #include "ui/base/ime/ash/input_method_descriptor.h"

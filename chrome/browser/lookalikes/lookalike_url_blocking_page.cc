@@ -6,6 +6,7 @@
 
 #include <utility>
 
+#include "base/strings/string_number_conversions.h"
 #include "chrome/common/webui_url_constants.h"
 #include "components/grit/components_resources.h"
 #include "components/lookalikes/core/lookalike_url_ui_util.h"
@@ -59,7 +60,7 @@ LookalikeUrlBlockingPage::GetTypeForTesting() {
 }
 
 void LookalikeUrlBlockingPage::PopulateInterstitialStrings(
-    base::Value::Dict& load_time_data) {
+    base::DictValue& load_time_data) {
   lookalikes::PopulateLookalikeUrlBlockingPageStrings(load_time_data, safe_url_,
                                                       request_url());
 }
@@ -97,7 +98,7 @@ void LookalikeUrlBlockingPage::CommandReceived(const std::string& command) {
       // If the interstitial doesn't have a suggested URL (e.g. punycode
       // interstitial), simply open the new tab page.
       if (!safe_url_.is_valid()) {
-        controller()->OpenUrlInCurrentTab(GURL(chrome::kChromeUINewTabURL));
+        controller()->OpenUrlInCurrentTab(chrome::ChromeUINewTabURLAsGURL());
       } else {
         controller()->GoBack();
       }

@@ -10,6 +10,7 @@ include_rules = [
   "+components/viz/common",
   "+content/public",
   "+device/base/features.h",
+  "+services/tracing/public/cpp/perfetto",
   "+gin/public",
   "+gin/v8_initializer.h",
   "+mojo/core/embedder/embedder.h",
@@ -20,10 +21,3 @@ include_rules = [
   "+ui/base",
   "+ui/gl",
 ]
-
-specific_include_rules = {
-    # Special-case where webview composes webview+weblayer.
-    "webview_entry_point\.cc": [
-        "+weblayer",
-    ],
-}

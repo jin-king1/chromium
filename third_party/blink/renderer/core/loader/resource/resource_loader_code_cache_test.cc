@@ -2,16 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
+#include "base/compiler_specific.h"
 #include "base/task/single_thread_task_runner.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/v8_binding_for_testing.h"
 #include "third_party/blink/renderer/core/loader/resource/script_resource.h"
+#include "third_party/blink/renderer/platform/bindings/parkable_string.h"
 #include "third_party/blink/renderer/platform/exported/wrapped_resource_response.h"
 #include "third_party/blink/renderer/platform/loader/fetch/cached_metadata.h"
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
@@ -25,7 +22,7 @@
 #include "third_party/blink/renderer/platform/testing/mock_context_lifecycle_notifier.h"
 #include "third_party/blink/renderer/platform/testing/noop_url_loader.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/testing/unit_test_helpers.h"
 #include "third_party/blink/renderer/platform/weborigin/scheme_registry.h"
 
@@ -70,7 +67,7 @@ class ResourceLoaderCodeCacheTest : public testing::Test {
 
   void CommonSetup(v8::Isolate* isolate, const char* url_string = nullptr) {
 #if DCHECK_IS_ON()
-    WTF::SetIsBeforeThreadCreatedForTest();  // Required for next operation:
+    SetIsBeforeThreadCreatedForTest();  // Required for next operation:
 #endif
     SchemeRegistry::RegisterURLSchemeAsCodeCacheWithHashing(
         "codecachewithhashing");
@@ -93,7 +90,7 @@ class ResourceLoaderCodeCacheTest : public testing::Test {
     resource_ = ScriptResource::Fetch(
         params, fetcher, nullptr, isolate, ScriptResource::kNoStreaming,
         kNoCompileHintsProducer, kNoCompileHintsConsumer,
-        v8_compile_hints::MagicCommentMode::kNever);
+        v8_compile_hints::MagicCommentMode::kNone);
     loader_ = resource_->Loader();
 
     response_ = ResourceResponse(url);
@@ -109,8 +106,8 @@ class ResourceLoaderCodeCacheTest : public testing::Test {
         reinterpret_cast<CachedMetadataHeader*>(&serialized_data[0]);
     header->marker = CachedMetadataHandler::kSingleEntryWithTag;
     header->type = 0;
-    memcpy(&serialized_data[sizeof(CachedMetadataHeader)], data.data(),
-           data.size());
+    UNSAFE_TODO(memcpy(&serialized_data[sizeof(CachedMetadataHeader)],
+                       data.data(), data.size()));
     return serialized_data;
   }
 
@@ -126,27 +123,24 @@ class ResourceLoaderCodeCacheTest : public testing::Test {
     outer_header->marker =
         CachedMetadataHandler::kSingleEntryWithHashAndPadding;
     if (source_text.has_value()) {
-      std::unique_ptr<ParkableStringImpl::SecureDigest> hash =
+      std::unique_ptr<SecureStringDigest> hash =
           ParkableStringImpl::HashString(source_text->Impl());
-      CHECK_EQ(hash->size(),
-               ScriptCachedMetadataHandlerWithHashing::kSha256Bytes);
-      memcpy(outer_header->hash, hash->data(),
-             ScriptCachedMetadataHandlerWithHashing::kSha256Bytes);
+      CHECK_EQ(hash->size(), kSha256Bytes);
+      UNSAFE_TODO(memcpy(outer_header->hash, hash->data(), kSha256Bytes));
     }
     CachedMetadataHeader* inner_header =
         reinterpret_cast<CachedMetadataHeader*>(
             &serialized_data[sizeof(CachedMetadataHeaderWithHash)]);
     inner_header->marker = CachedMetadataHandler::kSingleEntryWithTag;
     inner_header->type = 0;
-    memcpy(&serialized_data[sizeof(CachedMetadataHeaderWithHash) +
-                            sizeof(CachedMetadataHeader)],
-           data.data(), data.size());
+    UNSAFE_TODO(memcpy(&serialized_data[sizeof(CachedMetadataHeaderWithHash) +
+                                        sizeof(CachedMetadataHeader)],
+                       data.data(), data.size()));
     return serialized_data;
   }
 
   test::TaskEnvironment task_environment_;
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform_;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform_;
 
   // State initialized by CommonSetup().
   Persistent<ScriptResource> resource_;

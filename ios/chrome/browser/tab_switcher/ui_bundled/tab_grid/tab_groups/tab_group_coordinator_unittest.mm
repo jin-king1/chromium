@@ -9,20 +9,24 @@
 #import "components/data_sharing/public/features.h"
 #import "components/saved_tab_groups/test_support/fake_tab_group_sync_service.h"
 #import "components/tab_groups/tab_group_id.h"
+#import "ios/chrome/browser/data_sharing/model/data_sharing_service_factory.h"
+#import "ios/chrome/browser/saved_tab_groups/model/tab_group_service_factory.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
+#import "ios/chrome/browser/share_kit/model/share_kit_service_factory.h"
+#import "ios/chrome/browser/share_kit/model/test_share_kit_service.h"
 #import "ios/chrome/browser/shared/model/browser/test/test_browser.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/browser/shared/model/web_state_list/tab_group.h"
 #import "ios/chrome/browser/shared/model/web_state_list/test/fake_web_state_list_delegate.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/tab_groups_commands.h"
-#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_browser_agent.h"
+#import "ios/chrome/browser/snapshots/model/snapshot_source_tab_helper.h"
 #import "ios/chrome/browser/snapshots/model/snapshot_tab_helper.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_mode_holder.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_groups/tab_group_view_controller.h"
+#import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
 #import "ios/web/public/test/web_task_environment.h"
 #import "testing/platform_test.h"
@@ -42,33 +46,38 @@ class TabGroupCoordinatorFakeWebStateListDelegate
   // WebStateListDelegate implementation.
   void WillAddWebState(web::WebState* web_state) override {
     SnapshotTabHelper::CreateForWebState(web_state);
+    SnapshotSourceTabHelper::CreateForWebState(web_state);
   }
 };
 
 // Creates a FakeTabGroupSyncService.
 std::unique_ptr<KeyedService> CreateFakeTabGroupSyncService(
-    web::BrowserState* context) {
+    ProfileIOS* profile) {
   return std::make_unique<tab_groups::FakeTabGroupSyncService>();
+}
+
+// Creates a test ShareKitService.
+std::unique_ptr<KeyedService> BuildTestShareKitService(ProfileIOS* profile) {
+  data_sharing::DataSharingService* data_sharing_service =
+      data_sharing::DataSharingServiceFactory::GetForProfile(profile);
+  TabGroupService* tab_group_service =
+      TabGroupServiceFactory::GetForProfile(profile);
+
+  return std::make_unique<TestShareKitService>(data_sharing_service, nullptr,
+                                               nullptr, tab_group_service);
 }
 
 class TabGroupCoordinatorTest : public PlatformTest {
  protected:
-  TabGroupCoordinatorTest() {
-    feature_list_.InitWithFeatures({kTabGroupsIPad, kModernTabStrip}, {});
-  }
-
   void SetUp() override {
     PlatformTest::SetUp();
-    if (!IsTabGroupInGridEnabled()) {
-      // Disabled on iPadOS 16.
-      return;
-    }
-
     // Create a TestProfileIOS with required services.
     TestProfileIOS::Builder builder;
     builder.AddTestingFactory(
         tab_groups::TabGroupSyncServiceFactory::GetInstance(),
         base::BindRepeating(&CreateFakeTabGroupSyncService));
+    builder.AddTestingFactory(ShareKitServiceFactory::GetInstance(),
+                              base::BindOnce(&BuildTestShareKitService));
     profile_ = std::move(builder).Build();
 
     tab_group_sync_service_ = static_cast<tab_groups::FakeTabGroupSyncService*>(
@@ -79,13 +88,11 @@ class TabGroupCoordinatorTest : public PlatformTest {
         std::make_unique<TabGroupCoordinatorFakeWebStateListDelegate>());
     SnapshotBrowserAgent::CreateForBrowser(browser_.get());
 
-    tab_groups_handler_ = OCMProtocolMock(@protocol(TabGroupsCommands));
-    application_handler_ = OCMProtocolMock(@protocol(ApplicationCommands));
+    tab_groups_commands_handler_ =
+        OCMProtocolMock(@protocol(TabGroupsCommands));
     CommandDispatcher* dispatcher = browser_->GetCommandDispatcher();
-    [dispatcher startDispatchingToTarget:tab_groups_handler_
+    [dispatcher startDispatchingToTarget:tab_groups_commands_handler_
                              forProtocol:@protocol(TabGroupsCommands)];
-    [dispatcher startDispatchingToTarget:application_handler_
-                             forProtocol:@protocol(ApplicationCommands)];
 
     base_view_controller_ = [[UIViewController alloc] init];
 
@@ -123,7 +130,7 @@ class TabGroupCoordinatorTest : public PlatformTest {
         initWithBaseViewController:base_view_controller_
                            browser:browser_.get()
                           tabGroup:group];
-    mode_holder_ = [[TabGridModeHolder alloc] init];
+    mode_holder_ = [[TabGridModeHolder alloc] initWithTabGridState:nil];
     coordinator_.modeHolder = mode_holder_;
   }
 
@@ -134,12 +141,12 @@ class TabGroupCoordinatorTest : public PlatformTest {
 
   // Needed for test profile created by TestBrowser().
   web::WebTaskEnvironment task_environment_;
+  IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   base::test::ScopedFeatureList feature_list_;
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<tab_groups::FakeTabGroupSyncService> tab_group_sync_service_;
   std::unique_ptr<TestBrowser> browser_;
-  id<TabGroupsCommands> tab_groups_handler_;
-  id<ApplicationCommands> application_handler_;
+  id<TabGroupsCommands> tab_groups_commands_handler_;
   UIViewController* base_view_controller_;
   TabGridModeHolder* mode_holder_;
   TabGroupCoordinator* coordinator_;
@@ -153,9 +160,7 @@ class TabGroupCoordinatorWithSharedTabGroupsJoinOnlyTest
   TabGroupCoordinatorWithSharedTabGroupsJoinOnlyTest() {
     feature_list_.Reset();
     feature_list_.InitWithFeatures(
-        {kTabGroupsIPad, kModernTabStrip, kTabGroupSync,
-         data_sharing::features::kDataSharingJoinOnly},
-        {});
+        {data_sharing::features::kDataSharingJoinOnly}, {});
   }
 };
 
@@ -167,18 +172,12 @@ class TabGroupCoordinatorWithSharedTabGroupsTest
   TabGroupCoordinatorWithSharedTabGroupsTest() {
     feature_list_.Reset();
     feature_list_.InitWithFeatures(
-        {kTabGroupsIPad, kModernTabStrip, kTabGroupSync,
-         data_sharing::features::kDataSharingFeature},
-        {});
+        {data_sharing::features::kDataSharingFeature}, {});
   }
 };
 
 // Checks that the coordinator and its view controller are created upon start.
 TEST_F(TabGroupCoordinatorTest, Started) {
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   [coordinator_ start];
 
   EXPECT_NE(coordinator_, nil);
@@ -187,10 +186,6 @@ TEST_F(TabGroupCoordinatorTest, Started) {
 
 // Checks that the coordinator and its view controller are created upon start.
 TEST_F(TabGroupCoordinatorWithSharedTabGroupsJoinOnlyTest, Started) {
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   [coordinator_ start];
 
   EXPECT_NE(coordinator_, nil);
@@ -199,10 +194,6 @@ TEST_F(TabGroupCoordinatorWithSharedTabGroupsJoinOnlyTest, Started) {
 
 // Checks that the coordinator and its view controller are created upon start.
 TEST_F(TabGroupCoordinatorWithSharedTabGroupsTest, Started) {
-  if (!IsTabGroupInGridEnabled()) {
-    // Disabled on iPadOS 16.
-    return;
-  }
   [coordinator_ start];
 
   EXPECT_NE(coordinator_, nil);

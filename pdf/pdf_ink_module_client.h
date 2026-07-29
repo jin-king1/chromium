@@ -5,14 +5,22 @@
 #ifndef PDF_PDF_INK_MODULE_CLIENT_H_
 #define PDF_PDF_INK_MODULE_CLIENT_H_
 
-#include <map>
+#include <stdint.h>
 
+#include <map>
+#include <vector>
+
+#include "base/containers/span.h"
 #include "pdf/buildflags.h"
 #include "pdf/page_orientation.h"
 #include "pdf/pdf_ink_ids.h"
+#include "pdf/pdf_ink_text.h"
+#include "pdf/pdf_rect.h"
 #include "pdf/ui/thumbnail.h"
 #include "third_party/ink/src/ink/geometry/partitioned_mesh.h"
+#include "ui/base/cursor/cursor.h"
 #include "ui/gfx/geometry/rect.h"
+#include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/geometry/vector2d.h"
 
 static_assert(BUILDFLAG(ENABLE_PDF_INK2), "ENABLE_PDF_INK2 not set to true");
@@ -31,6 +39,8 @@ class Cursor;
 
 namespace chrome_pdf {
 
+class PdfCaret;
+
 class PdfInkModuleClient {
  public:
   // Key: ID to identify a shape.
@@ -42,11 +52,46 @@ class PdfInkModuleClient {
   // Value: Map of shapes on the page.
   using DocumentV2InkPathShapesMap = std::map<int, PageV2InkPathShapesMap>;
 
+  // Key: 0-based page index.
+  // Value: Selections on the page, in PDF coordinates.
+  using SelectionRectMap = std::map<int, std::vector<PdfRect>>;
+
   virtual ~PdfInkModuleClient() = default;
+
+  // Tells the client about a new font. The data is a serialized SkTypeface.
+  virtual void AddFont(FontId font_id,
+                       const std::string& font_name,
+                       base::span<const uint8_t> serialized_typeface) {}
+
+  // Notifies the client to clear the current text selection.
+  virtual void ClearSelection() {}
+
+  // Notifies the client to draw `text_info` with `attributes` into the page
+  // at `page_index`, identified as `id`.
+  virtual void DrawText(int page_index,
+                        InkTextId id,
+                        base::span<const InkTextInfo> text_info,
+                        float ascent,
+                        double pdf_zoom,
+                        const InkTextBoxAttributes& attributes) {}
 
   // Asks the client to discard the stroke identified by `id` on the page at
   // `page_index`.
   virtual void DiscardStroke(int page_index, InkStrokeId id) {}
+
+  // Asks the client to discard the text identified by `id`.
+  virtual void DiscardText(InkTextId id) {}
+
+  // Extends the current text selection to the nearest page and character to
+  // `point`. `point` must be in device coordinates.
+  virtual void ExtendSelectionByPoint(const gfx::PointF& point) {}
+
+  // Returns the transform required to convert canonical coordinates to PDF
+  // coordinates.
+  virtual gfx::Transform GetCanonicalToPdfTransform(int page_index) = 0;
+
+  // Returns the current cursor.
+  virtual ui::Cursor GetCursor() = 0;
 
   // Gets the current page orientation.
   virtual PageOrientation GetOrientation() const = 0;
@@ -59,6 +104,13 @@ class PdfInkModuleClient {
   // Gets the page size in points for `page_index`.  Must be non-empty for any
   // non-negative page index returned from `VisiblePageIndexFromPoint()`.
   virtual gfx::SizeF GetPageSizeInPoints(int page_index) = 0;
+
+  // Returns the PDF caret instance, otherwise returns nullptr if it does not
+  // exist.
+  virtual PdfCaret* GetPdfCaret() = 0;
+
+  // Returns all current text selection rects in PDF coordinates.
+  virtual SelectionRectMap GetSelectionRectMap() = 0;
 
   // Gets the thumbnail size for `page_index`. The size must be non-empty for
   // any valid page index.
@@ -82,14 +134,33 @@ class PdfInkModuleClient {
   // Returns whether the page at `page_index` is visible or not.
   virtual bool IsPageVisible(int page_index) = 0;
 
+  // Returns whether `point` is within a selectable text area or a link area.
+  // `point` must be in device coordinates.
+  virtual bool IsSelectableTextOrLinkArea(const gfx::PointF& point) = 0;
+
+  // Returns the saved text annotations across the document.
+  virtual DocumentInkTextBoxesMap LoadTextAnnotationsFromPdf() = 0;
+
   // Asks the client to load Ink data from the PDF.
   virtual DocumentV2InkPathShapesMap LoadV2InkPathsFromPdf() = 0;
 
   // Notifies the client whether annotation mode is enabled or not.
   virtual void OnAnnotationModeToggled(bool enable) {}
 
+  // Notifies the client that a text area was clicked at `point` `click_count`
+  // times during Ink annotation mode. It is the client's responsibility to
+  // handle text selection, copying behavior from Blink. Two click counts should
+  // select the word at `point`, while three click counts should select the
+  // entire line at `point`. `point` must be in device coordinates.
+  virtual void OnTextOrLinkAreaClick(const gfx::PointF& point,
+                                     int click_count) {}
+
+  // Returns the 0-based page index for the given `point`. `point` must be on a
+  // page, otherwise returns -1. `point` must be in device coordinates.
+  virtual int PageIndexFromPoint(const gfx::PointF& point) = 0;
+
   // Asks the client to post `message`.
-  virtual void PostMessage(base::Value::Dict message) {}
+  virtual void PostMessage(base::DictValue message) {}
 
   // Asks the client to update the page thumbnail for `page_index`. Note that
   // this is the regular page thumbnail, and not the thumbnail with the Ink
@@ -104,8 +175,12 @@ class PdfInkModuleClient {
                            InkStrokeId id,
                            const ink::Stroke& stroke) {}
 
-  // Notifies the client that a stroke has finished drawing or erasing.
-  virtual void StrokeFinished() {}
+  // Notifies the client that stroking has finished. `modified` indicates
+  // whether strokes got added or erased.
+  virtual void StrokeFinished(bool modified) {}
+
+  // Notifies the client that a stroke has started drawing or erasing.
+  virtual void StrokeStarted() {}
 
   // Asks the client to change the cursor to `cursor`.
   virtual void UpdateInkCursor(const ui::Cursor& cursor) {}
@@ -121,8 +196,13 @@ class PdfInkModuleClient {
   virtual void UpdateStrokeActive(int page_index, InkStrokeId id, bool active) {
   }
 
-  // Returns the 0-based page index for the given `point` if it is on a
-  // visible page, or -1 if `point` is not on a visible page.
+  // Notifies that an existing text annotation identified by `id` should update
+  // its active state and then invalidate the rect that corresponds to the union
+  // of all text in the text annotation.
+  virtual void UpdateTextActiveAndInvalidate(TextId id, bool active) {}
+
+  // Same as `PageIndexFromPoint()`, but `point` must be on a visible page,
+  // otherwise returns -1.
   virtual int VisiblePageIndexFromPoint(const gfx::PointF& point) = 0;
 };
 

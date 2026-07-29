@@ -32,6 +32,7 @@
 #include "base/containers/span.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/to_string.h"
+#include "base/task/single_thread_task_runner.h"
 #include "encrypted_media_utils.h"
 #include "media/base/content_decryption_module.h"
 #include "media/base/eme_constants.h"
@@ -83,16 +84,18 @@ static bool IsValidSessionId(const String& session_id) {
       (session_id.length() > MaxSessionIdLength))
     return false;
 
-  if (!session_id.ContainsOnlyASCIIOrEmpty())
+  if (!session_id.ContainsOnlyAsciiOrEmpty()) {
     return false;
+  }
 
   // Check that |sanitized_session_id| only contains printable characters for
   // easier logging. Note that checking alphanumeric is too strict because there
   // are key systems using Base64 session IDs (which may include spaces). See
   // https://crbug.com/902828.
   for (unsigned i = 0; i < session_id.length(); ++i) {
-    if (!IsASCIIPrintable(session_id[i]))
+    if (!IsAsciiPrintable(session_id[i])) {
       return false;
+    }
   }
 
   return true;
@@ -539,12 +542,18 @@ ScriptPromise<IDLUndefined> MediaKeySession::generateRequest(
   media::EmeInitDataType init_data_type =
       EncryptedMediaUtils::ConvertToInitDataType(init_data_type_string);
   if (init_data_type == media::EmeInitDataType::UNKNOWN) {
-    exception_state.ThrowDOMException(DOMExceptionCode::kNotSupportedError,
-                                      "The initialization data type '" +
-                                          init_data_type_string +
-                                          "' is not supported.");
+    exception_state.ThrowDOMException(
+        DOMExceptionCode::kNotSupportedError,
+        StrCat({"The initialization data type '", init_data_type_string,
+                "' is not supported."}));
     return EmptyPromise();
   }
+
+  // Log the usage of generateRequest().
+  EncryptedMediaUtils::ReportUsage(EmeApiType::kGenerateRequest,
+                                   GetExecutionContext(), config_.key_system,
+                                   config_.use_hardware_secure_codecs,
+                                   IsPersistentSessionType(session_type_));
 
   // 7. Let init data be a copy of the contents of the initData parameter.
   DOMArrayBuffer* init_data_buffer =
@@ -577,9 +586,8 @@ void MediaKeySession::GenerateRequestTask(ContentDecryptionModuleResult* result,
   DVLOG(MEDIA_KEY_SESSION_LOG_LEVEL) << __func__ << "(" << this << ")";
 
   // initializeNewSession() in Chromium will execute steps 10.1 to 10.9.
-  session_->InitializeNewSession(
-      init_data_type, static_cast<unsigned char*>(init_data_buffer->Data()),
-      init_data_buffer->ByteLength(), result->Result());
+  session_->InitializeNewSession(init_data_type, init_data_buffer->ByteSpan(),
+                                 result->Result());
 
   // Remaining steps (10.10) executed in finishGenerateRequest(),
   // called when |result| is resolved.
@@ -811,8 +819,7 @@ void MediaKeySession::UpdateTask(ContentDecryptionModuleResult* result,
   DVLOG(MEDIA_KEY_SESSION_LOG_LEVEL) << __func__ << "(" << this << ")";
 
   // update() in Chromium will execute steps 6.1 through 6.8.
-  session_->Update(static_cast<unsigned char*>(sanitized_response->Data()),
-                   sanitized_response->ByteLength(), result->Result());
+  session_->Update(sanitized_response->ByteSpan(), result->Result());
 
   // Last step (6.8.2 Resolve promise) will be done when |result| is resolved.
 }
@@ -962,8 +969,7 @@ void MediaKeySession::ActionTimerFired(TimerBase*) {
 
 // Queue a task to fire a simple event named keymessage at the new object.
 void MediaKeySession::OnSessionMessage(media::CdmMessageType message_type,
-                                       const unsigned char* message,
-                                       size_t message_length) {
+                                       base::span<const uint8_t> message) {
   DVLOG(MEDIA_KEY_SESSION_LOG_LEVEL) << __func__ << "(" << this << ")";
 
   // Verify that 'message' not fired before session initialization is complete.
@@ -980,20 +986,20 @@ void MediaKeySession::OnSessionMessage(media::CdmMessageType message_type,
   MediaKeyMessageEventInit* init = MediaKeyMessageEventInit::Create();
   switch (message_type) {
     case media::CdmMessageType::LICENSE_REQUEST:
-      init->setMessageType("license-request");
+      init->setMessageType(V8MediaKeyMessageType::Enum::kLicenseRequest);
       break;
     case media::CdmMessageType::LICENSE_RENEWAL:
-      init->setMessageType("license-renewal");
+      init->setMessageType(V8MediaKeyMessageType::Enum::kLicenseRenewal);
       break;
     case media::CdmMessageType::LICENSE_RELEASE:
-      init->setMessageType("license-release");
+      init->setMessageType(V8MediaKeyMessageType::Enum::kLicenseRelease);
       break;
     case media::CdmMessageType::INDIVIDUALIZATION_REQUEST:
-      init->setMessageType("individualization-request");
+      init->setMessageType(
+          V8MediaKeyMessageType::Enum::kIndividualizationRequest);
       break;
   }
-  init->setMessage(
-      DOMArrayBuffer::Create(UNSAFE_TODO(base::span(message, message_length))));
+  init->setMessage(DOMArrayBuffer::Create(message));
 
   MediaKeyMessageEvent* event =
       MediaKeyMessageEvent::Create(event_type_names::kMessage, init);

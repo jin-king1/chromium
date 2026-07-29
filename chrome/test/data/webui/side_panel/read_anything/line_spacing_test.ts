@@ -4,56 +4,105 @@
 
 import 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
 
-import {flush} from '//resources/polymer/v3_0/polymer/polymer_bundled.min.js';
-import {MetricsBrowserProxyImpl, ReadAnythingLogger, ReadAnythingSettingsChange, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import type {LineSpacingMenu} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
-import {assertEquals} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {DEFAULT_SETTINGS, ReadAnythingSettingsChange, ToolbarEvent} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import type {LineSpacingMenuElement} from 'chrome-untrusted://read-anything-side-panel.top-chrome/read_anything.js';
+import {assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome-untrusted://webui-test/chai_assert.js';
+import {eventToPromise, microtasksFinished} from 'chrome-untrusted://webui-test/test_util.js';
 
-import {emitEventForPolymer} from './common.js';
+import {assertCheckMarksForDropdown, assertTestSettingsAreNotDefaultSettings, mockMetrics, stubAnimationFrame, TEST_RANDOM_VALUE_SETTINGS} from './common.js';
 import {FakeReadingMode} from './fake_reading_mode.js';
-import {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
+import type {TestMetricsBrowserProxy} from './test_metrics_browser_proxy.js';
 
 suite('LineSpacing', () => {
-  let lineSpacingMenu: LineSpacingMenu;
+  let lineSpacingMenu: LineSpacingMenuElement;
   let metrics: TestMetricsBrowserProxy;
+
+  suiteSetup(() => {
+    assertTestSettingsAreNotDefaultSettings();
+  });
 
   setup(() => {
     // Clearing the DOM should always be done first.
     document.body.innerHTML = window.trustedTypes!.emptyHTML;
     const readingMode = new FakeReadingMode();
     chrome.readingMode = readingMode as unknown as typeof chrome.readingMode;
-
-    metrics = new TestMetricsBrowserProxy();
-    MetricsBrowserProxyImpl.setInstance(metrics);
-    ReadAnythingLogger.setInstance(new ReadAnythingLogger());
+    metrics = mockMetrics();
 
     lineSpacingMenu = document.createElement('line-spacing-menu');
     document.body.appendChild(lineSpacingMenu);
-    flush();
   });
+
+  test('has checkmarks', () => {
+    assertCheckMarksForDropdown(lineSpacingMenu);
+  });
+
+
 
   test('spacing change', async () => {
     const veryLoose = chrome.readingMode.veryLooseLineSpacing;
-    emitEventForPolymer(
-        lineSpacingMenu.$.menu, ToolbarEvent.LINE_SPACING,
-        {detail: {data: veryLoose}});
+    const numberOfItems = 3;
+
+    const closePromise1 =
+        eventToPromise(ToolbarEvent.CLOSE_ALL_MENUS, document);
+    lineSpacingMenu.$.menu.dispatchEvent(new CustomEvent(
+        ToolbarEvent.LINE_SPACING, {detail: {data: veryLoose}}));
+    await closePromise1;
     assertEquals(veryLoose, chrome.readingMode.lineSpacing);
 
     const loose = chrome.readingMode.looseLineSpacing;
-    emitEventForPolymer(
-        lineSpacingMenu.$.menu, ToolbarEvent.LINE_SPACING,
-        {detail: {data: loose}});
+    const closePromise2 =
+        eventToPromise(ToolbarEvent.CLOSE_ALL_MENUS, document);
+    lineSpacingMenu.$.menu.dispatchEvent(
+        new CustomEvent(ToolbarEvent.LINE_SPACING, {detail: {data: loose}}));
+    await closePromise2;
     assertEquals(loose, chrome.readingMode.lineSpacing);
 
     const standard = chrome.readingMode.standardLineSpacing;
-    emitEventForPolymer(
-        lineSpacingMenu.$.menu, ToolbarEvent.LINE_SPACING,
-        {detail: {data: standard}});
+    const closePromise3 =
+        eventToPromise(ToolbarEvent.CLOSE_ALL_MENUS, document);
+    lineSpacingMenu.$.menu.dispatchEvent(
+        new CustomEvent(ToolbarEvent.LINE_SPACING, {detail: {data: standard}}));
+    await closePromise3;
     assertEquals(standard, chrome.readingMode.lineSpacing);
 
     assertEquals(
         ReadAnythingSettingsChange.LINE_HEIGHT_CHANGE,
         await metrics.whenCalled('recordTextSettingsChange'));
-    assertEquals(3, metrics.getCallCount('recordTextSettingsChange'));
+    assertEquals(
+        numberOfItems, metrics.getCallCount('recordTextSettingsChange'));
+  });
+
+  test('restores saved spacing option', async () => {
+    const spacing = chrome.readingMode.veryLooseLineSpacing;
+    const startingIndex = lineSpacingMenu.$.menu.currentSelectedIndex;
+    assertNotEquals(spacing, startingIndex);
+
+    lineSpacingMenu.settingsPrefs = {
+      ...DEFAULT_SETTINGS,
+      lineSpacing: spacing,
+    };
+    await microtasksFinished();
+
+    assertNotEquals(startingIndex, lineSpacingMenu.$.menu.currentSelectedIndex);
+  });
+
+  test('does nothing if saved spacing is the same', async () => {
+    const startingIndex = lineSpacingMenu.$.menu.currentSelectedIndex;
+
+    lineSpacingMenu.settingsPrefs = {
+      ...TEST_RANDOM_VALUE_SETTINGS,
+      lineSpacing: 0,
+    };
+    await microtasksFinished();
+
+    assertEquals(startingIndex, lineSpacingMenu.$.menu.currentSelectedIndex);
+  });
+
+  test('can be closed programatically', () => {
+    stubAnimationFrame();
+    lineSpacingMenu.open(document.body);
+    assertTrue(lineSpacingMenu.$.menu.$.lazyMenu.get().open);
+    lineSpacingMenu.close();
+    assertFalse(lineSpacingMenu.$.menu.$.lazyMenu.get().open);
   });
 });

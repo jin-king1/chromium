@@ -57,12 +57,12 @@ class UrlLoaderNetworkServiceObserver
       const scoped_refptr<net::HttpResponseHeaders>& head_headers,
       mojo::PendingRemote<network::mojom::AuthChallengeResponder>
           auth_challenge_responder) override;
-  void OnPrivateNetworkAccessPermissionRequired(
-      const GURL& url,
-      const net::IPAddress& ip_address,
-      const std::optional<std::string>& private_network_device_id,
-      const std::optional<std::string>& private_network_device_name,
-      OnPrivateNetworkAccessPermissionRequiredCallback callback) override;
+  void OnLocalNetworkAccessPermissionRequired(
+      network::mojom::TransportType type,
+      network::mojom::IPAddressSpace ip_address_space,
+      OnLocalNetworkAccessPermissionRequiredCallback callback) override;
+  void OnPlatformLocalNetworkPermissionRequired(
+      OnPlatformLocalNetworkPermissionRequiredCallback callback) override;
   void OnClearSiteData(
       const GURL& url,
       const std::string& header_value,
@@ -73,20 +73,15 @@ class UrlLoaderNetworkServiceObserver
   void OnLoadingStateUpdate(network::mojom::LoadInfoPtr info,
                             OnLoadingStateUpdateCallback callback) override;
   void OnDataUseUpdate(int32_t network_traffic_annotation_id_hash,
-                       int64_t recv_bytes,
-                       int64_t sent_bytes) override;
-  void OnSharedStorageHeaderReceived(
-      const url::Origin& request_origin,
-      std::vector<network::mojom::SharedStorageModifierMethodWithOptionsPtr>
-          methods_with_options,
-      const std::optional<std::string>& with_lock,
-      OnSharedStorageHeaderReceivedCallback callback) override;
+                       base::ByteSize recv_bytes,
+                       base::ByteSize sent_bytes) override;
   void Clone(
       mojo::PendingReceiver<network::mojom::URLLoaderNetworkServiceObserver>
           listener) override;
-  void OnWebSocketConnectedToPrivateNetwork(
+  void OnWebSocketConnectedToLocalNetwork(
+      const GURL& request_url,
       network::mojom::IPAddressSpace ip_address_space) override;
-  void OnUrlLoaderConnectedToPrivateNetwork(
+  void OnUrlLoaderConnectedToLocalNetwork(
       const GURL& request_url,
       network::mojom::IPAddressSpace response_address_space,
       network::mojom::IPAddressSpace client_address_space,

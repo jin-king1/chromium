@@ -48,7 +48,7 @@
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/wtf/text/character_visitor.h"
 #include "third_party/blink/renderer/platform/wtf/text/parsing_utilities.h"
-#include "third_party/blink/renderer/platform/wtf/text/string_builder.h"
+#include "third_party/blink/renderer/platform/wtf/text/strcat.h"
 #include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 
 namespace blink {
@@ -74,37 +74,35 @@ struct DescriptorToken {
   unsigned LastIndex() { return start + length - 1; }
 
   template <typename CharType>
-  int ToInt(base::span<const CharType> attribute, bool& is_valid) {
+  std::optional<int> ToInt(base::span<const CharType> attribute) const {
     unsigned position = 0;
     // Make sure the integer is a valid non-negative integer
     // https://html.spec.whatwg.org/C/#valid-non-negative-integer
     unsigned length_excluding_descriptor = length - 1;
     while (position < length_excluding_descriptor) {
-      if (!IsASCIIDigit(attribute[start + position])) {
-        is_valid = false;
-        return 0;
+      if (!IsAsciiDigit(attribute[start + position])) {
+        return std::nullopt;
       }
       ++position;
     }
     return CharactersToInt(
         attribute.subspan(start, length_excluding_descriptor),
-        WTF::NumberParsingOptions(), &is_valid);
+        NumberParsingOptions());
   }
 
   template <typename CharType>
-  float ToFloat(base::span<const CharType> attribute, bool& is_valid) {
+  std::optional<float> ToFloat(base::span<const CharType> attribute) const {
     // Make sure the is a valid floating point number
     // https://html.spec.whatwg.org/C/#valid-floating-point-number
     unsigned length_excluding_descriptor = length - 1;
     if (length_excluding_descriptor > 0 && attribute[start] == '+') {
-      is_valid = false;
-      return 0;
+      return std::nullopt;
     }
     Decimal result = ParseToDecimalForNumberType(
         String(attribute.subspan(start, length_excluding_descriptor)));
-    is_valid = result.IsFinite();
-    if (!is_valid)
-      return 0;
+    if (!result.IsFinite()) {
+      return std::nullopt;
+    }
     return static_cast<float>(result.ToDouble());
   }
 };
@@ -203,13 +201,12 @@ static void TokenizeDescriptors(base::span<const CharType> attribute_span,
 
 static void SrcsetError(Document* document, String message) {
   if (document && document->GetFrame()) {
-    StringBuilder warning_message;
-    warning_message.Append("Failed parsing 'srcset' attribute value since ");
-    warning_message.Append(message);
     document->GetFrame()->Console().AddMessage(
         MakeGarbageCollected<ConsoleMessage>(
             mojom::ConsoleMessageSource::kOther,
-            mojom::ConsoleMessageLevel::kWarning, warning_message.ToString()));
+            mojom::ConsoleMessageLevel::kWarning,
+            StrCat(
+                {"Failed parsing 'srcset' attribute value since ", message})));
   }
 }
 
@@ -222,7 +219,6 @@ static bool ParseDescriptors(base::span<const CharType> attribute,
     if (descriptor.length == 0)
       continue;
     CharType c = attribute[descriptor.LastIndex()];
-    bool is_valid = false;
     if (c == 'w') {
       if (result.HasDensity() || result.HasWidth()) {
         SrcsetError(document,
@@ -230,12 +226,12 @@ static bool ParseDescriptors(base::span<const CharType> attribute,
                     "descriptors.");
         return false;
       }
-      int resource_width = descriptor.ToInt(attribute, is_valid);
-      if (!is_valid || resource_width <= 0) {
+      std::optional<int> resource_width = descriptor.ToInt(attribute);
+      if (resource_width <= 0) {
         SrcsetError(document, "its 'w' descriptor is invalid.");
         return false;
       }
-      result.SetResourceWidth(resource_width);
+      result.SetResourceWidth(*resource_width);
     } else if (c == 'h') {
       // This is here only for future compat purposes. The value of the 'h'
       // descriptor is not used.
@@ -245,12 +241,12 @@ static bool ParseDescriptors(base::span<const CharType> attribute,
                     "descriptors.");
         return false;
       }
-      int resource_height = descriptor.ToInt(attribute, is_valid);
-      if (!is_valid || resource_height <= 0) {
+      std::optional<int> resource_height = descriptor.ToInt(attribute);
+      if (resource_height <= 0) {
         SrcsetError(document, "its 'h' descriptor is invalid.");
         return false;
       }
-      result.SetResourceHeight(resource_height);
+      result.SetResourceHeight(*resource_height);
     } else if (c == 'x') {
       if (result.HasDensity() || result.HasHeight() || result.HasWidth()) {
         SrcsetError(document,
@@ -258,12 +254,12 @@ static bool ParseDescriptors(base::span<const CharType> attribute,
                     "'w'/'h' descriptors.");
         return false;
       }
-      float density = descriptor.ToFloat(attribute, is_valid);
-      if (!is_valid || density < 0) {
+      std::optional<float> density = descriptor.ToFloat(attribute);
+      if (density < 0) {
         SrcsetError(document, "its 'x' descriptor is invalid.");
         return false;
       }
-      result.SetDensity(density);
+      result.SetDensity(*density);
     } else {
       SrcsetError(document, "it has an unknown descriptor.");
       return false;
@@ -280,7 +276,7 @@ static bool ParseDescriptors(const String& attribute,
                              DescriptorParsingResult& result,
                              Document* document) {
   // FIXME: See if StringView can't be extended to replace DescriptorToken here.
-  return WTF::VisitCharacters(attribute, [&](auto chars) {
+  return VisitCharacters(attribute, [&](auto chars) {
     return ParseDescriptors(chars, descriptors, result, document);
   });
 }
@@ -341,10 +337,11 @@ static void ParseImageCandidatesFromSrcsetAttribute(
                 MakeGarbageCollected<ConsoleMessage>(
                     mojom::ConsoleMessageSource::kOther,
                     mojom::ConsoleMessageLevel::kWarning,
-                    String("Dropped srcset candidate ") +
-                        JSONValue::QuoteString(String(attribute_span.subspan(
-                            image_url_start,
-                            image_url_end - image_url_start)))));
+                    StrCat({"Dropped srcset candidate ",
+                            JSONValue::QuoteString(attribute.subview(
+                                static_cast<wtf_size_t>(image_url_start),
+                                static_cast<wtf_size_t>(image_url_end -
+                                                        image_url_start)))})));
           }
         }
         continue;
@@ -422,7 +419,7 @@ static unsigned AvoidDownloadIfHigherDensityResourceIsInCache(
     return winner;
   for (unsigned i = image_candidates.size() - 1; i > winner; --i) {
     KURL url = document->CompleteURL(
-        StripLeadingAndTrailingHTMLSpaces(image_candidates[i]->Url()));
+        StripLeadingAndTrailingHtmlSpaces(image_candidates[i]->Url()));
     auto* resource = MemoryCache::Get()->ResourceForURL(
         url,
         document->Fetcher()->GetCacheIdentifier(url,

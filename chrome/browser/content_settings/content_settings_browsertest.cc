@@ -4,6 +4,8 @@
 
 #include "components/content_settings/core/common/content_settings.h"
 
+#include <variant>
+
 #include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/path_service.h"
@@ -18,12 +20,12 @@
 #include "chrome/browser/content_settings/cookie_settings_factory.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/plugins/chrome_plugin_service_filter.h"
+#include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/view_ids.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/test_launcher_utils.h"
@@ -34,7 +36,6 @@
 #include "components/content_settings/core/browser/cookie_settings.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/pref_names.h"
-#include "components/nacl/common/buildflags.h"
 #include "components/prefs/pref_service.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
@@ -46,6 +47,7 @@
 #include "content/public/browser/spare_render_process_host_manager.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/buildflags.h"
 #include "content/public/common/content_constants.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_paths.h"
@@ -54,7 +56,6 @@
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/commit_message_delayer.h"
 #include "content/public/test/fenced_frame_test_util.h"
-#include "content/public/test/ppapi_test_utils.h"
 #include "content/public/test/prerender_test_util.h"
 #include "content/public/test/test_frame_navigation_observer.h"
 #include "content/public/test/test_utils.h"
@@ -66,7 +67,6 @@
 #include "net/test/embedded_test_server/http_response.h"
 #include "net/test/url_request/url_request_mock_http_job.h"
 #include "pdf/buildflags.h"
-#include "ppapi/buildflags/buildflags.h"
 #include "services/network/public/cpp/features.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -111,7 +111,7 @@ net::CookieList ExtractCookiesFromModel(BrowsingDataModel* model) {
   net::CookieList result;
   for (const auto& [owner, key, details] : *model) {
     if (const net::CanonicalCookie* cookie =
-            absl::get_if<net::CanonicalCookie>(&key.get())) {
+            std::get_if<net::CanonicalCookie>(&key.get())) {
       result.push_back(*cookie);
     }
   }
@@ -161,6 +161,12 @@ class ContentSettingsTest : public InProcessBrowserTest {
   }
 
   net::EmbeddedTestServer https_server_{net::EmbeddedTestServer::TYPE_HTTPS};
+
+ private:
+  // TODO(https://crbug.com/423465927): Explore a better approach to make the
+  // existing tests run with the prewarm feature enabled.
+  test::ScopedPrewarmFeatureList scoped_prewarm_feature_list_{
+      test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
 };
 
 // Test the combination of different ways of accessing cookies --- JS, HTML,
@@ -279,8 +285,9 @@ class CookieSettingsTest
       cookies_seen_.clear();
     }
 
-    auto* network_context =
-        browser->profile()->GetDefaultStoragePartition()->GetNetworkContext();
+    auto* network_context = browser->GetProfile()
+                                ->GetDefaultStoragePartition()
+                                ->GetNetworkContext();
     content::LoadBasicRequest(network_context, url);
 
     {
@@ -399,7 +406,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BasicCookiesHttps) {
 // Verify that cookies are being blocked.
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest, PRE_BlockCookies) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
   WriteCookie(browser());
   ASSERT_TRUE(ReadCookie(browser()).empty());
@@ -409,7 +416,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest, PRE_BlockCookies) {
 // Ensure that the setting persists.
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BlockCookies) {
   ASSERT_EQ(CONTENT_SETTING_BLOCK,
-            CookieSettingsFactory::GetForProfile(browser()->profile())
+            CookieSettingsFactory::GetForProfile(browser()->GetProfile())
                 ->GetDefaultCookieSetting());
 }
 
@@ -418,7 +425,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BlockCookies) {
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest, AllowCookiesUsingExceptions) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   content::CookieChangeObserver observer1(
@@ -464,7 +471,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
                        DISABLED_BlockCookiesUsingExceptions) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(GetPageURL(), CONTENT_SETTING_BLOCK);
 
   WriteCookie(browser());
@@ -482,7 +489,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
   GURL unblocked_url = GetOtherServer()->GetURL("/cookie1.html");
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), unblocked_url));
-  ASSERT_FALSE(GetCookies(browser()->profile(), unblocked_url).empty());
+  ASSERT_FALSE(GetCookies(browser()->GetProfile(), unblocked_url).empty());
   net::CookieList accepted_cookies;
 
   EXPECT_EQ(GetModelCookieCount(blocked_model), 0u);
@@ -494,7 +501,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
 
 // Test that cookies that are considered "blocked" are excluded only due to the
 // content settings blocking (i.e. not for other reasons like domain or path not
-// matching). See https://crbug.com/1104451.
+// matching). See https://crbug.com/40139687.
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
                        BlockedCookiesOnlyExcludedDueToBlocking) {
   // This test only runs in HTTP mode, not with the full parameterized test
@@ -557,7 +564,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
   // Set content settings to block cookies for |cookies_blocked_url|.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), cookies_blocked_url));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(cookies_blocked_url, CONTENT_SETTING_BLOCK);
 
   // Verify all cookies are still present on |cookies_present_url|.
@@ -589,7 +596,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BlockCookiesAlsoBlocksCacheStorage) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(GetPageURL(), CONTENT_SETTING_BLOCK);
 
   const char kBaseExpected[] =
@@ -633,7 +640,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BlockCookiesAlsoBlocksCacheStorage) {
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BlockCookiesAlsoBlocksIndexedDB) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(GetPageURL(), CONTENT_SETTING_BLOCK);
 
   content::WebContents* tab =
@@ -680,7 +687,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
                        BlockCookiesAlsoBlocksIndexedDBPromiseBased) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(GetPageURL(), CONTENT_SETTING_BLOCK);
 
   content::WebContents* tab =
@@ -719,7 +726,7 @@ IN_PROC_BROWSER_TEST_P(CookieSettingsTest,
 IN_PROC_BROWSER_TEST_P(CookieSettingsTest, BlockCookiesAlsoBlocksFileSystem) {
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GetPageURL()));
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetCookieSetting(GetPageURL(), CONTENT_SETTING_BLOCK);
 
   const char kBaseExpected[] = "%s - %s";
@@ -789,15 +796,15 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest,
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL url = embedded_test_server()->GetURL("/setcookie.html");
   content_settings::CookieSettings* settings =
-      CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+      CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
   settings->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-  ASSERT_TRUE(GetCookies(browser()->profile(), url).empty());
+  ASSERT_TRUE(GetCookies(browser()->GetProfile(), url).empty());
 
   settings->SetCookieSetting(url, CONTENT_SETTING_SESSION_ONLY);
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
-  ASSERT_FALSE(GetCookies(browser()->profile(), url).empty());
+  ASSERT_FALSE(GetCookies(browser()->GetProfile(), url).empty());
 }
 
 IN_PROC_BROWSER_TEST_F(ContentSettingsTest,
@@ -805,18 +812,18 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest,
   ASSERT_TRUE(embedded_test_server()->Start());
   GURL url = embedded_test_server()->GetURL("/setcookie.html");
   // Cookies are shared between ports, so this will get cookies set in PRE.
-  ASSERT_TRUE(GetCookies(browser()->profile(), url).empty());
+  ASSERT_TRUE(GetCookies(browser()->GetProfile(), url).empty());
 }
 
 #endif  // !CHROME_OS
 
-// Regression test for http://crbug.com/63649.
+// Regression test for http://crbug.com/40480136.
 IN_PROC_BROWSER_TEST_F(ContentSettingsTest, RedirectLoopCookies) {
   ASSERT_TRUE(embedded_test_server()->Start());
 
   GURL test_url = embedded_test_server()->GetURL("/redirect-loop.html");
 
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   content::WebContents* web_contents =
@@ -842,7 +849,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest, CookiesIgnoredFor204) {
   GURL test_url =
       embedded_test_server()->GetURL("/server-redirect-with-cookie?/nocontent");
 
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   content::WebContents* web_contents =
@@ -880,7 +887,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsBackForwardCacheBrowserTest,
   GURL test_url = embedded_test_server()->GetURL("a.com", "/setcookie.html");
   GURL other_url = embedded_test_server()->GetURL("b.com", "/title1.html");
 
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   content::CookieChangeObserver observer(
@@ -922,7 +929,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsBackForwardCacheBrowserTest,
   content::WebContents* web_contents =
       browser()->tab_strip_model()->GetActiveWebContents();
 
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   content::CookieChangeObserver observer(
@@ -943,7 +950,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsBackForwardCacheBrowserTest,
 
   // This triggers a OnContentSettingChanged notification that should be
   // processed by the page in the cache.
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_ALLOW);
 
   web_contents->GetController().GoBack();
@@ -956,7 +963,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsBackForwardCacheBrowserTest,
 IN_PROC_BROWSER_TEST_F(ContentSettingsTest, ContentSettingsBlockDataURLs) {
   GURL url("data:text/html,<title>Data URL</title><script>alert(1)</script>");
 
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT,
                                  CONTENT_SETTING_BLOCK);
 
@@ -984,7 +991,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest, RedirectCrossOrigin) {
   GURL test_url =
       embedded_test_server()->GetURL("/server-redirect?" + redirect);
 
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
 
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), test_url));
@@ -1026,7 +1033,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest,
                        SpareRenderProcessHostRulesAreUpdated) {
   // Make sure a spare RenderProcessHost exists during the test.
   content::SpareRenderProcessHostManager::Get().WarmupSpare(
-      browser()->profile());
+      browser()->GetProfile());
 
   ASSERT_TRUE(embedded_test_server()->Start());
   // URL to a page that loads a cross-site iframe which creates another iframe
@@ -1037,7 +1044,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest,
 
   // Disable JavaScript. A warmed-up spare renderer should get ContentSettings
   // updates and disable JavaScript.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT,
                                  CONTENT_SETTING_BLOCK);
   // Navigate to the page.
@@ -1057,7 +1064,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest, NonMainFrameRulesAreUpdated) {
       "a.test", "/iframe_cross_site_with_script.html");
 
   // Disable JavaScript.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT,
                                  CONTENT_SETTING_BLOCK);
   // Navigate to the page.
@@ -1068,7 +1075,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest, NonMainFrameRulesAreUpdated) {
   EXPECT_EQ(GetRenderFrameHostCount(main_frame), 2u);
 
   // Enable JavaScript and load the same page.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT,
                                  CONTENT_SETTING_DEFAULT);
   main_frame = ui_test_utils::NavigateToURLWithDisposition(
@@ -1080,7 +1087,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsTest, NonMainFrameRulesAreUpdated) {
   EXPECT_EQ(GetRenderFrameHostCount(main_frame), 3u);
 
   // Disable JavaScript and reload the iframe which contains JavaScript.
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT,
                                  CONTENT_SETTING_BLOCK);
   content::RenderFrameHost* iframe_to_reload =
@@ -1316,7 +1323,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWorkerModulesBrowserTest, CookieStore) {
         browser()->tab_strip_model()->GetActiveWebContents());
     // Now set with cookies blocked.
     content_settings::CookieSettings* settings =
-        CookieSettingsFactory::GetForProfile(browser()->profile()).get();
+        CookieSettingsFactory::GetForProfile(browser()->GetProfile()).get();
     settings->SetDefaultCookieSetting(CONTENT_SETTING_BLOCK);
     content::EvalJsResult result4 =
         content::EvalJs(browser()->tab_strip_model()->GetActiveWebContents(),
@@ -1335,12 +1342,20 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWorkerModulesBrowserTest, CookieStore) {
   }
 }
 
-class ContentSettingsWithPrerenderingBrowserTest : public ContentSettingsTest {
+class ContentSettingsWithPrerenderingBrowserTest
+    : public ContentSettingsTest,
+      public ::testing::WithParamInterface<bool> {
  public:
   ContentSettingsWithPrerenderingBrowserTest()
       : prerender_test_helper_(base::BindRepeating(
             &ContentSettingsWithPrerenderingBrowserTest::GetWebContents,
-            base::Unretained(this))) {}
+            base::Unretained(this))) {
+    if (GetParam()) {
+      // nop. Use the default environment.
+    } else {
+      prerender_test_helper_.DisablePrerender2FallbackPrefetchSpecRules();
+    }
+  }
 
   void SetUp() override {
     prerender_test_helper().RegisterServerRequestMonitor(
@@ -1364,6 +1379,11 @@ class ContentSettingsWithPrerenderingBrowserTest : public ContentSettingsTest {
  private:
   content::test::PrerenderTestHelper prerender_test_helper_;
 };
+
+INSTANTIATE_TEST_SUITE_P(
+    /* no prefix */,
+    ContentSettingsWithPrerenderingBrowserTest,
+    ::testing::Bool());
 
 // Used to wait for non-primary pages to set a cookie (eg: prerendering pages or
 // fenced frames).
@@ -1408,8 +1428,17 @@ class NonPrimaryPageCookieAccessObserver : public content::WebContentsObserver {
   base::RunLoop run_loop_;
 };
 
-IN_PROC_BROWSER_TEST_F(ContentSettingsWithPrerenderingBrowserTest,
+IN_PROC_BROWSER_TEST_P(ContentSettingsWithPrerenderingBrowserTest,
                        PrerenderingPageSetsCookie) {
+  if (content::test::PrerenderTestHelper::
+          IsPrerender2FallbackPrefetchSpecRulesEnabled()) {
+    // `PageSpecificContentSettings` can't observe cookie events of navigation
+    // using prefetch. So, we need to disable prefetch ahead of prerender for
+    // SpeculationRules. For more details, see
+    // https://docs.google.com/document/d/1gYanzL8zrrulVdJds9IxoCwlNs0Xstc6bTuHVgrVGn4
+    GTEST_SKIP();
+  }
+
   const GURL main_url = embedded_test_server()->GetURL("/empty.html");
   const GURL prerender_url =
       embedded_test_server()->GetURL("/set_cookie_header.html");
@@ -1423,7 +1452,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWithPrerenderingBrowserTest,
   {
     NonPrimaryPageCookieAccessObserver cookie_observer(GetWebContents());
     prerender_test_helper().AddPrerender(prerender_url);
-    content::FrameTreeNodeId host_id =
+    content::PrerenderHostId host_id =
         prerender_test_helper().GetHostForUrl(prerender_url);
     content::RenderFrameHost* prerender_frame =
         prerender_test_helper().GetPrerenderedMainFrameHost(host_id);
@@ -1452,7 +1481,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWithPrerenderingBrowserTest,
   EXPECT_EQ(GetModelCookieCount(main_pscs->allowed_browsing_data_model()), 1u);
 }
 
-IN_PROC_BROWSER_TEST_F(ContentSettingsWithPrerenderingBrowserTest,
+IN_PROC_BROWSER_TEST_P(ContentSettingsWithPrerenderingBrowserTest,
                        PrerenderingPageIframeSetsCookie) {
   const GURL main_url = embedded_test_server()->GetURL("/empty.html");
   const GURL prerender_url = embedded_test_server()->GetURL("/title1.html");
@@ -1467,7 +1496,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWithPrerenderingBrowserTest,
   ASSERT_FALSE(main_pscs->IsContentAllowed(ContentSettingsType::COOKIES));
 
   prerender_test_helper().AddPrerender(prerender_url);
-  content::FrameTreeNodeId host_id =
+  content::PrerenderHostId host_id =
       prerender_test_helper().GetHostForUrl(prerender_url);
   content::RenderFrameHost* prerender_frame =
       prerender_test_helper().GetPrerenderedMainFrameHost(host_id);
@@ -1593,7 +1622,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWithFencedFrameBrowserTest,
   //
   // Block script in b.test.
   auto* map =
-      HostContentSettingsMapFactory::GetForProfile(browser()->profile());
+      HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile());
   map->SetContentSettingCustomScope(
       ContentSettingsPattern::FromURL(fenced_frame_url),
       ContentSettingsPattern::Wildcard(),
@@ -1635,7 +1664,7 @@ IN_PROC_BROWSER_TEST_F(ContentSettingsWithFencedFrameBrowserTest,
   EXPECT_EQ(GetModelCookieCount(main_pscs->allowed_browsing_data_model()), 1u);
   EXPECT_EQ(GetModelCookieCount(ff_pscs->allowed_browsing_data_model()), 1u);
 
-  CookieSettingsFactory::GetForProfile(browser()->profile())
+  CookieSettingsFactory::GetForProfile(browser()->GetProfile())
       ->SetCookieSetting((*fenced_frame)->GetLastCommittedURL(),
                          CONTENT_SETTING_BLOCK);
   {
@@ -1687,7 +1716,7 @@ class ContentSettingsPdfTest : public PDFExtensionTestBase {
 
 // Test that only PDF frames are allowed to use JavaScript.
 IN_PROC_BROWSER_TEST_F(ContentSettingsPdfTest, JavaScriptAllowedForPdfFrames) {
-  HostContentSettingsMapFactory::GetForProfile(browser()->profile())
+  HostContentSettingsMapFactory::GetForProfile(browser()->GetProfile())
       ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT,
                                  CONTENT_SETTING_BLOCK);
 

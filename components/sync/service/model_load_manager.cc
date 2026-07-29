@@ -13,11 +13,11 @@
 #include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/not_fatal_until.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/base/features.h"
 #include "components/sync/base/sync_stop_metadata_fate.h"
+#include "components/sync/model/model_error.h"
 #include "components/sync/service/data_type_controller.h"
 #include "components/sync/service/sync_error.h"
 
@@ -108,7 +108,8 @@ void ModelLoadManager::Configure(DataTypeSet preferred_types_without_errors,
         SyncStopMetadataFate metadata_fate =
             SyncStopMetadataFate::KEEP_METADATA;
         if (!preferred_types.Has(dtc->type()) ||
-            dtc->GetPreconditionState() ==
+            dtc->GetPreconditionState(DataTypeController::PreconditionContext(
+                configure_context_->account_managed_status)) ==
                 DataTypeController::PreconditionState::kMustStopAndClearData) {
           metadata_fate = SyncStopMetadataFate::CLEAR_METADATA;
         }
@@ -160,16 +161,21 @@ void ModelLoadManager::StopDatatypeImpl(
 }
 
 void ModelLoadManager::LoadDesiredTypes() {
+  // Invalidate any previously-registered LoadModelsForType() callbacks (e.g.
+  // from a previous Configure() call) to avoid calling LoadModelsForType()
+  // multiple times for the same type.
+  load_models_weak_ptr_factory_.InvalidateWeakPtrs();
+
   // Note: `preferred_types_without_errors_` might be modified during iteration
   // (e.g. in ModelLoadCallback()), so make a copy.
   const DataTypeSet types = preferred_types_without_errors_;
 
   // Start timer to measure time for loading to complete.
-  load_models_elapsed_timer_ = std::make_unique<base::ElapsedTimer>();
+  load_models_elapsed_timer_.emplace();
 
   for (DataType type : types) {
     auto dtc_iter = controllers_->find(type);
-    CHECK(dtc_iter != controllers_->end(), base::NotFatalUntil::M130);
+    CHECK(dtc_iter != controllers_->end());
     DataTypeController* dtc = dtc_iter->second.get();
     if (dtc->state() == DataTypeController::NOT_RUNNING) {
       LoadModelsForType(dtc);
@@ -177,8 +183,8 @@ void ModelLoadManager::LoadDesiredTypes() {
       // If the datatype is already STOPPING, we wait for it to stop before
       // starting it up again.
       auto stop_callback =
-          base::BindRepeating(&ModelLoadManager::LoadModelsForType,
-                              weak_ptr_factory_.GetWeakPtr(), dtc);
+          base::BindOnce(&ModelLoadManager::LoadModelsForType,
+                         load_models_weak_ptr_factory_.GetWeakPtr(), dtc);
       dtc->Stop(SyncStopMetadataFate::KEEP_METADATA, std::move(stop_callback));
     }
   }
@@ -195,6 +201,7 @@ void ModelLoadManager::LoadDesiredTypes() {
 void ModelLoadManager::Stop(SyncStopMetadataFate metadata_fate) {
   // Ignore callbacks from controllers.
   weak_ptr_factory_.InvalidateWeakPtrs();
+  load_models_weak_ptr_factory_.InvalidateWeakPtrs();
 
   // Stop all data types. Note that stop is also called on data types that are
   // already stopped to allow clearing the metadata.
@@ -222,9 +229,9 @@ void ModelLoadManager::ModelLoadCallback(
     DVLOG(1) << "ModelLoadManager: Type encountered an error.";
     preferred_types_without_errors_.Remove(type);
     DataTypeController* dtc = controllers_->find(type)->second.get();
-    StopDatatypeImpl(
-        SyncError(error->location(), SyncError::MODEL_ERROR, error->message()),
-        SyncStopMetadataFate::KEEP_METADATA, dtc, base::DoNothing());
+    StopDatatypeImpl(SyncError::CreateFromModelError(*error),
+                     SyncStopMetadataFate::KEEP_METADATA, dtc,
+                     base::DoNothing());
     NotifyDelegateIfReadyForConfigure();
     return;
   }
@@ -292,19 +299,18 @@ void ModelLoadManager::LoadModelsForType(DataTypeController* dtc) {
   // FAILED is possible if the type was STOPPING but then encountered an error
   // before the type actually stopped.
   if (dtc->state() == DataTypeController::FAILED) {
-    ModelLoadCallback(dtc->type(),
-                      ModelError(FROM_HERE, "Data type in FAILED state."));
+    ModelLoadCallback(
+        dtc->type(),
+        ModelError(FROM_HERE,
+                   ModelError::Type::kModelLoadManagerDataTypeInFailedState));
     return;
   }
 
-  // TODO(crbug.com/41492467): Avoid calling LoadModelsForType() multiple times
-  // upon stop, and re-introduce a CHECK for state to be NOT_RUNNING only.
-  if (dtc->state() == DataTypeController::NOT_RUNNING) {
-    dtc->LoadModels(
-        *configure_context_,
-        base::BindRepeating(&ModelLoadManager::ModelLoadCallback,
-                            weak_ptr_factory_.GetWeakPtr(), dtc->type()));
-  }
+  CHECK_EQ(dtc->state(), DataTypeController::NOT_RUNNING);
+  dtc->LoadModels(
+      *configure_context_,
+      base::BindRepeating(&ModelLoadManager::ModelLoadCallback,
+                          weak_ptr_factory_.GetWeakPtr(), dtc->type()));
 }
 
 }  // namespace syncer

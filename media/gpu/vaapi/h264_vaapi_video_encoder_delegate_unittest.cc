@@ -2,16 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/gpu/vaapi/h264_vaapi_video_encoder_delegate.h"
 
+#include <array>
 #include <memory>
 
 #include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
+#include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
@@ -45,9 +43,12 @@ constexpr uint8_t kMaxQP = 42;
 constexpr size_t kMaxRefIdxL0Size = 2;
 
 constexpr size_t kTemporalLayerCycle = 4;
-constexpr uint8_t kExpectedTemporalId[][kTemporalLayerCycle] = {{0, 0, 0, 0},
-                                                                {0, 1, 0, 1},
-                                                                {0, 2, 1, 2}};
+constexpr auto kExpectedTemporalId =
+    std::to_array<std::array<uint8_t, kTemporalLayerCycle>>({
+        {0, 0, 0, 0},
+        {0, 1, 0, 1},
+        {0, 2, 1, 2},
+    });
 
 VaapiVideoEncoderDelegate::Config kDefaultVEADelegateConfig{
     .max_num_ref_frames = 4,
@@ -190,8 +191,12 @@ void ValidateTemporalLayerStructure(uint8_t num_temporal_layers,
     return;
   }
 
-  EXPECT_EQ(frame_num, previous_frame_num + ref);
-  previous_frame_num = frame_num;
+  // If frame_num is so big that it hits max frame num, then this needs to be
+  // |previous_frame_num + 1 %  max_frame_num|.
+  EXPECT_EQ(frame_num, previous_frame_num + 1);
+  if (ref) {
+    previous_frame_num = frame_num;
+  }
 }
 
 class MockVaapiWrapper : public VaapiWrapper {
@@ -204,10 +209,12 @@ class MockVaapiWrapper : public VaapiWrapper {
   bool GetSupportedPackedHeaders(VideoCodecProfile profile,
                                  bool& packed_sps,
                                  bool& packed_pps,
-                                 bool& packed_slice) override {
+                                 bool& packed_slice,
+                                 bool& packed_raw) override {
     packed_sps = true;
     packed_pps = true;
     packed_slice = true;
+    packed_raw = true;
     return true;
   }
 
@@ -220,7 +227,7 @@ class MockH264RateControl : public H264RateControlWrapper {
   MockH264RateControl() = default;
   ~MockH264RateControl() override = default;
 
-  MOCK_METHOD1(UpdateRateControl, void(const H264RateControlConfigRTC&));
+  MOCK_METHOD1(UpdateRateControl, bool(const H264RateControlConfigRTC&));
   MOCK_METHOD1(ComputeQP,
                H264RateCtrlRTC::FrameDropDecision(const H264FrameParamsRTC&));
   MOCK_CONST_METHOD0(GetQP, int());
@@ -278,9 +285,8 @@ class H264VaapiVideoEncoderDelegateTest
 std::unique_ptr<VaapiVideoEncoderDelegate::EncodeJob>
 H264VaapiVideoEncoderDelegateTest::CreateEncodeJob(bool keyframe,
                                                    base::TimeDelta timestamp) {
-  scoped_refptr<H264Picture> picture(
-      new VaapiH264Picture(std::make_unique<VASurfaceHandle>(
-          next_surface_id_++, base::DoNothing())));
+  auto picture = base::MakeRefCounted<VaapiH264Picture>(
+      std::make_unique<VASurfaceHandle>(next_surface_id_++, base::DoNothing()));
 
   constexpr VABufferID kDummyVABufferID = 12;
   auto scoped_va_buffer = ScopedVABuffer::CreateForTesting(
@@ -331,7 +337,8 @@ void H264VaapiVideoEncoderDelegateTest::
   EXPECT_CALL(*mock_rate_ctrl_, UpdateRateControl(MatchRtcConfigWithRates(
                                     initial_bitrate_allocation,
                                     vea_config.framerate, kDefaultVisibleSize,
-                                    num_temporal_layers, kDefaultContentType)));
+                                    num_temporal_layers, kDefaultContentType)))
+      .WillOnce(Return(true));
   EXPECT_TRUE(InitializeEncoder(num_temporal_layers));
 }
 
@@ -468,7 +475,8 @@ void H264VaapiVideoEncoderDelegateTest::UpdateRatesAndEncode(
   EXPECT_CALL(*mock_rate_ctrl_,
               UpdateRateControl(MatchRtcConfigWithRates(
                   bitrate_allocation, framerate, kDefaultVisibleSize,
-                  num_temporal_layers, kDefaultContentType)));
+                  num_temporal_layers, kDefaultContentType)))
+      .WillOnce(Return(true));
   EXPECT_TRUE(encoder_->UpdateRates(bitrate_allocation, framerate));
   EXPECT_EQ(encoder_->curr_params_.bitrate_allocation, bitrate_allocation);
   EXPECT_EQ(encoder_->curr_params_.framerate, framerate);
@@ -574,8 +582,8 @@ TEST_P(H264VaapiVideoEncoderDelegateTest, UpdateRatesWithSWBitrateController) {
   InitializeEncoderWithSWBitrateController(num_temporal_layers);
   const uint32_t kBitrate = DefaultVEAConfig().bitrate.target_bps();
   const uint32_t kFramerate = DefaultVEAConfig().framerate;
-  const uint8_t* expected_temporal_ids =
-      kExpectedTemporalId[num_temporal_layers - 1];
+  const auto expected_temporal_ids =
+      base::span<const uint8_t>(kExpectedTemporalId[num_temporal_layers - 1]);
 
   // Call UpdateRates before Encode.
   UpdateRatesAndEncode(true, kBitrate / 2, kFramerate, num_temporal_layers,

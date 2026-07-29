@@ -7,9 +7,9 @@
 #include <memory>
 #include <string>
 
-#include "testing/gtest/include/gtest/gtest.h"
-
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
+#include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gl/gl_surface_egl.h"
 #include "ui/gl/init/gl_factory.h"
 
@@ -21,7 +21,7 @@
 #include "base/win/scoped_select_object.h"
 #include "third_party/skia/include/core/SkColorSpace.h"
 #include "third_party/skia/include/core/SkImageInfo.h"
-#include "ui/gfx/gdi_util.h"
+#include "ui/gfx/win/gdi_util.h"
 #include "ui/gl/direct_composition_support.h"
 #endif
 
@@ -98,7 +98,7 @@ SkBitmap GLTestHelper::ReadBackWindow(HWND window, const gfx::Size& size) {
   }
 
   base::win::ScopedCreateDC mem_hdc(::CreateCompatibleDC(nullptr));
-  DCHECK(mem_hdc.IsValid());
+  DCHECK(mem_hdc.is_valid());
 
   BITMAPV4HEADER hdr;
   gfx::CreateBitmapV4HeaderForARGB888(size.width(), size.height(), &hdr);
@@ -128,7 +128,8 @@ SkBitmap GLTestHelper::ReadBackWindow(HWND window, const gfx::Size& size) {
       SkISize::Make(size.width(), size.height()),
       SkColorInfo(SkColorType::kBGRA_8888_SkColorType,
                   SkAlphaType::kPremul_SkAlphaType, nullptr))));
-  memcpy(sk_bitmap.getAddr(0, 0), bits, sk_bitmap.computeByteSize());
+  UNSAFE_TODO(
+      memcpy(sk_bitmap.getAddr(0, 0), bits, sk_bitmap.computeByteSize()));
 
   return sk_bitmap;
 }

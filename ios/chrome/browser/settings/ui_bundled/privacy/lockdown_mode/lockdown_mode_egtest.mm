@@ -5,8 +5,6 @@
 #import "base/test/ios/wait_util.h"
 #import "ios/chrome/browser/settings/ui_bundled/privacy/privacy_constants.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
-#import "ios/chrome/browser/ui/popup_menu/overflow_menu/feature_flags.h"
-#import "ios/chrome/browser/web/model/features.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_actions.h"
@@ -47,13 +45,6 @@ NSString* const kLockdownModeCellId = @"kLockdownModeCellId";
 @end
 
 @implementation LockdownModeTestCase
-
-- (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config;
-  // TODO (crbug.com/1285974) Remove when bug is resolved.
-  config.features_disabled.push_back(kNewOverflowMenu);
-  return config;
-}
 
 - (void)setUp {
   [super setUp];

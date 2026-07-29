@@ -17,6 +17,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <string>
 
 #include "absl/status/status.h"
 #include "absl/status/statusor.h"
@@ -28,6 +29,9 @@
 #include "tensorflow/lite/util.h"
 
 namespace mediapipe {
+
+// Returns number of threads to configure CPU inference based on the platform.
+int GetCpuDefaultNumThreads();
 
 // Returns number of threads to configure XNNPACK delegate with.
 // Returns user provided value if specified. Otherwise, tries to choose optimal
@@ -79,6 +83,10 @@ absl::Status SetTfLiteCustomAllocation(tflite::Interpreter& interpreter,
 absl::StatusOr<Tensor> CreateTensorWithTfLiteTensorSpecs(
     const TfLiteTensor& reference_tflite_tensor,
     MemoryManager* memory_manager = nullptr, int alignment = 0);
+
+// Checks that MP and TfLite tensor size and type matches.
+absl::Status TensorDimsAndTypeEqual(const Tensor& mp_tensor,
+                                    const TfLiteTensor& tflite_tensor);
 
 }  // namespace mediapipe
 

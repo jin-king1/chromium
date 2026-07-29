@@ -6,12 +6,15 @@
 #define ASH_DISPLAY_CURSOR_WINDOW_CONTROLLER_H_
 
 #include <memory>
+#include <optional>
 
 #include "ash/ash_export.h"
 #include "ash/constants/ash_constants.h"
 #include "base/memory/raw_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "base/time/time.h"
+#include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/aura/window.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/base/cursor/cursor_size.h"
@@ -58,6 +61,7 @@ class ASH_EXPORT CursorWindowController : public aura::WindowObserver {
 
   void SetLargeCursorSizeInDip(int large_cursor_size_in_dip);
   void SetCursorColor(SkColor cursor_color);
+  void SetCursorInverted(bool inverted);
 
   // If at least one of the features that use cursor compositing is enabled, it
   // should not be disabled. Future features that require cursor compositing
@@ -84,8 +88,9 @@ class ASH_EXPORT CursorWindowController : public aura::WindowObserver {
   // switch between cursor view and cursor aura window depends on the status.
   void OnFullscreenMagnifierEnabled(bool enabled);
 
-  // Sets cursor location, shape, set and visibility.
-  void UpdateLocation();
+  // Sets cursor location, shape, set and visibility. When `throttle` it will
+  // throttle the update based on the display's refresh rate.
+  void UpdateLocation(bool throttle = false);
   void SetCursor(gfx::NativeCursor cursor);
   void SetCursorSize(ui::CursorSize cursor_size);
   void SetVisibility(bool visible);
@@ -100,8 +105,11 @@ class ASH_EXPORT CursorWindowController : public aura::WindowObserver {
   // Gets the cursor container for testing purposes.
   const aura::Window* GetContainerForTest() const;
   SkColor GetCursorColorForTest() const;
+  bool IsCursorInvertedForTest() const;
   gfx::Rect GetCursorBoundsInScreenForTest() const;
   const aura::Window* GetCursorHostWindowForTest() const;
+
+  float max_update_rate_ms() const { return max_update_rate_ms_; }
 
  private:
   friend class CursorWindowControllerTest;
@@ -136,6 +144,10 @@ class ASH_EXPORT CursorWindowController : public aura::WindowObserver {
   // create `cursor_window_`.
   void UpdateCursorMode();
 
+  void SeparateCursorBitmapForTest(const SkBitmap& original,
+                                   SkBitmap* mask,
+                                   SkBitmap* overlay) const;
+
   base::ObserverList<Observer> observers_;
 
   raw_ptr<aura::Window, DanglingUntriaged> container_ = nullptr;
@@ -160,6 +172,7 @@ class ASH_EXPORT CursorWindowController : public aura::WindowObserver {
 
   int large_cursor_size_in_dip_ = kDefaultLargeCursorSize;
   SkColor cursor_color_ = ui::kDefaultCursorColor;
+  bool is_inverted_ = false;
 
   // The display on which the cursor is drawn.
   // For mirroring mode, the display is always the primary display.
@@ -172,6 +185,14 @@ class ASH_EXPORT CursorWindowController : public aura::WindowObserver {
   // When using fast ink, cursor_view_widget_ draws cursor image
   // directly to the front buffer that is overlay candidate.
   views::UniqueWidgetPtr cursor_view_widget_;
+
+  // The last time the location was updated.
+  std::optional<base::TimeTicks> last_updated_;
+
+  // The max rate of how many times the screen can be updated.
+  // The current impl uses 2/3 of the refresh rate to avoid excessive updates,
+  // while keeping the latency low.
+  float max_update_rate_ms_ = 0;
 
   base::ScopedObservation<aura::Window, aura::WindowObserver>
       scoped_container_observer_{this};

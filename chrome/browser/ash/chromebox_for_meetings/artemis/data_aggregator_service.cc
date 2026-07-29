@@ -4,8 +4,18 @@
 
 #include "chrome/browser/ash/chromebox_for_meetings/artemis/data_aggregator_service.h"
 
+#include <array>
+#include <map>
+#include <vector>
+
+#include "base/metrics/field_trial_params.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/no_destructor.h"
+#include "base/strings/string_split.h"
+#include "base/syslog_logging.h"
 #include "base/task/thread_pool.h"
 #include "base/time/time.h"
+#include "chrome/browser/ash/chromebox_for_meetings/artemis/artemis_features.h"
 #include "chrome/browser/ash/chromebox_for_meetings/artemis/log_source.h"
 #include "chrome/browser/ash/chromebox_for_meetings/artemis/persistent_db.h"
 #include "chrome/browser/ash/chromebox_for_meetings/artemis/specialized_log_sources.h"
@@ -21,13 +31,6 @@ using mojom::DataFilter::FilterType::CHANGE;
 using mojom::DataFilter::FilterType::REGEX;
 
 static DataAggregatorService* g_data_aggregator_service = nullptr;
-
-constexpr base::TimeDelta kFetchFrequency = base::Minutes(1);
-constexpr size_t kDefaultLogBatchSize = 100;  // lines
-
-constexpr size_t kPayloadMaxSizeBytes = 500 * 1000;  // 500Kb
-constexpr base::TimeDelta kPayloadEnqueueTimeout = base::Minutes(10);
-constexpr size_t kMaxPayloadQueueSize = 3;  // # payloads
 
 constexpr base::TimeDelta kServiceAdaptorRetryDelay = base::Seconds(1);
 constexpr size_t kServiceAdaptorRetryMaxTries = 5;
@@ -50,37 +53,78 @@ constexpr net::BackoffEntry::Policy kEnqueueRetryBackoffPolicy = {
     true,           // Use initial delay.
 };
 
-// List of commands that should be polled frequently. Any commands
-// being watched by watchdogs should be here.
-constexpr base::TimeDelta kDefaultCommandPollFrequency = base::Seconds(5);
-const char* kLocalCommandSourcesFastPoll[] = {
-    "ip -brief address",
-    "lspci",
-    "lsusb -t",
-};
+// Create aliases for readability. C++ has ugly syntax for global maps.
+using CommandSourceMap =
+    std::map<features::TelemetryVerbosity, std::vector<const char*>>;
 
-// List of commands that should be polled at a much slower frequency
-// than the default. These are strictly for telemetry purposes in
-// cloud logging and should be reserved for commands that don't need
-// constant monitoring. Commands that are watched by a watchdog should
-// NOT be in this list.
-constexpr base::TimeDelta kExtendedCommandPollFrequency = base::Minutes(1);
-const char* kLocalCommandSourcesSlowPoll[] = {
-    "df -h",
-    "free -m",
-    "aplay -l",
-    "audio_diagnostics",
-    // Hide kernelspace processes and show limited columns.
-    "ps -o pid,user,group,args --ppid 2 -p 2 -N --sort=pid",
-};
+using PollFrequencyMap =
+    std::map<features::TelemetryVerbosity, base::TimeDelta>;
 
-constexpr base::TimeDelta kDefaultLogPollFrequency = base::Seconds(10);
-const char* kLocalLogSources[] = {
+/*
+ * IMPORTANT: When adding new commands to the below lists, please take care
+ * to choose commands with a relatively small amount of output. Rule of thumb:
+ * avoid commands that output more than (payload_max_size_bytes_ / 2) bytes of
+ * data. We don't want to overwhelm missived with large payloads.
+ *
+ * To check size output, pipe the command to `wc`. The byte count will be the
+ * last number.
+ */
+const CommandSourceMap& GetLocalCommandSourceMap() {
+  static const base::NoDestructor<CommandSourceMap> map({
+      // Note: these are cumulative.
+      {features::TelemetryVerbosity::kWatchdog,
+       {
+           "lsusb -t",
+       }},
+      {features::TelemetryVerbosity::kInfo,
+       {
+           "df -h /var",
+           "du -sh /var/log /var/spool/crash",
+           "free -m",
+           "ip -br addr",
+           "v4l2-ctl --list-devices",
+       }},
+      {features::TelemetryVerbosity::kVerbose,
+       {
+           "iostat -o JSON",
+           "top -b -n 1 -o %MEM",
+       }},
+  });
+  return *map;
+}
+
+const PollFrequencyMap& GetLocalCommandPollFrequencyMap() {
+  // Poll less frequently at higher verbosities to keep the payloads small.
+  static const base::NoDestructor<PollFrequencyMap> map({
+      {features::TelemetryVerbosity::kWatchdog, base::Seconds(5)},
+      {features::TelemetryVerbosity::kInfo, base::Minutes(10)},
+      {features::TelemetryVerbosity::kVerbose, base::Minutes(30)},
+  });
+  return *map;
+}
+
+constexpr const char* kLocalLogSources[] = {
     kCfmAuditLogFile,      kCfmBiosInfoLogFile,     kCfmChromeLogFile,
     kCfmChromeUserLogFile, kCfmCrosEcLogFile,       kCfmEventlogLogFile,
     kCfmFwupdLogFile,      kCfmPowerdLogFile,       kCfmSyslogLogFile,
     kCfmUiLogFile,         kCfmUpdateEngineLogFile, kCfmVariationsListLogFile,
 };
+
+// Define sane minimums and maximums for our Finch-controlled configs.
+constexpr base::TimeDelta kMinimumFetchFrequency = base::Minutes(1);
+constexpr base::TimeDelta kMaximumFetchFrequency = base::Hours(1);
+
+constexpr base::TimeDelta kMinimumLogPollFrequency = base::Seconds(10);
+constexpr base::TimeDelta kMaximumLogPollFrequency = base::Hours(1);
+
+constexpr size_t kMinimumLogBatchSize = 10;
+constexpr size_t kMaximumLogBatchSize = 10 * 1000;
+
+constexpr size_t kMinimumPayloadMaxSizeBytes = 1000;
+constexpr size_t kMaximumPayloadMaxSizeBytes = 1000 * 1000;
+
+constexpr size_t kMinimumPayloadQueueMaxSize = 1;
+constexpr size_t kMaximumPayloadQueueMaxSize = 10;
 
 }  // namespace
 
@@ -88,13 +132,6 @@ const char* kLocalLogSources[] = {
 void DataAggregatorService::Initialize() {
   CHECK(!g_data_aggregator_service);
   g_data_aggregator_service = new DataAggregatorService();
-}
-
-// static
-void DataAggregatorService::InitializeForTesting(
-    DataAggregatorService* data_aggregator_service) {
-  CHECK(!g_data_aggregator_service);
-  g_data_aggregator_service = data_aggregator_service;
 }
 
 // static
@@ -202,8 +239,10 @@ void DataAggregatorService::AddLocalCommandSource(
       base::BindOnce(
           [](mojo::PendingReceiver<mojom::DataSource> pending_receiver,
              const std::string& device_id, const std::string& command,
+             const size_t payload_max_size_bytes,
              const base::TimeDelta& poll_freq) {
-            auto source = std::make_unique<CommandSource>(command, poll_freq);
+            auto source = std::make_unique<CommandSource>(
+                command, payload_max_size_bytes, poll_freq);
             source->AssignDeviceID(device_id);
             source->StartCollectingData();
 
@@ -211,7 +250,8 @@ void DataAggregatorService::AddLocalCommandSource(
                                         std::move(pending_receiver));
           },
           remote.BindNewPipeAndPassReceiver(),
-          active_transport_payload_.permanent_id(), command, poll_freq));
+          active_transport_payload_.permanent_id(), command,
+          payload_max_size_bytes_, poll_freq));
 
   remote.set_disconnect_handler(
       base::BindOnce(&DataAggregatorService::OnLocalCommandDisconnect,
@@ -243,9 +283,12 @@ void DataAggregatorService::AddLocalLogSource(const std::string& filepath) {
       FROM_HERE,
       base::BindOnce(
           [](mojo::PendingReceiver<mojom::DataSource> pending_receiver,
-             const std::string& device_id, const std::string& filepath) {
-            auto source = LogSource::Create(filepath, kDefaultLogPollFrequency,
-                                            kDefaultLogBatchSize);
+             const std::string& device_id, const std::string& filepath,
+             const size_t payload_max_size_bytes,
+             const base::TimeDelta log_poll_frequency,
+             const size_t log_batch_size) {
+            auto source = LogSource::Create(filepath, payload_max_size_bytes,
+                                            log_poll_frequency, log_batch_size);
             source->AssignDeviceID(device_id);
             source->StartCollectingData();
 
@@ -253,7 +296,8 @@ void DataAggregatorService::AddLocalLogSource(const std::string& filepath) {
                                         std::move(pending_receiver));
           },
           remote.BindNewPipeAndPassReceiver(),
-          active_transport_payload_.permanent_id(), filepath));
+          active_transport_payload_.permanent_id(), filepath,
+          payload_max_size_bytes_, log_poll_frequency_, log_batch_size_));
 
   remote.set_disconnect_handler(
       base::BindOnce(&DataAggregatorService::OnLocalLogDisconnect,
@@ -276,22 +320,55 @@ void DataAggregatorService::OnMojoDisconnect() {
   VLOG(2) << "mojom::DataAggregator disconnected";
 }
 
-void DataAggregatorService::InitializeLocalSources() {
-  // Add local command sources
-  for (auto* const cmd : kLocalCommandSourcesFastPoll) {
-    VLOG(1) << "Adding command '" << cmd << "' to sources.";
-    AddLocalCommandSource(cmd, kDefaultCommandPollFrequency);
-  }
+void DataAggregatorService::InitializeCommandSources(
+    enum features::TelemetryVerbosity verbosity) {
+  const auto& command_map = GetLocalCommandSourceMap();
+  const auto& freq_map = GetLocalCommandPollFrequencyMap();
 
-  for (auto* const cmd : kLocalCommandSourcesSlowPoll) {
-    VLOG(1) << "Adding command '" << cmd << "' to local sources.";
-    AddLocalCommandSource(cmd, kExtendedCommandPollFrequency);
+  auto cmd_list = command_map.at(verbosity);
+  auto frequency = freq_map.at(verbosity);
+
+  for (const char* cmd : cmd_list) {
+    VLOG(1) << "Adding command '" << cmd << "' to sources.";
+    AddLocalCommandSource(cmd, frequency);
+  }
+}
+
+void DataAggregatorService::InitializeLocalSources() {
+  // Add local command sources. Watchdog commands are always enabled.
+  InitializeCommandSources(features::TelemetryVerbosity::kWatchdog);
+
+  // Add verbosity-dependent telemetry logs. Higher verbosity can be set
+  // via ArtemisDynamicCloudLogging experiment.
+  auto verbosity = features::kTelemetryVerbosity.Get();
+
+  if (verbosity == features::TelemetryVerbosity::kVerbose) {
+    LOG(WARNING) << "Enabling VERBOSE level telemetry.";
+    InitializeCommandSources(features::TelemetryVerbosity::kVerbose);
+    InitializeCommandSources(features::TelemetryVerbosity::kInfo);
+  } else if (verbosity == features::TelemetryVerbosity::kInfo) {
+    LOG(WARNING) << "Enabling INFO level telemetry.";
+    InitializeCommandSources(features::TelemetryVerbosity::kInfo);
   }
 
   // Add local log file sources
   for (auto* const logfile : kLocalLogSources) {
     VLOG(1) << "Adding log file '" << logfile << "' to local sources.";
     AddLocalLogSource(logfile);
+  }
+
+  // Add any additional log files activated by experiment
+  std::string param = features::kSupplementaryLogs.Get();
+  if (!param.empty()) {
+    std::vector<std::string> items = base::SplitString(
+        param, "|", base::TRIM_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
+
+    for (const auto& file : items) {
+      // NB: using LOG(WARNING) here so we can track this in prod.
+      LOG(WARNING) << "[Dynamic] Adding log file '" << file
+                   << "' to local sources.";
+      AddLocalLogSource(file);
+    }
   }
 }
 
@@ -330,6 +407,8 @@ void DataAggregatorService::OnRequestBindUploadService(
   if (num_tries >= kServiceAdaptorRetryMaxTries) {
     LOG(ERROR) << "Retry limit reached for connecting to " << interface_name
                << ". Remote calls will fail.";
+    base::UmaHistogramEnumeration(kSetupStatusMetricName,
+                                  SetupStatus::kLoggerServiceBindFailure);
     return;
   }
 
@@ -376,6 +455,8 @@ void DataAggregatorService::OnRequestBindDeviceInfoService(
   if (num_tries >= kServiceAdaptorRetryMaxTries) {
     LOG(ERROR) << "Retry limit reached for connecting to " << interface_name
                << ". Remote calls will fail.";
+    base::UmaHistogramEnumeration(kSetupStatusMetricName,
+                                  SetupStatus::kDeviceInfoServiceBindFailure);
     return;
   }
 
@@ -419,6 +500,8 @@ void DataAggregatorService::StorePolicyInfo(
   if (!policy_info->service_account_email_address.has_value()) {
     LOG(ERROR)
         << "Unable to determine robot email! Cloud logging will be disabled.";
+    base::UmaHistogramEnumeration(kSetupStatusMetricName,
+                                  SetupStatus::kNoRobotEmailFound);
     return;
   }
 
@@ -432,6 +515,9 @@ void DataAggregatorService::StorePolicyInfo(
   VLOG(1) << "Assigning device ID " << policy_info->device_id.value()
           << " and email "
           << policy_info->service_account_email_address.value();
+
+  base::UmaHistogramEnumeration(kSetupStatusMetricName,
+                                SetupStatus::kSetupSucceeded);
 
   InitializeLocalSources();
   StartFetchTimer();
@@ -464,16 +550,58 @@ void DataAggregatorService::StartFetchTimer() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   VLOG(1) << "Artemis started. Listening for data.";
   fetch_timer_.Start(
-      FROM_HERE, kFetchFrequency,
+      FROM_HERE, fetch_frequency_,
       base::BindRepeating(&DataAggregatorService::FetchFromAllSourcesAndEnqueue,
                           weak_ptr_factory_.GetWeakPtr()));
 }
 
+/*
+ * The upload process is a bit involved, so let's summarize:
+ *
+ * Note that `FetchFromAllSourcesAndEnqueue()` will be referred to as FetchAll()
+ * for brevity.
+ *
+ * - We call FetchAll() on a repeated timer. This will make the async Fetch()
+ *   requests for every data source we track.
+ * - As data comes in from the async calls, we add it to the "active" payload,
+ *   which is a reused payload object that collects data until the payload
+ *   is ready, most commonly when it reaches a max size, at which point the
+ *   data is copied to a new payload and the "active" payload is zero'ed out.
+ * - The new payload mentioned above is pushed to our upload queue. If there is
+ *   no enqueue currently in progress, we will also enqueue it to our reporting
+ *   pipeline.
+ * - Once an enqueue is initiated, we set an enqueue_in_progress_ bool and
+ *   enter our enqueue routine. During this time, we will return early from all
+ *   FetchAll() attempts until the enqueue succeeds.
+ *        NOTE: despite cancelling future FetchAll requests, we may still get
+ *        rolling responses from the async Fetch() calls that we already called.
+ *        These will just be appended into the now-empty active payload.
+ * - If the initial enqueue attempt fails, we will try again after N seconds,
+ *   determined by a backoff timer. Fetches will continue to be halted during
+ *   all retry attempts.
+ * - Once the enqueue attempt succeeds, we pop the payload off our queue and
+ *   check the queue for more data. If more is available, we'll immediately
+ *   schedule another enqueue.
+ * - FetchAll() calls will also be paused if the queue ever reaches the max
+ *   size set by `payload_queue_max_size_`. This prevents us from needing to
+ *   drop data to keep the memory footprint down.
+ */
 void DataAggregatorService::FetchFromAllSourcesAndEnqueue() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Wait for enqueue callback to fire before fetching more data.
   if (enqueue_in_progress_) {
+    return;
+  }
+
+  // If the queue is full, halt fetches until we can catch up. Note that
+  // a full queue implies that we've begun the enqueue process for the
+  // first item, which will continue to attempt an enqueue until it
+  // succeeds, at which point it will trigger the enqueue for the next
+  // one. In other words, we should never reach a deadlocked state where
+  // `Fetch()` calls are halted AND enqueues are halted.
+  if (pending_transport_payloads_.size() >= payload_queue_max_size_) {
+    LOG(WARNING) << "Payload queue is at capacity. Forgoing next fetch.";
     return;
   }
 
@@ -545,29 +673,20 @@ void DataAggregatorService::AppendEntriesToActivePayload(
     }
   }
 
-  if (IsPayloadReadyForUpload()) {
-    VLOG(1) << "Payload is ready to be enqueued. Pushing to wire.";
+  if (DidActivePayloadReachMaxSize()) {
+    VLOG(1) << "Payload is ready to be enqueued. Pushing to pending queue.";
     AddActivePayloadToPendingQueue();
-    EnqueueNextPendingTransportPayload();
+
+    // Additionally, push the next payload to the wire if we aren't currently
+    // enqueuing anything else.
+    if (!enqueue_in_progress_) {
+      EnqueueNextPendingTransportPayload();
+    }
   }
 }
 
-bool DataAggregatorService::IsPayloadReadyForUpload() const {
-  // Flush the payload to the wire if it exceeds our max size.
-  if (active_transport_payload_.ByteSizeLong() >= kPayloadMaxSizeBytes) {
-    VLOG(2) << "Payload reached maximum size; pushing to wire";
-    return true;
-  }
-
-  // Use a timeout to force flush to the wire. This ensures that we're
-  // always uploading data, even in the event of a data "stall", where
-  // a small amount of data is available for an extended period of time.
-  if ((base::TimeTicks::Now() - last_upload_time_) >= kPayloadEnqueueTimeout) {
-    VLOG(2) << "Payload timeout reached; force pushing";
-    return true;
-  }
-
-  return false;
+bool DataAggregatorService::DidActivePayloadReachMaxSize() const {
+  return active_transport_payload_.ByteSizeLong() >= payload_max_size_bytes_;
 }
 
 void DataAggregatorService::AddActivePayloadToPendingQueue() {
@@ -590,11 +709,8 @@ void DataAggregatorService::AddActivePayloadToPendingQueue() {
 
   pending_transport_payloads_.push(std::move(pending_payload));
 
-  // Drop front element if queue grows too large.
-  if (pending_transport_payloads_.size() > kMaxPayloadQueueSize) {
-    LOG(WARNING) << "Payload queue grew too large. Dropping oldest.";
-    pending_transport_payloads_.pop();
-  }
+  base::UmaHistogramCounts100(kPayloadQueueSizeMetricName,
+                              pending_transport_payloads_.size());
 
   VLOG(2) << "Pushed payload into pending queue. New size: "
           << pending_transport_payloads_.size();
@@ -623,14 +739,16 @@ void DataAggregatorService::InitiateEnqueueRequest() {
     return;
   }
 
+  base::UmaHistogramCounts1M(
+      kEnqueuedPayloadSizeMetricName,
+      pending_transport_payloads_.front().ByteSizeLong());
+
   auto enqueue_success_callback =
       base::BindOnce(&DataAggregatorService::HandleEnqueueResponse,
                      weak_ptr_factory_.GetWeakPtr());
 
   enqueue_in_progress_ = true;
 
-  // TODO(b/339455254): have each data source specify a priority instead
-  // of assuming kLow for every enqueue.
   uploader_remote_->Enqueue(
       pending_transport_payloads_.front().SerializeAsString(),
       chromeos::cfm::mojom::EnqueuePriority::kLow,
@@ -641,12 +759,39 @@ void DataAggregatorService::HandleEnqueueResponse(
     chromeos::cfm::mojom::LoggerStatusPtr status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  enum LoggerResponse response;
+
+  if (status->code == chromeos::cfm::mojom::LoggerErrorCode::kOk) {
+    response = LoggerResponse::kOk;
+  } else if (status->code ==
+             chromeos::cfm::mojom::LoggerErrorCode::kOutOfRange) {
+    response = LoggerResponse::kDeniedDueToThrottling;
+  } else if (status->code ==
+             chromeos::cfm::mojom::LoggerErrorCode::kUnauthenticated) {
+    response = LoggerResponse::kUnauthenticated;
+  } else if (status->code ==
+             chromeos::cfm::mojom::LoggerErrorCode::kUnavailable) {
+    response = LoggerResponse::kUnavailable;
+  } else {
+    response = LoggerResponse::kOther;
+  }
+
+  base::UmaHistogramEnumeration(kLoggerServiceResponseMetricName, response);
+
   if (status->code != chromeos::cfm::mojom::LoggerErrorCode::kOk) {
     enqueue_retry_backoff_.InformOfRequest(/*succeeded=*/false);
     auto retry_delay = enqueue_retry_backoff_.GetTimeUntilRelease();
 
     LOG(ERROR) << "Recent enqueue failed with error code: " << status->code
                << ". Trying again in " << retry_delay;
+
+    // TODO(crbug.com/475558926): Remove when fixed.
+    SYSLOG(ERROR) << "Recent enqueue failed with error code: " << status->code
+                  << ". Trying again in " << retry_delay;
+
+    current_enqueue_retries_++;
+    base::UmaHistogramTimes(kTimeWaitedBeforeEnqueueRetryMetricName,
+                            retry_delay);
 
     // Note: we call the helper directly here to force the attempt to go
     // through, despite `enqueue_in_progress_` being set. We can't unset
@@ -660,6 +805,9 @@ void DataAggregatorService::HandleEnqueueResponse(
         retry_delay);
     return;
   }
+
+  // TODO(crbug.com/475558926): Remove when fixed.
+  SYSLOG(INFO) << "Recent enqueue succeeded.";
 
   VLOG(1) << "Recent enqueue succeeded.";
   enqueue_retry_backoff_.Reset();
@@ -677,9 +825,16 @@ void DataAggregatorService::HandleEnqueueResponse(
     data_source_map_[data_source]->Flush();
   }
 
+  base::UmaHistogramCounts1000(kNumberOfRetriesBeforeSuccessfulEnqueueMetricName,
+                               current_enqueue_retries_);
+
+  base::UmaHistogramTimes(kTimeSinceLastSuccessfulEnqueueMetricName,
+                          base::TimeTicks::Now() - last_upload_time_);
+
   // Clean up.
   enqueue_in_progress_ = false;
   last_upload_time_ = base::TimeTicks::Now();
+  current_enqueue_retries_ = 0;
   pending_transport_payloads_.pop();
 
   // Try another transfer if the queue is still populated.
@@ -705,7 +860,32 @@ DataAggregatorService::DataAggregatorService()
   local_task_runner_->PostTask(FROM_HERE,
                                base::BindOnce(&PersistentDb::Initialize));
 
-  VLOG(1) << "Starting Artemis...";
+  // Cache configs.
+  fetch_frequency_ = std::clamp(features::kFetchFrequency.Get(),
+                                kMinimumFetchFrequency, kMaximumFetchFrequency);
+
+  log_poll_frequency_ =
+      std::clamp(features::kLogPollFrequency.Get(), kMinimumLogPollFrequency,
+                 kMaximumLogPollFrequency);
+
+  log_batch_size_ = std::clamp(features::kLogBatchSize.Get(),
+                               kMinimumLogBatchSize, kMaximumLogBatchSize);
+
+  payload_max_size_bytes_ =
+      std::clamp(features::kPayloadMaxSizeBytes.Get(),
+                 kMinimumPayloadMaxSizeBytes, kMaximumPayloadMaxSizeBytes);
+
+  payload_queue_max_size_ =
+      std::clamp(features::kPayloadQueueMaxSize.Get(),
+                 kMinimumPayloadQueueMaxSize, kMaximumPayloadQueueMaxSize);
+
+  VLOG(1) << "Starting Artemis with config: fetch_frequency = "
+          << fetch_frequency_
+          << ", log_poll_frequency = " << log_poll_frequency_
+          << ", log_batch_size = " << log_batch_size_
+          << ", payload_max_size_bytes = " << payload_max_size_bytes_
+          << ", payload_queue_max_size = " << payload_queue_max_size_;
+
   InitializeUploadEndpoint(/*num_tries=*/0);
 }
 

@@ -14,21 +14,25 @@ import androidx.annotation.VisibleForTesting;
 import org.chromium.base.ActivityState;
 import org.chromium.base.ApplicationState;
 import org.chromium.base.ApplicationStatus;
+import org.chromium.base.ApplicationStatus.ActivityStateListener;
 import org.chromium.base.Log;
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.TraceEvent;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.CheckDiscard;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.app.ChromeActivity;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.ui.display.DisplayAndroidManager;
 
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** Computes and records metrics for what caused Chrome to be launched. */
+@NullMarked
 public abstract class LaunchCauseMetrics
-        implements ApplicationStatus.ApplicationStateListener,
-                ApplicationStatus.ActivityStateListener {
+        implements ApplicationStatus.ApplicationStateListener, ActivityStateListener {
     private static final boolean DEBUG = false;
     private static final String TAG = "LaunchCauseMetrics";
 
@@ -43,11 +47,12 @@ public abstract class LaunchCauseMetrics
     private BetweenLaunchState mBetweenLaunchState = new BetweenLaunchState();
     private final Activity mActivity;
     private long mActivityId;
+    private final boolean mUseStopForScreenOff;
 
     @SuppressLint("StaticFieldLeak")
-    private static Activity sLastResumedActivity;
+    private static @Nullable Activity sLastResumedActivity;
 
-    private static ApplicationStatus.ActivityStateListener sAppActivityListener;
+    private static @Nullable ActivityStateListener sAppActivityListener;
 
     static {
         doStaticInit();
@@ -55,7 +60,7 @@ public abstract class LaunchCauseMetrics
 
     private static void doStaticInit() {
         sAppActivityListener =
-                new ApplicationStatus.ActivityStateListener() {
+                new ActivityStateListener() {
                     @Override
                     public void onActivityStateChange(Activity activity, int newState) {
                         if (newState == ActivityState.RESUMED) sLastResumedActivity = activity;
@@ -78,13 +83,14 @@ public abstract class LaunchCauseMetrics
         // intentional transitions between different types of ChromeActivity.
         boolean mOtherChromeActivityLastFocused;
         boolean mLaunchedFromRecents;
+        boolean mFromRecreation;
     }
 
     // State that persists through Chrome being backgrounded (but not destroyed), reset after
     // computing LaunchCause.
     private static class BetweenLaunchState {
         boolean mReceivedLeaveHint;
-        boolean mScreenOffWhenPaused;
+        boolean mScreenOffWhenStopped;
     }
 
     // These values are persisted in histograms. Please do not renumber. Append only.
@@ -112,6 +118,9 @@ public abstract class LaunchCauseMetrics
         LaunchCause.SHARE_INTENT,
         LaunchCause.NFC,
         LaunchCause.AUTH_TAB,
+        LaunchCause.RECREATION,
+        LaunchCause.HANDOFF,
+        LaunchCause.DEV_TOOLS,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface LaunchCause {
@@ -136,8 +145,11 @@ public abstract class LaunchCauseMetrics
         int SHARE_INTENT = 17;
         int NFC = 18;
         int AUTH_TAB = 19;
+        int RECREATION = 20;
+        int HANDOFF = 21;
+        int DEV_TOOLS = 22;
 
-        int NUM_ENTRIES = 21;
+        int NUM_ENTRIES = 24;
     }
 
     /**
@@ -148,6 +160,7 @@ public abstract class LaunchCauseMetrics
         mActivity = activity;
         ApplicationStatus.registerApplicationStateListener(this);
         ApplicationStatus.registerStateListenerForActivity(this, activity);
+        mUseStopForScreenOff = ChromeFeatureList.sLaunchCauseScreenOffFix.isEnabled();
     }
 
     @Override
@@ -157,8 +170,9 @@ public abstract class LaunchCauseMetrics
             ApplicationStatus.unregisterApplicationStateListener(this);
             ApplicationStatus.unregisterActivityStateListener(this);
         }
-        if (newState == ActivityState.PAUSED) {
-            mBetweenLaunchState.mScreenOffWhenPaused = isDisplayOff(mActivity);
+        if ((!mUseStopForScreenOff && newState == ActivityState.PAUSED)
+                || (mUseStopForScreenOff && newState == ActivityState.STOPPED)) {
+            mBetweenLaunchState.mScreenOffWhenStopped = isDisplayOff(mActivity);
         }
     }
 
@@ -246,10 +260,13 @@ public abstract class LaunchCauseMetrics
     // Chrome, with Chrome set as the debug app, it won't work because Android clears app state and
     // resuming through Recents will instead send a MAIN intent.
     private @LaunchCause int computeNonIntentLaunchCause() {
+        if (mPerLaunchState.mFromRecreation) {
+            return LaunchCause.RECREATION;
+        }
         if (mPerLaunchState.mLaunchedFromRecents) {
             return LaunchCause.RECENTS;
         }
-        if (mBetweenLaunchState.mScreenOffWhenPaused) {
+        if (mBetweenLaunchState.mScreenOffWhenStopped) {
             // It's possible we got here through Recents, if the user tapped a non-Chrome
             // notification after locking their screen with Chrome in the foreground, then
             // returned to Chrome through Recents, and there's no reliable way to detect this.
@@ -285,6 +302,13 @@ public abstract class LaunchCauseMetrics
     /** Called when the Activity is launched from Android Recets (aka App Overview) */
     public void onLaunchFromRecents() {
         mPerLaunchState.mLaunchedFromRecents = true;
+    }
+
+    /**
+     * Called when the Activity is launched from being recreated (usually a configuration change).
+     */
+    public void onRecreated() {
+        mPerLaunchState.mFromRecreation = true;
     }
 
     @VisibleForTesting
@@ -360,6 +384,6 @@ public abstract class LaunchCauseMetrics
                 launchCause = "HOME_SCREEN_SHORTCUT";
                 break;
         }
-        Log.d(TAG, "Launch Cause: " + launchCause);
+        Log.d(TAG, "Launch Cause: %s", launchCause);
     }
 }

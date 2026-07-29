@@ -17,7 +17,9 @@
 #include "components/policy/core/common/cloud/cloud_external_data_manager.h"
 #include "components/policy/core/common/cloud/cloud_policy_constants.h"
 #include "components/policy/core/common/cloud/cloud_policy_service.h"
+#include "components/policy/core/common/cloud/cloud_policy_util.h"
 #include "components/policy/core/common/cloud/user_cloud_policy_store.h"
+#include "components/policy/core/common/features.h"
 #include "components/policy/core/common/policy_pref_names.h"
 #include "components/policy/core/common/policy_types.h"
 #include "components/policy/policy_constants.h"
@@ -42,16 +44,17 @@ namespace policy {
 
 UserCloudPolicyManager::UserCloudPolicyManager(
     std::unique_ptr<UserCloudPolicyStore> user_store,
+    std::unique_ptr<UserCloudPolicyStore> extension_install_user_store,
     const base::FilePath& component_policy_cache_path,
     std::unique_ptr<CloudExternalDataManager> external_data_manager,
     const scoped_refptr<base::SequencedTaskRunner>& task_runner,
     network::NetworkConnectionTrackerGetter network_connection_tracker_getter)
-    : CloudPolicyManager(dm_protocol::kChromeUserPolicyType,
+    : CloudPolicyManager(dm_protocol::GetChromeUserPolicyType(),
                          std::string(),
                          std::move(user_store),
+                         std::move(extension_install_user_store),
                          task_runner,
                          network_connection_tracker_getter),
-      user_store_(static_cast<UserCloudPolicyStore*>(store())),
       component_policy_cache_path_(component_policy_cache_path),
       external_data_manager_(std::move(external_data_manager)) {}
 
@@ -65,15 +68,35 @@ std::unique_ptr<UserCloudPolicyManager> UserCloudPolicyManager::Create(
     network::NetworkConnectionTrackerGetter network_connection_tracker_getter) {
   std::unique_ptr<UserCloudPolicyStore> store =
       UserCloudPolicyStore::Create(profile_path, background_task_runner);
-  if (force_immediate_load)
+
+  std::unique_ptr<UserCloudPolicyStore> extension_install_store = nullptr;
+#if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+  if (IsExtensionInstallPolicySupportedOnThisVersion()) {
+    if (base::FeatureList::IsEnabled(
+            features::kEnableExtensionInstallPolicyFetching)) {
+      extension_install_store = UserCloudPolicyStore::CreateForExtensionInstall(
+          profile_path, background_task_runner);
+    } else {
+      UserCloudPolicyStore::CreateForExtensionInstall(profile_path,
+                                                      background_task_runner)
+          ->Clear();
+    }
+  }
+#endif  // !BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+
+  if (force_immediate_load) {
     store->LoadImmediately();
+    if (extension_install_store) {
+      extension_install_store->LoadImmediately();
+    }
+  }
 
   const base::FilePath component_policy_cache_dir =
       profile_path.Append(kPolicy).Append(kComponentsDir);
 
   auto policy_manager = std::make_unique<UserCloudPolicyManager>(
-      std::move(store), component_policy_cache_dir,
-      std::unique_ptr<CloudExternalDataManager>(),
+      std::move(store), std::move(extension_install_store),
+      component_policy_cache_dir, std::unique_ptr<CloudExternalDataManager>(),
       base::SingleThreadTaskRunner::GetCurrentDefault(),
       network_connection_tracker_getter);
   policy_manager->Init(schema_registry);
@@ -93,7 +116,10 @@ void UserCloudPolicyManager::SetSigninAccountId(const AccountId& account_id) {
     StartRecordingMetric();
   }
 
-  user_store_->SetSigninAccountId(account_id);
+  store()->SetSigninAccountId(account_id);
+  if (extension_install_store()) {
+    extension_install_store()->SetSigninAccountId(account_id);
+  }
 }
 
 void UserCloudPolicyManager::SetPoliciesRequired(bool required,
@@ -128,17 +154,19 @@ void UserCloudPolicyManager::Connect(
 void UserCloudPolicyManager::DisconnectAndRemovePolicy() {
   if (external_data_manager_)
     external_data_manager_->Disconnect();
-  core()->Disconnect();
 
   // store_->Clear() will publish the updated, empty policy. The component
   // policy service must be cleared before OnStoreLoaded() is issued, so that
   // component policies are also empty at CheckAndPublishPolicy().
-  ClearAndDestroyComponentCloudPolicyService();
+  CloudPolicyManager::DisconnectAndRemovePolicy();
 
   // When the |user_store_| is cleared, it informs the |external_data_manager_|
   // that all external data references have been removed, causing the
   // |external_data_manager_| to clear its cache as well.
-  user_store_->Clear();
+  store()->Clear();
+  if (extension_install_store()) {
+    extension_install_store()->Clear();
+  }
   SetPoliciesRequired(false, PolicyFetchReason::kDisconnect);
 }
 
@@ -162,6 +190,15 @@ bool UserCloudPolicyManager::IsFirstPolicyLoadComplete(
     PolicyDomain domain) const {
   return !policies_required_ ||
          CloudPolicyManager::IsFirstPolicyLoadComplete(domain);
+}
+
+UserCloudPolicyStore* UserCloudPolicyManager::store() {
+  return static_cast<UserCloudPolicyStore*>(CloudPolicyManager::store());
+}
+
+UserCloudPolicyStore* UserCloudPolicyManager::extension_install_store() {
+  return static_cast<UserCloudPolicyStore*>(
+      CloudPolicyManager::extension_install_store());
 }
 
 void UserCloudPolicyManager::StartRecordingMetric() {

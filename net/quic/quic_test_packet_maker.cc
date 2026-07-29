@@ -2,13 +2,9 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/quic/quic_test_packet_maker.h"
 
+#include <algorithm>
 #include <list>
 #include <utility>
 
@@ -78,12 +74,12 @@ quic::QuicFrames CloneFrames(const quic::QuicFrames& frames) {
             new quic::QuicRetireConnectionIdFrame(
                 *frame.retire_connection_id_frame);
         break;
-      case quic::MESSAGE_FRAME:
-        frame.message_frame = new quic::QuicMessageFrame(
-            frame.message_frame->message_id,
+      case quic::DATAGRAM_FRAME:
+        frame.datagram_frame = new quic::QuicDatagramFrame(
+            frame.datagram_frame->datagram_id,
             quiche::QuicheMemSlice(quiche::QuicheBuffer::Copy(
                 quiche::SimpleBufferAllocator::Get(),
-                frame.message_frame->message_data.data()->AsStringView())));
+                frame.datagram_frame->datagram_data.data()->AsStringView())));
         break;
       case quic::CRYPTO_FRAME:
         frame.crypto_frame = new quic::QuicCryptoFrame(*frame.crypto_frame);
@@ -131,7 +127,7 @@ void QuicTestPacketMaker::ConnectionState::Reset() {
 QuicTestPacketMaker::QuicTestPacketMaker(quic::ParsedQuicVersion version,
                                          quic::QuicConnectionId connection_id,
                                          const quic::QuicClock* clock,
-                                         const std::string& host,
+                                         std::string_view host,
                                          quic::Perspective perspective,
                                          bool client_priority_uses_incremental,
                                          bool use_priority_header)
@@ -144,7 +140,7 @@ QuicTestPacketMaker::QuicTestPacketMaker(quic::ParsedQuicVersion version,
       perspective_(perspective),
       client_priority_uses_incremental_(client_priority_uses_incremental),
       use_priority_header_(use_priority_header) {
-  DCHECK(version.HasIetfQuicFrames());
+  DCHECK(version.IsIetfQuic());
   DCHECK(!(perspective_ == quic::Perspective::IS_SERVER &&
            client_priority_uses_incremental_));
 
@@ -396,15 +392,15 @@ QuicTestPacketMaker::MakeStatelessResetPacket() {
 void QuicTestPacketMaker::RemoveSavedStreamFrames(
     quic::QuicStreamId stream_id) {
   for (auto& kv : connection_state_.saved_frames) {
-    auto* it = kv.second.begin();
-    while (it != kv.second.end()) {
-      if (it->type == quic::STREAM_FRAME &&
-          it->stream_frame.stream_id == stream_id) {
-        it = kv.second.erase(it);
-      } else {
-        ++it;
-      }
-    }
+    // Since this is an absl::InlinedVector, it doesn't support erase_if().
+    // Instead, have to use erase() and remove_if().
+    kv.second.erase(std::remove_if(kv.second.begin(), kv.second.end(),
+                                   [stream_id](const quic::QuicFrame& frame) {
+                                     return frame.type == quic::STREAM_FRAME &&
+                                            frame.stream_frame.stream_id ==
+                                                stream_id;
+                                   }),
+                    kv.second.end());
   }
 }
 
@@ -712,9 +708,9 @@ QuicTestPacketBuilder& QuicTestPacketBuilder::AddAckFrame(
 
 QuicTestPacketBuilder& QuicTestPacketBuilder::AddMessageFrame(
     std::string_view data) {
-  auto* message_frame = new quic::QuicMessageFrame(
-      /*message_id=*/0, quiche::QuicheMemSlice(quiche::QuicheBuffer::Copy(
-                            quiche::SimpleBufferAllocator::Get(), data)));
+  auto* message_frame = new quic::QuicDatagramFrame(
+      /*datagram_id=*/0, quiche::QuicheMemSlice(quiche::QuicheBuffer::Copy(
+                             quiche::SimpleBufferAllocator::Get(), data)));
   AddFrame(quic::QuicFrame(message_frame));
   return *this;
 }

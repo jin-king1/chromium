@@ -5,6 +5,7 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_MODULES_PRINTING_WEB_PRINTING_MANAGER_H_
 #define THIRD_PARTY_BLINK_RENDERER_MODULES_PRINTING_WEB_PRINTING_MANAGER_H_
 
+#include "base/types/expected.h"
 #include "third_party/blink/public/mojom/printing/web_printing.mojom-blink.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
@@ -12,26 +13,27 @@
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/mojo/heap_mojo_remote.h"
 #include "third_party/blink/renderer/platform/supplementable.h"
+#include "third_party/blink/renderer/platform/wtf/vector.h"
 
 namespace blink {
 
 class ExceptionState;
-class NavigatorBase;
+class ExecutionContext;
 class WebPrinter;
 
 class MODULES_EXPORT WebPrintingManager : public ScriptWrappable,
-                                          public Supplement<NavigatorBase> {
+                                          public Supplement<ExecutionContext> {
   DEFINE_WRAPPERTYPEINFO();
 
  public:
   static const char kSupplementName[];
 
-  // Getter for navigator.printing
-  static WebPrintingManager* GetWebPrintingManager(NavigatorBase&);
+  // Getter for printing (available in the window global scope)
+  static WebPrintingManager* GetWebPrintingManager(ExecutionContext&);
 
-  explicit WebPrintingManager(NavigatorBase&);
+  explicit WebPrintingManager(ExecutionContext*);
 
-  // navigator.printing.getPrinters()
+  // printing.getPrinters()
   ScriptPromise<IDLSequence<WebPrinter>> getPrinters(ScriptState*,
                                                      ExceptionState&);
 
@@ -40,8 +42,11 @@ class MODULES_EXPORT WebPrintingManager : public ScriptWrappable,
 
  private:
   mojom::blink::WebPrintingService* GetPrintingService();
-  void OnPrintersRetrieved(ScriptPromiseResolver<IDLSequence<WebPrinter>>*,
-                           mojom::blink::GetPrintersResultPtr result);
+  void OnPrintersRetrieved(
+      ScriptPromiseResolver<IDLSequence<WebPrinter>>*,
+      mojom::blink::WebPrintingService::GetPrintersResult printers_result);
+
+  ExecutionContext* GetExecutionContext();
 
   HeapMojoRemote<mojom::blink::WebPrintingService> printing_service_;
 };

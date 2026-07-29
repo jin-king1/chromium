@@ -16,6 +16,9 @@
 
 namespace media {
 
+CdmMetricsData::CdmMetricsData() = default;
+CdmMetricsData::~CdmMetricsData() = default;
+
 CdmAuxiliaryHelper::CdmAuxiliaryHelper() = default;
 CdmAuxiliaryHelper::~CdmAuxiliaryHelper() = default;
 
@@ -69,6 +72,11 @@ void CdmAuxiliaryHelper::SetCdmClientToken(
     const std::vector<uint8_t>& client_token) {}
 
 void CdmAuxiliaryHelper::OnCdmEvent(CdmEvent event, HRESULT hresult) {}
+
+void CdmAuxiliaryHelper::GetContentProtectionWindow(
+    GetContentProtectionWindowCB callback) {
+  std::move(callback).Run(0u);
+}
 #endif  // BUILDFLAG(IS_WIN)
 
 }  // namespace media

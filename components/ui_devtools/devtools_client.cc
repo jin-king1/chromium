@@ -6,6 +6,7 @@
 
 #include <string_view>
 
+#include "base/notimplemented.h"
 #include "components/ui_devtools/devtools_server.h"
 #include "third_party/inspector_protocol/crdtp/dispatch.h"
 #include "third_party/inspector_protocol/crdtp/json.h"
@@ -43,9 +44,10 @@ void UiDevToolsClient::Dispatch(const std::string& json) {
             crdtp::DispatchResponse::ParseError(status.ToASCIIString())));
     return;
   }
-  crdtp::Dispatchable dispatchable(crdtp::SpanFrom(cbor));
+  crdtp::Dispatchable dispatchable(crdtp::SpanFrom(cbor), std::string_view(),
+                                   nullptr);
   if (dispatchable.ok()) {
-    dispatcher_.Dispatch(dispatchable).Run();
+    dispatcher_.Dispatch(dispatchable);
     return;
   }
   if (dispatchable.HasCallId()) {
@@ -100,12 +102,6 @@ void UiDevToolsClient::SendProtocolNotification(
 }
 
 void UiDevToolsClient::FlushProtocolNotifications() {
-  NOTIMPLEMENTED();
-}
-
-void UiDevToolsClient::FallThrough(int call_id,
-                                   crdtp::span<uint8_t> method,
-                                   crdtp::span<uint8_t> message) {
   NOTIMPLEMENTED();
 }
 

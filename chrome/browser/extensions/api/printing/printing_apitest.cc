@@ -2,12 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <optional>
 #include <string>
 
 #include "chrome/browser/extensions/api/printing/print_job_submitter.h"
 #include "chrome/browser/extensions/api/printing/printing_test_utils.h"
 #include "chrome/browser/extensions/extension_apitest.h"
-#include "chrome/browser/printing/local_printer_utils_chromeos.h"
 #include "chrome/browser/ui/browser.h"
 #include "content/public/test/browser_test.h"
 #include "extensions/test/test_extension_dir.h"
@@ -25,6 +25,10 @@ constexpr char kName[] = "name";
 class PrintingApiTestBase : public ExtensionApiTest,
                             public testing::WithParamInterface<ExtensionType> {
  public:
+  void SetUp() override {
+    ExtensionApiTest::SetUp();
+  }
+
   void SetUpOnMainThread() override {
     ExtensionApiTest::SetUpOnMainThread();
     PrintJobSubmitter::SkipConfirmationDialogForTesting();
@@ -33,13 +37,14 @@ class PrintingApiTestBase : public ExtensionApiTest,
  protected:
   ExtensionType GetExtensionType() const { return GetParam(); }
 
-  void RunTest(const char* html_test_page) {
+  void RunTest(const char* html_test_page, bool expect_success = true) {
     auto dir = CreatePrintingExtension(GetExtensionType());
     auto run_options = GetExtensionType() == ExtensionType::kChromeApp
                            ? RunOptions{.custom_arg = html_test_page,
                                         .launch_as_platform_app = true}
                            : RunOptions({.extension_url = html_test_page});
-    ASSERT_TRUE(RunExtensionTest(dir->UnpackedPath(), run_options, {}));
+    ASSERT_EQ(RunExtensionTest(dir->UnpackedPath(), run_options, {}),
+              expect_success);
   }
 };
 
@@ -47,7 +52,7 @@ class PrintingApiTest : public PrintingApiTestBase {
  public:
   void PreRunTestOnMainThread() override {
     PrintingApiTestBase::PreRunTestOnMainThread();
-    helper_->Init(browser()->profile());
+    helper_->Init(profile());
   }
 
   void TearDownOnMainThread() override {
@@ -85,6 +90,8 @@ IN_PROC_BROWSER_TEST_P(PrintingApiTest, GetPrinterInfo) {
   AddPrinterWithSemanticCaps(kId, kName, ConstructPrinterCapabilities());
 
   RunTest("get_printer_info.html");
+
+  RunTest("get_printer_info_margin_and_scale.html");
 }
 
 // Verifies that:
@@ -102,6 +109,45 @@ IN_PROC_BROWSER_TEST_P(PrintingApiTest, SubmitJob) {
   RunTest("submit_job.html");
 }
 
+IN_PROC_BROWSER_TEST_P(PrintingApiTest, SubmitJobWithMarginsAndScale) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  AddPrinterWithSemanticCaps(kId, kName, ConstructPrinterCapabilities());
+
+  RunTest("submit_job_margins_and_scale.html");
+}
+
+IN_PROC_BROWSER_TEST_P(PrintingApiTest, SubmitJobWithUnsupportedMargins) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  auto caps = ConstructPrinterCapabilities();
+  std::vector<printing::PrinterSemanticCapsAndDefaults::Paper> papers;
+  // Override papers with custom margins.
+  for (const auto& paper : caps->papers) {
+    papers.emplace_back(paper.display_name(), paper.vendor_id(),
+                        paper.size_um(), paper.printable_area_um(),
+                        paper.max_height_um(), paper.has_borderless_variant(),
+                        printing::PaperMargins(2340, 1234, 1234, 1234));
+  }
+  caps->papers = std::move(papers);
+  AddPrinterWithSemanticCaps(kId, kName, std::move(caps));
+
+  RunTest("submit_job_margins_and_scale.html", /*expect_success=*/false);
+}
+
+IN_PROC_BROWSER_TEST_P(PrintingApiTest, SubmitJobWithUnsupportedScale) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  auto caps = ConstructPrinterCapabilities();
+  // Override with custom scaling type different from defined in the js/html
+  // file of the test.
+  caps->print_scaling_types = {printing::mojom::PrintScalingType::kFill};
+  caps->print_scaling_type_default = printing::mojom::PrintScalingType::kFill;
+  AddPrinterWithSemanticCaps(kId, kName, std::move(caps));
+
+  RunTest("submit_job_margins_and_scale.html", /*expect_success=*/false);
+}
+
 // As above, but tests using promise based API calls.
 IN_PROC_BROWSER_TEST_P(PrintingPromiseApiTest, SubmitJob) {
   ASSERT_TRUE(StartEmbeddedTestServer());
@@ -109,6 +155,14 @@ IN_PROC_BROWSER_TEST_P(PrintingPromiseApiTest, SubmitJob) {
   AddPrinterWithSemanticCaps(kId, kName, ConstructPrinterCapabilities());
 
   RunTest("submit_job_promise.html");
+}
+
+IN_PROC_BROWSER_TEST_P(PrintingPromiseApiTest, SubmitJobWithMarginsAndScale) {
+  ASSERT_TRUE(StartEmbeddedTestServer());
+
+  AddPrinterWithSemanticCaps(kId, kName, ConstructPrinterCapabilities());
+
+  RunTest("submit_job_promise_margins_and_scale.html");
 }
 
 // Verifies that:
@@ -130,16 +184,18 @@ IN_PROC_BROWSER_TEST_P(PrintingApiTest, GetJobStatus) {
   RunTest("get_print_job_status.html");
 }
 
-INSTANTIATE_TEST_SUITE_P(/**/,
-                         PrintingApiTest,
-                         testing::Values(ExtensionType::kChromeApp,
-                                         ExtensionType::kExtensionMV2,
-                                         ExtensionType::kExtensionMV3));
+INSTANTIATE_TEST_SUITE_P(
+    /**/,
+    PrintingApiTest,
+    testing::Values(ExtensionType::kChromeApp,
+                    ExtensionType::kExtensionMV2,
+                    ExtensionType::kExtensionMV3));
 
 // We only run the promise based tests for MV3 extensions as promise based API
 // calls are only exposed to MV3.
-INSTANTIATE_TEST_SUITE_P(/**/,
-                         PrintingPromiseApiTest,
-                         testing::Values(ExtensionType::kExtensionMV3));
+INSTANTIATE_TEST_SUITE_P(
+    /**/,
+    PrintingPromiseApiTest,
+    testing::Values(ExtensionType::kExtensionMV3));
 
 }  // namespace extensions

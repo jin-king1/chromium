@@ -8,9 +8,10 @@
 
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/functional/callback_helpers.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
+#include "components/metrics/startup_visibility.h"
 #include "components/prefs/pref_registry.h"
 #include "components/prefs/pref_registry_simple.h"
 #include "components/prefs/pref_service.h"
@@ -104,7 +105,11 @@ SeedType SafeSeedManager::GetSeedType() const {
   return SeedType::kRegularSeed;
 }
 
-void SafeSeedManager::RecordFetchStarted() {
+void SafeSeedManager::RecordFetchStarted(
+    metrics::StartupVisibility startup_visibility) {
+  if (startup_visibility == metrics::StartupVisibility::kBackground) {
+    return;
+  }
   // Pessimistically assume the fetch will fail. The failure streak will be
   // reset upon success.
   int num_failures_to_fetch =
@@ -123,14 +128,15 @@ void SafeSeedManager::RecordSuccessfulFetch(VariationsSeedStore* seed_store) {
   const std::optional<ActiveSeedState>& active_seed_state =
       GetActiveSeedState();
   if (active_seed_state) {
-    seed_store->StoreSafeSeed(active_seed_state->seed_data,
+    seed_store->StoreSafeSeed(/*done_callback=*/base::DoNothing(),
+                              active_seed_state->seed_data,
                               active_seed_state->base64_seed_signature,
                               active_seed_state->seed_milestone,
                               *active_seed_state->client_filterable_state,
                               active_seed_state->seed_fetch_time);
     // The active seed state is only needed for the first time this code path is
     // reached, so free up its memory once the data is no longer needed.
-    ClearActiveSeedState();
+    active_seed_state_.reset();
   }
 
   // Note: It's important to clear the crash streak as well as the fetch
@@ -139,6 +145,38 @@ void SafeSeedManager::RecordSuccessfulFetch(VariationsSeedStore* seed_store) {
   // back to a safe seed.
   local_state_->SetInteger(prefs::kVariationsCrashStreak, 0);
   local_state_->SetInteger(prefs::kVariationsFailedToFetchSeedStreak, 0);
+}
+
+void SafeSeedManager::SetActiveSeedState(
+    const std::string& seed_data,
+    const std::string& base64_seed_signature,
+    int seed_milestone,
+    std::unique_ptr<ClientFilterableState> client_filterable_state,
+    base::Time seed_fetch_time) {
+  DCHECK(!active_seed_state_.has_value());
+
+  active_seed_state_.emplace(seed_data, base64_seed_signature, seed_milestone,
+                             std::move(client_filterable_state),
+                             seed_fetch_time);
+}
+
+SafeSeedManager::ActiveSeedState::ActiveSeedState(
+    const std::string& seed_data,
+    const std::string& base64_seed_signature,
+    int seed_milestone,
+    std::unique_ptr<ClientFilterableState> client_filterable_state,
+    base::Time seed_fetch_time)
+    : seed_data(seed_data),
+      base64_seed_signature(base64_seed_signature),
+      seed_milestone(seed_milestone),
+      client_filterable_state(std::move(client_filterable_state)),
+      seed_fetch_time(seed_fetch_time) {}
+
+SafeSeedManager::ActiveSeedState::~ActiveSeedState() = default;
+
+const std::optional<SafeSeedManager::ActiveSeedState>&
+SafeSeedManager::GetActiveSeedState() const {
+  return active_seed_state_;
 }
 
 }  // namespace variations

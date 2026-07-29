@@ -7,20 +7,30 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
 #include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/test_future.h"
 #include "base/test/values_test_util.h"
 #include "base/types/expected.h"
 #include "base/values.h"
 #include "build/chromeos_buildflags.h"
+#include "chrome/browser/ash/printing/cups_print_job_manager_factory.h"
+#include "chrome/browser/ash/printing/fake_local_printer.h"
+#include "chrome/browser/ash/printing/history/print_job_history_service_factory.h"
+#include "chrome/browser/ash/printing/history/print_job_history_service_impl.h"
+#include "chrome/browser/ash/printing/history/test_print_job_database.h"
+#include "chrome/browser/ash/printing/print_management/printing_manager_factory.h"
+#include "chrome/browser/ash/printing/test_cups_print_job_manager.h"
 #include "chrome/browser/chromeos/printing/test_cups_wrapper.h"
 #include "chrome/browser/extensions/api/printing/fake_print_job_controller.h"
 #include "chrome/browser/extensions/api/printing/print_job_submitter.h"
+#include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/printing/print_preview_sticky_settings.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/common/chrome_constants.h"
@@ -29,10 +39,20 @@
 #include "chrome/test/base/testing_browser_process.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/base/testing_profile_manager.h"
-#include "chrome/test/chromeos/printing/fake_local_printer_chromeos.h"
-#include "chromeos/crosapi/mojom/local_printer.mojom.h"
+#include "chromeos/ash/components/browser_context_helper/annotated_account_id.h"
+#include "chromeos/ash/components/login/login_state/login_state.h"
 #include "chromeos/printing/printer_configuration.h"
+#include "components/account_id/account_id.h"
+#include "components/account_id/account_id_literal.h"
+#include "components/history/core/test/history_service_test_util.h"
+#include "components/session_manager/core/fake_session_manager_delegate.h"
+#include "components/session_manager/test/test_user_session_manager.h"
 #include "components/sync_preferences/testing_pref_service_syncable.h"
+#include "components/user_manager/fake_user_manager_delegate.h"
+#include "components/user_manager/scoped_user_manager.h"
+#include "components/user_manager/test_helper.h"
+#include "components/user_manager/user_manager.h"
+#include "components/user_manager/user_manager_impl.h"
 #include "content/public/browser/blob_handle.h"
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/event_router.h"
@@ -49,6 +69,11 @@
 namespace extensions {
 
 namespace {
+
+constexpr char kDigits[] = "0123456789";
+constexpr auto kAccountId =
+    AccountId::Literal::FromUserEmailGaiaId("test@test",
+                                            GaiaId::Literal("123456789"));
 
 class PrintingEventObserver : public TestEventRouter::EventObserver {
  public:
@@ -119,7 +144,7 @@ constexpr size_t kExpectedNumberOfEvictedJobs = 50u;
 constexpr char kId1[] = "id1";
 constexpr char kName[] = "name";
 constexpr char kDescription[] = "description";
-constexpr char kUri[] = "ipp://1.2.3.4";
+constexpr char kUri[] = "ipp://1.2.3.4:631";
 
 constexpr int kHorizontalDpi = 300;
 constexpr int kVerticalDpi = 400;
@@ -156,6 +181,12 @@ constexpr char kCjt[] = R"(
         },
         "collate": {
           "collate": false
+        },
+        "margins" : {
+          "top_microns": 500,
+          "right_microns": 800,
+          "bottom_microns": 200,
+          "left_microns": 600
         }
       }
     })";
@@ -211,9 +242,26 @@ std::optional<api::printing::SubmitJob::Params> ConstructSubmitJobParams(
   request.job.content_type = content_type;
   request.document_blob_uuid = std::move(document_blob_uuid);
 
-  base::Value::List args;
+  base::ListValue args;
   args.Append(base::Value(request.ToValue()));
   return api::printing::SubmitJob::Params::Create(args);
+}
+
+chromeos::Printer PrinterFrom(const std::string& id,
+                              const std::string& name,
+                              const std::string& description,
+                              bool via_policy,
+                              std::optional<std::string> uri) {
+  chromeos::Printer printer(id);
+  printer.set_display_name(name);
+  printer.set_description(description);
+  if (via_policy) {
+    printer.set_source(chromeos::Printer::SRC_POLICY);
+  }
+  if (uri.has_value()) {
+    EXPECT_TRUE(printer.SetUri(uri.value()));
+  }
+  return printer;
 }
 
 std::optional<printing::PrinterSemanticCapsAndDefaults>
@@ -223,10 +271,21 @@ ConstructPrinterCapabilities() {
   capabilities.duplex_modes.push_back(printing::mojom::DuplexMode::kSimplex);
   capabilities.copies_max = 5;
   capabilities.dpis.emplace_back(kHorizontalDpi, kVerticalDpi);
+#if BUILDFLAG(IS_CHROMEOS)
+  const printing::PaperMargins kMargins(/*top_um=*/500, /*right_um=*/800,
+                                        /*bottom_um=*/200, /*left_um=*/600);
+  capabilities.papers.emplace_back(
+      /*display_name=*/"", kMediaSizeVendorId,
+      /*size_um=*/gfx::Size(kMediaSizeWidth, kMediaSizeHeight),
+      /*printable_area_um=*/gfx::Rect(), /*max_height_um=*/0,
+      /*has_borderless_variant=*/false,
+      /*supported_margins_um=*/kMargins);
+#else
   printing::PrinterSemanticCapsAndDefaults::Paper paper(
       /*display_name=*/"", kMediaSizeVendorId,
       {kMediaSizeWidth, kMediaSizeHeight});
   capabilities.papers.push_back(std::move(paper));
+#endif  // BUILDFLAG(IS_CHROMEOS)
   capabilities.collate_capable = true;
   return capabilities;
 }
@@ -254,70 +313,23 @@ using SubmitJobFuture =
 
 }  // namespace
 
-class TestLocalPrinter : public FakeLocalPrinter {
+class TestPrintingManager
+    : public ash::printing::print_management::PrintingManager {
  public:
-  struct JobInfo {
-    std::string printer_id;
-    unsigned int job_id;
-  };
+  using PrintingManager::PrintingManager;
 
-  TestLocalPrinter() = default;
-  TestLocalPrinter(TestLocalPrinter&) = delete;
-  TestLocalPrinter& operator=(const TestLocalPrinter&) = delete;
-  ~TestLocalPrinter() override { EXPECT_TRUE(print_jobs_.empty()); }
-
-  std::vector<JobInfo> jobs_cancelled() { return jobs_cancelled_; }
-
-  std::vector<crosapi::mojom::PrintJobPtr> TakePrintJobs() {
-    std::vector<crosapi::mojom::PrintJobPtr> print_jobs;
-    std::swap(print_jobs, print_jobs_);
-    return print_jobs;
+  void CancelPrintJob(const std::string& id,
+                      CancelPrintJobCallback callback) override {
+    cancelled_jobs_.push_back(id);
+    std::move(callback).Run(true);
   }
 
-  void AddPrinter(crosapi::mojom::LocalDestinationInfoPtr printer) {
-    printers_.push_back(std::move(printer));
-  }
-
-  void SetCaps(const std::string& id,
-               crosapi::mojom::CapabilitiesResponsePtr caps) {
-    DCHECK(caps);
-    caps_map_[id] = std::move(caps);
-  }
-
-  void CreatePrintJob(crosapi::mojom::PrintJobPtr job,
-                      CreatePrintJobCallback cb) override {
-    print_jobs_.push_back(std::move(job));
-    std::move(cb).Run();
-  }
-
-  void GetPrinters(GetPrintersCallback cb) override {
-    std::vector<crosapi::mojom::LocalDestinationInfoPtr> printers;
-    std::swap(printers, printers_);
-    std::move(cb).Run(std::move(printers));
-  }
-
-  void GetCapability(const std::string& id, GetCapabilityCallback cb) override {
-    auto it = caps_map_.find(id);
-    if (it == caps_map_.end()) {
-      std::move(cb).Run(nullptr);
-      return;
-    }
-    std::move(cb).Run(std::move(it->second));
-    caps_map_.erase(it);
-  }
-
-  void CancelPrintJob(const std::string& printer_id,
-                      unsigned int job_id,
-                      CancelPrintJobCallback cb) override {
-    jobs_cancelled_.push_back(JobInfo{printer_id, job_id});
-    std::move(cb).Run(true);
+  const std::vector<std::string>& cancelled_jobs() const {
+    return cancelled_jobs_;
   }
 
  private:
-  std::vector<crosapi::mojom::PrintJobPtr> print_jobs_;
-  std::vector<JobInfo> jobs_cancelled_;
-  std::map<std::string, crosapi::mojom::CapabilitiesResponsePtr> caps_map_;
-  std::vector<crosapi::mojom::LocalDestinationInfoPtr> printers_;
+  std::vector<std::string> cancelled_jobs_;
 };
 
 class PrintingAPIHandlerUnittest : public testing::Test {
@@ -330,30 +342,43 @@ class PrintingAPIHandlerUnittest : public testing::Test {
       delete;
   ~PrintingAPIHandlerUnittest() override = default;
 
-  std::vector<crosapi::mojom::PrintJobPtr> TakePrintJobs() {
-    return local_printer_.TakePrintJobs();
+  struct JobInfo {
+    std::string printer_id;
+    int job_id;
+  };
+
+  std::vector<JobInfo> GetJobsCancelled() {
+    auto* manager = static_cast<TestPrintingManager*>(
+        ash::printing::print_management::PrintingManagerFactory::GetForProfile(
+            testing_profile_));
+    std::vector<JobInfo> jobs;
+    if (manager) {
+      for (const auto& id : manager->cancelled_jobs()) {
+        // CreateUniqueId concats printer_id(%s) and job_id(%d).
+        // This unittest always use printer_id without numeric chars.
+        // Finding first digit can split printer_id and job_id.
+        size_t first_digit = id.find_first_of(kDigits);
+        CHECK(first_digit != std::string::npos);
+        std::string printer_id = id.substr(0, first_digit);
+        int job_id = 0;
+        base::StringToInt(id.substr(first_digit), &job_id);
+        jobs.push_back({printer_id, job_id});
+      }
+    }
+    return jobs;
   }
 
-  std::vector<TestLocalPrinter::JobInfo> GetJobsCancelled() {
-    return local_printer_.jobs_cancelled();
-  }
-
-  void AddPrinter(const crosapi::mojom::LocalDestinationInfo& printer) {
-    local_printer_.AddPrinter(printer.Clone());
+  void AddPrinter(chromeos::Printer printer) {
+    local_printer_.AddPrinter(std::move(printer));
   }
 
   void SetCaps(const std::string& id,
-               crosapi::mojom::CapabilitiesResponsePtr caps) {
-    local_printer_.SetCaps(id, std::move(caps));
+               std::optional<printing::PrinterSemanticCapsAndDefaults> caps) {
+    local_printer_.SetCapability(id, std::move(caps));
   }
 
   std::string SubmitJob(std::string document_data = kPdfExample,
                         const char* content_type = "application/pdf") {
-    auto caps = crosapi::mojom::CapabilitiesResponse::New();
-    caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-    caps->capabilities = ConstructPrinterCapabilities();
-    SetCaps(kPrinterId, std::move(caps));
-
     // Create Blob with given data.
     std::unique_ptr<content::BlobHandle> blob = CreateMemoryBackedBlob(
         testing_profile_, document_data, /*content_type=*/"");
@@ -371,19 +396,56 @@ class PrintingAPIHandlerUnittest : public testing::Test {
     EXPECT_TRUE(job_id);
     EXPECT_TRUE(submit_job_status);
     EXPECT_EQ(api::printing::SubmitJobStatus::kOk, submit_job_status);
-    EXPECT_EQ(0u, TakePrintJobs().size());
 
     return *job_id;
   }
 
   void SetUp() override {
+    test_user_session_manager_ =
+        std::make_unique<ash::test::TestUserSessionManager>(
+            TestingBrowserProcess::GetGlobal()->GetTestingLocalState());
     profile_manager_ = std::make_unique<TestingProfileManager>(
         TestingBrowserProcess::GetGlobal());
     ASSERT_TRUE(profile_manager_->SetUp());
+    ash::LoginState::Initialize();
+
+    ASSERT_TRUE(test_user_session_manager_->AddRegularUser(kAccountId));
+    test_user_session_manager_->LogIn(kAccountId);
+
     testing_profile_ =
         profile_manager_->CreateTestingProfile(chrome::kInitialProfile);
+    ash::AnnotatedAccountId::Set(testing_profile_, kAccountId);
+    user_manager::UserManager::Get()->OnUserProfileCreated(
+        kAccountId, testing_profile_->GetPrefs());
 
-    base::Value::List extensions_list;
+    print_job_manager_ =
+        std::make_unique<ash::TestCupsPrintJobManager>(testing_profile_);
+    auto print_job_database = std::make_unique<ash::TestPrintJobDatabase>();
+    print_job_history_service_ =
+        std::make_unique<ash::PrintJobHistoryServiceImpl>(
+            std::move(print_job_database), print_job_manager_.get(),
+            testing_profile_->GetPrefs());
+    ASSERT_TRUE(history_dir_.CreateUniqueTempDir());
+    history_service_ =
+        history::CreateHistoryService(history_dir_.GetPath(), true);
+
+    ash::printing::print_management::PrintingManagerFactory::GetInstance()
+        ->SetTestingFactory(
+            testing_profile_,
+            base::BindRepeating(
+                [](ash::PrintJobHistoryService* history_service,
+                   history::HistoryService* hist_srv,
+                   ash::CupsPrintJobManager* job_mgr,
+                   content::BrowserContext* context)
+                    -> std::unique_ptr<KeyedService> {
+                  Profile* profile = Profile::FromBrowserContext(context);
+                  return std::make_unique<TestPrintingManager>(
+                      history_service, hist_srv, job_mgr, profile->GetPrefs());
+                },
+                print_job_history_service_.get(), history_service_.get(),
+                print_job_manager_.get()));
+
+    base::ListValue extensions_list;
     extensions_list.Append(kExtensionId);
     testing_profile_->GetTestingPrefService()->SetList(
         prefs::kPrintingAPIExtensionsAllowlist, std::move(extensions_list));
@@ -414,9 +476,20 @@ class PrintingAPIHandlerUnittest : public testing::Test {
     print_job_controller_ = nullptr;
     printing_api_handler_.reset();
     event_router_ = nullptr;
+    print_job_history_service_.reset();
+    ash::LoginState::Shutdown();
+    user_manager::UserManager::Get()->OnUserProfileWillBeDestroyed(kAccountId);
     testing_profile_ = nullptr;
     profile_manager_->DeleteTestingProfile(chrome::kInitialProfile);
+    // HistoryService and CupsPrintJobManager must be shutdown later than
+    // deleting the TestingProfile.
+    // TestingProfile deletion will shutdown keyed service TestPrintingManager.
+    // Destructor of TestPrintingManager will need to remove observers from
+    // HistoryService and CupsPrintJobManager.
+    print_job_manager_.reset();
+    history_service_.reset();
     profile_manager_.reset();
+    test_user_session_manager_.reset();
   }
 
  protected:
@@ -429,70 +502,66 @@ class PrintingAPIHandlerUnittest : public testing::Test {
   scoped_refptr<const Extension> extension_;
 
  private:
-  TestLocalPrinter local_printer_;
+  ash::FakeLocalPrinter local_printer_;
   // Resets `disable_pdf_flattening_for_testing` back to false automatically
   // after the test is over.
   base::AutoReset<bool> disable_pdf_flattening_reset_;
+  std::unique_ptr<ash::test::TestUserSessionManager> test_user_session_manager_;
   std::unique_ptr<TestingProfileManager> profile_manager_;
+  std::unique_ptr<ash::TestCupsPrintJobManager> print_job_manager_;
+  std::unique_ptr<ash::PrintJobHistoryServiceImpl> print_job_history_service_;
+  std::unique_ptr<history::HistoryService> history_service_;
+  base::ScopedTempDir history_dir_;
 };
 
-struct Param {
-  crosapi::mojom::PrintJobStatus status;
-  api::printing::JobStatus expected_status;
-};
+class PrintingAPIHandlerParam
+    : public PrintingAPIHandlerUnittest,
+      public testing::WithParamInterface<api::printing::JobStatus> {};
 
-class PrintingAPIHandlerParam : public PrintingAPIHandlerUnittest,
-                                public testing::WithParamInterface<Param> {};
-
-INSTANTIATE_TEST_SUITE_P(
-    All,
-    PrintingAPIHandlerParam,
-    testing::Values(Param{crosapi::mojom::PrintJobStatus::kUnknown,
-                          api::printing::JobStatus::kPending},
-                    Param{crosapi::mojom::PrintJobStatus::kStarted,
-                          api::printing::JobStatus::kInProgress},
-                    Param{crosapi::mojom::PrintJobStatus::kDone,
-                          api::printing::JobStatus::kPrinted},
-                    Param{crosapi::mojom::PrintJobStatus::kError,
-                          api::printing::JobStatus::kFailed},
-                    Param{crosapi::mojom::PrintJobStatus::kCancelled,
-                          api::printing::JobStatus::kCanceled}));
+INSTANTIATE_TEST_SUITE_P(All,
+                         PrintingAPIHandlerParam,
+                         testing::Values(api::printing::JobStatus::kPending,
+                                         api::printing::JobStatus::kInProgress,
+                                         api::printing::JobStatus::kPrinted,
+                                         api::printing::JobStatus::kFailed,
+                                         api::printing::JobStatus::kCanceled));
 
 // Test that `OnJobStatusChanged` is dispatched when the print job status is
 // changed.
 TEST_P(PrintingAPIHandlerParam, EventIsDispatched) {
   PrintingEventObserver event_observer(
       event_router_, api::printing::OnJobStatusChanged::kEventName);
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
   ASSERT_TRUE(job_id.size() > 1);
   int index = job_id.size() - 1;
-  const Param& param = GetParam();
-  if (param.status != crosapi::mojom::PrintJobStatus::kUnknown) {
-    auto update = crosapi::mojom::PrintJobUpdate::New();
-    update->status = param.status;
-    printing_api_handler_->OnPrintJobUpdate(
-        job_id.substr(0, index), job_id[index] - '0', std::move(update));
+  const api::printing::JobStatus expected_status = GetParam();
+  if (expected_status != api::printing::JobStatus::kPending) {
+    printing_api_handler_->UpdateJobStatus(
+        job_id.substr(0, index), job_id[index] - '0', expected_status);
   }
 
-  event_observer.CheckJobStatusEvent(kExtensionId, job_id,
-                                     param.expected_status);
+  event_observer.CheckJobStatusEvent(kExtensionId, job_id, expected_status);
 }
 
 // Test that each submitted job can be queried to check its status.
 TEST_P(PrintingAPIHandlerParam, GetJobStatus) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
-  const Param& param = GetParam();
+  const api::printing::JobStatus expected_status = GetParam();
   int index = job_id.size() - 1;
-  auto update = crosapi::mojom::PrintJobUpdate::New();
-  update->status = param.status;
-  printing_api_handler_->OnPrintJobUpdate(
-      job_id.substr(0, index), job_id[index] - '0', std::move(update));
+  if (expected_status != api::printing::JobStatus::kPending) {
+    printing_api_handler_->UpdateJobStatus(
+        job_id.substr(0, index), job_id[index] - '0', expected_status);
+  }
 
   base::expected<api::printing::JobStatus, std::string> status =
       printing_api_handler_->GetJobStatus(kExtensionId, job_id);
 
-  EXPECT_EQ(status.value(), param.expected_status);
+  EXPECT_EQ(status.value(), expected_status);
 }
 
 // The same as above, but with the cache full.
@@ -506,19 +575,21 @@ TEST_P(PrintingAPIHandlerParam, GetJobStatus_CacheFull) {
     printing_api_handler_->finished_jobs_order_.push_back(unique_id);
   }
 
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
-  const Param& param = GetParam();
+  const api::printing::JobStatus expected_status = GetParam();
   int index = job_id.size() - 1;
-  auto update = crosapi::mojom::PrintJobUpdate::New();
-  update->status = param.status;
-  printing_api_handler_->OnPrintJobUpdate(
-      job_id.substr(0, index), job_id[index] - '0', std::move(update));
+  if (expected_status != api::printing::JobStatus::kPending) {
+    printing_api_handler_->UpdateJobStatus(
+        job_id.substr(0, index), job_id[index] - '0', expected_status);
+  }
 
   base::expected<api::printing::JobStatus, std::string> status =
       printing_api_handler_->GetJobStatus(kExtensionId, job_id);
 
-  EXPECT_EQ(status.value(), param.expected_status);
+  EXPECT_EQ(status.value(), expected_status);
   EXPECT_EQ(printing_api_handler_->finished_jobs_order_.size(),
             printing_api_handler_->finished_print_jobs_.size());
 
@@ -546,8 +617,8 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinters_NoPrinters) {
 
 // Test that calling GetPrinters() returns the mock printer.
 TEST_F(PrintingAPIHandlerUnittest, GetPrinters_OnePrinter) {
-  AddPrinter(crosapi::mojom::LocalDestinationInfo(
-      kId1, kName, kDescription, true, std::make_optional(kUri)));
+  AddPrinter(
+      PrinterFrom(kId1, kName, kDescription, true, std::make_optional(kUri)));
 
   GetPrintersFuture printers_future;
   printing_api_handler_->GetPrinters(printers_future.GetCallback());
@@ -571,8 +642,8 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinters_IsDefault) {
   testing_profile_->GetPrefs()->SetString(
       prefs::kPrintPreviewDefaultDestinationSelectionRules,
       R"({"kind": "local", "idPattern": "id.*"})");
-  AddPrinter(crosapi::mojom::LocalDestinationInfo(
-      kId1, kName, kDescription, true, std::make_optional(kUri)));
+  AddPrinter(
+      PrinterFrom(kId1, kName, kDescription, true, std::make_optional(kUri)));
 
   GetPrintersFuture printers_future;
   printing_api_handler_->GetPrinters(printers_future.GetCallback());
@@ -602,8 +673,8 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinters_RecentlyUsedRank) {
     ]
   })");
   sticky_settings->SaveInPrefs(testing_profile_->GetPrefs());
-  AddPrinter(crosapi::mojom::LocalDestinationInfo(
-      kId1, kName, kDescription, true, std::make_optional(kUri)));
+  AddPrinter(
+      PrinterFrom(kId1, kName, kDescription, true, std::make_optional(kUri)));
 
   GetPrintersFuture printers_future;
   printing_api_handler_->GetPrinters(printers_future.GetCallback());
@@ -619,24 +690,9 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinters_RecentlyUsedRank) {
   EXPECT_EQ(1, *idl_printer.recently_used_rank);
 }
 
-TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_InvalidId) {
-  GetPrinterInfoFuture printer_info_future;
-  printing_api_handler_->GetPrinterInfo(kPrinterId,
-                                        printer_info_future.GetCallback());
-
-  auto [capabilities, printer_status, error] = printer_info_future.Take();
-  // Printer is not added to CupsPrintersManager, so we expect "Invalid printer
-  // id" error.
-  EXPECT_FALSE(capabilities);
-  EXPECT_FALSE(printer_status);
-  ASSERT_TRUE(error);
-  EXPECT_EQ("Invalid printer ID", error);
-}
-
 TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_NoCapabilities) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, std::nullopt);
 
   GetPrinterInfoFuture printer_info_future;
   printing_api_handler_->GetPrinterInfo(kPrinterId,
@@ -650,10 +706,9 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_NoCapabilities) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_OutOfPaper) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = printing::PrinterSemanticCapsAndDefaults();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId,
+          std::make_optional(printing::PrinterSemanticCapsAndDefaults()));
 
   // Mock CUPS wrapper to return predefined status for given printer.
   printing::PrinterStatus::PrinterReason reason{
@@ -661,21 +716,19 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_OutOfPaper) {
       printing::PrinterStatus::PrinterReason::Severity::kWarning};
   cups_wrapper_->SetPrinterStatus(kPrinterId, reason);
 
-  std::map<std::string, crosapi::mojom::PrinterStatusPtr> status_map_;
-
   GetPrinterInfoFuture printer_info_future;
   printing_api_handler_->GetPrinterInfo(kPrinterId,
                                         printer_info_future.GetCallback());
 
   auto [capabilities, printer_status, error] = printer_info_future.Take();
   ASSERT_TRUE(capabilities);
-  const base::Value::Dict* capabilities_dict =
+  const base::DictValue* capabilities_dict =
       capabilities->GetDict().FindDict("printer");
   ASSERT_TRUE(capabilities_dict);
 
-  const base::Value::Dict* color = capabilities_dict->FindDict("color");
+  const base::DictValue* color = capabilities_dict->FindDict("color");
   ASSERT_TRUE(color);
-  const base::Value::List* color_options = color->FindList("option");
+  const base::ListValue* color_options = color->FindList("option");
   ASSERT_TRUE(color_options);
   ASSERT_EQ(1u, color_options->size());
   const std::string* color_type =
@@ -683,10 +736,10 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_OutOfPaper) {
   ASSERT_TRUE(color_type);
   EXPECT_EQ("STANDARD_MONOCHROME", *color_type);
 
-  const base::Value::Dict* page_orientation =
+  const base::DictValue* page_orientation =
       capabilities_dict->FindDict("page_orientation");
   ASSERT_TRUE(page_orientation);
-  const base::Value::List* page_orientation_options =
+  const base::ListValue* page_orientation_options =
       page_orientation->FindList("option");
   ASSERT_TRUE(page_orientation_options);
   ASSERT_EQ(3u, page_orientation_options->size());
@@ -706,10 +759,9 @@ TEST_F(PrintingAPIHandlerUnittest, GetPrinterInfo_OutOfPaper) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_UnsupportedContentType) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = printing::PrinterSemanticCapsAndDefaults();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId,
+          std::make_optional(printing::PrinterSemanticCapsAndDefaults()));
 
   auto params =
       ConstructSubmitJobParams(kPrinterId, /*title=*/"", kCjt, "image/jpeg",
@@ -731,10 +783,8 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_UnsupportedContentType) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_InvalidPrintTicket) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = ConstructPrinterCapabilities();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
 
   auto params = ConstructSubmitJobParams(kPrinterId, /*title=*/"",
                                          kIncompleteCjt, "application/pdf",
@@ -775,9 +825,8 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_InvalidPrinterId) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_PrinterUnavailable) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, std::nullopt);
 
   auto params = ConstructSubmitJobParams(kPrinterId, /*title=*/"", kCjt,
                                          "application/pdf",
@@ -799,10 +848,9 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_PrinterUnavailable) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_UnsupportedTicket) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = printing::PrinterSemanticCapsAndDefaults();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId,
+          std::make_optional(printing::PrinterSemanticCapsAndDefaults()));
 
   auto params = ConstructSubmitJobParams(kPrinterId, /*title=*/"", kCjt,
                                          "application/pdf",
@@ -825,10 +873,8 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_UnsupportedTicket) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_InvalidData) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = ConstructPrinterCapabilities();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
 
   auto params = ConstructSubmitJobParams(kPrinterId, /*title=*/"", kCjt,
                                          "application/pdf", "invalid_uuid");
@@ -849,10 +895,8 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_InvalidData) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_InvalidDataPNG) {
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = ConstructPrinterCapabilities();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
 
   auto params = ConstructSubmitJobParams(kPrinterId, /*title=*/"", kCjt,
                                          "image/png", "invalid_uuid");
@@ -874,10 +918,8 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_InvalidDataPNG) {
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_PrintingFailed) {
   print_job_controller_->set_fail(true);
-  auto caps = crosapi::mojom::CapabilitiesResponse::New();
-  caps->basic_info = crosapi::mojom::LocalDestinationInfo::New();
-  caps->capabilities = ConstructPrinterCapabilities();
-  SetCaps(kPrinterId, std::move(caps));
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
 
   // Create Blob with given data.
   std::unique_ptr<content::BlobHandle> blob = CreateMemoryBackedBlob(
@@ -899,10 +941,14 @@ TEST_F(PrintingAPIHandlerUnittest, SubmitJob_PrintingFailed) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   SubmitJob();
 }
 
 TEST_F(PrintingAPIHandlerUnittest, SubmitJob_PNG) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   SubmitJob(std::string(kPngExample, kPngExampleSize), "image/png");
 }
 
@@ -916,6 +962,8 @@ TEST_F(PrintingAPIHandlerUnittest, CancelJob_InvalidId) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, CancelJob_InvalidId_OtherExtension) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
   // Try to cancel print job from other extension.
@@ -928,15 +976,16 @@ TEST_F(PrintingAPIHandlerUnittest, CancelJob_InvalidId_OtherExtension) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, CancelJob_InvalidState) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
   // Explicitly complete started print job.
   ASSERT_TRUE(job_id.size() > 1);
   int index = job_id.size() - 1;
-  auto update = crosapi::mojom::PrintJobUpdate::New();
-  update->status = crosapi::mojom::PrintJobStatus::kDone;
-  printing_api_handler_->OnPrintJobUpdate(
-      job_id.substr(0, index), job_id[index] - '0', std::move(update));
+  printing_api_handler_->UpdateJobStatus(job_id.substr(0, index),
+                                         job_id[index] - '0',
+                                         api::printing::JobStatus::kPrinted);
 
   // Try to cancel already completed print job.
   std::optional<std::string> error =
@@ -948,6 +997,8 @@ TEST_F(PrintingAPIHandlerUnittest, CancelJob_InvalidState) {
 }
 
 TEST_F(PrintingAPIHandlerUnittest, CancelJob) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
   PrintingEventObserver event_observer(
@@ -966,11 +1017,9 @@ TEST_F(PrintingAPIHandlerUnittest, CancelJob) {
   EXPECT_EQ("", event_observer.extension_id());
   EXPECT_TRUE(event_observer.event_args().is_none());
 
-  auto update = crosapi::mojom::PrintJobUpdate::New();
-  update->status = crosapi::mojom::PrintJobStatus::kCancelled;
-  printing_api_handler_->OnPrintJobUpdate(GetJobsCancelled()[0].printer_id,
-                                          GetJobsCancelled()[0].job_id,
-                                          std::move(update));
+  printing_api_handler_->UpdateJobStatus(GetJobsCancelled()[0].printer_id,
+                                         GetJobsCancelled()[0].job_id,
+                                         api::printing::JobStatus::kCanceled);
 
   // Now the job is canceled.
   event_observer.CheckJobStatusEvent(kExtensionId, job_id,
@@ -979,6 +1028,8 @@ TEST_F(PrintingAPIHandlerUnittest, CancelJob) {
 
 // Test that querying print job status with invalid job id returns an error.
 TEST_F(PrintingAPIHandlerUnittest, GetJobStatus_InvalidJobId) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
   base::expected<api::printing::JobStatus, std::string> status =
@@ -991,6 +1042,8 @@ TEST_F(PrintingAPIHandlerUnittest, GetJobStatus_InvalidJobId) {
 // Test that querying print job status with invalid extension id returns an
 // error.
 TEST_F(PrintingAPIHandlerUnittest, GetJobStatus_InvalidId_OtherExtension) {
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
   const auto job_id = SubmitJob();
 
   // Try to get a print job status from other extension.
@@ -1012,6 +1065,9 @@ TEST_F(PrintingAPIHandlerUnittest, EvictOldFinishedJobs) {
     printing_api_handler_->finished_jobs_order_.push_back(unique_id);
   }
 
+  AddPrinter(chromeos::Printer(kPrinterId));
+  SetCaps(kPrinterId, ConstructPrinterCapabilities());
+
   // Helper function to submit n jobs via SubmitJob, which will go through the
   // code path that evicts old finished jobs.
   auto submit_jobs = [&](size_t num_of_jobs) {
@@ -1019,10 +1075,9 @@ TEST_F(PrintingAPIHandlerUnittest, EvictOldFinishedJobs) {
       const auto job_id = SubmitJob();
 
       int index = job_id.size() - 1;
-      auto update = crosapi::mojom::PrintJobUpdate::New();
-      update->status = crosapi::mojom::PrintJobStatus::kDone;
-      printing_api_handler_->OnPrintJobUpdate(
-          job_id.substr(0, index), job_id[index] - '0', std::move(update));
+      printing_api_handler_->UpdateJobStatus(
+          job_id.substr(0, index), job_id[index] - '0',
+          api::printing::JobStatus::kPrinted);
 
       base::expected<api::printing::JobStatus, std::string> status =
           printing_api_handler_->GetJobStatus(kExtensionId, job_id);

@@ -7,12 +7,14 @@
 #include <memory>
 
 #include "base/functional/callback_helpers.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "chrome/browser/ui/views/extensions/security_dialog_tracker.h"
 #include "components/constrained_window/constrained_window_views.h"
 #include "content/public/browser/web_contents.h"
-#include "third_party/blink/public/mojom/webid/federated_auth_request.mojom-shared.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/color/color_variant.h"
+#include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/bubble/bubble_dialog_utils.h"
@@ -23,6 +25,11 @@
 namespace {
 
 using ButtonModel = ui::DialogModel::Button;
+
+// A top margin is necessary since without the dialog "close" button, there is
+// no enough margin to display the progress bar and match the margin below the
+// content view.
+constexpr int kContentMarginTop = 12;
 
 // Creates ScrollView for `contents_view`.
 std::unique_ptr<views::View> CreateContentsScrollView(
@@ -43,16 +50,52 @@ ButtonModel CreateButtonModel(const ButtonModel::Params& params) {
 
 }  // anonymous namespace
 
-DigitalIdentityMultiStepDialog::TestApi::TestApi(
-    DigitalIdentityMultiStepDialog* dialog)
-    : dialog_(dialog) {}
-DigitalIdentityMultiStepDialog::TestApi::~TestApi() = default;
+// The wrapped views::BubbleDialogDelegate.
+class DigitalIdentityMultiStepDialogDelegate
+    : public views::BubbleDialogDelegate {
+ public:
+  DigitalIdentityMultiStepDialogDelegate();
+  ~DigitalIdentityMultiStepDialogDelegate() override;
 
-DigitalIdentityMultiStepDialog::Delegate::Delegate()
+  void Update(
+      const std::optional<ui::DialogModel::Button::Params>& accept_button,
+      base::OnceClosure accept_callback,
+      const ui::DialogModel::Button::Params& cancel_button,
+      base::OnceClosure cancel_callback,
+      const std::u16string& dialog_title,
+      const std::u16string& body_text,
+      std::unique_ptr<views::View> custom_body_field);
+
+  views::Widget::ClosedReason get_closed_reason() { return closed_reason_; }
+
+  bool ShouldAllowKeyEventsDuringInputProtection() const override;
+
+ private:
+  bool OnDialogAccepted();
+  bool OnDialogCanceled();
+  void OnDialogClosed();
+
+  void ResetCallbacks();
+
+  // Owned by the parent view.
+  raw_ptr<views::View> contents_view_;
+
+  base::OnceClosure accept_callback_;
+  base::OnceClosure cancel_callback_;
+
+  views::Widget::ClosedReason closed_reason_ =
+      views::Widget::ClosedReason::kUnspecified;
+
+  base::WeakPtrFactory<DigitalIdentityMultiStepDialogDelegate>
+      weak_ptr_factory_{this};
+};
+
+DigitalIdentityMultiStepDialogDelegate::DigitalIdentityMultiStepDialogDelegate()
     : views::BubbleDialogDelegate(/*anchor_view=*/nullptr,
                                   views::BubbleBorder::Arrow::NONE,
                                   views::BubbleBorder::DIALOG_SHADOW,
                                   /*autosize=*/true) {
+  SetOwnedByWidget(OwnedByWidgetPassKey());
   SetModalType(ui::mojom::ModalType::kChild);
   SetShowCloseButton(true);
 
@@ -66,9 +109,10 @@ DigitalIdentityMultiStepDialog::Delegate::Delegate()
       views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH));
 }
 
-DigitalIdentityMultiStepDialog::Delegate::~Delegate() = default;
+DigitalIdentityMultiStepDialogDelegate::
+    ~DigitalIdentityMultiStepDialogDelegate() = default;
 
-void DigitalIdentityMultiStepDialog::Delegate::Update(
+void DigitalIdentityMultiStepDialogDelegate::Update(
     const std::optional<ButtonModel::Params>& accept_button,
     base::OnceClosure accept_callback,
     const ButtonModel::Params& cancel_button,
@@ -80,15 +124,27 @@ void DigitalIdentityMultiStepDialog::Delegate::Update(
   cancel_callback_ = std::move(cancel_callback);
 
   if (accept_button) {
-    SetAcceptCallbackWithClose(base::BindRepeating(&Delegate::OnDialogAccepted,
-                                                   base::Unretained(this)));
+    SetAcceptCallbackWithClose(base::BindRepeating(
+        &DigitalIdentityMultiStepDialogDelegate::OnDialogAccepted,
+        base::Unretained(this)));
   }
 
   SetTitle(dialog_title);
-  SetCancelCallbackWithClose(
-      base::BindRepeating(&Delegate::OnDialogCanceled, base::Unretained(this)));
-  SetCloseCallback(base::BindOnce(&Delegate::OnDialogClosed,
-                                  weak_ptr_factory_.GetWeakPtr()));
+  // When the `dialog_title` is empty, the calling site would make sure to add
+  // the proper name for the `custom_body_field` accessibility. This should be
+  // used in this case as the dialog accessible title.
+  SetAccessibleTitle(
+      dialog_title.empty()
+          ? custom_body_field->GetViewAccessibility().GetCachedName()
+          : dialog_title);
+
+  SetShowCloseButton(false);
+  SetCancelCallbackWithClose(base::BindRepeating(
+      &DigitalIdentityMultiStepDialogDelegate::OnDialogCanceled,
+      base::Unretained(this)));
+  SetCloseCallback(
+      base::BindOnce(&DigitalIdentityMultiStepDialogDelegate::OnDialogClosed,
+                     weak_ptr_factory_.GetWeakPtr()));
 
   int button_mask = static_cast<int>(ui::mojom::DialogButton::kCancel);
   if (accept_button) {
@@ -103,18 +159,19 @@ void DigitalIdentityMultiStepDialog::Delegate::Update(
 
   SetButtons(button_mask);
 
-  auto body_label = std::make_unique<views::Label>(body_text);
-  body_label->SetMultiLine(true);
-  body_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
-
   contents_view_->RemoveAllChildViews();
-  contents_view_->AddChildView(std::move(body_label));
+  if (!body_text.empty()) {
+    auto body_label = std::make_unique<views::Label>(body_text);
+    body_label->SetMultiLine(true);
+    body_label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
+    contents_view_->AddChildView(std::move(body_label));
+  }
   if (custom_body_field) {
     contents_view_->AddChildView(std::move(custom_body_field));
   }
 }
 
-bool DigitalIdentityMultiStepDialog::Delegate::OnDialogAccepted() {
+bool DigitalIdentityMultiStepDialogDelegate::OnDialogAccepted() {
   closed_reason_ = views::Widget::ClosedReason::kAcceptButtonClicked;
 
   // views::DialogDelegate does not support synchronously destroying
@@ -130,7 +187,7 @@ bool DigitalIdentityMultiStepDialog::Delegate::OnDialogAccepted() {
   return false;
 }
 
-bool DigitalIdentityMultiStepDialog::Delegate::OnDialogCanceled() {
+bool DigitalIdentityMultiStepDialogDelegate::OnDialogCanceled() {
   closed_reason_ = views::Widget::ClosedReason::kCancelButtonClicked;
 
   // views::DialogDelegate does not support synchronously destroying
@@ -146,7 +203,7 @@ bool DigitalIdentityMultiStepDialog::Delegate::OnDialogCanceled() {
   return false;
 }
 
-void DigitalIdentityMultiStepDialog::Delegate::OnDialogClosed() {
+void DigitalIdentityMultiStepDialogDelegate::OnDialogClosed() {
   if (cancel_callback_) {
     // views::DialogDelegate does not support synchronously destroying
     // views::Widget from close callback.
@@ -155,10 +212,102 @@ void DigitalIdentityMultiStepDialog::Delegate::OnDialogClosed() {
   }
 }
 
-void DigitalIdentityMultiStepDialog::Delegate::ResetCallbacks() {
+void DigitalIdentityMultiStepDialogDelegate::ResetCallbacks() {
   SetAcceptCallbackWithClose(base::BindRepeating([]() { return false; }));
   SetCancelCallbackWithClose(base::BindRepeating([]() { return false; }));
   SetCloseCallback(base::OnceClosure());
+}
+
+bool DigitalIdentityMultiStepDialogDelegate::
+    ShouldAllowKeyEventsDuringInputProtection() const {
+  return false;
+}
+
+// static
+std::unique_ptr<views::BoxLayoutView>
+DigitalIdentityMultiStepDialog::CreateHeaderView(
+    std::u16string title,
+    std::u16string body_text,
+    std::unique_ptr<views::ImageViewBase> illustration) {
+  constexpr int kImageMarginTop = 0;
+  constexpr int kImageMarginBottom = 2;
+  constexpr int kImageHeight = 112;
+  constexpr int kHeaderHeight =
+      kImageHeight + kImageMarginTop + kImageMarginBottom;
+
+  const gfx::Insets& insets =
+      ChromeLayoutProvider::Get()->GetDialogInsetsForContentType(
+          views::DialogContentType::kText, views::DialogContentType::kText);
+  const int available_width =
+      ChromeLayoutProvider::Get()->GetDistanceMetric(
+          views::DISTANCE_MODAL_DIALOG_PREFERRED_WIDTH) -
+      insets.right() - insets.left();
+  const gfx::Size header_size(available_width, kHeaderHeight);
+  // `illustration` will horizontally center if the width is
+  // larger than the size from the Lottie file, but the height is just used to
+  // truncate the image, so that is disabled with a very large value.
+  illustration->SetPreferredSize(gfx::Size(available_width, 9999));
+  illustration->SetBorder(views::CreateEmptyBorder(
+      gfx::Insets::TLBR(kImageMarginTop, 0, kImageMarginBottom, 0)));
+  illustration->SetSize(header_size);
+  illustration->SetVerticalAlignment(views::ImageView::Alignment::kLeading);
+
+  auto illustration_container_view =
+      views::Builder<views::BoxLayoutView>()
+          .SetOrientation(views::BoxLayout::Orientation::kVertical)
+          .SetInsideBorderInsets(gfx::Insets())
+          .SetPreferredSize(header_size)
+          .Build();
+  illustration_container_view->AddChildView(std::move(illustration));
+
+  auto header_view =
+      views::Builder<views::BoxLayoutView>()
+          .SetOrientation(views::BoxLayout::Orientation::kVertical)
+          .SetInsideBorderInsets(gfx::Insets())
+          .SetBetweenChildSpacing(
+              views::LayoutProvider::Get()->GetDistanceMetric(
+                  views::DISTANCE_RELATED_CONTROL_VERTICAL))
+          .Build();
+  header_view->AddChildView(std::move(illustration_container_view));
+
+  // Add title if not empty
+  if (!title.empty()) {
+    auto title_label = views::Builder<views::Label>()
+                           .SetText(title)
+                           .SetTextContext(views::style::CONTEXT_DIALOG_TITLE)
+                           .SetHorizontalAlignment(gfx::ALIGN_LEFT)
+                           .Build();
+    header_view->AddChildView(std::move(title_label));
+    header_view->GetViewAccessibility().SetRole(ax::mojom::Role::kAlertDialog);
+    header_view->GetViewAccessibility().SetName(std::move(title));
+  }
+
+  // Add body text if not empty
+  if (!body_text.empty()) {
+    auto body_label = views::Builder<views::Label>()
+                          .SetText(std::move(body_text))
+                          .SetTextContext(views::style::CONTEXT_LABEL)
+                          .SetMultiLine(true)
+                          .SetHorizontalAlignment(gfx::ALIGN_LEFT)
+                          .Build();
+    header_view->AddChildView(std::move(body_label));
+  }
+  return header_view;
+}
+
+DigitalIdentityMultiStepDialog::TestApi::TestApi(
+    DigitalIdentityMultiStepDialog* dialog)
+    : dialog_(dialog) {}
+
+DigitalIdentityMultiStepDialog::TestApi::~TestApi() = default;
+
+views::Widget* DigitalIdentityMultiStepDialog::TestApi::GetWidget() {
+  return dialog_->dialog_.get();
+}
+
+views::BubbleDialogDelegate*
+DigitalIdentityMultiStepDialog::TestApi::GetWidgetDelegate() {
+  return dialog_->GetWidgetDelegate();
 }
 
 DigitalIdentityMultiStepDialog::DigitalIdentityMultiStepDialog(
@@ -178,7 +327,8 @@ void DigitalIdentityMultiStepDialog::TryShow(
     base::OnceClosure cancel_callback,
     const std::u16string& dialog_title,
     const std::u16string& body_text,
-    std::unique_ptr<views::View> custom_body_field) {
+    std::unique_ptr<views::View> custom_body_field,
+    bool show_progress_bar) {
   if (!web_contents_) {
     // Post task so that the callback is guaranteed to be called asynchronously
     // in all cases.
@@ -186,11 +336,13 @@ void DigitalIdentityMultiStepDialog::TryShow(
         FROM_HERE, std::move(cancel_callback));
     return;
   }
+  views::View* custom_body_field_ptr = custom_body_field.get();
 
-  std::unique_ptr<Delegate> new_dialog_delegate;
-  Delegate* delegate = GetWidgetDelegate();
+  std::unique_ptr<DigitalIdentityMultiStepDialogDelegate> new_dialog_delegate;
+  DigitalIdentityMultiStepDialogDelegate* delegate = GetWidgetDelegate();
   if (!delegate) {
-    new_dialog_delegate = std::make_unique<Delegate>();
+    new_dialog_delegate =
+        std::make_unique<DigitalIdentityMultiStepDialogDelegate>();
     delegate = new_dialog_delegate.get();
   }
 
@@ -200,26 +352,55 @@ void DigitalIdentityMultiStepDialog::TryShow(
                    std::move(custom_body_field));
 
   if (new_dialog_delegate) {
+    base::WeakPtr<DigitalIdentityMultiStepDialog> weak_ptr =
+        weak_ptr_factory_.GetWeakPtr();
     // views::Widget takes ownership of `new_dialog_delegate`.
-    dialog_ = constrained_window::ShowWebModalDialogViews(
-                  new_dialog_delegate.release(), web_contents_.get())
-                  ->GetWeakPtr();
+    views::Widget* widget = constrained_window::ShowWebModalDialogViews(
+        new_dialog_delegate.release(), web_contents_.get());
+    // `ShowWebModalDialogViews` can spin a nested message loop and
+    // synchronously destroy `this`. Check `weak_ptr` before accessing member
+    // variables.
+    if (!weak_ptr) {
+      return;
+    }
+    dialog_ = widget->GetWeakPtr();
+    extensions::SecurityDialogTracker::GetInstance()->AddSecurityDialog(
+        dialog_.get());
   }
+  if (dialog_title.empty()) {
+    // Adding a top margin is necessary only when there is no title in which
+    // case the content is very close to the dialog top.
+    delegate->GetBubbleFrameView()->SetContentMargins(
+        gfx::Insets::TLBR(kContentMarginTop, 0, 0, 0));
+  }
+  if (!new_dialog_delegate && custom_body_field_ptr) {
+    // When the dialog is displayed for the first time, the title is announced
+    // to screen reader. However, upon subsequent changes to the dialog contents
+    // including the title, this has to be announced explicitly to convey to
+    // the user the change in the UI.
+    views::ViewAccessibility& custom_body_field_accessibility =
+        custom_body_field_ptr->GetViewAccessibility();
+    custom_body_field_accessibility.AnnouncePolitely(
+        dialog_title.empty() ? custom_body_field_accessibility.GetCachedName()
+                             : dialog_title);
+  }
+  delegate->GetBubbleFrameView()->SetProgress(
+      show_progress_bar ? std::optional<double>(-1) : std::nullopt);
 }
 
 ui::ColorVariant DigitalIdentityMultiStepDialog::GetBackgroundColor() {
-  DigitalIdentityMultiStepDialog::Delegate* widget_delegate =
-      GetWidgetDelegate();
+  DigitalIdentityMultiStepDialogDelegate* widget_delegate = GetWidgetDelegate();
   if (!widget_delegate) {
     return gfx::kPlaceholderColor;
   }
   return widget_delegate->background_color();
 }
 
-DigitalIdentityMultiStepDialog::Delegate*
+DigitalIdentityMultiStepDialogDelegate*
 DigitalIdentityMultiStepDialog::GetWidgetDelegate() {
   if (!dialog_) {
     return nullptr;
   }
-  return reinterpret_cast<Delegate*>(dialog_->widget_delegate());
+  return static_cast<DigitalIdentityMultiStepDialogDelegate*>(
+      dialog_->widget_delegate());
 }

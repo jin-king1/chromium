@@ -12,6 +12,7 @@
 #include "third_party/blink/public/common/manifest/manifest.h"
 
 class Browser;
+class BrowserWindowInterface;
 enum class WindowOpenDisposition;
 class GURL;
 class Profile;
@@ -67,27 +68,13 @@ class WebAppLaunchProcess {
   std::tuple<GURL, bool /*is_file_handling*/> GetLaunchUrl(
       const apps::ShareTarget* share_target) const;
   WindowOpenDisposition GetNavigationDisposition(bool is_new_browser) const;
-  std::tuple<Browser*, bool /*is_new_browser*/> EnsureBrowser();
+  std::tuple<BrowserWindowInterface*, bool /*is_new_browser*/> EnsureBrowser();
   LaunchHandler GetLaunchHandler() const;
   LaunchHandler::ClientMode GetLaunchClientMode() const;
 
   // Returns nullptr if these is no existing browser to be used for the launch.
-  Browser* MaybeFindBrowserForLaunch() const;
+  BrowserWindowInterface* MaybeFindBrowserForLaunch() const;
   Browser* CreateBrowserForLaunch();
-
-  struct NavigateResult {
-    raw_ptr<content::WebContents> web_contents = nullptr;
-    bool did_navigate;
-  };
-  NavigateResult MaybeNavigateBrowser(Browser* browser,
-                                      bool is_new_browser,
-                                      const GURL& launch_url,
-                                      const apps::ShareTarget* share_target);
-
-  void MaybeEnqueueWebLaunchParams(const GURL& launch_url,
-                                   bool is_file_handling,
-                                   content::WebContents* web_contents,
-                                   bool started_new_navigation);
 
   const raw_ref<Profile> profile_;
   const raw_ref<WebAppRegistrar> registrar_;

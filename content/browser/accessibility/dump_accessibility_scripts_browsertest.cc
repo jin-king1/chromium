@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 #include "base/command_line.h"
-#include "base/files/file_util.h"
+#include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "content/browser/accessibility/dump_accessibility_browsertest_base.h"
 #include "content/public/common/content_switches.h"
@@ -39,6 +39,7 @@ constexpr const char kMacTextMarker[]{"mac/textmarker"};
 constexpr const char kMacMethods[]{"mac/methods"};
 constexpr const char kMacParameterizedAttributes[]{
     "mac/parameterized-attributes"};
+constexpr const char kMacTextOperation[]{"mac/text-operation"};
 
 #endif
 
@@ -84,6 +85,14 @@ class DumpAccessibilityScriptTest : public DumpAccessibilityTestBase {
       GTEST_SKIP();
     }
   }
+
+  void AXTextOperation_RunTest(const base::FilePath::CharType* file_path) {
+    if (features::IsMacAccessibilityTextOperationEnabled()) {
+      RunTypedTest<kMacTextOperation>(file_path);
+    } else {
+      GTEST_SKIP();
+    }
+  }
 #endif
 
  protected:
@@ -98,7 +107,7 @@ class DumpAccessibilityScriptTest : public DumpAccessibilityTestBase {
     property_filters->push_back(AXPropertyFilter(filter, type));
   }
 
-  std::vector<std::string> Dump(ui::AXMode mode) override {
+  std::vector<std::string> Dump() override {
     std::vector<std::string> dump;
     std::unique_ptr<AXTreeFormatter> formatter(CreateFormatter());
     ui::BrowserAccessibility* root =
@@ -136,9 +145,8 @@ class DumpAccessibilityScriptTest : public DumpAccessibilityTestBase {
         auto pair = CaptureEvents(
             base::BindOnce(&DumpAccessibilityScriptTest::EvaluateScript,
                            base::Unretained(this), formatter.get(), root,
-                           scenario_.script_instructions, start_index, index),
-            ui::kAXModeComplete);
-        actual_contents = pair.first.ExtractString();
+                           scenario_.script_instructions, start_index, index));
+        actual_contents = pair.first.GetString();
         for (auto event : pair.second) {
           if (base::StartsWith(event, wait_for)) {
             actual_contents += event + '\n';
@@ -162,7 +170,7 @@ class DumpAccessibilityScriptTest : public DumpAccessibilityTestBase {
 
         // Input presses could create a11y events. Wait for those to clear
         // before procceding.
-        WaitForEndOfTest(mode);
+        WaitForEndOfTest();
       }
       if (printTree) {
         actual_contents += DumpTreeAsString() + '\n';
@@ -178,15 +186,14 @@ class DumpAccessibilityScriptTest : public DumpAccessibilityTestBase {
     return dump;
   }
 
-  EvalJsResult EvaluateScript(
+  base::Value EvaluateScript(
       AXTreeFormatter* formatter,
       ui::BrowserAccessibility* root,
       const std::vector<AXScriptInstruction>& instructions,
       size_t start_index,
       size_t end_index) {
-    return EvalJsResult(/*value=*/base::Value(formatter->EvaluateScript(
-                            root, instructions, start_index, end_index)),
-                        /*error=*/"");
+    return base::Value(
+        formatter->EvaluateScript(root, instructions, start_index, end_index));
   }
 
   RenderWidgetHost* GetWidgetHost() {
@@ -419,6 +426,10 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXSelectedRows) {
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXSize) {
   RunTypedTest<kMacAttributes>("ax-size.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXSubrole) {
+  RunTypedTest<kMacAttributes>("ax-subrole.html");
 }
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXTitleUIElement) {
@@ -728,6 +739,39 @@ IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest,
 
 IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXStringForRange) {
   RunTypedTest<kMacParameterizedAttributes>("ax-string-for-range.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest,
+                       AXLineForIndexAndRangeForLine) {
+  RunTypedTest<kMacParameterizedAttributes>(
+      "ax-line-for-index-and-range-for-line.html");
+}
+
+// Text Operation
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXTextOperationSelect) {
+  AXTextOperation_RunTest("ax-text-operation-select.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXTextOperationCapitalize) {
+  AXTextOperation_RunTest("ax-text-operation-capitalize.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXTextOperationLowercase) {
+  AXTextOperation_RunTest("ax-text-operation-lowercase.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXTextOperationUppercase) {
+  AXTextOperation_RunTest("ax-text-operation-uppercase.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest, AXTextOperationReplace) {
+  AXTextOperation_RunTest("ax-text-operation-replace.html");
+}
+
+IN_PROC_BROWSER_TEST_P(DumpAccessibilityScriptTest,
+                       AXTextOperationReplacePreserveCase) {
+  AXTextOperation_RunTest("ax-text-operation-replace-preserve-case.html");
 }
 
 #endif

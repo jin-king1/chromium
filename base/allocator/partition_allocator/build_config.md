@@ -23,7 +23,7 @@ in [`partition_alloc_config.h`][partition-alloc-config].
 ***
 
 *** promo
-PartitionAlloc targets C++17. As the team develops standalone
+PartitionAlloc targets C++20. As the team develops standalone
 PartitionAlloc, this may diverge from what the rest of Chrome browser
 does, as we will be obligated to support external clients that
 may not yet support newer C++ standards.
@@ -75,15 +75,6 @@ but the team needs to decide either
 
 A non-exhaustive list of work items:
 
-* `OFFICIAL_BUILD` - influences crash macros and
-  `PA_THREAD_CACHE_ALLOC_STATS`. These are conceptually distinct enough
-  to be worth separating into dedicated build controls.
-* `IS_PARTITION_ALLOC_IMPL` - must be defined when PartitionAlloc is
-  built as a shared library. This is required to export symbols.
-* `COMPONENT_BUILD` - component builds (as per
-  `//docs/component_build.md`) must `#define COMPONENT_BUILD`.
-  Additionally, to build Win32, invoker must `#define WIN32`.
-* `MEMORY_TOOL_REPLACES_ALLOCATOR`
 * `*_SANITIZER` - mainly influences unit tests.
 
 *** note

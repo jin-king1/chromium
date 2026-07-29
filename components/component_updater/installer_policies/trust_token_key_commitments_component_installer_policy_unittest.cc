@@ -22,9 +22,7 @@
 
 namespace component_updater {
 
-namespace {
 using ::testing::_;
-}  // namespace
 
 class TrustTokenKeyCommitmentsComponentInstallerTest : public ::testing::Test {
  public:
@@ -66,7 +64,7 @@ TEST_F(TrustTokenKeyCommitmentsComponentInstallerTest,
   // The |component_install_dir_.GetPath()| should be ignored in favor of the
   // separate path we provide through the switch.
   policy->ComponentReady(base::Version(), component_install_dir_.GetPath(),
-                         base::Value::Dict());
+                         base::DictValue());
 
   run_loop.Run();
 
@@ -93,7 +91,7 @@ TEST_F(TrustTokenKeyCommitmentsComponentInstallerTest, LoadsCommitments) {
       expectation));
 
   policy->ComponentReady(base::Version(), component_install_dir_.GetPath(),
-                         base::Value::Dict());
+                         base::DictValue());
 
   run_loop.Run();
 }

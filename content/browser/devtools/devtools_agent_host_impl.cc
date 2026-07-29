@@ -8,14 +8,14 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/observer_list.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
-#include "content/browser/devtools/auction_worklet_devtools_agent_host.h"
+#include "base/strings/string_view_util.h"
 #include "content/browser/devtools/dedicated_worker_devtools_agent_host.h"
 #include "content/browser/devtools/devtools_http_handler.h"
 #include "content/browser/devtools/devtools_manager.h"
@@ -26,7 +26,6 @@
 #include "content/browser/devtools/render_frame_devtools_agent_host.h"
 #include "content/browser/devtools/service_worker_devtools_agent_host.h"
 #include "content/browser/devtools/service_worker_devtools_manager.h"
-#include "content/browser/devtools/shared_storage_worklet_devtools_manager.h"
 #include "content/browser/devtools/shared_worker_devtools_agent_host.h"
 #include "content/browser/devtools/shared_worker_devtools_manager.h"
 #include "content/browser/devtools/web_contents_devtools_agent_host.h"
@@ -35,9 +34,11 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/content_browser_client.h"
 #include "content/public/browser/devtools_external_agent_proxy_delegate.h"
+#include "content/public/browser/devtools_manager_delegate.h"
 #include "content/public/browser/devtools_socket_factory.h"
 #include "content/public/browser/mojom_devtools_agent_host_delegate.h"
 #include "content/public/common/content_switches.h"
+#include "net/base/ip_endpoint.h"
 #include "services/network/public/mojom/network_context.mojom.h"
 
 #if BUILDFLAG(IS_WIN)
@@ -57,17 +58,29 @@ DevToolsMap& GetDevtoolsInstances() {
   return *instance;
 }
 
-base::ObserverList<DevToolsAgentHostObserver>::Unchecked&
+// TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+base::ObserverList<
+    DevToolsAgentHostObserver,
+    /*check_empty=*/false,
+    /*reentrancy=*/
+    base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked&
 GetDevtoolsObservers() {
-  static base::NoDestructor<
-      base::ObserverList<DevToolsAgentHostObserver>::Unchecked>
+  static base::NoDestructor<base::ObserverList<
+      DevToolsAgentHostObserver,
+      /*check_empty=*/false,
+      /*reentrancy=*/
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked>
       instance;
   return *instance;
 }
 
-void SetDevToolsHttpHandler(std::unique_ptr<DevToolsHttpHandler> handler) {
+std::unique_ptr<DevToolsHttpHandler>& GetDevToolsHttpHandler() {
   static base::NoDestructor<std::unique_ptr<DevToolsHttpHandler>> instance;
-  *instance = std::move(handler);
+  return *instance;
+}
+
+void SetDevToolsHttpHandler(std::unique_ptr<DevToolsHttpHandler> handler) {
+  GetDevToolsHttpHandler() = std::move(handler);
 }
 
 void SetDevToolsPipeHandler(std::unique_ptr<DevToolsPipeHandler> handler) {
@@ -133,18 +146,17 @@ const char DevToolsAgentHost::kTypeDedicatedWorker[] = "worker";
 const char DevToolsAgentHost::kTypeSharedWorker[] = "shared_worker";
 const char DevToolsAgentHost::kTypeServiceWorker[] = "service_worker";
 const char DevToolsAgentHost::kTypeWorklet[] = "worklet";
-const char DevToolsAgentHost::kTypeSharedStorageWorklet[] =
-    "shared_storage_worklet";
 const char DevToolsAgentHost::kTypeBrowser[] = "browser";
 const char DevToolsAgentHost::kTypeGuest[] = "webview";
 const char DevToolsAgentHost::kTypeOther[] = "other";
 const char DevToolsAgentHost::kTypeAuctionWorklet[] = "auction_worklet";
 const char DevToolsAgentHost::kTypeAssistiveTechnology[] =
     "assistive_technology";
+const char DevToolsAgentHost::kTypeBrowserUI[] = "browser_ui";
 int DevToolsAgentHostImpl::s_force_creation_count_ = 0;
 
 // static
-std::string DevToolsAgentHost::GetProtocolVersion() {
+std::string_view DevToolsAgentHost::GetProtocolVersion() {
   // TODO(dgozman): generate this.
   return "1.3";
 }
@@ -178,19 +190,16 @@ DevToolsAgentHost::List DevToolsAgentHost::GetOrCreateAll() {
   for (const auto& host : service_list)
     result.push_back(host);
 
-  SharedStorageWorkletDevToolsManager::GetInstance()->AddAllAgentHosts(&result);
-
   DedicatedWorkerDevToolsAgentHost::AddAllAgentHosts(&result);
   RenderFrameDevToolsAgentHost::AddAllAgentHosts(&result);
   WebContentsDevToolsAgentHost::AddAllAgentHosts(&result);
 
-  AuctionWorkletDevToolsAgentHostManager::GetInstance().GetAll(&result);
   MojomDevToolsAgentHost::GetAll(&result);
 
 #if DCHECK_IS_ON()
   for (auto it : result) {
     DevToolsAgentHostImpl* host = static_cast<DevToolsAgentHostImpl*>(it.get());
-    DCHECK(base::Contains(GetDevtoolsInstances(), host->id_));
+    DCHECK(GetDevtoolsInstances().contains(host->id_));
   }
 #endif
 
@@ -201,13 +210,14 @@ DevToolsAgentHost::List DevToolsAgentHost::GetOrCreateAll() {
 void DevToolsAgentHost::StartRemoteDebuggingServer(
     std::unique_ptr<DevToolsSocketFactory> server_socket_factory,
     const base::FilePath& active_port_output_directory,
-    const base::FilePath& debug_frontend_dir) {
+    const base::FilePath& debug_frontend_dir,
+    RemoteDebuggingServerMode mode) {
   DevToolsManagerDelegate* delegate =
       DevToolsManager::GetInstance()->delegate();
   CHECK(delegate);
   SetDevToolsHttpHandler(std::make_unique<DevToolsHttpHandler>(
       delegate, std::move(server_socket_factory), active_port_output_directory,
-      debug_frontend_dir));
+      debug_frontend_dir, mode));
 }
 
 // static
@@ -231,6 +241,14 @@ void DevToolsAgentHost::StartRemoteDebuggingPipeHandler(
 // static
 void DevToolsAgentHost::StopRemoteDebuggingServer() {
   SetDevToolsHttpHandler(nullptr);
+}
+
+// static
+std::string DevToolsAgentHost::GetRemoteDebuggingServerAddress() {
+  if (auto& handler = GetDevToolsHttpHandler()) {
+    return handler->GetServerIpAddress().ToString();
+  }
+  return std::string();
 }
 
 // static
@@ -290,21 +308,42 @@ DevToolsSession* DevToolsAgentHostImpl::SessionByClient(
   return it == session_by_client_.end() ? nullptr : it->second.get();
 }
 
+DevToolsSession* DevToolsAgentHostImpl::GetSessionByIdForTesting(
+    const std::string& session_id) {
+  DevToolsSession* session = nullptr;
+  if (session_id.empty()) {
+    session = sessions_.empty() ? nullptr : sessions_.front();
+  } else {
+    for (DevToolsSession* root_session : sessions_) {
+      if (root_session->HasChildSession(session_id)) {
+        session = root_session->GetSessionById(session_id);
+        break;
+      }
+    }
+  }
+  CHECK(session) << "Session not found: " << session_id;
+  return session;
+}
+
 bool DevToolsAgentHostImpl::AttachInternal(
     std::unique_ptr<DevToolsSession> session_owned) {
   scoped_refptr<DevToolsAgentHostImpl> protect(this);
   DevToolsSession* session = session_owned.get();
+  DevToolsManager* manager = DevToolsManager::GetInstance();
+  if (manager->delegate() &&
+      !manager->delegate()->AllowInspectingTarget(this)) {
+    return false;
+  }
   session->SetAgentHost(this);
   if (!AttachSession(session)) {
     return false;
   }
   renderer_channel_.AttachSession(session);
   sessions_.push_back(session);
-  DCHECK(!base::Contains(session_by_client_, session->GetClient()));
+  DCHECK(!session_by_client_.contains(session->GetClient()));
   session_by_client_.emplace(session->GetClient(), std::move(session_owned));
   if (sessions_.size() == 1)
     NotifyAttached();
-  DevToolsManager* manager = DevToolsManager::GetInstance();
   if (manager->delegate())
     manager->delegate()->ClientAttached(session);
   return true;
@@ -384,6 +423,10 @@ std::string DevToolsAgentHostImpl::GetOpenerFrameId() {
   return std::string();
 }
 
+std::string DevToolsAgentHostImpl::GetParentFrameId() {
+  return std::string();
+}
+
 bool DevToolsAgentHostImpl::CanAccessOpener() {
   return false;
 }
@@ -423,12 +466,26 @@ DevToolsSession::Mode DevToolsAgentHostImpl::GetSessionMode() {
 }
 
 bool DevToolsAgentHostImpl::Inspect() {
-  DevToolsManager* manager = DevToolsManager::GetInstance();
-  if (manager->delegate()) {
-    manager->delegate()->Inspect(this);
+  if (auto* delegate = DevToolsManager::GetInstance()->delegate()) {
+    delegate->Inspect(this);
     return true;
   }
   return false;
+}
+
+scoped_refptr<DevToolsAgentHost> DevToolsAgentHostImpl::GetDevToolsAgentHost() {
+  if (auto* delegate = DevToolsManager::GetInstance()->delegate()) {
+    return delegate->GetDevToolsAgentHost(this);
+  }
+  return nullptr;
+}
+
+scoped_refptr<DevToolsAgentHost> DevToolsAgentHostImpl::OpenDevTools(
+    const content::DevToolsManagerDelegate::DevToolsOptions& devtools_options) {
+  if (auto* delegate = DevToolsManager::GetInstance()->delegate()) {
+    return delegate->OpenDevTools(this, devtools_options);
+  }
+  return nullptr;
 }
 
 void DevToolsAgentHostImpl::ForceDetachAllSessions() {
@@ -513,7 +570,7 @@ std::string DevToolsAgentHostImpl::GetSubtype() {
 }
 
 void DevToolsAgentHostImpl::NotifyCreated() {
-  DCHECK(!base::Contains(GetDevtoolsInstances(), id_));
+  DCHECK(!GetDevtoolsInstances().contains(id_));
   GetDevtoolsInstances()[id_] = this;
   for (auto& observer : GetDevtoolsObservers())
     observer.DevToolsAgentHostCreated(this);
@@ -540,7 +597,7 @@ void DevToolsAgentHostImpl::NotifyCrashed(base::TerminationStatus status) {
 }
 
 void DevToolsAgentHostImpl::NotifyDestroyed() {
-  DCHECK(base::Contains(GetDevtoolsInstances(), id_));
+  DCHECK(GetDevtoolsInstances().contains(id_));
   for (auto& observer : GetDevtoolsObservers())
     observer.DevToolsAgentHostDestroyed(this);
   GetDevtoolsInstances().erase(id_);

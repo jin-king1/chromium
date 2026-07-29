@@ -8,15 +8,13 @@ import android.content.Context;
 import android.view.LayoutInflater;
 import android.view.ViewGroup;
 
-import androidx.annotation.NonNull;
-
 import org.chromium.base.Callback;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchControllerFactory;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchUtils;
 import org.chromium.chrome.browser.auxiliary_search.R;
 import org.chromium.chrome.browser.flags.ChromeFeatureList;
-import org.chromium.chrome.browser.magic_stack.ModuleConfigChecker;
 import org.chromium.chrome.browser.magic_stack.ModuleDelegate;
 import org.chromium.chrome.browser.magic_stack.ModuleProvider;
 import org.chromium.chrome.browser.magic_stack.ModuleProviderBuilder;
@@ -26,15 +24,15 @@ import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel;
 
 /** Builder to build the auxiliary search opt in module. */
-public class AuxiliarySearchModuleBuilder implements ModuleProviderBuilder, ModuleConfigChecker {
+@NullMarked
+public class AuxiliarySearchModuleBuilder implements ModuleProviderBuilder {
     private static final String CARD_AVAILABILITY_INPUT_NAME = "auxiliary_search_available";
 
     private final Context mContext;
     private final Runnable mOpenSettingsRunnable;
     private static boolean sShownInThisSession;
 
-    public AuxiliarySearchModuleBuilder(
-            @NonNull Context context, @NonNull Runnable openSettingsRunnable) {
+    public AuxiliarySearchModuleBuilder(Context context, Runnable openSettingsRunnable) {
         mContext = context;
         mOpenSettingsRunnable = openSettingsRunnable;
     }
@@ -43,8 +41,7 @@ public class AuxiliarySearchModuleBuilder implements ModuleProviderBuilder, Modu
 
     @Override
     public boolean build(
-            @NonNull ModuleDelegate moduleDelegate,
-            @NonNull Callback<ModuleProvider> onModuleBuiltCallback) {
+            ModuleDelegate moduleDelegate, Callback<ModuleProvider> onModuleBuiltCallback) {
         if (!AuxiliarySearchUtils.canShowCard(sShownInThisSession)) {
             return false;
         }
@@ -56,7 +53,7 @@ public class AuxiliarySearchModuleBuilder implements ModuleProviderBuilder, Modu
     }
 
     @Override
-    public ViewGroup createView(@NonNull ViewGroup parentView) {
+    public ViewGroup createView(ViewGroup parentView) {
         sShownInThisSession = true;
 
         ViewGroup viewGroup =
@@ -70,10 +67,7 @@ public class AuxiliarySearchModuleBuilder implements ModuleProviderBuilder, Modu
     }
 
     @Override
-    public void bind(
-            @NonNull PropertyModel model,
-            @NonNull ViewGroup view,
-            @NonNull PropertyKey propertyKey) {
+    public void bind(PropertyModel model, ViewGroup view, PropertyKey propertyKey) {
         AuxiliarySearchModuleViewBinder.bind(model, view, propertyKey);
     }
 

@@ -12,6 +12,7 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/run_loop.h"
+#include "base/strings/string_util.h"
 #include "base/test/bind.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/threading/thread_restrictions.h"
@@ -96,7 +97,7 @@ class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
 #endif  // BUILDFLAG(IS_ANDROID)
 
   void WriteInterfacesToFile(const base::FilePath& path) {
-    base::Value::List interfaces_list;
+    base::ListValue interfaces_list;
     base::RunLoop run_loop;
     std::vector<net::NetworkInterface> interfaces;
     GetNetworkService()->GetNetworkList(
@@ -109,7 +110,7 @@ class SandboxedNetworkListBrowserTest : public ContentBrowserTest {
     run_loop.Run();
 
     for (const auto& interface : interfaces) {
-      base::Value::Dict interface_dict;
+      base::DictValue interface_dict;
       interface_dict.Set("name", interface.name);
       interface_dict.Set("type", interface.type);
       interface_dict.Set("address", interface.address.ToString());

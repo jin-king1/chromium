@@ -13,14 +13,20 @@ import android.widget.ImageView;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.autofill.AutofillSheetUiControllerFactory;
 import org.chromium.ui.base.LocalizationUtils;
 import org.chromium.ui.widget.LoadingView;
 
 /** The view of the autofill virtual card enrollment bottom sheet UI. */
+@NullMarked
 /*package*/ class AutofillVcnEnrollBottomSheetView {
     /** The view that contains all other views. */
     final ViewGroup mContentView;
+
+    /** The drag handler of the bottom sheet. */
+    final ImageView mDragHandler;
 
     /** The view that optionally scrolls the contents on smaller screens. */
     final ScrollView mScrollView;
@@ -33,6 +39,9 @@ import org.chromium.ui.widget.LoadingView;
 
     /** The container for the card icon, label, and description. */
     final View mCardContainer;
+
+    /** The Google Pay icon. */
+    final ImageView mGpayIcon;
 
     /** The icon for the card. */
     final ImageView mIssuerIcon;
@@ -77,10 +86,12 @@ import org.chromium.ui.widget.LoadingView;
                 LocalizationUtils.isLayoutRtl()
                         ? View.LAYOUT_DIRECTION_RTL
                         : View.LAYOUT_DIRECTION_LTR);
+        mDragHandler = mContentView.findViewById(R.id.drag_handler);
         mScrollView = mContentView.findViewById(R.id.scroll_view);
         mDialogTitle = mContentView.findViewById(R.id.dialog_title);
         mVirtualCardDescription = mContentView.findViewById(R.id.virtual_card_description);
         mCardContainer = mContentView.findViewById(R.id.card_container);
+        mGpayIcon = mContentView.findViewById(R.id.gpay_icon);
         mIssuerIcon = mContentView.findViewById(R.id.issuer_icon);
         mCardLabel = mContentView.findViewById(R.id.card_label);
         mCardDescription = mContentView.findViewById(R.id.card_description);
@@ -90,5 +101,10 @@ import org.chromium.ui.widget.LoadingView;
         mCancelButton = mContentView.findViewById(R.id.cancel_button);
         mLoadingViewContainer = mContentView.findViewById(R.id.loading_view_container);
         mLoadingView = mContentView.findViewById(R.id.loading_view);
+
+        // Drag handler is not useful when shown as a dialog.
+        if (AutofillSheetUiControllerFactory.shouldUseNonBlockingDialog(context)) {
+            mDragHandler.setVisibility(View.GONE);
+        }
     }
 }

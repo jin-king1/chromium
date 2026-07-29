@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/spdy/spdy_stream.h"
 
 #include <stdint.h>
@@ -20,10 +15,12 @@
 #include <utility>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/functional/bind.h"
 #include "base/memory/ref_counted.h"
 #include "base/run_loop.h"
 #include "base/time/time.h"
+#include "net/base/network_handle.h"
 #include "net/base/request_priority.h"
 #include "net/base/session_usage.h"
 #include "net/dns/public/secure_dns_policy.h"
@@ -61,13 +58,15 @@ const std::string_view kPostBodyStringPiece(kPostBody, kPostBodyLength);
 // Creates a MockRead from the given serialized frame except for the last byte.
 MockRead ReadFrameExceptForLastByte(const spdy::SpdySerializedFrame& frame) {
   CHECK_GE(frame.size(), 2u);
-  return MockRead(ASYNC, frame.data(), frame.size() - 1);
+  std::string_view frame_view(frame);
+  return MockRead(ASYNC, frame_view.substr(0, frame.size() - 1u));
 }
 
 // Creates a MockRead from the last byte of the given serialized frame.
 MockRead LastByteOfReadFrame(const spdy::SpdySerializedFrame& frame) {
   CHECK_GE(frame.size(), 2u);
-  return MockRead(ASYNC, frame.data() + frame.size() - 1, 1);
+  std::string_view frame_view(frame);
+  return MockRead(ASYNC, frame_view.substr(frame.size() - 1u, 1));
 }
 
 }  // namespace
@@ -93,7 +92,8 @@ class SpdyStreamTest : public ::testing::Test, public WithTaskEnvironment {
                        ProxyChain::Direct(), SessionUsage::kDestination,
                        SocketTag(), NetworkAnonymizationKey(),
                        SecureDnsPolicy::kAllow,
-                       /*disable_cert_verification_network_fetches=*/false);
+                       /*disable_cert_verification_network_fetches=*/false,
+                       handles::kInvalidNetworkHandle);
     return CreateSpdySession(session_.get(), key, NetLogWithSource());
   }
 
@@ -170,11 +170,13 @@ class SpdyStreamTest : public ::testing::Test, public WithTaskEnvironment {
 };
 
 TEST_F(SpdyStreamTest, SendDataAfterOpen) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
-  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyPostReply(nullptr, 0));
+  spdy::SpdySerializedFrame resp(
+      spdy_util_.ConstructSpdyPostReply(base::span<const std::string_view>()));
   AddRead(resp);
 
   spdy::SpdySerializedFrame msg(
@@ -219,11 +221,13 @@ TEST_F(SpdyStreamTest, SendDataAfterOpen) {
 }
 
 TEST_F(SpdyStreamTest, BrokenConnectionDetectionSuccessfulRequest) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
-  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyPostReply(nullptr, 0));
+  spdy::SpdySerializedFrame resp(
+      spdy_util_.ConstructSpdyPostReply(base::span<const std::string_view>()));
   AddRead(resp);
 
   spdy::SpdySerializedFrame msg(
@@ -289,15 +293,17 @@ class StreamDelegateWithTrailers : public test::StreamDelegateWithBody {
 
 // Regression test for https://crbug.com/481033.
 TEST_F(SpdyStreamTest, Trailers) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   spdy::SpdySerializedFrame msg(
       spdy_util_.ConstructSpdyDataFrame(1, kPostBodyStringPiece, true));
   AddWrite(msg);
 
-  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyPostReply(nullptr, 0));
+  spdy::SpdySerializedFrame resp(
+      spdy_util_.ConstructSpdyPostReply(base::span<const std::string_view>()));
   AddRead(resp);
 
   spdy::SpdySerializedFrame echo(
@@ -347,12 +353,13 @@ TEST_F(SpdyStreamTest, Trailers) {
 }
 
 TEST_F(SpdyStreamTest, StreamError) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
-  spdy::SpdySerializedFrame resp(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(resp);
 
   spdy::SpdySerializedFrame msg(
@@ -415,8 +422,9 @@ TEST_F(SpdyStreamTest, StreamError) {
 // Make sure that large blocks of data are properly split up into frame-sized
 // chunks for a request/response (i.e., an HTTP-like) stream.
 TEST_F(SpdyStreamTest, SendLargeDataAfterOpenRequestResponse) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   std::string chunk_data(kMaxSpdyFrameChunkSize, 'x');
@@ -429,7 +437,8 @@ TEST_F(SpdyStreamTest, SendLargeDataAfterOpenRequestResponse) {
       spdy_util_.ConstructSpdyDataFrame(1, chunk_data, true));
   AddWrite(last_chunk);
 
-  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyPostReply(nullptr, 0));
+  spdy::SpdySerializedFrame resp(
+      spdy_util_.ConstructSpdyPostReply(base::span<const std::string_view>()));
   AddRead(resp);
 
   AddReadEOF();
@@ -468,11 +477,13 @@ TEST_F(SpdyStreamTest, SendLargeDataAfterOpenRequestResponse) {
 // Make sure that large blocks of data are properly split up into frame-sized
 // chunks for a bidirectional (i.e., non-HTTP-like) stream.
 TEST_F(SpdyStreamTest, SendLargeDataAfterOpenBidirectional) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
-  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyPostReply(nullptr, 0));
+  spdy::SpdySerializedFrame resp(
+      spdy_util_.ConstructSpdyPostReply(base::span<const std::string_view>()));
   AddRead(resp);
 
   std::string chunk_data(kMaxSpdyFrameChunkSize, 'x');
@@ -517,13 +528,13 @@ TEST_F(SpdyStreamTest, SendLargeDataAfterOpenBidirectional) {
 
 // Receiving a header with uppercase ASCII should result in a protocol error.
 TEST_F(SpdyStreamTest, UpperCaseHeaders) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
-  const char* const kExtraHeaders[] = {"X-UpperCase", "yes"};
-  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
-      kExtraHeaders, std::size(kExtraHeaders) / 2, 1));
+  const std::string_view kExtraHeaders[] = {"X-UpperCase", "yes"};
+  spdy::SpdySerializedFrame reply(
+      spdy_util_.ConstructSpdyGetReply(kExtraHeaders, 1));
   AddRead(reply);
 
   spdy::SpdySerializedFrame rst(
@@ -565,8 +576,8 @@ TEST_F(SpdyStreamTest, UpperCaseHeaders) {
 }
 
 TEST_F(SpdyStreamTest, HeadersMustHaveStatus) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   // Response headers without ":status" header field: protocol error.
@@ -617,12 +628,12 @@ TEST_F(SpdyStreamTest, HeadersMustHaveStatus) {
 }
 
 TEST_F(SpdyStreamTest, TrailersMustNotFollowTrailers) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(reply);
 
   spdy::SpdySerializedFrame body(
@@ -680,12 +691,12 @@ TEST_F(SpdyStreamTest, TrailersMustNotFollowTrailers) {
 }
 
 TEST_F(SpdyStreamTest, DataMustNotFollowTrailers) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(reply);
 
   spdy::SpdySerializedFrame body(
@@ -789,13 +800,13 @@ class SpdyStreamTestWithMockClock : public SpdyStreamTest {
 // Test that the response start time is recorded for non-informational response.
 TEST_F(SpdyStreamTestWithMockClock, NonInformationalResponseStart) {
   // Set up the request.
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   // Set up the response headers.
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   // Separate the headers into 2 fragments and add pauses between the fragments
   // so that the test runner can advance the mock clock to test timing
   // information.
@@ -852,8 +863,8 @@ TEST_F(SpdyStreamTestWithMockClock, NonInformationalResponseStart) {
 
 TEST_F(SpdyStreamTestWithMockClock, InformationalHeaders) {
   // Set up the request.
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   // Set up the informational response headers.
@@ -871,8 +882,8 @@ TEST_F(SpdyStreamTestWithMockClock, InformationalHeaders) {
   AddReadPause();
 
   // Set up the non-informational response headers and body.
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(reply);
   AddReadPause();
   spdy::SpdySerializedFrame body(
@@ -941,8 +952,8 @@ TEST_F(SpdyStreamTestWithMockClock, InformationalHeaders) {
 // callbacks are called as expected.
 TEST_F(SpdyStreamTestWithMockClock, EarlyHints) {
   // Set up the request.
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   // Set up two early hints response headers.
@@ -979,8 +990,8 @@ TEST_F(SpdyStreamTestWithMockClock, EarlyHints) {
   AddReadPause();
 
   // Set up the non-informational response headers and body.
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(reply);
   AddReadPause();
   spdy::SpdySerializedFrame body(
@@ -1078,8 +1089,8 @@ TEST_F(SpdyStreamTestWithMockClock, EarlyHints) {
 }
 
 TEST_F(SpdyStreamTest, StatusMustBeNumber) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   quiche::HttpHeaderBlock incorrect_headers;
@@ -1126,8 +1137,8 @@ TEST_F(SpdyStreamTest, StatusMustBeNumber) {
 }
 
 TEST_F(SpdyStreamTest, StatusCannotHaveExtraText) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   quiche::HttpHeaderBlock headers_with_status_text;
@@ -1179,8 +1190,8 @@ TEST_F(SpdyStreamTest, StatusCannotHaveExtraText) {
 }
 
 TEST_F(SpdyStreamTest, StatusMustBePresent) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   quiche::HttpHeaderBlock headers_without_status;
@@ -1232,8 +1243,9 @@ TEST_F(SpdyStreamTest, StatusMustBePresent) {
 // Call IncreaseSendWindowSize on a stream with a large enough delta to overflow
 // an int32_t. The SpdyStream should handle that case gracefully.
 TEST_F(SpdyStreamTest, IncreaseSendWindowSizeOverflow) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   AddReadPause();
@@ -1319,16 +1331,17 @@ void AdjustStreamSendWindowSize(const base::WeakPtr<SpdyStream>& stream,
 // and unstall.
 void SpdyStreamTest::RunResumeAfterUnstallRequestResponseTest(
     UnstallFunction unstall_function) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   spdy::SpdySerializedFrame body(
       spdy_util_.ConstructSpdyDataFrame(1, kPostBodyStringPiece, true));
   AddWrite(body);
 
-  spdy::SpdySerializedFrame resp(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(resp);
 
   AddReadEOF();
@@ -1389,14 +1402,15 @@ TEST_F(SpdyStreamTest, ResumeAfterSendWindowSizeAdjustRequestResponse) {
 // (i.e., non-HTTP-like) stream resumes after a stall and unstall.
 void SpdyStreamTest::RunResumeAfterUnstallBidirectionalTest(
     UnstallFunction unstall_function) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   AddReadPause();
 
-  spdy::SpdySerializedFrame resp(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame resp(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(resp);
 
   spdy::SpdySerializedFrame msg(
@@ -1467,14 +1481,14 @@ TEST_F(SpdyStreamTest, ResumeAfterSendWindowSizeAdjustBidirectional) {
 
 // Test calculation of amount of bytes received from network.
 TEST_F(SpdyStreamTest, ReceivedBytes) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   AddReadPause();
 
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(reply);
 
   AddReadPause();
@@ -1510,16 +1524,17 @@ TEST_F(SpdyStreamTest, ReceivedBytes) {
       stream->SendRequestHeaders(std::move(headers), NO_MORE_DATA_TO_SEND),
       IsError(ERR_IO_PENDING));
 
-  int64_t reply_frame_len = reply.size();
-  int64_t data_header_len = spdy::kDataFrameMinimumSize;
-  int64_t data_frame_len = data_header_len + kPostBodyLength;
-  int64_t response_len = reply_frame_len + data_frame_len;
+  base::ByteSize reply_frame_len(reply.size());
+  base::ByteSize data_header_len(spdy::kDataFrameMinimumSize);
+  base::ByteSize data_frame_len =
+      data_header_len + base::ByteSize(kPostBodyLength);
+  base::ByteSize response_len = reply_frame_len + data_frame_len;
 
-  EXPECT_EQ(0, stream->raw_received_bytes());
+  EXPECT_EQ(base::ByteSize(0), stream->raw_received_bytes());
 
   // REQUEST
   data.RunUntilPaused();
-  EXPECT_EQ(0, stream->raw_received_bytes());
+  EXPECT_EQ(base::ByteSize(0), stream->raw_received_bytes());
 
   // REPLY
   data.Resume();
@@ -1538,8 +1553,9 @@ TEST_F(SpdyStreamTest, ReceivedBytes) {
 
 // Regression test for https://crbug.com/810763.
 TEST_F(SpdyStreamTest, DataOnHalfClosedRemoveStream) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   quiche::HttpHeaderBlock response_headers;
@@ -1589,8 +1605,9 @@ TEST_F(SpdyStreamTest, DataOnHalfClosedRemoveStream) {
 }
 
 TEST_F(SpdyStreamTest, DelegateIsInformedOfEOF) {
-  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyPost(
-      kDefaultUrl, 1, kPostBodyLength, LOWEST, nullptr, 0));
+  spdy::SpdySerializedFrame req(
+      spdy_util_.ConstructSpdyPost(kDefaultUrl, 1, kPostBodyLength, LOWEST,
+                                   base::span<const std::string_view>()));
   AddWrite(req);
 
   quiche::HttpHeaderBlock response_headers;
@@ -1643,14 +1660,14 @@ TEST_F(SpdyStreamTest, DelegateIsInformedOfEOF) {
 // count of unacknowledged bytes to zero only after
 // kDefaultTimeToBufferSmallWindowUpdates time has passed.
 TEST_F(SpdyStreamTestWithMockClock, FlowControlSlowReads) {
-  spdy::SpdySerializedFrame req(
-      spdy_util_.ConstructSpdyGet(nullptr, 0, 1, LOWEST));
+  spdy::SpdySerializedFrame req(spdy_util_.ConstructSpdyGet(
+      base::span<const std::string_view>(), 1, LOWEST));
   AddWrite(req);
 
   AddReadPause();
 
-  spdy::SpdySerializedFrame reply(
-      spdy_util_.ConstructSpdyGetReply(nullptr, 0, 1));
+  spdy::SpdySerializedFrame reply(spdy_util_.ConstructSpdyGetReply(
+      base::span<const std::string_view>(), 1));
   AddRead(reply);
 
   AddReadPause();

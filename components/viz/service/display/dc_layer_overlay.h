@@ -67,7 +67,7 @@ class VIZ_SERVICE_EXPORT DCLayerOverlayProcessor final
   using RenderPassOverlayDataMap =
       base::flat_map<raw_ptr<AggregatedRenderPass>, RenderPassOverlayData>;
 
-  // Virtual for testing. All render passes that should be considered for
+  // All render passes that should be considered for
   // overlays in this frame should be in |render_pass_overlay_data_map|. After
   // this function executes, |render_pass_overlay_data_map[render_pass]| will
   // contain the all of the overlays promoted for |render_pass|. The z-order
@@ -75,10 +75,8 @@ class VIZ_SERVICE_EXPORT DCLayerOverlayProcessor final
   // pass, with positive z-orders being overlays and negative z-orders being
   // underlays. The caller must aggregate overlays from all render passes into
   // a global overlay list, taking into account the render pass's z-order.
-  virtual void Process(
+  void Process(
       const DisplayResourceProvider* resource_provider,
-      const FilterOperationsMap& render_pass_filters,
-      const FilterOperationsMap& render_pass_backdrop_filters,
       const SurfaceDamageRectList& surface_damage_rect_list_in_root_space,
       bool is_page_fullscreen_mode,
       RenderPassOverlayDataMap& render_pass_overlay_data_map);
@@ -150,15 +148,6 @@ class VIZ_SERVICE_EXPORT DCLayerOverlayProcessor final
   // See implementation for details.
   static bool IsPossibleFullScreenLetterboxing(const DrawQuad* quad_below,
                                                const gfx::Rect& display_rect);
-
-  // Promote a single quad in isolation, like how |Process| would internally.
-  // This ignores per-frame limitations such as max number of YUV quads, etc.
-  // This also adds other properties needed for delegated compositing.
-  std::optional<OverlayCandidate> FromTextureOrYuvQuad(
-      const DisplayResourceProvider* resource_provider,
-      const AggregatedRenderPass* render_pass,
-      const DrawQuad& quad,
-      bool is_possible_full_screen_letterboxing) const;
 
  private:
   // Information about a render pass's overlays from the previous frame. The
@@ -275,7 +264,6 @@ class VIZ_SERVICE_EXPORT DCLayerOverlayProcessor final
   void CollectCandidates(
       const DisplayResourceProvider* resource_provider,
       AggregatedRenderPass* render_pass,
-      const FilterOperationsMap& render_pass_backdrop_filters,
       RenderPassOverlayData& overlay_data,
       RenderPassCurrentFrameState& render_pass_state,
       GlobalOverlayState& global_overlay_state);
@@ -294,7 +282,6 @@ class VIZ_SERVICE_EXPORT DCLayerOverlayProcessor final
   void PromoteCandidates(
       const DisplayResourceProvider* resource_provider,
       AggregatedRenderPass* render_pass,
-      const FilterOperationsMap& render_pass_filters,
       const RenderPassPreviousFrameState& previous_frame_state,
       bool is_page_fullscreen_mode,
       RenderPassOverlayData& overlay_data,
@@ -369,7 +356,6 @@ class VIZ_SERVICE_EXPORT DCLayerOverlayProcessor final
   const int allowed_yuv_overlay_count_;
   uint64_t frames_since_last_qualified_multi_overlays_ = 0;
 
-  bool allow_promotion_hinting_ = false;
   bool is_on_battery_power_ = false;
 
   // Information about overlays from the previous frame.

@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "ui/compositor/debug_utils.h"
 
@@ -19,9 +15,12 @@
 #include "base/logging.h"
 #include "base/numerics/angle_conversions.h"
 #include "cc/trees/layer_tree_host.h"
+#include "ui/color/color_provider_utils.h"
 #include "ui/compositor/layer.h"
+#include "ui/compositor/layer_type.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "ui/gfx/geometry/rect_f.h"
 #include "ui/gfx/geometry/transform.h"
 #include "ui/gfx/interpolated_transform.h"
 
@@ -33,12 +32,10 @@ void PrintLayerHierarchyImp(const Layer* layer,
                             int indent,
                             const gfx::Point& mouse_location,
                             bool print_invisible,
-                            std::ostringstream* out,
-                            DebugLayerChildCallback child_cb) {
+                            std::ostringstream* out) {
   if (!print_invisible && !layer->visible()) {
     return;
   }
-
   std::string indent_str(indent, ' ');
 
   gfx::Point transformed_mouse_location = layer->transform()
@@ -63,8 +60,6 @@ void PrintLayerHierarchyImp(const Layer* layer,
       break;
     case ui::LAYER_TEXTURED:
       *out << " textured";
-      if (layer->fills_bounds_opaquely())
-        *out << " opaque";
       break;
     case ui::LAYER_SOLID_COLOR:
       *out << " solid";
@@ -74,8 +69,16 @@ void PrintLayerHierarchyImp(const Layer* layer,
       break;
   }
 
+  if (layer->fills_bounds_opaquely()) {
+    *out << " opaque";
+  }
+
   if (!layer->visible())
     *out << " !visible";
+
+  if (layer->GetMasksToBounds()) {
+    *out << " masks-to-bounds";
+  }
 
   std::string property_indent_str(indent+3, ' ');
   *out << '\n' << property_indent_str;
@@ -110,6 +113,12 @@ void PrintLayerHierarchyImp(const Layer* layer,
          << layer->rounded_corner_radii().ToString();
   }
 
+  if (auto* solid_layer = layer->AsSolidColor()) {
+    *out << "\n" << property_indent_str;
+    *out << "background-color="
+         << ui::SkColorName(solid_layer->background_color().toSkColor());
+  }
+
   const ui::Layer* mask = const_cast<ui::Layer*>(layer)->layer_mask_layer();
 
   if (mask) {
@@ -142,11 +151,9 @@ void PrintLayerHierarchyImp(const Layer* layer,
 
   *out << '\n';
 
-  std::vector<raw_ptr<ui::Layer, VectorExperimental>> children =
-      child_cb ? child_cb.Run(layer) : layer->children();
-  for (ui::Layer* child : children) {
+  for (ui::Layer* child : layer->children()) {
     PrintLayerHierarchyImp(child, indent + 3, mouse_location_in_layer,
-                           print_invisible, out, child_cb);
+                           print_invisible, out);
   }
 }
 
@@ -164,11 +171,9 @@ void PrintLayerHierarchy(const Layer* layer,
 void PrintLayerHierarchy(const Layer* layer,
                          const gfx::Point& mouse_location,
                          bool print_invisible,
-                         std::ostringstream* out,
-                         DebugLayerChildCallback child_cb) {
+                         std::ostringstream* out) {
   *out << "Layer hierarchy:\n";
-  PrintLayerHierarchyImp(layer, 0, mouse_location, print_invisible, out,
-                         child_cb);
+  PrintLayerHierarchyImp(layer, 0, mouse_location, print_invisible, out);
 }
 
 }  // namespace ui

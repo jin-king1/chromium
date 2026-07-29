@@ -5,14 +5,48 @@
 import type {Value} from '//resources/mojo/mojo/public/mojom/base/values.mojom-webui.js';
 
 import type {Assignment as AssignmentMojom, Config, ControlledTab as ControlledTabMojom, Course, IdentifiedActivity as Activity, Identity as IdentityMojom, Material as MaterialMojom, NetworkInfo as NetworkInfoMojom, PageHandlerRemote, TabInfo, Window} from '../mojom/boca.mojom-webui.js';
+import {CrdConnectionState as CrdConnectionStateMojom, CreateSessionError, SpeechRecognitionInstallState as SpeechRecognitionInstallStateMojom, SubmitAccessCodeError} from '../mojom/boca.mojom-webui.js';
 
-import type {BocaValidPref, CaptionConfig, ClientApiDelegate, ControlledTab, IdentifiedActivity, Identity, NetworkInfo, OnTaskConfig, Permission, PermissionSetting, SessionConfig} from './boca_app.js';
-import {SubmitAccessCodeResult} from './boca_app.js';
+import {BocaValidPref, CaptionConfig, ClientApiDelegate, ControlledTab, CrdConnectionState, CreateSessionResult, IdentifiedActivity, Identity, NetworkInfo, OnTaskConfig, Permission, PermissionSetting, SessionConfig, SpeechRecognitionInstallState, SubmitAccessCodeResult} from './boca_app.js';
+
 
 const MICRO_SECS_IN_MINUTES: bigint = 60000000n;
 
 function resultHasError(result: any) {
   return !(result.error === undefined || result.error === null);
+}
+
+export function getSpeechRecognitionInstallStateMojomToUI(
+    state: SpeechRecognitionInstallStateMojom) {
+  switch (state) {
+    case SpeechRecognitionInstallStateMojom.kUnknown:
+      return SpeechRecognitionInstallState.UNKNOWN;
+    case SpeechRecognitionInstallStateMojom.kSystemLanguageUnsupported:
+      return SpeechRecognitionInstallState.SYSTEM_LANGUAGE_NOT_SUPPORTED;
+    case SpeechRecognitionInstallStateMojom.kInProgress:
+      return SpeechRecognitionInstallState.IN_PROGRESS;
+    case SpeechRecognitionInstallStateMojom.kFailed:
+      return SpeechRecognitionInstallState.FAILED;
+    case SpeechRecognitionInstallStateMojom.kReady:
+      return SpeechRecognitionInstallState.READY;
+    default:
+      return SpeechRecognitionInstallState.UNKNOWN;
+  }
+}
+
+export function getCrdConnectionStateMojomToUI(state: CrdConnectionStateMojom) {
+  switch (state) {
+    case CrdConnectionStateMojom.kUnknown:
+      return CrdConnectionState.UNKNOWN;
+    case CrdConnectionStateMojom.kConnecting:
+      return CrdConnectionState.CONNECTING;
+    case CrdConnectionStateMojom.kConnected:
+      return CrdConnectionState.CONNECTED;
+    case CrdConnectionStateMojom.kDisconnected:
+      return CrdConnectionState.DISCONNECTED;
+    default:
+      return CrdConnectionState.UNKNOWN;
+  }
 }
 
 export function getStudentActivityMojomToUI(activities: Activity[]):
@@ -21,6 +55,7 @@ export function getStudentActivityMojomToUI(activities: Activity[]):
     return {
       id: item.id,
       studentActivity: {
+        studentStatusDetail: item.activity.studentStatusDetail.valueOf(),
         isActive: item.activity.isActive,
         activeTab: item.activity.activeTab ? item.activity.activeTab :
                                              undefined,
@@ -30,6 +65,7 @@ export function getStudentActivityMojomToUI(activities: Activity[]):
         viewScreenSessionCode: item.activity.viewScreenSessionCode ?
             item.activity.viewScreenSessionCode :
             undefined,
+        geminiState: item.activity.geminiState.valueOf(),
       },
     };
   });
@@ -47,38 +83,37 @@ export function getSessionConfigMojomToUI(session: Config|
       id: session.teacher.id,
       name: session.teacher.name,
       email: session.teacher.email,
-      photoUrl: session.teacher.photoUrl ? session.teacher.photoUrl.url :
-                                           undefined,
+      photoUrl: session.teacher.photoUrl ?? undefined,
     } :
                                undefined,
-    students:
-        session.students.map((item: IdentityMojom) => {
+    students: session.students.map((item: IdentityMojom) => {
+      return {
+        id: item.id,
+        name: item.name,
+        email: item.email,
+        photoUrl: item.photoUrl ?? undefined,
+      };
+    }),
+    studentsJoinViaCode:
+        session.studentsJoinViaCode.map((item: IdentityMojom) => {
           return {
             id: item.id,
             name: item.name,
             email: item.email,
-            photoUrl: item.photoUrl ? item.photoUrl.url : undefined,
+            photoUrl: item.photoUrl ?? undefined,
           };
         }),
-    studentsJoinViaCode:
-        session.studentsJoinViaCode.map(
-            (item: IdentityMojom) => {
-              return {
-                id: item.id,
-                name: item.name,
-                email: item.email,
-                photoUrl: item.photoUrl ? item.photoUrl.url : undefined,
-              };
-            }),
     onTaskConfig: {
       isLocked: session.onTaskConfig.isLocked,
+      isPaused: session.onTaskConfig.isPaused,
       tabs: session.onTaskConfig.tabs.map((item: ControlledTabMojom) => {
         return {
           tab: {
             id: item.tab.id ? item.tab.id : undefined,
-            url: item.tab.url.url,
+            url: item.tab.url,
             title: item.tab.title,
-            favicon: item.tab.favicon.url,
+            favicon: item.tab.favicon,
+            urlType: item.tab.urlType?.valueOf(),
           },
           navigationType: item.navigationType.valueOf(),
         };
@@ -106,9 +141,6 @@ export class ClientDelegateFactory {
   private clientDelegateImpl: ClientApiDelegate;
   constructor(pageHandler: PageHandlerRemote) {
     this.clientDelegateImpl = {
-      authenticateWebview: async () => {
-        return (await pageHandler.authenticateWebview()).success;
-      },
       getWindowsTabsList: async () => {
         const result = await pageHandler.getWindowsTabsList();
         return result.windowList.map((window: Window) => {
@@ -118,8 +150,9 @@ export class ClientDelegateFactory {
               return {
                 id: tab.id ? tab.id : undefined,
                 title: tab.title,
-                url: tab.url.url,
-                favicon: tab.favicon.url,
+                url: tab.url,
+                favicon: tab.favicon,
+                urlType: tab.urlType?.valueOf(),
               };
             }),
           };
@@ -142,7 +175,7 @@ export class ClientDelegateFactory {
             id: student.id,
             name: student.name,
             email: student.email,
-            photoUrl: student.photoUrl ? student.photoUrl.url : undefined,
+            photoUrl: student.photoUrl ? student.photoUrl : undefined,
           };
         });
       },
@@ -151,7 +184,7 @@ export class ClientDelegateFactory {
         return result.assignments.map((assignment: AssignmentMojom) => {
           return {
             title: assignment.title,
-            url: assignment.url.url,
+            url: assignment.url,
             lastUpdateTime: assignment.lastUpdateTime,
             materials: assignment.materials.map((material: MaterialMojom) => {
               return {title: material.title, type: material.type.valueOf()};
@@ -175,19 +208,21 @@ export class ClientDelegateFactory {
               id: item.id,
               name: item.name,
               email: item.email,
-              photoUrl: item.photoUrl ? {url: item.photoUrl} : null,
+              photoUrl: item.photoUrl ? item.photoUrl : null,
             };
           }),
           onTaskConfig: {
             isLocked: sessionConfig.onTaskConfig?.isLocked,
+            isPaused: sessionConfig.onTaskConfig?.isPaused,
             tabs:
                 sessionConfig.onTaskConfig?.tabs.map((item: ControlledTab) => {
                   return {
                     tab: {
                       id: null,
-                      url: {url: item.tab.url},
+                      url: item.tab.url,
                       title: item.tab.title,
-                      favicon: {url: item.tab.favicon},
+                      favicon: item.tab.favicon,
+                      urlType: item.tab.urlType?.valueOf() ?? null,
                     },
                     navigationType: item.navigationType.valueOf(),
                   };
@@ -195,7 +230,16 @@ export class ClientDelegateFactory {
           },
           captionConfig: sessionConfig.captionConfig,
         } as Config);
-        return result.success;
+        if (!resultHasError(result)) {
+          return CreateSessionResult.SUCCESS;
+        } else if (result.error == CreateSessionError.kHTTPError) {
+          return CreateSessionResult.HTTP_ERROR;
+        } else if (result.error == CreateSessionError.kNetworkRestriction) {
+          return CreateSessionResult.NETWORK_RESTRICTION;
+        } else if (result.error == CreateSessionError.kMaxStudentsExceeded) {
+          return CreateSessionResult.MAX_STUDENTS_EXCEEDED;
+        }
+        return CreateSessionResult.SUCCESS;
       },
       getSession: async () => {
         const result = (await pageHandler.getSession()).result;
@@ -222,17 +266,31 @@ export class ClientDelegateFactory {
         const result = await pageHandler.removeStudent(id);
         return !resultHasError(result);
       },
+      addStudents: async (students: Identity[]) => {
+        const result =
+            await pageHandler.addStudents(students?.map((item: Identity) => {
+              return {
+                id: item.id,
+                name: item.name,
+                email: item.email,
+                photoUrl: item.photoUrl ? item.photoUrl : null,
+              };
+            }));
+        return !resultHasError(result);
+      },
       updateOnTaskConfig: async (onTaskConfig: OnTaskConfig) => {
         const result = await pageHandler.updateOnTaskConfig(
             {
               isLocked: onTaskConfig.isLocked,
+              isPaused: onTaskConfig.isPaused ? onTaskConfig.isPaused : false,
               tabs: onTaskConfig.tabs.map((item: ControlledTab) => {
                 return {
                   tab: {
                     id: null,
-                    url: {url: item.tab.url},
+                    url: item.tab.url,
                     title: item.tab.title,
-                    favicon: {url: item.tab.favicon},
+                    favicon: item.tab.favicon,
+                    urlType: item.tab.urlType?.valueOf() ?? null,
                   },
                   navigationType: item.navigationType.valueOf(),
                 };
@@ -254,8 +312,12 @@ export class ClientDelegateFactory {
         const result = await pageHandler.submitAccessCode(code);
         if (!resultHasError(result)) {
           return SubmitAccessCodeResult.SUCCESS;
+        } else if (result.error == SubmitAccessCodeError.kInvalid) {
+          return SubmitAccessCodeResult.INVALID_CODE;
+        } else if (result.error == SubmitAccessCodeError.kNetworkRestriction) {
+          return SubmitAccessCodeResult.NETWORK_RESTRICTION;
         }
-        return SubmitAccessCodeResult.INVALID_CODE;
+        return SubmitAccessCodeResult.SUCCESS;
       },
       viewStudentScreen: async (id: string) => {
         const result = await pageHandler.viewStudentScreen(id);
@@ -281,11 +343,45 @@ export class ClientDelegateFactory {
                     url, permission.valueOf(), setting.valueOf()))
             .success;
       },
-      closeTab: async (tabId: number) => {
-        return (await pageHandler.closeTab(tabId)).success;
-      },
       openFeedbackDialog: async () => {
         await pageHandler.openFeedbackDialog();
+      },
+      refreshWorkbook: async () => {
+        await pageHandler.refreshWorkbook();
+      },
+      getSpeechRecognitionInstallationStatus: async () => {
+        return getSpeechRecognitionInstallStateMojomToUI(
+            (await pageHandler.getSpeechRecognitionInstallationStatus()).state);
+      },
+      renotifyStudent: async (id: string) => {
+        const result = await pageHandler.renotifyStudent(id);
+        return !resultHasError(result);
+      },
+      startSpotlight: async (crdConnectionCode: string) => {
+        return await pageHandler.startSpotlight(crdConnectionCode);
+      },
+      presentStudentScreen: async (student: Identity, receiverId: string) => {
+        const studentMojom: IdentityMojom = {
+          id: student.id,
+          name: student.name,
+          email: student.email,
+          photoUrl: student.photoUrl ? student.photoUrl : null
+        };
+        return (await pageHandler.presentStudentScreen(
+                    studentMojom, receiverId))
+            .success;
+      },
+      stopPresentingStudentScreen: async () => {
+        return (await pageHandler.stopPresentingStudentScreen()).success;
+      },
+      presentOwnScreen: async (receiverId: string) => {
+        return (await pageHandler.presentOwnScreen(receiverId)).success;
+      },
+      stopPresentingOwnScreen: async () => {
+        return (await pageHandler.stopPresentingOwnScreen()).success;
+      },
+      getGeminiStatus: async () => {
+        return (await pageHandler.getGeminiStatus()).enabled;
       },
     };
   }

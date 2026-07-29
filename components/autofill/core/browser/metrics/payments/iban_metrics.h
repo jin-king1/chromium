@@ -5,16 +5,21 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_PAYMENTS_IBAN_METRICS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_PAYMENTS_IBAN_METRICS_H_
 
+#include <memory>
+#include <string_view>
+#include <vector>
+
 #include "base/time/time.h"
 #include "components/autofill/core/browser/data_model/payments/iban.h"
-#include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 
 namespace autofill::autofill_metrics {
 
 // This includes all possible results.
+//
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+//
 // A java IntDef@ is generated from this.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
 enum class SaveIbanPromptResult {
@@ -35,8 +40,10 @@ enum class SaveIbanPromptResult {
 };
 
 // Metrics to track event when the IBAN prompt is offered.
+//
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
+//
 // A java IntDef@ is generated from this.
 // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.autofill
 enum class SaveIbanPromptOffer {
@@ -50,6 +57,7 @@ enum class SaveIbanPromptOffer {
 
 // Metrics to track events related to individual IBAN suggestions in the
 // IBANs suggestions popup.
+//
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 enum class IbanSuggestionsEvent {
@@ -68,7 +76,6 @@ enum class IbanSuggestionsEvent {
   // suggestion for the same field, or if the user alternates between this IBAN
   // field and the other non-IBAN fields and then click on IBAN suggestion.
   kLocalIbanSuggestionSelectedOnce = 3,
-
   // An individual server IBAN suggestion was selected.
   kServerIbanSuggestionSelected = 4,
   // An individual server IBAN suggestion was selected. Logged only once per
@@ -80,6 +87,9 @@ enum class IbanSuggestionsEvent {
 };
 
 // Metrics to track the site blocklist status when showing IBAN suggestions.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 enum class IbanSuggestionBlockListStatus {
   // IBAN suggestions were allowed.
   kAllowed = 0,
@@ -93,6 +103,7 @@ enum class IbanSuggestionBlockListStatus {
 
 // Log all the scenarios that contribute to the decision of whether IBAN
 // upload is enabled or not.
+//
 // These values are persisted to logs. Entries should not be renumbered and
 // numeric values should never be reused.
 enum class IbanUploadEnabledStatus {
@@ -108,6 +119,9 @@ enum class IbanUploadEnabledStatus {
 // Metric to measure if an IBAN for which an upload action was taken (offered,
 // accepted, declined, ignored) is already stored as a local IBAN on the device
 // or if it's a new IBAN.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 enum class UploadIbanOriginMetric {
   // IBAN upload action happened for a local IBAN already on the device.
   kLocalIban = 0,
@@ -117,6 +131,9 @@ enum class UploadIbanOriginMetric {
 };
 
 // Metric to track the metrics for an IBAN upload offer.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
 enum class UploadIbanActionMetric {
   kOffered = 0,
   kAccepted = 1,
@@ -124,6 +141,27 @@ enum class UploadIbanActionMetric {
   kIgnored = 3,
   kMaxValue = kIgnored,
 };
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused. The event will be logged only once
+// per flow.
+enum class IbanFormEvent {
+  // The IBAN suggestion was shown to the user.
+  kSuggestionShown = 0,
+  // A local IBAN is filled for the IBAN form. For local IBANs, the `select`
+  // and `fill` events happen simultaneously, so only a single 'filled' status
+  // is recorded.
+  kLocalIbanFilled = 1,
+  // A server IBAN is selected for the form field.
+  kServerIbanSelected = 2,
+  // A server IBAN is filled for the IBAN form.
+  kServerIbanFilled = 3,
+  // The form was submitted after IBAN autofill finished.
+  kFormSubmitted = 4,
+  kMaxValue = kFormSubmitted,
+};
+
+void LogIbanFormEvent(IbanFormEvent event);
 
 // Logs various metrics about the local/server IBANs associated with a profile.
 // This should be called each time a new Chrome profile is launched.

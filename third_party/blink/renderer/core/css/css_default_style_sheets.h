@@ -66,7 +66,6 @@ class CSSDefaultStyleSheets final
   RuleSet* DefaultMathMLStyle() { return default_mathml_style_.Get(); }
   RuleSet* DefaultSVGStyle() { return default_svg_style_.Get(); }
   RuleSet* DefaultHtmlQuirksStyle() { return default_html_quirks_style_.Get(); }
-  RuleSet* DefaultPrintStyle() { return default_print_style_.Get(); }
   RuleSet* DefaultViewSourceStyle();
   RuleSet* DefaultJSONDocumentStyle();
   RuleSet* DefaultForcedColorStyle() {
@@ -100,9 +99,17 @@ class CSSDefaultStyleSheets final
   StyleSheetContents* ScrollMarkerStyleSheet() {
     return scroll_marker_style_sheet_.Get();
   }
+  StyleSheetContents* OverscrollStyleSheet() {
+    return overscroll_style_sheet_.Get();
+  }
   StyleSheetContents* ForcedColorsStyleSheet() {
     return forced_colors_style_sheet_.Get();
   }
+  StyleSheetContents* DefaultViewTransitionStyleSheet() {
+    return default_view_transition_style_sheet_.Get();
+  }
+
+  CORE_EXPORT void ResetTextTrackStyleSheet();
 
   CORE_EXPORT void PrepareForLeakDetection();
 
@@ -123,6 +130,12 @@ class CSSDefaultStyleSheets final
   }
 
   void CollectFeaturesTo(const Document&, RuleFeatureSet&);
+
+  void ForEachRuleFeatureSet(
+      const Document& document,
+      bool call_for_each_stylesheet,
+      base::RepeatingCallback<void(const RuleFeatureSet&, StyleSheetContents*)>
+          func);
 
   HeapVector<std::pair<unsigned, RuleSetGroup>>& RuleSetGroupCache() {
     return rule_set_group_cache_;
@@ -159,7 +172,6 @@ class CSSDefaultStyleSheets final
   Member<RuleSet> default_mathml_style_;
   Member<RuleSet> default_svg_style_;
   Member<RuleSet> default_html_quirks_style_;
-  Member<RuleSet> default_print_style_;
   Member<RuleSet> default_view_source_style_;
   Member<RuleSet> default_forced_color_style_;
   Member<RuleSet> default_pseudo_element_style_;
@@ -183,8 +195,11 @@ class CSSDefaultStyleSheets final
   Member<StyleSheetContents> marker_style_sheet_;
   Member<StyleSheetContents> scroll_button_style_sheet_;
   Member<StyleSheetContents> scroll_marker_style_sheet_;
+  Member<StyleSheetContents> overscroll_style_sheet_;
   Member<StyleSheetContents> forced_colors_style_sheet_;
-
+  Member<StyleSheetContents> view_source_style_sheet_;
+  Member<StyleSheetContents> json_style_sheet_;
+  Member<StyleSheetContents> default_view_transition_style_sheet_;
   std::unique_ptr<UAStyleSheetLoader> media_controls_style_sheet_loader_;
 
   // This is used by StyleResolver to avoid building up MatchRequests

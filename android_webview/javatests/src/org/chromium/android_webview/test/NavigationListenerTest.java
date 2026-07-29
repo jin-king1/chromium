@@ -21,22 +21,22 @@ import org.junit.runners.Parameterized;
 import org.junit.runners.Parameterized.UseParametersRunnerFactory;
 
 import org.chromium.android_webview.AwContents;
-import org.chromium.android_webview.AwFeatureMap;
 import org.chromium.android_webview.JsReplyProxy;
 import org.chromium.android_webview.WebMessageListener;
+import org.chromium.android_webview.common.AwFeatureMap;
 import org.chromium.android_webview.common.AwFeatures;
 import org.chromium.android_webview.test.TestAwContentsClient.OnReceivedTitleHelper;
 import org.chromium.base.test.util.Batch;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
-import org.chromium.components.embedder_support.util.WebResourceResponseInfo;
+import org.chromium.base.test.util.Restriction;
 import org.chromium.content_public.browser.test.util.HistoryUtils;
 import org.chromium.content_public.browser.test.util.TestCallbackHelperContainer.OnPageStartedHelper;
 import org.chromium.net.test.EmbeddedTestServer;
 import org.chromium.net.test.util.TestWebServer;
+import org.chromium.ui.test.util.DeviceRestriction;
 
-import java.io.ByteArrayInputStream;
 import java.net.URLEncoder;
 
 /** Test suite for the special navigation listener that will be notified of navigation messages */
@@ -60,6 +60,7 @@ public class NavigationListenerTest extends AwParameterizedTest {
     private TestAwContentsClient mContentsClient;
     private AwContents mAwContents;
     private TestWebMessageListener mListener;
+    private boolean mPageDeletedMessagePending;
 
     public NavigationListenerTest(AwSettingsMutation param) {
         this.mActivityTestRule = new AwActivityTestRule(param.getMutation());
@@ -95,7 +96,6 @@ public class NavigationListenerTest extends AwParameterizedTest {
     @LargeTest
     @Feature({"AndroidWebView", "NavigationListener"})
     @CommandLineFlags.Add({"enable-features=EnableNavigationListener"})
-    @DisabledTest(message = "crbug.com/332809183")
     public void testNavigationVariousCases() throws Throwable {
         // Add the special listener object which will receive navigation messages.
         addWebMessageListenerOnUiThread(
@@ -123,17 +123,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy page2ReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ false,
-                        /* isReload */ false,
-                        /* isHistory */ false, /* isBack */
-                        false, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ true,
-                        /* pageLoadEnd */ true);
+                        /* isSameDocument= */ false,
+                        /* isReload= */ false,
+                        /* isHistory= */ false,
+                        /* isBack= */ false,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ true,
+                        /* loadEnds= */ true);
         Assert.assertNotEquals(page1ReplyProxy, page2ReplyProxy);
 
         // Navigation #2: Do a same-document navigation to `url2`.
@@ -141,17 +141,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy currentPageReplyProxy =
                 assertNavigationMessages(
                         url2,
-                        /* isSameDocument */ true,
-                        /* isReload */ false,
-                        /* isHistory */ false, /* isBack */
-                        false, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ false,
-                        /* pageLoadEnd */ false);
+                        /* isSameDocument= */ true,
+                        /* isReload= */ false,
+                        /* isHistory= */ false,
+                        /* isBack= */ false,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ false,
+                        /* loadEnds= */ false);
         Assert.assertEquals(page2ReplyProxy, currentPageReplyProxy);
 
         // Navigation #3: Do a renderer-initiated reload.
@@ -161,17 +161,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy page3ReplyProxy =
                 assertNavigationMessages(
                         url2,
-                        /* isSameDocument */ false,
-                        /* isReload */ true,
-                        /* isHistory */ false, /* isBack */
-                        false, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ true,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ true,
-                        /* pageLoadEnd */ true);
+                        /* isSameDocument= */ false,
+                        /* isReload= */ true,
+                        /* isHistory= */ false,
+                        /* isBack= */ false,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ true,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ true,
+                        /* loadEnds= */ true);
         Assert.assertNotEquals(page1ReplyProxy, page3ReplyProxy);
         Assert.assertNotEquals(page2ReplyProxy, page3ReplyProxy);
 
@@ -181,41 +181,41 @@ public class NavigationListenerTest extends AwParameterizedTest {
         currentPageReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ true,
-                        /* isReload */ false,
-                        /* isHistory */ true, /* isBack */
-                        true, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ true,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ false,
-                        /* pageLoadEnd */ false);
+                        /* isSameDocument= */ true,
+                        /* isReload= */ false,
+                        /* isHistory= */ true,
+                        /* isBack= */ true,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ true,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ false,
+                        /* loadEnds= */ false);
         Assert.assertEquals(page3ReplyProxy, currentPageReplyProxy);
 
         // Navigation #5: Do a navigation to a non-existent page, resulting in a 404 error.
         mActivityTestRule.executeJavaScriptAndWaitForResult(
                 mAwContents, mContentsClient, "location.href = '404.html'; ");
 
-        data = getNextMessageIgnoreFCP(mListener);
+        data = getNextMessageIgnoreFCP();
         String navigationId = new JSONObject(data.getAsString()).getString("id");
         assertNavigationMessage(
                 data,
                 "NAVIGATION_STARTED",
                 mTestServer.getURL(RESOURCE_PATH + "/404.html"),
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isPageInitiated */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isPageInitiated= */ true);
         Assert.assertEquals(page3ReplyProxy, data.mReplyProxy);
 
         // The previous page can be stored into the BFCache. If the BFCache
         // is not enabled, the original page will be deleted.
         if (!AwFeatureMap.isEnabled(AwFeatures.WEBVIEW_BACK_FORWARD_CACHE)) {
-            data = getNextMessageIgnoreFCP(mListener);
+            data = getNextMessageIgnoreFCP();
             Assert.assertEquals(page3ReplyProxy, data.mReplyProxy);
             assertNavigationMessageType(data, "PAGE_DELETED");
         }
@@ -225,15 +225,15 @@ public class NavigationListenerTest extends AwParameterizedTest {
         assertNavigationCompletedMessage(
                 data,
                 mAwContents.getUrl().getSpec(),
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ true,
-                /* isPageInitiated */ true,
-                /* committed */ true,
-                /* statusCode */ 404);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ true,
+                /* isPageInitiated= */ true,
+                /* committed= */ true,
+                /* statusCode= */ 404);
         JsReplyProxy page4ReplyProxy = data.mReplyProxy;
         Assert.assertNotEquals(page1ReplyProxy, page4ReplyProxy);
         Assert.assertNotEquals(page2ReplyProxy, page4ReplyProxy);
@@ -272,17 +272,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
             JsReplyProxy currentReplyProxy =
                     assertNavigationMessages(
                             url204,
-                            /* isSameDocument */ false,
-                            /* isReload */ false,
-                            /* isHistory */ false, /* isBack */
-                            false, /* isRestore */
-                            false,
-                            /* isErrorPage */ false,
-                            /* isPageInitiated */ false,
-                            /* committed */ false,
-                            /* statusCode */ 204,
-                            /* previousPageDeleted */ false,
-                            /* pageLoadEnd */ false);
+                            /* isSameDocument= */ false,
+                            /* isReload= */ false,
+                            /* isHistory= */ false,
+                            /* isBack= */ false,
+                            /* isRestore= */ false,
+                            /* isErrorPage= */ false,
+                            /* isPageInitiated= */ false,
+                            /* committed= */ false,
+                            /* statusCode= */ 204,
+                            /* previousPageDeleted= */ false,
+                            /* loadEnds= */ false);
             Assert.assertEquals(page1ReplyProxy, currentReplyProxy);
 
             // No more messages as the navigation didn't commit.
@@ -312,17 +312,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
                 mAwContents, mContentsClient.getOnPageFinishedHelper(), pageWithIframeURL);
         assertNavigationMessages(
                 pageWithIframeURL,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ true,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ true,
+                /* loadEnds= */ true);
 
         // Check that the main document's title has been updated to the iframe's URL, indicating
         // that the iframe had finished loading.
@@ -334,18 +334,18 @@ public class NavigationListenerTest extends AwParameterizedTest {
         final String url2 = loadUrlFromPath(PAGE_B);
         assertNavigationMessages(
                 url2,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ !AwFeatureMap.isEnabled(
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ !AwFeatureMap.isEnabled(
                         AwFeatures.WEBVIEW_BACK_FORWARD_CACHE),
-                /* pageLoadEnd */ true);
+                /* loadEnds= */ true);
     }
 
     // Test navigation messages when navigating to a URL that redirects.
@@ -379,12 +379,12 @@ public class NavigationListenerTest extends AwParameterizedTest {
                 data,
                 "NAVIGATION_STARTED",
                 multipleRedirectsURL,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isPageInitiated */ false);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isPageInitiated= */ false);
 
         data = mListener.waitForOnPostMessage();
         Assert.assertEquals(page1ReplyProxy, data.mReplyProxy);
@@ -393,12 +393,12 @@ public class NavigationListenerTest extends AwParameterizedTest {
                 data,
                 "NAVIGATION_REDIRECTED",
                 redirectingURL,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isPageInitiated */ false);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isPageInitiated= */ false);
 
         data = mListener.waitForOnPostMessage();
         Assert.assertEquals(page1ReplyProxy, data.mReplyProxy);
@@ -407,12 +407,12 @@ public class NavigationListenerTest extends AwParameterizedTest {
                 data,
                 "NAVIGATION_REDIRECTED",
                 redirectTargetURL,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isPageInitiated */ false);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isPageInitiated= */ false);
 
         // Since this navigation creates a new Page, the previous Page gets
         // deleted.
@@ -427,15 +427,15 @@ public class NavigationListenerTest extends AwParameterizedTest {
         assertNavigationCompletedMessage(
                 data,
                 redirectTargetURL,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200);
         JsReplyProxy page2ReplyProxy = data.mReplyProxy;
         Assert.assertNotEquals(page1ReplyProxy, page2ReplyProxy);
 
@@ -467,34 +467,34 @@ public class NavigationListenerTest extends AwParameterizedTest {
                 mAwContents, mContentsClient.getOnPageFinishedHelper(), "about:blank");
         assertNavigationMessages(
                 "about:blank",
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ true,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ true,
+                /* loadEnds= */ true);
 
         // Navigate same-document to about:blank#foo.
         mActivityTestRule.executeJavaScriptAndWaitForResult(
                 mAwContents, mContentsClient, "location.href = 'about:blank#foo';");
         assertNavigationMessages(
                 "about:blank#foo",
-                /* isSameDocument */ true,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ true,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ false,
-                /* pageLoadEnd */ false);
+                /* isSameDocument= */ true,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ true,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ false,
+                /* loadEnds= */ false);
     }
 
     // Test navigation messages when navigating with restoreState().
@@ -546,12 +546,12 @@ public class NavigationListenerTest extends AwParameterizedTest {
                 data,
                 "NAVIGATION_STARTED",
                 url,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ true, /* isBack */
-                false, /* isRestore */
-                true,
-                /* isPageInitiated */ false);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ true,
+                /* isBack= */ false,
+                /* isRestore= */ true,
+                /* isPageInitiated= */ false);
 
         data = newListener.waitForOnPostMessage();
         assertNavigationMessageType(data, "PAGE_DELETED");
@@ -562,15 +562,15 @@ public class NavigationListenerTest extends AwParameterizedTest {
         assertNavigationCompletedMessage(
                 data,
                 url,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ true, /* isBack */
-                false, /* isRestore */
-                true,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ true,
+                /* isBack= */ false,
+                /* isRestore= */ true,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200);
         JsReplyProxy page4ReplyProxy = data.mReplyProxy;
         Assert.assertNotEquals(page3ReplyProxy, page4ReplyProxy);
 
@@ -599,7 +599,6 @@ public class NavigationListenerTest extends AwParameterizedTest {
     @MediumTest
     @Feature({"AndroidWebView", "NavigationListener"})
     @CommandLineFlags.Add({"enable-features=EnableNavigationListener"})
-    @DisabledTest(message = "crbug.com/332809183")
     public void testNavigationLoadDataWithBaseURL() throws Throwable {
         // Add the special listener object which will receive navigation messages.
         setUpAndGetInitialProxy();
@@ -618,17 +617,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
 
         assertNavigationMessages(
                 "data:text/html;charset=utf-8;base64,",
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ true,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ true,
+                /* loadEnds= */ true);
     }
 
     // Test navigation messages for navigations that get intercepted.
@@ -636,62 +635,53 @@ public class NavigationListenerTest extends AwParameterizedTest {
     @MediumTest
     @Feature({"AndroidWebView", "NavigationListener"})
     @CommandLineFlags.Add({"enable-features=EnableNavigationListener"})
-    @DisabledTest(message = "crbug.com/332809183")
     public void testNavigationIntercepted() throws Throwable {
         // Add the special listener object which will receive navigation messages.
         setUpAndGetInitialProxy();
 
         TestAwContentsClient.ShouldInterceptRequestHelper shouldInterceptRequestHelper =
                 mContentsClient.getShouldInterceptRequestHelper();
-        shouldInterceptRequestHelper.setReturnValue(
-                new WebResourceResponseInfo(
-                        "text/html",
-                        ENCODING,
-                        new ByteArrayInputStream("foo".getBytes(ENCODING)),
-                        200,
-                        "OK",
-                        /* responseHeaders= */ null));
+        shouldInterceptRequestHelper.enqueueHtmlResponse("data", /* responseHeaders= */ null);
 
         // Navigation #1: Navigate to `url` which will be intercepted to contain "foo".
         final String url = loadUrlFromPath(PAGE_A);
         assertNavigationMessages(
                 url,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ true,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ true,
+                /* loadEnds= */ true);
 
         // Navigation #2: Navigate to `url2`, which will be intercepted to result in an error page.
-        shouldInterceptRequestHelper.setReturnValue(
-                new WebResourceResponseInfo(
-                        "text/html",
-                        ENCODING,
-                        new ByteArrayInputStream("".getBytes(ENCODING)),
-                        500,
-                        "Internal Server Error",
-                        /* responseHeaders= */ null));
+        shouldInterceptRequestHelper.enqueueResponse(
+                "text/html",
+                ENCODING,
+                /* data= */ "",
+                500,
+                "Internal Server Error",
+                /* responseHeaders= */ null);
         final String url2 = loadUrlFromPath(PAGE_B);
         assertNavigationMessages(
                 url2,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ true,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 500,
-                /* previousPageDeleted */ !AwFeatureMap.isEnabled(
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ true,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 500,
+                /* previousPageDeleted= */ !AwFeatureMap.isEnabled(
                         AwFeatures.WEBVIEW_BACK_FORWARD_CACHE),
-                /* pageLoadEnd */ true);
+                /* loadEnds= */ true);
     }
 
     // Test the navigation messages for navigations that get overridden.
@@ -746,27 +736,27 @@ public class NavigationListenerTest extends AwParameterizedTest {
                     data,
                     "NAVIGATION_STARTED",
                     url3,
-                    /* isSameDocument */ false,
-                    /* isReload */ false,
-                    /* isHistory */ false, /* isBack */
-                    false, /* isRestore */
-                    false,
-                    /* isPageInitiated */ true);
+                    /* isSameDocument= */ false,
+                    /* isReload= */ false,
+                    /* isHistory= */ false,
+                    /* isBack= */ false,
+                    /* isRestore= */ false,
+                    /* isPageInitiated= */ true);
 
             data = mListener.waitForOnPostMessage();
             assertNavigationId(data, navigationId);
             assertNavigationCompletedMessage(
                     data,
                     url2,
-                    /* isSameDocument */ false,
-                    /* isReload */ false,
-                    /* isHistory */ false, /* isBack */
-                    false, /* isRestore */
-                    false,
-                    /* isErrorPage */ false,
-                    /* isPageInitiated */ true,
-                    /* committed */ false,
-                    /* statusCode */ 301);
+                    /* isSameDocument= */ false,
+                    /* isReload= */ false,
+                    /* isHistory= */ false,
+                    /* isBack= */ false,
+                    /* isRestore= */ false,
+                    /* isErrorPage= */ false,
+                    /* isPageInitiated= */ true,
+                    /* committed= */ false,
+                    /* statusCode= */ 301);
 
             Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
 
@@ -784,6 +774,7 @@ public class NavigationListenerTest extends AwParameterizedTest {
         "enable-features=EnableNavigationListener",
         "disable-features=WebViewBackForwardCache"
     })
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO}) // crbug.com/458118167
     public void testNavigationHistoryNavigationBFCacheDisabled() throws Throwable {
         // Navigation #1: Set up the listener and navigate to `url`. This will create a new page and
         // an associated JsReplyProxy.
@@ -795,17 +786,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         final String url2 = loadUrlFromPath(PAGE_B);
         assertNavigationMessages(
                 url2,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ true,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ true,
+                /* loadEnds= */ true);
 
         // Navigation #3: Do a back navigation to the `url` Page. This will not restore from
         // BFCache.
@@ -817,17 +808,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy currentPageReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ false,
-                        /* isReload */ false,
-                        /* isHistory */ true, /* isBack */
-                        true, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ true,
-                        /* pageLoadEnd */ true);
+                        /* isSameDocument= */ false,
+                        /* isReload= */ false,
+                        /* isHistory= */ true,
+                        /* isBack= */ true,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ true,
+                        /* loadEnds= */ true);
         Assert.assertNotEquals(page2ReplyProxy, currentPageReplyProxy);
     }
 
@@ -849,17 +840,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         final String url2 = loadUrlFromPath(PAGE_B);
         assertNavigationMessages(
                 url2,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ false,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ false,
+                /* loadEnds= */ true);
 
         // Navigation #3: Do a back navigation to the `url` Page. This will restore from BFCache.
         OnPageStartedHelper onPageStartedHelper = mContentsClient.getOnPageStartedHelper();
@@ -870,19 +861,19 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy currentPageReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ false,
-                        /* isReload */ false,
-                        /* isHistory */ true, /* isBack */
-                        true, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ false,
+                        /* isSameDocument= */ false,
+                        /* isReload= */ false,
+                        /* isHistory= */ true,
+                        /* isBack= */ true,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ false,
                         // No PAGE_LOAD_END for BFCache restores, as the page content didn't get
                         // re-loaded.
-                        /* pageLoadEnd */ false);
+                        /* loadEnds= */ false);
         Assert.assertEquals(page2ReplyProxy, currentPageReplyProxy);
 
         Assert.assertTrue(mListener.hasNoMoreOnPostMessage());
@@ -894,6 +885,7 @@ public class NavigationListenerTest extends AwParameterizedTest {
     @LargeTest
     @Feature({"AndroidWebView", "NavigationListener"})
     @CommandLineFlags.Add({"enable-features=EnableNavigationListener"})
+    @Restriction({DeviceRestriction.RESTRICTION_TYPE_NON_AUTO}) // crbug.com/458118167
     public void testNavigationHistoryNavigationBFCacheEnabled_ListenerDisablesBFCache()
             throws Throwable {
         mAwContents.getSettings().setBackForwardCacheEnabled(true);
@@ -907,17 +899,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         final String url2 = loadUrlFromPath(PAGE_B);
         assertNavigationMessages(
                 url2,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ true,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ true,
+                /* loadEnds= */ true);
 
         // Navigation #3: Do a back navigation to the `url` Page. This will not restore from
         // BFCache.
@@ -929,17 +921,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy currentPageReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ false,
-                        /* isReload */ false,
-                        /* isHistory */ true, /* isBack */
-                        true, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ true,
-                        /* pageLoadEnd */ true);
+                        /* isSameDocument= */ false,
+                        /* isReload= */ false,
+                        /* isHistory= */ true,
+                        /* isBack= */ true,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ true,
+                        /* loadEnds= */ true);
         Assert.assertNotEquals(page2ReplyProxy, currentPageReplyProxy);
     }
 
@@ -964,24 +956,24 @@ public class NavigationListenerTest extends AwParameterizedTest {
         // page.
         assertNavigationMessages(
                 url2,
-                /* isSameDocument */ false,
-                /* isReload */ false,
-                /* isHistory */ false, /* isBack */
-                false, /* isRestore */
-                false,
-                /* isErrorPage */ false,
-                /* isPageInitiated */ false,
-                /* committed */ true,
-                /* statusCode */ 200,
-                /* previousPageDeleted */ false,
-                /* pageLoadEnd */ true);
+                /* isSameDocument= */ false,
+                /* isReload= */ false,
+                /* isHistory= */ false,
+                /* isBack= */ false,
+                /* isRestore= */ false,
+                /* isErrorPage= */ false,
+                /* isPageInitiated= */ false,
+                /* committed= */ true,
+                /* statusCode= */ 200,
+                /* previousPageDeleted= */ false,
+                /* loadEnds= */ true);
 
         // Add another WebMessageListener, which will evict all BFCached pages.
         addWebMessageListenerOnUiThread(
                 mAwContents, "foo", new String[] {"*"}, new TestWebMessageListener());
 
         // The `url` Page gets deleted as it's evicted from BFCache.
-        TestWebMessageListener.Data data = getNextMessageIgnoreFCP(mListener);
+        TestWebMessageListener.Data data = getNextMessageIgnoreFCP();
         assertNavigationMessageType(data, "PAGE_DELETED");
         Assert.assertEquals(page2ReplyProxy, data.mReplyProxy);
 
@@ -997,17 +989,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy currentPageReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ false,
-                        /* isReload */ false,
-                        /* isHistory */ true, /* isBack */
-                        true, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ false,
-                        /* pageLoadEnd */ true);
+                        /* isSameDocument= */ false,
+                        /* isReload= */ false,
+                        /* isHistory= */ true,
+                        /* isBack= */ true,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ false,
+                        /* loadEnds= */ true);
         Assert.assertNotEquals(page2ReplyProxy, currentPageReplyProxy);
     }
 
@@ -1115,8 +1107,9 @@ public class NavigationListenerTest extends AwParameterizedTest {
             boolean previousPageDeleted,
             boolean loadEnds)
             throws Throwable {
-        TestWebMessageListener.Data data = getNextMessageIgnoreFCP(mListener);
+        TestWebMessageListener.Data data = getNextMessageIgnoreFCP();
         JsReplyProxy previousPageReplyProxy = data.mReplyProxy;
+        mPageDeletedMessagePending = previousPageDeleted;
         assertNavigationMessage(
                 data,
                 "NAVIGATION_STARTED",
@@ -1130,15 +1123,9 @@ public class NavigationListenerTest extends AwParameterizedTest {
 
         String navigationId = new JSONObject(data.getAsString()).getString("id");
 
-        if (previousPageDeleted) {
-            data = getNextMessageIgnoreFCP(mListener);
-            assertNavigationMessageType(data, "PAGE_DELETED");
-            Assert.assertEquals(previousPageReplyProxy, data.mReplyProxy);
-        }
+        data = getNextMessageMaybePageDeleted(previousPageReplyProxy, /* ignoreFCP= */ true);
 
-        data = mListener.waitForOnPostMessage();
         assertNavigationId(data, navigationId);
-
         assertNavigationCompletedMessage(
                 data,
                 url,
@@ -1160,10 +1147,10 @@ public class NavigationListenerTest extends AwParameterizedTest {
         }
 
         if (loadEnds) {
-            data = mListener.waitForOnPostMessage();
+            data = getNextMessageMaybePageDeleted(previousPageReplyProxy, /* ignoreFCP= */ false);
             assertNavigationMessageType(data, "DOM_CONTENT_LOADED");
 
-            data = mListener.waitForOnPostMessage();
+            data = getNextMessageMaybePageDeleted(previousPageReplyProxy, /* ignoreFCP= */ false);
             assertNavigationMessageType(data, "PAGE_LOAD_END");
             Assert.assertEquals(currentPageReplyProxy, data.mReplyProxy);
 
@@ -1174,22 +1161,47 @@ public class NavigationListenerTest extends AwParameterizedTest {
             mActivityTestRule.executeJavaScriptAndWaitForResult(
                     mAwContents, mContentsClient, "await new Promise(requestAnimationFrame)");
             if (!mListener.hasNoMoreOnPostMessage()) {
-                data = mListener.waitForOnPostMessage();
+                data =
+                        getNextMessageMaybePageDeleted(
+                                previousPageReplyProxy, /* ignoreFCP= */ false);
                 assertNavigationMessageType(data, "FIRST_CONTENTFUL_PAINT");
                 Assert.assertEquals(currentPageReplyProxy, data.mReplyProxy);
             }
         }
 
+        // Last chance to get the message for page deleted.
+        if (mPageDeletedMessagePending) {
+            data = mListener.waitForOnPostMessage();
+            assertNavigationMessageType(data, "PAGE_DELETED");
+            Assert.assertEquals(previousPageReplyProxy, data.mReplyProxy);
+            mPageDeletedMessagePending = false;
+        }
+
         return currentPageReplyProxy;
     }
 
-    private TestWebMessageListener.Data getNextMessageIgnoreFCP(TestWebMessageListener listener)
-            throws Throwable {
-        TestWebMessageListener.Data data = listener.waitForOnPostMessage();
+    private TestWebMessageListener.Data getNextMessageIgnoreFCP() throws Throwable {
+        TestWebMessageListener.Data data = mListener.waitForOnPostMessage();
         if ("FIRST_CONTENTFUL_PAINT".equals(new JSONObject(data.getAsString()).getString("type"))) {
             // An FCP message from a previous navigation only arrived now. Ignore it and get the
             // next message.
-            data = listener.waitForOnPostMessage();
+            data = mListener.waitForOnPostMessage();
+        }
+        return data;
+    }
+
+    // PageDeletions can be asynchronous, so they can come in an unpredictable order.
+    private TestWebMessageListener.Data getNextMessageMaybePageDeleted(
+            JsReplyProxy previousPageReplyProxy, boolean ignoreFCP) throws Throwable {
+        TestWebMessageListener.Data data =
+                ignoreFCP ? getNextMessageIgnoreFCP() : mListener.waitForOnPostMessage();
+        if ("PAGE_DELETED".equals(new JSONObject(data.getAsString()).getString("type"))) {
+            Assert.assertTrue(mPageDeletedMessagePending);
+            Assert.assertEquals(previousPageReplyProxy, data.mReplyProxy);
+            mPageDeletedMessagePending = false;
+
+            // Now that the delete has been satisfied, get the next message.
+            data = ignoreFCP ? getNextMessageIgnoreFCP() : mListener.waitForOnPostMessage();
         }
         return data;
     }
@@ -1228,17 +1240,17 @@ public class NavigationListenerTest extends AwParameterizedTest {
         JsReplyProxy page2ReplyProxy =
                 assertNavigationMessages(
                         url,
-                        /* isSameDocument */ false,
-                        /* isReload */ false,
-                        /* isHistory */ false, /* isBack */
-                        false, /* isRestore */
-                        false,
-                        /* isErrorPage */ false,
-                        /* isPageInitiated */ false,
-                        /* committed */ true,
-                        /* statusCode */ 200,
-                        /* previousPageDeleted */ true,
-                        /* pageLoadEnd */ true);
+                        /* isSameDocument= */ false,
+                        /* isReload= */ false,
+                        /* isHistory= */ false,
+                        /* isBack= */ false,
+                        /* isRestore= */ false,
+                        /* isErrorPage= */ false,
+                        /* isPageInitiated= */ false,
+                        /* committed= */ true,
+                        /* statusCode= */ 200,
+                        /* previousPageDeleted= */ true,
+                        /* loadEnds= */ true);
         Assert.assertNotEquals(page1ReplyProxy, page2ReplyProxy);
         return page2ReplyProxy;
     }

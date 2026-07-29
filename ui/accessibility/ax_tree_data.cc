@@ -4,8 +4,6 @@
 
 #include "ui/accessibility/ax_tree_data.h"
 
-#include <set>
-
 #include "base/no_destructor.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
@@ -20,6 +18,13 @@ AXTreeData::AXTreeData()
       sel_focus_affinity(ax::mojom::TextAffinity::kDownstream) {}
 
 AXTreeData::AXTreeData(const AXTreeData& other) = default;
+
+AXTreeData::AXTreeData(AXTreeData&& other) noexcept = default;
+
+AXTreeData& AXTreeData::operator=(const AXTreeData& other) = default;
+
+AXTreeData& AXTreeData::operator=(AXTreeData&& other) noexcept = default;
+
 AXTreeData::~AXTreeData() = default;
 
 // Note that this includes an initial space character if nonempty, but
@@ -66,10 +71,11 @@ std::string AXTreeData::ToString() const {
     result += " sel_focus_affinity=";
     result += ui::ToString(sel_focus_affinity);
   }
-  if (!metadata.empty()) {
+  if (metadata.has_value() && !metadata->empty()) {
     result += "\n<head>\n";
-    for (const auto& str : metadata)
+    for (const auto& str : *metadata) {
       result += "  " + str + "\n";
+    }
     result += "</head>\n";
   }
 
@@ -90,10 +96,6 @@ bool operator==(const AXTreeData& lhs, const AXTreeData& rhs) {
           lhs.sel_focus_object_id == rhs.sel_focus_object_id &&
           lhs.sel_focus_offset == rhs.sel_focus_offset &&
           lhs.sel_focus_affinity == rhs.sel_focus_affinity);
-}
-
-bool operator!=(const AXTreeData& lhs, const AXTreeData& rhs) {
-  return !(lhs == rhs);
 }
 
 const AXTreeData& AXTreeDataUnknown() {

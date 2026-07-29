@@ -6,8 +6,8 @@
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_ASPECT_RATIO_H_
 
 #include "third_party/blink/renderer/core/core_export.h"
-#include "third_party/blink/renderer/core/layout/geometry/physical_size.h"
 #include "third_party/blink/renderer/platform/geometry/layout_unit.h"
+#include "third_party/blink/renderer/platform/geometry/physical_size.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
 #include "ui/gfx/geometry/size_f.h"
 
@@ -49,8 +49,6 @@ class CORE_EXPORT StyleAspectRatio {
   bool operator==(const StyleAspectRatio& o) const {
     return type_ == o.type_ && ratio_ == o.ratio_;
   }
-
-  bool operator!=(const StyleAspectRatio& o) const { return !(*this == o); }
 
  private:
   unsigned type_ : 2;  // EAspectRatioType

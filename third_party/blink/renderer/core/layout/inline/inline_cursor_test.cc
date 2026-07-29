@@ -8,6 +8,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/renderer/core/editing/position_with_affinity.h"
 #include "third_party/blink/renderer/core/editing/text_affinity.h"
+#include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/layout/inline/fragment_item.h"
 #include "third_party/blink/renderer/core/layout/inline/inline_node_data.h"
 #include "third_party/blink/renderer/core/layout/layout_image.h"
@@ -160,6 +161,24 @@ TEST_F(InlineCursorTest, BidiLevelSimpleRTL) {
   EXPECT_THAT(
       list, ElementsAre("#linebox", ":0", "DEF:3", "abc:6", "GHI:3", "#linebox",
                         "MNO:3", ":1", "jkl:2", ",:1", "123:2"));
+}
+
+TEST_F(InlineCursorTest, BidiLevelFirstLineTextTransform) {
+  InsertStyleElement(
+      "#root { white-space: pre; }"
+      "#root::first-line { text-transform: uppercase; }");
+  InlineCursor cursor = SetupCursor("<div id=root dir=ltr>&szlig;&#9;</div>");
+  Vector<String> list = ToDebugStringListWithBidiLevel(cursor);
+  EXPECT_THAT(list, ElementsAre("#linebox", "SS:0", ":0"));
+}
+
+TEST_F(InlineCursorTest, BidiLevelFirstLineTextTransformBR) {
+  InsertStyleElement(
+      "#root { white-space: pre; }"
+      "#root::first-line { text-transform: uppercase; }");
+  InlineCursor cursor = SetupCursor("<div id=root dir=ltr>&szlig;<br></div>");
+  Vector<String> list = ToDebugStringListWithBidiLevel(cursor);
+  EXPECT_THAT(list, ElementsAre("#linebox", "SS:0", ":0"));
 }
 
 TEST_F(InlineCursorTest, GetLayoutBlockFlowWithScopedCursor) {
@@ -420,44 +439,64 @@ TEST_F(InlineCursorTest, FirstLastLogicalLeafInTextAsDeepDescendants) {
 TEST_F(InlineCursorTest, MoveToEndOfLineWithNoCharsLtr) {
   SetBodyContent(
       "<textarea rows=\"3\" cols=\"50\">foo&#10;&#10;bar</textarea>");
-  const auto& textarea =
-      ToTextControl(*GetDocument().QuerySelector(AtomicString("textarea")));
+  const auto& textarea = ToTextControl(*QuerySelector("textarea"));
   const LayoutObject* textarea_layout =
       textarea.InnerEditorElement()->GetLayoutObject();
   const LayoutBlockFlow& block_flow = *To<LayoutBlockFlow>(textarea_layout);
 
-  InlineCursor move_to_end_of_line(block_flow);
-  // Preparing the InlineCursor to start from beginning
-  // of second line(Empty Line).
-  move_to_end_of_line.MoveToNextLine();
+  // Preparing the InlineCursor to start from beginning of the second line
+  // (Empty Line).
+  const LayoutBlockFlow* second_anonymous =
+      To<LayoutBlockFlow>(block_flow.FirstChild()->NextSibling());
+  InlineCursor move_to_end_of_line(second_anonymous ? *second_anonymous
+                                                    : block_flow);
+  if (!second_anonymous) {
+    // Preparing the InlineCursor to start from beginning
+    // of second line(Empty Line).
+    move_to_end_of_line.MoveToNextLine();
+  }
   InlineCursor next_line = move_to_end_of_line.CursorForDescendants();
   // Verify if it has been successfully placed at the correct position.
-  EXPECT_EQ(4u, next_line.Current().TextStartOffset());
+  if (!second_anonymous) {
+    EXPECT_EQ(4u, next_line.Current().TextStartOffset());
+  } else {
+    EXPECT_EQ(0u, next_line.Current().TextStartOffset());
+  }
   const PositionWithAffinity end_position =
       move_to_end_of_line.PositionForEndOfLine();
-  EXPECT_EQ(4, end_position.GetPosition().OffsetInContainerNode());
+  EXPECT_TRUE(end_position.AnchorNode()->HasTagName(html_names::kBrTag));
 }
 
 TEST_F(InlineCursorTest, MoveToEndOfLineWithNoCharsRtl) {
   SetBodyContent(
       "<textarea rows=\"3\" cols=\"50\" "
       "dir=\"rtl\">foo&#10;&#10;bar</textarea>");
-  const auto& textarea =
-      ToTextControl(*GetDocument().QuerySelector(AtomicString("textarea")));
+  const auto& textarea = ToTextControl(*QuerySelector("textarea"));
   const LayoutObject* textarea_layout =
       textarea.InnerEditorElement()->GetLayoutObject();
   const LayoutBlockFlow& block_flow = *To<LayoutBlockFlow>(textarea_layout);
 
-  InlineCursor move_to_end_of_line(block_flow);
-  // Preparing the InlineCursor to start from beginning
-  // of second line(Empty Line).
-  move_to_end_of_line.MoveToNextLine();
+  // Preparing the InlineCursor to start from beginning of the second line
+  // (Empty Line).
+  const LayoutBlockFlow* second_anonymous =
+      To<LayoutBlockFlow>(block_flow.FirstChild()->NextSibling());
+  InlineCursor move_to_end_of_line(second_anonymous ? *second_anonymous
+                                                    : block_flow);
+  if (!second_anonymous) {
+    // Preparing the InlineCursor to start from beginning
+    // of second line(Empty Line).
+    move_to_end_of_line.MoveToNextLine();
+  }
   InlineCursor next_line = move_to_end_of_line.CursorForDescendants();
   // Verify if it has been successfully placed at the correct position.
-  EXPECT_EQ(4u, next_line.Current().TextStartOffset());
+  if (!second_anonymous) {
+    EXPECT_EQ(4u, next_line.Current().TextStartOffset());
+  } else {
+    EXPECT_EQ(0u, next_line.Current().TextStartOffset());
+  }
   const PositionWithAffinity end_position =
       move_to_end_of_line.PositionForEndOfLine();
-  EXPECT_EQ(4, end_position.GetPosition().OffsetInContainerNode());
+  EXPECT_TRUE(end_position.AnchorNode()->HasTagName(html_names::kBrTag));
 }
 
 TEST_F(InlineCursorTest, FirstLastLogicalLeafWithInlineBlock) {

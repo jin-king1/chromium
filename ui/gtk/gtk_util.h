@@ -17,15 +17,15 @@
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/window/frame_buttons.h"
 
+class SkBitmap;
+
 namespace aura {
 class Window;
 }
 
-namespace ui {
-class KeyEvent;
-}
-
 namespace gtk {
+
+class GtkUiPlatform;
 
 const char* GtkCssMenu();
 const char* GtkCssMenuItem();
@@ -35,13 +35,17 @@ const char* GtkCssMenuScrollbar();
 
 // Sets |dialog| as transient for |parent|, which will keep it on top and center
 // it above |parent|. Do nothing if |parent| is nullptr.
-void SetGtkTransientForAura(GtkWidget* dialog, aura::Window* parent);
+void SetGtkTransientForAura(GtkWidget* dialog,
+                            aura::Window* parent,
+                            GtkUiPlatform* platform);
 
 // Gets the transient parent aura window for |dialog|.
 aura::Window* GetAuraTransientParent(GtkWidget* dialog);
 
 // Clears the transient parent for |dialog|.
-void ClearAuraTransientParent(GtkWidget* dialog, aura::Window* parent);
+void ClearAuraTransientParent(GtkWidget* dialog,
+                              aura::Window* parent,
+                              GtkUiPlatform* platform);
 
 // Disable input events handling on `parent` to make `dialog` modal.  The caller
 // is responsible for running the returned closure when the dialog is hidden to
@@ -62,6 +66,10 @@ class CairoSurface {
   // Attaches a cairo surface to an SkBitmap so that GTK can render
   // into it.  |bitmap| must outlive this CairoSurface.
   explicit CairoSurface(SkBitmap& bitmap);
+
+  // Attaches a cairo surface to a pointer to pixel data.  `pixels`
+  // must outlive this CairoSurface.
+  CairoSurface(void* pixels, int width, int height);
 
   // Creates a new cairo surface with the given size.  The memory for
   // this surface is deallocated when this CairoSurface is destroyed.
@@ -166,10 +174,6 @@ SkColor GetBgColor(const std::string& css_selector);
 // returns the average color.
 SkColor GetBorderColor(const std::string& css_selector);
 
-// On Gtk3.20 or later, behaves like GetBgColor.  Otherwise, returns
-// the background-color property.
-SkColor GetSelectionBgColor(const std::string& css_selector);
-
 // Get the color of the GtkSeparator specified by |css_selector|.
 SkColor GetSeparatorColor(const std::string& css_selector);
 
@@ -177,41 +181,15 @@ SkColor GetSeparatorColor(const std::string& css_selector);
 std::string GetGtkSettingsStringProperty(GtkSettings* settings,
                                          const gchar* prop_name);
 
-// Xkb Events store group attribute into XKeyEvent::state bit field, along with
-// other state-related info, while GdkEventKey objects have separate fields for
-// that purpose, they are ::state and ::group. This function is responsible for
-// recomposing them into a single bit field value when translating GdkEventKey
-// into XKeyEvent. This is similar to XkbBuildCoreState(), but assumes state is
-// an uint rather than an uchar.
-//
-// More details:
-// https://gitlab.freedesktop.org/xorg/proto/xorgproto/blob/master/include/X11/extensions/XKB.h#L372
-int BuildXkbStateFromGdkEvent(unsigned int state, unsigned char group);
-
-// GDK uses different flags for modifiers than are defined in ui::EventFlags.
-// This function translates ui::EventFlags to GDK flags.
-//
-// More details:
-// https://gitlab.gnome.org/GNOME/gtk/-/blob/master/gdk/gdktypes.h#L131
-GdkModifierType ExtractGdkEventStateFromKeyEventFlags(int flags);
-
-int GetKeyEventProperty(const ui::KeyEvent& key_event,
-                        const char* property_key);
-
-GdkModifierType GetGdkKeyEventState(const ui::KeyEvent& key_event);
-
-// Translates |key_event| into a GdkEvent. GdkEvent::key::window is the only
-// field not set by this function, callers must set it, as the way for
-// retrieving it may vary depending on the event being processed. E.g: for IME
-// Context impl, X11 window XID is obtained through Event::target() which is
-// root aura::Window targeted by that key event.  Only available in GTK3.
-GdkEvent* GdkEventFromKeyEvent(const ui::KeyEvent& key_event);
-
 GtkIconTheme* GetDefaultIconTheme();
 
 void GtkWindowDestroy(GtkWidget* widget);
 
 GtkWidget* GetDummyWindow();
+
+// Returns the CSS min-width and min-height of the content area for the given
+// context, excluding margin, border, and padding.
+gfx::Size GetMinimumContentSize(GtkCssContext context);
 
 gfx::Size GetSeparatorSize(bool horizontal);
 
@@ -221,6 +199,33 @@ float GetDeviceScaleFactor();
 GdkTexture* GetTextureFromRenderNode(GskRenderNode* node);
 
 double GetOpacityFromContext(GtkStyleContext* context);
+
+enum class ThemeProperty {
+  kThemeName,
+  kIconThemeName,
+  kKeyThemeName,
+};
+
+// Returns true if `theme` is a safe, valid theme name for `property`.
+// If `theme` is null, returns true only for kKeyThemeName.
+COMPONENT_EXPORT(GTK)
+bool IsValidThemeName(ThemeProperty property, const char* theme);
+
+// Returns the safe fallback value for the given theme-related property.
+COMPONENT_EXPORT(GTK)
+const char* GetThemeFallback(ThemeProperty property);
+
+// Hook the `GtkSettings` `set_property` method to sanitize theme names.
+COMPONENT_EXPORT(GTK) void InstallGtkSettingsInterceptor();
+
+// Unhook the `GtkSettings` `set_property` method.
+COMPONENT_EXPORT(GTK) void UninstallGtkSettingsInterceptor();
+
+// Returns the default `GtkSettings` instance. This wrapper is required because
+// in component builds, raw GTK symbols loaded via stubs (including
+// `gtk_settings_get_default`) are not exported, preventing direct usage in
+// non-component targets like tests.
+COMPONENT_EXPORT(GTK) GtkSettings* GetDefaultGtkSettings();
 
 }  // namespace gtk
 

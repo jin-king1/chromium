@@ -27,11 +27,14 @@ class WebStateID;
 - (void)showTabGroupCreationForTabs:
     (const std::set<web::WebStateID>&)identifiers;
 
+// Shows the tab group creation view and creates a new tab for the group.
+- (void)showTabGroupCreationWithoutTabs;
+
 // Hides the tab group creation view.
 - (void)hideTabGroupCreationAnimated:(BOOL)animated;
 
 // Shows tab group edition view.
-- (void)showTabGroupEditionForGroup:(const TabGroup*)tabGroup;
+- (void)showTabGroupEditionForGroup:(base::WeakPtr<const TabGroup>)tabGroup;
 
 // Show the current active tab.
 - (void)showActiveTab;
@@ -44,13 +47,10 @@ class WebStateID;
                                         (base::WeakPtr<const TabGroup>)tabGroup
                                sourceView:(UIView*)sourceView;
 
-// Displays a confirmation dialog anchoring to `sourceButtonItem` on iPad or at
-// the bottom on iPhone to confirm that selected `group` is going to take an
-// `actionType`.
-- (void)showTabGroupConfirmationForAction:(TabGroupActionType)actionType
-                                    group:
-                                        (base::WeakPtr<const TabGroup>)tabGroup
-                         sourceButtonItem:(UIBarButtonItem*)sourceButtonItem;
+// Starts the leave or delete shared group flow.
+- (void)startLeaveOrDeleteSharedGroup:(base::WeakPtr<const TabGroup>)group
+                            forAction:(TabGroupActionType)actionType
+                           sourceView:(UIView*)sourceView;
 
 // Displays a snackbar after closing tab groups locally.
 - (void)showTabGridTabGroupSnackbarAfterClosingGroups:(int)numberOfClosedGroups;

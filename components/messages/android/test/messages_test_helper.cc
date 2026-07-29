@@ -4,7 +4,10 @@
 
 #include "components/messages/android/test/messages_test_helper.h"
 
-#include "base/functional/callback_forward.h"
+#include <cstdint>
+
+#include "base/android/jni_android.h"
+#include "base/functional/callback.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "components/messages/android/test/jni_headers/MessagesTestHelper_jni.h"
@@ -18,8 +21,7 @@ MessagesTestHelper::MessagesTestHelper() {
 
 MessagesTestHelper::~MessagesTestHelper() = default;
 
-int messages::MessagesTestHelper::GetMessageCount(
-    ui::WindowAndroid* window_android) {
+int MessagesTestHelper::GetMessageCount(ui::WindowAndroid* window_android) {
   JNIEnv* env = jni_zero::AttachCurrentThread();
   return Java_MessagesTestHelper_getMessageCount(
       env, window_android->GetJavaObject());
@@ -30,6 +32,12 @@ int MessagesTestHelper::GetMessageIdentifier(ui::WindowAndroid* window_android,
   JNIEnv* env = jni_zero::AttachCurrentThread();
   return Java_MessagesTestHelper_getMessageIdentifier(
       env, window_android->GetJavaObject(), index);
+}
+
+int64_t MessagesTestHelper::GetNativePtr(
+    const base::android::JavaRef<jobject>& message_wrapper) {
+  JNIEnv* env = jni_zero::AttachCurrentThread();
+  return Java_MessagesTestHelper_getNativePtr(env, message_wrapper);
 }
 
 void MessagesTestHelper::AttachTestMessageDispatcherForTesting(
@@ -55,3 +63,5 @@ void MessagesTestHelper::OnMessageEnqueued(JNIEnv* env) {
 }
 
 }  // namespace messages
+
+DEFINE_JNI(MessagesTestHelper)

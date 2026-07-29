@@ -37,7 +37,8 @@ const bookmarks::BookmarkNode* AddProductBookmark(
     bool is_price_tracked,
     const int64_t price_micros,
     const std::string& currency_code,
-    const std::optional<int64_t>& last_subscription_change_time) {
+    const std::optional<int64_t>& last_subscription_change_time,
+    const std::optional<int64_t>& previous_price_micros) {
   // Prefer account bookmarks if available. `other_node()` is still relevant for
   // tests that continue to exercise the legacy sync-feature-on case.
   const bookmarks::BookmarkNode* parent =
@@ -50,7 +51,7 @@ const bookmarks::BookmarkNode* AddProductBookmark(
 
   AddProductInfoToExistingBookmark(
       bookmark_model, node, title, cluster_id, is_price_tracked, price_micros,
-      currency_code, last_subscription_change_time);
+      currency_code, last_subscription_change_time, previous_price_micros);
 
   return node;
 }
@@ -63,7 +64,8 @@ void AddProductInfoToExistingBookmark(
     bool is_price_tracked,
     const int64_t price_micros,
     const std::string& currency_code,
-    const std::optional<int64_t>& last_subscription_change_time) {
+    const std::optional<int64_t>& last_subscription_change_time,
+    const std::optional<int64_t>& previous_price_micros) {
   std::unique_ptr<power_bookmarks::PowerBookmarkMeta> meta =
       std::make_unique<power_bookmarks::PowerBookmarkMeta>();
   power_bookmarks::ShoppingSpecifics* specifics =
@@ -74,6 +76,12 @@ void AddProductInfoToExistingBookmark(
 
   specifics->mutable_current_price()->set_currency_code(currency_code);
   specifics->mutable_current_price()->set_amount_micros(price_micros);
+
+  if (previous_price_micros.has_value()) {
+    specifics->mutable_previous_price()->set_currency_code(currency_code);
+    specifics->mutable_previous_price()->set_amount_micros(
+        previous_price_micros.value());
+  }
 
   if (last_subscription_change_time.has_value()) {
     specifics->set_last_subscription_change_time(
@@ -158,7 +166,7 @@ DiscountInfo CreateValidDiscountInfo(const std::string& detail,
                                      const std::string& discount_code,
                                      int64_t id,
                                      bool is_merchant_wide,
-                                     double expiry_time_sec,
+                                     std::optional<double> expiry_time_sec,
                                      DiscountClusterType cluster_type) {
   DiscountInfo discount_info;
 
@@ -169,7 +177,9 @@ DiscountInfo CreateValidDiscountInfo(const std::string& detail,
   discount_info.discount_code = discount_code;
   discount_info.id = id;
   discount_info.is_merchant_wide = is_merchant_wide;
-  discount_info.expiry_time_sec = expiry_time_sec;
+  if (expiry_time_sec.has_value()) {
+    discount_info.expiry_time_sec = expiry_time_sec;
+  }
 
   return discount_info;
 }

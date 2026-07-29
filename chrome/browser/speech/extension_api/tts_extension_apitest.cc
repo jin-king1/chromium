@@ -11,7 +11,6 @@
 #include "base/memory/weak_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/component_loader.h"
 #include "chrome/browser/extensions/extension_apitest.h"
 #include "chrome/browser/extensions/extension_service.h"
@@ -19,6 +18,7 @@
 #include "chrome/browser/speech/extension_api/tts_engine_extension_api.h"
 #include "chrome/browser/speech/extension_api/tts_extension_api.h"
 #include "chrome/common/chrome_switches.h"
+#include "content/public/browser/browser_context.h"
 #include "content/public/browser/tts_controller.h"
 #include "content/public/browser/tts_platform.h"
 #include "content/public/test/browser_test.h"
@@ -34,11 +34,11 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/accessibility/accessibility_features.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/browser/speech/extension_api/tts_engine_extension_observer_chromeos.h"
 #include "chrome/browser/speech/extension_api/tts_engine_extension_observer_chromeos_factory.h"
 #include "chromeos/services/tts/tts_service.h"
-#endif  // IS_CHROMEOS_ASH
+#endif  // IS_CHROMEOS
 
 using ::testing::_;
 using ::testing::AnyNumber;
@@ -63,15 +63,18 @@ class MockUpdateLanguageStatusDelegate
   MockUpdateLanguageStatusDelegate() = default;
   ~MockUpdateLanguageStatusDelegate() override = default;
 
-  void OnUpdateLanguageStatus(const std::string& lang,
+  void OnUpdateLanguageStatus(content::BrowserContext* browser_context,
+                              const std::string& lang,
                               content::LanguageInstallStatus install_status,
                               const std::string& error) override {
+    this->on_update_language_status_params.browser_context = browser_context;
     this->on_update_language_status_params.lang = lang;
     this->on_update_language_status_params.install_status = install_status;
     this->on_update_language_status_params.error = error;
   }
 
   struct OnUpdateLanguageStatusParams {
+    raw_ptr<content::BrowserContext> browser_context;
     std::string lang;
     content::LanguageInstallStatus install_status;
     std::string error;
@@ -336,9 +339,8 @@ class TtsApiTest : public ExtensionApiTest,
   }
 
   void AddNetworkSpeechSynthesisExtension() {
-    ExtensionService* service =
-        extensions::ExtensionSystem::Get(profile())->extension_service();
-    service->component_loader()->AddNetworkSpeechSynthesisExtension();
+    auto* component_loader = extensions::ComponentLoader::Get(profile());
+    component_loader->AddNetworkSpeechSynthesisExtension();
 
     // Wait for any tts engine event listener to be added by the network tts
     // engine so that tests can be ready to validate state.
@@ -363,11 +365,15 @@ class TtsApiTest : public ExtensionApiTest,
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
+#if !BUILDFLAG(IS_ANDROID)
+// Android only support MV3 / service worker.
 INSTANTIATE_TEST_SUITE_P(
     PersistentBackground,
     TtsApiTest,
     ::testing::Values(FeaturesTestParam{
         .context_type = ContextType::kPersistentBackground}));
+#endif  // !BUILDFLAG(IS_ANDROID)
+
 INSTANTIATE_TEST_SUITE_P(
     ServiceWorker,
     TtsApiTest,
@@ -576,6 +582,10 @@ IN_PROC_BROWSER_TEST_P(TtsApiServiceWorkerTest, SpeakError) {
 // TTS Engine tests.
 //
 
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+// TODO(crbug.com/432798510): Port to desktop Android. The speech does not seem
+// to finish before test shutdown causes a DCHECK in ~TtsUtteranceImpl. Also,
+// some tests use chrome.app.getDetails() which is not supported on Android.
 IN_PROC_BROWSER_TEST_P(TtsApiTest, RegisterEngine) {
   mock_platform_impl_.set_should_fake_get_voices(true);
 
@@ -605,7 +615,7 @@ IN_PROC_BROWSER_TEST_P(TtsApiTest, RegisterEngine) {
       << message_;
 }
 
-// https://crbug.com/709115 tracks test flakiness.
+// https://crbug.com/41311728 tracks test flakiness.
 #if BUILDFLAG(IS_POSIX)
 #define MAYBE_EngineError DISABLED_EngineError
 #else
@@ -650,22 +660,15 @@ IN_PROC_BROWSER_TEST_P(TtsApiTest, NoNetworkSpeechEngineWhenOffline) {
   // Test should fail when offline.
   ASSERT_FALSE(RunExtensionTest("tts_engine/network_speech_engine"));
 }
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 
-// http://crbug.com/122474
+// http://crbug.com/40188097
 IN_PROC_BROWSER_TEST_P(TtsApiTest, EngineApi) {
   ASSERT_TRUE(RunExtensionTest("tts_engine/engine_api")) << message_;
 }
 
 IN_PROC_BROWSER_TEST_P(TtsApiTest, UpdateVoicesApi) {
   ASSERT_TRUE(RunExtensionTest("tts_engine/update_voices_api")) << message_;
-}
-
-IN_PROC_BROWSER_TEST_P(TtsApiTest, PRE_VoicesAreCached) {
-  EXPECT_FALSE(HasVoiceWithName("Dynamic Voice 1"));
-  EXPECT_FALSE(HasVoiceWithName("Dynamic Voice 2"));
-  ASSERT_TRUE(RunExtensionTest("tts_engine/call_update_voices")) << message_;
-  EXPECT_TRUE(HasVoiceWithName("Dynamic Voice 1"));
-  EXPECT_TRUE(HasVoiceWithName("Dynamic Voice 2"));
 }
 
 #if !BUILDFLAG(IS_CHROMEOS)
@@ -675,6 +678,8 @@ IN_PROC_BROWSER_TEST_P(TtsApiTest, UpdateLanguageCallsDelegate) {
       &delegate_);
 
   ASSERT_TRUE(RunExtensionTest("tts_engine/call_update_language")) << message_;
+  ASSERT_EQ(delegate_.GetLastUpdateLanguageStatusParams().browser_context,
+            profile());
   ASSERT_EQ(delegate_.GetLastUpdateLanguageStatusParams().install_status,
             content::LanguageInstallStatus::INSTALLING);
   ASSERT_EQ(delegate_.GetLastUpdateLanguageStatusParams().lang, "fr");
@@ -749,6 +754,14 @@ IN_PROC_BROWSER_TEST_P(TtsApiTest, LanguageStatusRequestEmitsEvent) {
   ASSERT_TRUE(validate_requestor_param_listener.WaitUntilSatisfied());
 }
 
+IN_PROC_BROWSER_TEST_P(TtsApiTest, PRE_VoicesAreCached) {
+  EXPECT_FALSE(HasVoiceWithName("Dynamic Voice 1"));
+  EXPECT_FALSE(HasVoiceWithName("Dynamic Voice 2"));
+  ASSERT_TRUE(RunExtensionTest("tts_engine/call_update_voices")) << message_;
+  EXPECT_TRUE(HasVoiceWithName("Dynamic Voice 1"));
+  EXPECT_TRUE(HasVoiceWithName("Dynamic Voice 2"));
+}
+
 IN_PROC_BROWSER_TEST_P(TtsApiTest, VoicesAreCached) {
   // Make sure the dynamically loaded voices are available even though
   // the extension didn't "run". Note that the voices might not be available
@@ -763,7 +776,7 @@ IN_PROC_BROWSER_TEST_P(TtsApiTest, VoicesAreCached) {
   }
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 IN_PROC_BROWSER_TEST_P(TtsApiTest, OnSpeakWithAudioStream) {
   TtsExtensionEngine::GetInstance()->DisableBuiltInTTSEngineForTesting();
   TtsEngineExtensionObserverChromeOS* engine_observer =
@@ -796,6 +809,6 @@ IN_PROC_BROWSER_TEST_P(TtsApiTest, OnSpeakWithAudioStreamAudioOptions) {
       "tts_engine/on_speak_with_audio_stream_using_audio_options"))
       << message_;
 }
-#endif  // IS_CHROMEOS_ASH
+#endif  // IS_CHROMEOS
 
 }  // namespace extensions

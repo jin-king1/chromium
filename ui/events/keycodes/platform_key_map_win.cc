@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "ui/events/keycodes/platform_key_map_win.h"
 
 #include <algorithm>
 #include <utility>
 
 #include "base/check_op.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/lazy_instance.h"
 #include "base/memory/ptr_util.h"
@@ -28,7 +24,7 @@ namespace {
 
 // List of modifiers mentioned in https://w3c.github.io/uievents/#keys-modifiers
 // Some modifiers are commented out because they usually don't change keys.
-const EventFlags modifier_flags[] = {
+constexpr auto kModifierFlags = std::array<EventFlags, 4>{
     EF_SHIFT_DOWN, EF_CONTROL_DOWN, EF_ALT_DOWN,
     // EF_COMMAND_DOWN,
     // EF_NUM_LOCK_ON,
@@ -39,7 +35,10 @@ const EventFlags modifier_flags[] = {
     // EF_ALTGR_DOWN,
 };
 
-void SetModifierState(BYTE* keyboard_state, int flags) {
+constexpr int kKeyboardSize = 256;
+
+void SetModifierState(base::span<BYTE, kKeyboardSize> keyboard_state,
+                      int flags) {
   // According to MSDN GetKeyState():
   // 1. If the high-order bit is 1, the key is down; otherwise, it is up.
   // 2. If the low-order bit is 1, the key is toggled. A key, such as the
@@ -75,13 +74,14 @@ int ReplaceAltGraphWithControlAndAlt(int flags) {
              : flags;
 }
 
-const int kModifierFlagsCombinations = (1 << std::size(modifier_flags)) - 1;
+const int kModifierFlagsCombinations = (1 << kModifierFlags.size()) - 1;
 
 int GetModifierFlags(int combination) {
   int flags = EF_NONE;
-  for (size_t i = 0; i < std::size(modifier_flags); ++i) {
-    if (combination & (1 << i))
-      flags |= modifier_flags[i];
+  for (size_t i = 0; i < kModifierFlags.size(); ++i) {
+    if (combination & (1 << i)) {
+      flags |= kModifierFlags[i];
+    }
   }
   return flags;
 }
@@ -368,7 +368,7 @@ void PlatformKeyMap::UpdateLayout(HKL layout) {
   if (layout == keyboard_layout_)
     return;
 
-  BYTE keyboard_state_to_restore[256];
+  BYTE keyboard_state_to_restore[kKeyboardSize];
   if (!::GetKeyboardState(keyboard_state_to_restore))
     return;
 
@@ -384,9 +384,7 @@ void PlatformKeyMap::UpdateLayout(HKL layout) {
   for (int modifier_combination = 0;
        modifier_combination <= kModifierFlagsCombinations;
        ++modifier_combination) {
-    BYTE keyboard_state[256];
-    memset(keyboard_state, 0, sizeof(keyboard_state));
-
+    BYTE keyboard_state[kKeyboardSize] = {};
     // Setting up keyboard state for modifiers.
     int flags = GetModifierFlags(modifier_combination);
     SetModifierState(keyboard_state, flags);
@@ -398,8 +396,7 @@ void PlatformKeyMap::UpdateLayout(HKL layout) {
 
       if (rv == -1) {
         // Dead key, injecting VK_SPACE to get character representation.
-        BYTE empty_state[256];
-        memset(empty_state, 0, sizeof(empty_state));
+        BYTE empty_state[kKeyboardSize] = {};
         rv = ::ToUnicodeEx(VK_SPACE, 0, empty_state, translated_chars,
                            std::size(translated_chars), 0, keyboard_layout_);
         // Expecting a dead key character (not followed by a space).

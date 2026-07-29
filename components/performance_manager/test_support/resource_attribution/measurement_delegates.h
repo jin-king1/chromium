@@ -210,8 +210,6 @@ class FakeMemoryMeasurementDelegateFactory final
 // A MemoryMeasurementDelegate that returns fake results.
 class FakeMemoryMeasurementDelegate final : public MemoryMeasurementDelegate {
  public:
-  using PassKey = base::PassKey<FakeMemoryMeasurementDelegate>;
-
   // Only FakeMemoryMeasurementDelegateFactory can call the constructor.
   FakeMemoryMeasurementDelegate(
       base::PassKey<FakeMemoryMeasurementDelegateFactory>,

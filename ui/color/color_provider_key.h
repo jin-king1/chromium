@@ -6,13 +6,19 @@
 #define UI_COLOR_COLOR_PROVIDER_KEY_H_
 
 #include <optional>
+#include <tuple>
 
 #include "base/component_export.h"
-#include "base/containers/flat_map.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/ref_counted.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/memory/weak_ptr.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/color/system_theme.h"
+
+#if BUILDFLAG(IS_ANDROID)
+#include "base/android/jni_weak_ref.h"
+#include "base/android/scoped_java_ref.h"
+#endif
 
 namespace color_utils {
 struct HSL;
@@ -33,29 +39,21 @@ struct COMPONENT_EXPORT(COLOR_PROVIDER_KEY) ColorProviderKey {
     kNormal,
     kHigh,
   };
-  // ForcedColors key applies contrast themes based on the user’s preferences or
-  // system settings.
+  // A ForcedColors value other than `kNone` overrides various colors to produce
+  // particular visual themes, usually for high contrast.
   enum class ForcedColors {
+    // Default behavior.
     kNone,
-    // Forced colors is simulated by the Devtools “Emulate Forced Colors”
-    // setting.
-    // https://developer.chrome.com/docs/devtools/rendering/emulate-css/#emulate-css-media-feature-forced-colors.
-    kEmulated,
-    // Forced colors is activated by the system’s high contrast mode on Windows.
-    // https://support.microsoft.com/en-us/windows/change-color-contrast-in-windows-fedc744c-90ac-69df-aed5-c8a90125e696
-    kActive,
-    // Forced colors is activated by the browser's Page colors feature across
-    // platforms. kDusk, kDesert, kNightSky, and kAquatic themes map to defaults
-    // available on Windows 11 [1], while kWhite is a theme available in Windows
-    // 10 [2]. [1]
-    // https://support.microsoft.com/en-us/windows/change-color-contrast-in-windows-fedc744c-90ac-69df-aed5-c8a90125e696
-    // [2]
-    // https://support.microsoft.com/en-us/windows/change-color-contrast-in-windows-fedc744c-90ac-69df-aed5-c8a90125e696#WindowsVersion=Windows_10
-    kDusk,
-    kDesert,
-    kNightSky,
-    kWhite,
-    kAquatic,
+
+    // Some colors are forced to match the underlying system colors.
+    kSystem,
+
+    // Some colors are forced to match various color themes.
+    kDusk,      // Mimics Win 11 "Dusk"
+    kDesert,    // Mimics Win 11 "Desert"
+    kNightSky,  // Mimics Win 11 "Night Sky"
+    kAquatic,   // Mimics Win 11 "Aquatic"
+    kWhite,     // Mimics Win 10 "High Contrast White"
   };
   enum class FrameType {
     // Chrome renders the browser frame.
@@ -149,9 +147,27 @@ struct COMPONENT_EXPORT(COLOR_PROVIDER_KEY) ColorProviderKey {
   raw_ptr<InitializerSupplier, AcrossTasksDanglingUntriaged> app_controller =
       nullptr;  // unowned
 
+  // TODO(crbug.com/537023567): Populate the hash and context from
+  // WindowAndroid.
+#if BUILDFLAG(IS_ANDROID)
+  int64_t context_hash = 0;
+  JavaObjectWeakGlobalRef context;
+#endif
+
   bool operator<(const ColorProviderKey& other) const {
     auto* lhs_app_controller = app_controller.get();
     auto* rhs_app_controller = other.app_controller.get();
+#if BUILDFLAG(IS_ANDROID)
+    return std::tie(color_mode, contrast_mode, forced_colors, system_theme,
+                    frame_type, frame_style, user_color_source, user_color,
+                    scheme_variant, custom_theme, lhs_app_controller,
+                    context_hash) <
+           std::tie(other.color_mode, other.contrast_mode, other.forced_colors,
+                    other.system_theme, other.frame_type, other.frame_style,
+                    other.user_color_source, other.user_color,
+                    other.scheme_variant, other.custom_theme,
+                    rhs_app_controller, other.context_hash);
+#else
     return std::tie(color_mode, contrast_mode, forced_colors, system_theme,
                     frame_type, frame_style, user_color_source, user_color,
                     scheme_variant, custom_theme, lhs_app_controller) <
@@ -160,6 +176,7 @@ struct COMPONENT_EXPORT(COLOR_PROVIDER_KEY) ColorProviderKey {
                     other.user_color_source, other.user_color,
                     other.scheme_variant, other.custom_theme,
                     rhs_app_controller);
+#endif
   }
 };
 

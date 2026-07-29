@@ -14,7 +14,7 @@ import java.lang.reflect.InvocationHandler;
 public interface WebViewNavigationBoundaryInterface extends IsomorphicObjectBoundaryInterface {
     String getUrl();
 
-    boolean isPageInitiated();
+    boolean wasInitiatedByPage();
 
     boolean isSameDocument();
 
@@ -28,11 +28,13 @@ public interface WebViewNavigationBoundaryInterface extends IsomorphicObjectBoun
 
     boolean isForward();
 
-    boolean hasCommitted();
+    boolean didCommit();
 
     boolean didCommitErrorPage();
 
     int getStatusCode();
 
     /* WebViewPage */ @Nullable InvocationHandler getPage();
+
+    /* WebResourceError */ @Nullable InvocationHandler getWebResourceError();
 }

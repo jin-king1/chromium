@@ -102,6 +102,10 @@ ChromeDesktopImpl::ChromeDesktopImpl(
       network_connection_enabled_(network_emulation_enabled),
       network_connection_(kDefaultConnectionType),
       quit_gracefully_(quit_gracefully) {
+  // The process ID of the browser may be returned in the custom
+  // capability "goog:processID".
+  browser_info_.process_id = process_.Pid();
+
   if (user_data_dir->IsValid())
     CHECK(user_data_dir_.Set(user_data_dir->Take()));
   if (extension_dir->IsValid())
@@ -208,7 +212,7 @@ Status ChromeDesktopImpl::QuitImpl() {
   quit_gracefully = quit_gracefully || command_.HasSwitch("log-net-log");
   if (quit_gracefully) {
     Status status = devtools_websocket_client_->SendCommandAndIgnoreResponse(
-        "Browser.close", base::Value::Dict());
+        "Browser.close", base::DictValue());
     // If status is not okay, we will try the old method of KillProcess
     if (status.IsOk() &&
         process_.WaitForExitWithTimeout(base::Seconds(10), nullptr)) {

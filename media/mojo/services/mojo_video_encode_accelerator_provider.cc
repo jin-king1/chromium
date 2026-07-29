@@ -115,17 +115,16 @@ void MojoVideoEncodeAcceleratorProvider::CreateVideoEncodeAccelerator(
       create_vea_callback_, gpu_preferences_, gpu_workarounds_, gpu_device_,
       get_helper_cb, gpu_task_runner_);
 
-  if (base::FeatureList::IsEnabled(kUseTaskRunnerForMojoVEAService)) {
+  scoped_refptr<base::TaskRunner> runner;
 #if BUILDFLAG(IS_WIN)
-    base::ThreadPool::CreateCOMSTATaskRunner({base::MayBlock()},
-        base::SingleThreadTaskRunnerThreadMode::DEDICATED)
+  runner = base::ThreadPool::CreateCOMSTATaskRunner(
+      {base::MayBlock()}, base::SingleThreadTaskRunnerThreadMode::DEDICATED);
+#elif BUILDFLAG(IS_APPLE)
+  runner = base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()});
 #else
-    base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()})
+  runner = base::SequencedTaskRunner::GetCurrentDefault();
 #endif
-        ->PostTask(FROM_HERE, std::move(create_service_cb));
-  } else {
-    std::move(create_service_cb).Run();
-  }
+  runner->PostTask(FROM_HERE, std::move(create_service_cb));
 }
 
 void MojoVideoEncodeAcceleratorProvider::

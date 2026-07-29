@@ -7,7 +7,7 @@
 
 #import <Foundation/Foundation.h>
 
-#import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_table_view_controller_delegate.h"
+#import "ios/chrome/browser/autofill/ui_bundled/address_editor/autofill_profile_edit_table_view_helper_delegate.h"
 #import "ios/chrome/browser/settings/ui_bundled/autofill/autofill_settings_profile_edit_table_view_controller_delegate.h"
 
 namespace autofill {
@@ -21,8 +21,11 @@ class PersonalDataManager;
 
 // The Mediator for viewing and editing the profile.
 @interface AutofillProfileEditMediator
-    : NSObject <AutofillProfileEditTableViewControllerDelegate,
+    : NSObject <AutofillProfileEditTableViewHelperDelegate,
                 AutofillSettingsProfileEditTableViewControllerDelegate>
+
+// Loads the country codes and names.
++ (NSArray<CountryItem*>*)loadCountries;
 
 // Designated initializer. `AutofillProfileEditMediatorDelegate` and
 // `dataManager` should not be nil.
@@ -31,6 +34,7 @@ class PersonalDataManager;
              personalDataManager:(autofill::PersonalDataManager*)dataManager
                  autofillProfile:(autofill::AutofillProfile*)profile
                isMigrationPrompt:(BOOL)isMigrationPrompt
+                addManualAddress:(BOOL)addManualAddress
     NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
@@ -50,6 +54,9 @@ class PersonalDataManager;
 
 // Saves the profile and dismisses the view.
 - (void)saveChangesForDismiss;
+
+// Disconnects the mediator.
+- (void)disconnect;
 
 @end
 

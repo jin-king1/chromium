@@ -10,6 +10,7 @@
 #include "components/omnibox/browser/omnibox_client.h"
 #include "components/omnibox/browser/omnibox_field_trial.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 #include "components/omnibox/browser/vector_icons.h"  // nogncheck
@@ -59,7 +60,6 @@ size_t EstimateMemoryUsage(const OmniboxAction::LabelStrings& self) {
 bool OmniboxAction::Client::OpenJourneys(const std::string& query) {
   return false;
 }
-
 // =============================================================================
 
 OmniboxAction::ExecutionContext::ExecutionContext(
@@ -76,8 +76,10 @@ OmniboxAction::ExecutionContext::~ExecutionContext() = default;
 
 // =============================================================================
 
-OmniboxAction::OmniboxAction(LabelStrings strings, GURL url)
-    : strings_(strings), url_(url) {}
+OmniboxAction::OmniboxAction(LabelStrings strings,
+                             GURL url,
+                             ActionPresentationMode presentation_mode)
+    : strings_(strings), url_(url), presentation_mode_(presentation_mode) {}
 
 OmniboxAction::~OmniboxAction() {
 #if BUILDFLAG(IS_ANDROID)
@@ -107,9 +109,15 @@ bool OmniboxAction::IsReadyToTrigger(
 #if defined(SUPPORT_PEDALS_VECTOR_ICONS)
 const gfx::VectorIcon& OmniboxAction::GetVectorIcon() const {
   // TODO(tommycli): Replace with real icon.
-  return omnibox::kProductChromeRefreshIcon;
+  return features::IsRoundedIconsEnabled()
+             ? omnibox::kChromeProductIcon
+             : omnibox::kProductChromeRefreshOldIcon;
 }
 #endif
+
+gfx::Image OmniboxAction::GetIconImage() const {
+  return gfx::Image();
+}
 
 size_t OmniboxAction::EstimateMemoryUsage() const {
   size_t total = 0;
@@ -144,3 +152,7 @@ void OmniboxAction::OpenURL(OmniboxAction::ExecutionContext& context,
            /*destination_url_entered_with_http_scheme=*/false, u"",
            AutocompleteMatch(), AutocompleteMatch());
 }
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(OmniboxAction)
+#endif

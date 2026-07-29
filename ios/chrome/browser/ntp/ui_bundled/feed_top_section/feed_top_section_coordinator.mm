@@ -10,7 +10,10 @@
 #import "components/search_engines/template_url.h"
 #import "components/search_engines/template_url_prepopulate_data.h"
 #import "components/search_engines/template_url_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "ios/chrome/browser/authentication/ui_bundled/continuation.h"
+#import "ios/chrome/browser/authentication/ui_bundled/signin/signin_coordinator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin_presenter.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin_promo_view_mediator.h"
 #import "ios/chrome/browser/ntp/ui_bundled/feed_top_section/feed_top_section_mediator.h"
@@ -18,17 +21,18 @@
 #import "ios/chrome/browser/ntp/ui_bundled/feed_top_section/notifications_promo_view_constants.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_delegate.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_utils.h"
+#import "ios/chrome/browser/push_notification/coordinator/notifications_opt_in_alert_coordinator.h"
 #import "ios/chrome/browser/push_notification/model/constants.h"
+#import "ios/chrome/browser/push_notification/model/provisional_push_notification_service_factory.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_client_id.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_service.h"
 #import "ios/chrome/browser/push_notification/model/push_notification_util.h"
-#import "ios/chrome/browser/push_notification/ui_bundled/notifications_opt_in_alert_coordinator.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/alert/alert_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 #import "ios/chrome/browser/shared/public/commands/snackbar_commands.h"
 #import "ios/chrome/browser/signin/model/authentication_service.h"
@@ -46,8 +50,8 @@ using base::UmaHistogramEnumeration;
 using base::UserMetricsAction;
 
 @interface FeedTopSectionCoordinator () <
-    SigninPresenter,
-    NotificationsOptInAlertCoordinatorDelegate>
+    NotificationsOptInAlertCoordinatorDelegate,
+    SigninPromoViewMediatorDelegate>
 
 @property(nonatomic, strong) FeedTopSectionMediator* feedTopSectionMediator;
 @property(nonatomic, strong)
@@ -78,23 +82,26 @@ using base::UserMetricsAction;
       [[FeedTopSectionViewController alloc] init];
   _viewController = self.feedTopSectionViewController;
 
-  ProfileIOS* profile = self.browser->GetProfile();
+  ProfileIOS* profile = self.profile;
   signin::IdentityManager* identityManager =
       IdentityManagerFactory::GetForProfile(profile);
   AuthenticationService* authenticationService =
       AuthenticationServiceFactory::GetForProfile(profile);
   syncer::SyncService* syncService = SyncServiceFactory::GetForProfile(profile);
+  ProvisionalPushNotificationService* provisionalPushNotificationService =
+      ProvisionalPushNotificationServiceFactory::GetForProfile(profile);
 
   self.feedTopSectionMediator = [[FeedTopSectionMediator alloc]
-      initWithConsumer:self.feedTopSectionViewController
-       identityManager:identityManager
-           authService:authenticationService
-           isIncognito:profile->IsOffTheRecord()
-           prefService:profile->GetPrefs()];
+                        initWithConsumer:self.feedTopSectionViewController
+                         identityManager:identityManager
+                             authService:authenticationService
+      provisionalPushNotificationService:provisionalPushNotificationService
+                               incognito:profile->IsOffTheRecord()
+                             prefService:profile->GetPrefs()];
   self.isSignInPromoEnabled =
       ShouldShowTopOfFeedSyncPromo() && authenticationService &&
       [self.NTPDelegate isSignInAllowed] &&
-      !authenticationService->HasPrimaryIdentity(signin::ConsentLevel::kSignin);
+      !identityManager->HasPrimaryAccount(signin::ConsentLevel::kSignin);
 
   // If the user is signed out and signin is allowed, then start the top-of-feed
   // signin promo components.
@@ -102,15 +109,17 @@ using base::UserMetricsAction;
     ChromeAccountManagerService* accountManagerService =
         ChromeAccountManagerServiceFactory::GetForProfile(profile);
     self.signinPromoMediator = [[SigninPromoViewMediator alloc]
-         initWithIdentityManager:identityManager
-           accountManagerService:accountManagerService
-                     authService:AuthenticationServiceFactory::GetForProfile(
-                                     profile)
-                     prefService:profile->GetPrefs()
-                     syncService:syncService
-                     accessPoint:signin_metrics::AccessPoint::kNtpFeedTopPromo
-                 signinPresenter:self
-        accountSettingsPresenter:nil];
+                  initWithIdentityManager:identityManager
+                    accountManagerService:accountManagerService
+                              authService:AuthenticationServiceFactory::
+                                              GetForProfile(profile)
+                              prefService:profile->GetPrefs()
+                              syncService:syncService
+                              accessPoint:signin_metrics::AccessPoint::
+                                              kNtpFeedTopPromo
+                                 delegate:self
+                 accountSettingsPresenter:nil
+        changeProfileContinuationProvider:DoNothingContinuationProvider()];
 
     self.signinPromoMediator.signinPromoAction =
         SigninPromoAction::kSigninWithNoDefaultIdentity;
@@ -169,12 +178,17 @@ using base::UserMetricsAction;
   self.isSigninPromoVisibleOnScreen = visible;
 }
 
-#pragma mark - SigninPresenter
+#pragma mark - SigninPromoViewMediatorDelegate
 
-- (void)showSignin:(ShowSigninCommand*)command {
-  id<ApplicationCommands> handler = HandlerForProtocol(
-      self.browser->GetCommandDispatcher(), ApplicationCommands);
-  [handler showSignin:command baseViewController:self.baseViewController];
+- (void)showSignin:(SigninPromoViewMediator*)mediator
+           command:(ShowSigninCommand*)command {
+  __weak __typeof(self) weakSelf = self;
+  [command addSigninCompletion:^(SigninCoordinator* coordinator,
+                                 SigninCoordinatorResult result,
+                                 id<SystemIdentity>) {
+    [weakSelf.signinPromoMediator signinDidCompleteWithResult:result];
+  }];
+  [self.NTPDelegate showSigninWithCommand:command];
 }
 
 #pragma mark - Setters

@@ -4,6 +4,8 @@
 
 #include "third_party/blink/renderer/core/timing/performance_navigation_timing.h"
 
+#include "services/network/public/mojom/timing_allow_origin.mojom-blink.h"
+#include "services/network/public/mojom/url_response_head.mojom-blink.h"
 #include "third_party/blink/public/mojom/confidence_level.mojom-blink.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink-forward.h"
 #include "third_party/blink/public/web/web_navigation_type.h"
@@ -25,6 +27,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/resource_timing_utils.h"
 #include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
+#include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 
 namespace blink {
 
@@ -44,12 +47,14 @@ V8PerformanceTimingConfidenceValue::Enum GetNavigationConfidenceString(
 PerformanceNavigationTiming::PerformanceNavigationTiming(
     LocalDOMWindow& window,
     mojom::blink::ResourceTimingInfoPtr resource_timing,
-    base::TimeTicks time_origin)
+    base::TimeTicks time_origin,
+    uint64_t navigation_id)
     : PerformanceResourceTiming(std::move(resource_timing),
                                 AtomicString("navigation"),
                                 time_origin,
                                 window.CrossOriginIsolatedCapability(),
-                                &window),
+                                &window,
+                                navigation_id),
       ExecutionContextClient(&window),
       navigation_delivery_type_(
           window.document()->Loader()->GetNavigationDeliveryType()),
@@ -59,7 +64,56 @@ PerformanceNavigationTiming::PerformanceNavigationTiming(
       document_load_timing_values_(window.document()
                                        ->Loader()
                                        ->GetTiming()
-                                       .GetDocumentLoadTimingValues()) {}
+                                       .GetDocumentLoadTimingValues()),
+      expose_cross_origin_redirect_timing_(
+          ComputeExposeCrossOriginRedirectTiming(
+              window,
+              *document_load_timing_values_)) {}
+
+// https://html.spec.whatwg.org/#create-the-navigation-timing-entry
+// static
+bool PerformanceNavigationTiming::ComputeExposeCrossOriginRedirectTiming(
+    LocalDOMWindow& window,
+    const DocumentLoadTimingValues& timing_values) {
+  // For a same-origin redirect chain (or no redirects at all), redirect timing
+  // is always exposed.
+  if (!timing_values.has_cross_origin_redirect) {
+    return true;
+  }
+
+  // When the feature is disabled, retain the legacy behavior of never exposing
+  // redirect timing for cross-origin redirect chains.
+  if (!RuntimeEnabledFeatures::NavigationTimingRedirectTimingViaTAOEnabled()) {
+    return false;
+  }
+
+  // If the navigation has no referrer ("no-referrer"), redirect timing is not
+  // exposed, even if the redirect chain opts in via `Timing-Allow-Origin`.
+  DocumentLoader* loader =
+      window.document() ? window.document()->Loader() : nullptr;
+  if (!loader || loader->GetReferrer().empty()) {
+    return false;
+  }
+
+  // https://fetch.spec.whatwg.org/#concept-navigation-tao-check
+  // Every redirect response in the chain must opt in to the destination origin,
+  // either via "*" or by listing it explicitly.
+  const SecurityOrigin* destination_origin = window.GetSecurityOrigin();
+  const String destination =
+      destination_origin ? destination_origin->ToString() : String();
+  for (const network::mojom::blink::TimingAllowOriginPtr& tao :
+       timing_values.navigation_timing_allow_check_list) {
+    if (tao && tao->is_all()) {
+      continue;
+    }
+    if (tao && tao->is_serialized_origins() && !destination.empty() &&
+        tao->get_serialized_origins().Contains(destination)) {
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
 
 PerformanceNavigationTiming::~PerformanceNavigationTiming() = default;
 
@@ -82,29 +136,6 @@ void PerformanceNavigationTiming::OnBodyLoadFinished(
     int64_t encoded_body_size,
     int64_t decoded_body_size) {
   UpdateBodySizes(encoded_body_size, decoded_body_size);
-}
-
-V8NavigationEntropy::Enum PerformanceNavigationTiming::GetSystemEntropy()
-    const {
-  DocumentLoader* loader = GetDocumentLoader();
-  switch (document_load_timing_values_->system_entropy_at_navigation_start) {
-    case mojom::blink::SystemEntropy::kHigh:
-      if (loader) {
-        CHECK(loader->GetFrame()->IsOutermostMainFrame());
-      }
-      return V8NavigationEntropy::Enum::kHigh;
-    case mojom::blink::SystemEntropy::kNormal:
-      if (loader) {
-        CHECK(loader->GetFrame()->IsOutermostMainFrame());
-      }
-      return V8NavigationEntropy::Enum::kNormal;
-    case mojom::blink::SystemEntropy::kEmpty:
-      if (loader) {
-        CHECK(!loader->GetFrame()->IsOutermostMainFrame());
-      }
-      return V8NavigationEntropy::Enum::k;
-  }
-  NOTREACHED();
 }
 
 DocumentLoader* PerformanceNavigationTiming::GetDocumentLoader() const {
@@ -203,7 +234,7 @@ AtomicString PerformanceNavigationTiming::deliveryType() const {
 }
 
 uint16_t PerformanceNavigationTiming::redirectCount() const {
-  if (document_load_timing_values_->has_cross_origin_redirect) {
+  if (!expose_cross_origin_redirect_timing_) {
     return 0;
   }
 
@@ -211,7 +242,7 @@ uint16_t PerformanceNavigationTiming::redirectCount() const {
 }
 
 DOMHighResTimeStamp PerformanceNavigationTiming::redirectStart() const {
-  if (document_load_timing_values_->has_cross_origin_redirect) {
+  if (!expose_cross_origin_redirect_timing_) {
     return 0;
   }
   return Performance::MonotonicTimeToDOMHighResTimeStamp(
@@ -220,7 +251,7 @@ DOMHighResTimeStamp PerformanceNavigationTiming::redirectStart() const {
 }
 
 DOMHighResTimeStamp PerformanceNavigationTiming::redirectEnd() const {
-  if (document_load_timing_values_->has_cross_origin_redirect) {
+  if (!expose_cross_origin_redirect_timing_) {
     return 0;
   }
   return Performance::MonotonicTimeToDOMHighResTimeStamp(
@@ -261,6 +292,11 @@ PerformanceTimingConfidence* PerformanceNavigationTiming::confidence() const {
         WebFeature::kPerformanceNavigationTimingConfidence);
   }
 
+  return GetConfidence();
+}
+
+PerformanceTimingConfidence* PerformanceNavigationTiming::GetConfidence()
+    const {
   std::optional<RandomizedConfidenceValue> confidence =
       document_load_timing_values_->randomized_confidence;
   if (!confidence) {
@@ -273,19 +309,7 @@ PerformanceTimingConfidence* PerformanceNavigationTiming::confidence() const {
           GetNavigationConfidenceString(confidence->second)));
 }
 
-V8NavigationEntropy PerformanceNavigationTiming::systemEntropy() const {
-  if (DomWindow()) {
-    blink::UseCounter::Count(DomWindow()->document(),
-                             WebFeature::kPerformanceNavigateSystemEntropy);
-  }
-
-  return V8NavigationEntropy(GetSystemEntropy());
-}
-
-DOMHighResTimeStamp PerformanceNavigationTiming::criticalCHRestart(
-    ScriptState* script_state) const {
-  ExecutionContext::From(script_state)
-      ->CountUse(WebFeature::kCriticalCHRestartNavigationTiming);
+DOMHighResTimeStamp PerformanceNavigationTiming::criticalCHRestart() const {
   return Performance::MonotonicTimeToDOMHighResTimeStamp(
       TimeOrigin(), document_load_timing_values_->critical_ch_restart,
       AllowNegativeValues(), CrossOriginIsolatedCapability());
@@ -352,13 +376,12 @@ void PerformanceNavigationTiming::BuildJSONValue(
   builder.AddNumber("domComplete", domComplete());
   builder.AddNumber("loadEventStart", loadEventStart());
   builder.AddNumber("loadEventEnd", loadEventEnd());
-  builder.AddString("type", type().AsString());
+  builder.AddString("type", type().AsStringView());
   builder.AddNumber("redirectCount", redirectCount());
   builder.AddNumber(
       "activationStart",
       PerformanceNavigationTimingActivationStart::activationStart(*this));
-  builder.AddNumber("criticalCHRestart",
-                    criticalCHRestart(builder.GetScriptState()));
+  builder.AddNumber("criticalCHRestart", criticalCHRestart());
 
   if (RuntimeEnabledFeatures::BackForwardCacheNotRestoredReasonsEnabled(
           ExecutionContext::From(builder.GetScriptState()))) {
@@ -371,19 +394,10 @@ void PerformanceNavigationTiming::BuildJSONValue(
         ->CountUse(WebFeature::kBackForwardCacheNotRestoredReasons);
   }
 
-  if (RuntimeEnabledFeatures::PerformanceNavigateSystemEntropyEnabled(
-          ExecutionContext::From(builder.GetScriptState()))) {
-    builder.AddString("systemEntropy",
-                      V8NavigationEntropy(GetSystemEntropy()).AsString());
-  }
-
-  if (RuntimeEnabledFeatures::PerformanceNavigationTimingConfidenceEnabled(
-          ExecutionContext::From(builder.GetScriptState()))) {
-    if (auto* confidence_value = confidence()) {
-      builder.Add("confidence", confidence_value);
-    } else {
-      builder.AddNull("confidence");
-    }
+  if (auto* confidence_value = GetConfidence()) {
+    builder.Add("confidence", confidence_value);
+  } else {
+    builder.AddNull("confidence");
   }
 }
 

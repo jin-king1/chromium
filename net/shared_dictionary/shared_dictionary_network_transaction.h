@@ -7,6 +7,7 @@
 
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ref.h"
 #include "base/memory/scoped_refptr.h"
@@ -25,6 +26,7 @@ class GURL;
 namespace net {
 class SharedDictionary;
 class SourceStream;
+struct LoadTimingInternalInfo;
 struct TransportInfo;
 
 // A `HttpTransaction` that decodes shared dictionary compression.
@@ -67,21 +69,20 @@ class NET_EXPORT SharedDictionaryNetworkTransaction : public HttpTransaction {
            int buf_len,
            CompletionOnceCallback callback) override;
   void StopCaching() override;
-  int64_t GetTotalReceivedBytes() const override;
-  int64_t GetTotalSentBytes() const override;
-  int64_t GetReceivedBodyBytes() const override;
+  base::ByteSize GetTotalReceivedBytes() const override;
+  base::ByteSize GetTotalSentBytes() const override;
+  base::ByteSize GetReceivedBodyBytes() const override;
   void DoneReading() override;
   const HttpResponseInfo* GetResponseInfo() const override;
   LoadState GetLoadState() const override;
-  void SetQuicServerInfo(QuicServerInfo* quic_server_info) override;
   bool GetLoadTimingInfo(LoadTimingInfo* load_timing_info) const override;
+  void PopulateLoadTimingInternalInfo(
+      LoadTimingInternalInfo* load_timing_internal_info) const override;
   bool GetRemoteEndpoint(IPEndPoint* endpoint) const override;
   void PopulateNetErrorDetails(NetErrorDetails* details) const override;
   void SetPriority(RequestPriority priority) override;
   void SetWebSocketHandshakeStreamCreateHelper(
       WebSocketHandshakeStreamBase::CreateHelper* create_helper) override;
-  void SetBeforeNetworkStartCallback(
-      BeforeNetworkStartCallback callback) override;
   void SetConnectedCallback(const ConnectedCallback& callback) override;
   void SetRequestHeadersCallback(RequestHeadersCallback callback) override;
   void SetResponseHeadersCallback(ResponseHeadersCallback callback) override;
@@ -91,10 +92,8 @@ class NET_EXPORT SharedDictionaryNetworkTransaction : public HttpTransaction {
       base::RepeatingCallback<void(HttpRequestHeaders*)> callback) override;
   void SetIsSharedDictionaryReadAllowedCallback(
       base::RepeatingCallback<bool()> callback) override;
-  int ResumeNetworkStart() override;
   ConnectionAttempts GetConnectionAttempts() const override;
   void CloseConnectionOnDestruction() override;
-  bool IsMdlMatchForMetrics() const override;
 
  private:
   enum class DictionaryStatus {
@@ -162,16 +161,20 @@ class NET_EXPORT SharedDictionaryNetworkTransaction : public HttpTransaction {
 
   std::unique_ptr<SourceStream> shared_compression_stream_;
 
-  // This is set only when a shared dictionary is used for decoding the body.
-  std::unique_ptr<HttpResponseInfo> shared_dictionary_used_response_info_;
+  // This is set only when a shared dictionary is available.
+  std::unique_ptr<HttpResponseInfo> shared_dictionary_response_info_;
 
   ConnectedCallback connected_callback_;
 
   bool cert_is_issued_by_known_root_ = false;
   NextProto negotiated_protocol_ = NextProto::kProtoUnknown;
 
+  bool request_destination_is_document_ = false;
+
   base::RepeatingCallback<scoped_refptr<SharedDictionary>()>
       shared_dictionary_getter_;
+
+  NetLogWithSource net_log_;
 
   base::WeakPtrFactory<SharedDictionaryNetworkTransaction> weak_factory_{this};
 };

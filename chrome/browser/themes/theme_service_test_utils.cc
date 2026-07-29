@@ -4,24 +4,17 @@
 
 #include "chrome/browser/themes/theme_service_test_utils.h"
 
+#include "base/containers/fixed_flat_map.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/themes/theme_syncable_service.h"
 #include "components/sync/protocol/entity_specifics.pb.h"
+#include "components/sync/protocol/theme_types.pb.h"
 #include "extensions/common/manifest_constants.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace theme_service::test {
-
-// Struct to distinguish SkColor (aliased to uint32_t) for printing.
-bool PrintableSkColor::operator==(const PrintableSkColor& other) const {
-  return color == other.color;
-}
-
-bool PrintableSkColor::operator!=(const PrintableSkColor& other) const {
-  return !operator==(other);
-}
 
 std::ostream& operator<<(std::ostream& os, PrintableSkColor printable_color) {
   SkColor color = printable_color.color;
@@ -46,18 +39,18 @@ scoped_refptr<extensions::Extension> MakeThemeExtension(
     const std::string& name,
     extensions::mojom::ManifestLocation location,
     const std::string& update_url) {
-  base::Value::Dict source;
+  base::DictValue source;
   source.Set(extensions::manifest_keys::kName, name);
-  source.Set(extensions::manifest_keys::kTheme, base::Value::Dict());
+  source.Set(extensions::manifest_keys::kTheme, base::DictValue());
   source.Set(extensions::manifest_keys::kUpdateURL, update_url);
   source.Set(extensions::manifest_keys::kVersion, "0.0.0.0");
-  std::string error;
+  std::u16string error;
   scoped_refptr<extensions::Extension> extension =
       extensions::Extension::Create(extension_path, location, source,
                                     extensions::Extension::NO_FLAGS, id,
                                     &error);
   EXPECT_TRUE(extension.get());
-  EXPECT_EQ("", error);
+  EXPECT_EQ(u"", error);
   return extension;
 }
 
@@ -124,11 +117,11 @@ sync_pb::ThemeSpecifics CreateThemeSpecificsWithColorTheme() {
   theme_specifics.set_use_system_theme_by_default(false);
   theme_specifics.set_browser_color_scheme(
       sync_pb::ThemeSpecifics_BrowserColorScheme_SYSTEM);
-  sync_pb::ThemeSpecifics::UserColorTheme* user_color_theme =
+  sync_pb::UserColorTheme* user_color_theme =
       theme_specifics.mutable_user_color_theme();
   user_color_theme->set_color(SK_ColorRED);
   user_color_theme->set_browser_color_variant(
-      sync_pb::ThemeSpecifics_UserColorTheme_BrowserColorVariant_TONAL_SPOT);
+      sync_pb::UserColorTheme_BrowserColorVariant_TONAL_SPOT);
   return theme_specifics;
 }
 
@@ -149,7 +142,7 @@ sync_pb::ThemeSpecifics CreateThemeSpecificsWithCustomNtpBackground(
   theme_specifics.set_use_system_theme_by_default(false);
   theme_specifics.set_browser_color_scheme(
       sync_pb::ThemeSpecifics_BrowserColorScheme_SYSTEM);
-  sync_pb::ThemeSpecifics::NtpCustomBackground* background =
+  sync_pb::NtpCustomBackground* background =
       theme_specifics.mutable_ntp_background();
   background->set_url(background_url);
   background->set_attribution_line_1("");

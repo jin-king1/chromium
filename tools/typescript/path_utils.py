@@ -20,7 +20,7 @@ def isInAshFolder(path):
       'chrome/browser/resources/ash',
       'chrome/browser/resources/chromeos',
       'chrome/browser/resources/dlp_internals',
-      'chromeos/ash/components/kiosk/vision/webui',
+      'chromeos/ash',
       'ui/file_manager',
 
       # Test folders

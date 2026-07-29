@@ -10,10 +10,10 @@
 
 #include "base/atomicops.h"
 #include "base/bits.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/discardable_memory.h"
-#include "base/memory/discardable_memory_internal.h"
 #include "base/memory/page_size.h"
 #include "base/memory/shared_memory_tracker.h"
 #include "base/numerics/safe_math.h"
@@ -24,13 +24,15 @@
 #include "partition_alloc/page_allocator.h"  // nogncheck
 #endif
 
-#if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)
+#if BUILDFLAG(IS_POSIX)
 // For madvise() which is available on all POSIX compatible systems.
 #include <sys/mman.h>
 #endif
 
 #if BUILDFLAG(IS_ANDROID)
-#include "third_party/ashmem/ashmem.h"
+#include <linux/ashmem.h>
+
+#include "base/android/linker/ashmem.h"
 #endif
 
 #if BUILDFLAG(IS_WIN)
@@ -46,10 +48,8 @@
 #include "base/fuchsia/fuchsia_logging.h"
 #endif
 
-#if BUILDFLAG(ENABLE_BASE_TRACING)
-#include "base/trace_event/memory_allocator_dump.h"  // no-presubmit-check
-#include "base/trace_event/process_memory_dump.h"    // no-presubmit-check
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
+#include "base/trace_event/memory_allocator_dump.h"
+#include "base/trace_event/process_memory_dump.h"
 
 namespace base {
 namespace {
@@ -131,22 +131,6 @@ SharedState* SharedStateFromSharedMemory(
 size_t AlignToPageSize(size_t size) {
   return bits::AlignUp(size, base::GetPageSize());
 }
-
-#if BUILDFLAG(IS_ANDROID)
-bool UseAshmemUnpinningForDiscardableMemory() {
-  if (!ashmem_device_is_supported()) {
-    return false;
-  }
-
-  // If we are participating in the discardable memory backing trial, only
-  // enable ashmem unpinning when we are in the corresponding trial group.
-  if (base::DiscardableMemoryBackingFieldTrialIsEnabled()) {
-    return base::GetDiscardableMemoryBackingFieldTrialGroup() ==
-           base::DiscardableMemoryTrialGroup::kAshmem;
-  }
-  return true;
-}
-#endif  // BUILDFLAG(IS_ANDROID)
 
 }  // namespace
 
@@ -358,7 +342,7 @@ void DiscardableSharedMemory::Unlock(size_t offset, size_t length) {
     return;
   }
 
-  Time current_time = Now();
+  Time current_time = Time::Now();
   DCHECK(!current_time.is_null());
 
   SharedState old_state(SharedState::LOCKED, Time());
@@ -427,7 +411,7 @@ bool DiscardableSharedMemory::Purge(Time current_time) {
 // Note: this memory will not be accessed again.  The segment will be
 // freed asynchronously at a later time, so just do the best
 // immediately.
-#if BUILDFLAG(IS_POSIX) && !BUILDFLAG(IS_NACL)
+#if BUILDFLAG(IS_POSIX)
 // Linux and Android provide MADV_REMOVE which is preferred as it has a
 // behavior that can be verified in tests. Other POSIX flavors (MacOSX, BSDs),
 // provide MADV_FREE which has the same result but memory is purged lazily.
@@ -505,7 +489,6 @@ void DiscardableSharedMemory::CreateSharedMemoryOwnershipEdge(
     trace_event::ProcessMemoryDump* pmd,
     bool is_owned) const {
 // Memory dumps are only supported when tracing support is enabled,.
-#if BUILDFLAG(ENABLE_BASE_TRACING)
   auto* shared_memory_dump = SharedMemoryTracker::GetOrCreateSharedMemoryDump(
       shared_memory_mapping_, pmd);
   // TODO(ssid): Clean this by a new api to inherit size of parent dump once the
@@ -535,7 +518,6 @@ void DiscardableSharedMemory::CreateSharedMemoryOwnershipEdge(
     pmd->CreateSharedMemoryOwnershipEdge(local_segment_dump->guid(),
                                          shared_memory_guid, kImportance);
   }
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 }
 
 // static
@@ -545,9 +527,9 @@ DiscardableSharedMemory::LockResult DiscardableSharedMemory::LockPages(
     size_t length) {
 #if BUILDFLAG(IS_ANDROID)
   if (region.IsValid()) {
-    if (UseAshmemUnpinningForDiscardableMemory()) {
+    if (AshmemDeviceIsSupported()) {
       int pin_result =
-          ashmem_pin_region(region.GetPlatformHandle(), offset, length);
+          AshmemPinRegion(region.GetPlatformHandle(), offset, length);
       if (pin_result == ASHMEM_WAS_PURGED) {
         return PURGED;
       }
@@ -567,23 +549,19 @@ void DiscardableSharedMemory::UnlockPages(
     size_t length) {
 #if BUILDFLAG(IS_ANDROID)
   if (region.IsValid()) {
-    if (UseAshmemUnpinningForDiscardableMemory()) {
+    if (AshmemDeviceIsSupported()) {
       int unpin_result =
-          ashmem_unpin_region(region.GetPlatformHandle(), offset, length);
+          AshmemUnpinRegion(region.GetPlatformHandle(), offset, length);
       DCHECK_EQ(0, unpin_result);
     }
   }
 #endif
 }
 
-Time DiscardableSharedMemory::Now() const {
-  return Time::Now();
-}
-
 #if BUILDFLAG(IS_ANDROID)
 // static
 bool DiscardableSharedMemory::IsAshmemDeviceSupportedForTesting() {
-  return UseAshmemUnpinningForDiscardableMemory();
+  return AshmemDeviceIsSupported();
 }
 #endif
 

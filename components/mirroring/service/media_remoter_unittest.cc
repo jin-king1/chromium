@@ -13,20 +13,17 @@
 #include "components/mirroring/mojom/cast_message_channel.mojom.h"
 #include "components/mirroring/mojom/session_parameters.mojom.h"
 #include "components/mirroring/service/mirror_settings.h"
+#include "components/mirroring/service/remoting_sender.h"
 #include "components/mirroring/service/rpc_dispatcher.h"
 #include "components/openscreen_platform/task_runner.h"
 #include "media/base/audio_codecs.h"
 #include "media/base/video_codecs.h"
+#include "media/cast/test/openscreen_test_helpers.h"
 #include "media/cast/test/test_with_cast_environment.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/openscreen/src/cast/streaming/public/environment.h"
-#include "third_party/openscreen/src/cast/streaming/public/sender.h"
-#include "third_party/openscreen/src/cast/streaming/sender_packet_router.h"
-#include "third_party/openscreen/src/platform/api/time.h"
-#include "third_party/openscreen/src/platform/base/trivial_clock_traits.h"
 
 using media::mojom::RemotingSinkMetadata;
 using media::mojom::RemotingStopReason;
@@ -38,52 +35,6 @@ using ::testing::Mock;
 namespace mirroring {
 
 namespace {
-
-constexpr uint32_t kFirstSsrc = 35535;
-constexpr int kRtpTimebase = 9000;
-
-constexpr std::array<uint8_t, 16> kAesSecretKey{1, 2,  3,  4,  5,  6,  7, 8,
-                                                9, 10, 11, 12, 13, 14, 15};
-
-constexpr std::array<uint8_t, 16> kAesIvMask{2,  3,  4,  5,  6,  7,  8, 9,
-                                             10, 11, 12, 13, 14, 15, 16};
-
-constexpr auto kDefaultPlayoutDelay = std::chrono::milliseconds(400);
-
-// Set of simply initialized remoting openscreen::cast::Senders for use with the
-// media remoter.
-// TODO(https://crbug.com/1363719): openscreen::cast::Sender should be easier to
-// initialize for tests.
-struct OpenscreenTestSenders {
-  OpenscreenTestSenders()
-      : task_runner(base::SequencedTaskRunner::GetCurrentDefault()),
-        environment(openscreen::Clock::now,
-                    task_runner,
-                    openscreen::IPEndpoint::kAnyV4()),
-        sender_packet_router(environment, 20, std::chrono::milliseconds(10)),
-        audio_sender(std::make_unique<openscreen::cast::Sender>(
-            environment,
-            sender_packet_router,
-            openscreen::cast::SessionConfig{
-                kFirstSsrc, kFirstSsrc + 1, kRtpTimebase, 2 /* channels */,
-                kDefaultPlayoutDelay, kAesSecretKey, kAesIvMask,
-                true /* is_pli_enabled */},
-            openscreen::cast::RtpPayloadType::kAudioVarious)),
-        video_sender(std::make_unique<openscreen::cast::Sender>(
-            environment,
-            sender_packet_router,
-            openscreen::cast::SessionConfig{
-                kFirstSsrc + 2, kFirstSsrc + 3, kRtpTimebase, 1 /* channels */,
-                kDefaultPlayoutDelay, kAesSecretKey, kAesIvMask,
-                true /* is_pli_enabled */},
-            openscreen::cast::RtpPayloadType::kVideoVarious)) {}
-
-  openscreen_platform::TaskRunner task_runner;
-  openscreen::cast::Environment environment;
-  openscreen::cast::SenderPacketRouter sender_packet_router;
-  std::unique_ptr<openscreen::cast::Sender> audio_sender;
-  std::unique_ptr<openscreen::cast::Sender> video_sender;
-};
 
 // Mojo handles used for managing the remoting data streams.
 struct DataStreamHandles {
@@ -172,6 +123,30 @@ class MediaRemoterTest : public mojom::CastMessageChannel,
     OnConnectToRemotingSource();
   }
 
+  std::unique_ptr<media::mojom::RemotingDataStreamSender>
+  CreateRemotingDataStreamSender(
+      bool is_audio,
+      mojo::ScopedDataPipeConsumerHandle pipe,
+      mojo::PendingReceiver<media::mojom::RemotingDataStreamSender> receiver,
+      base::OnceClosure error_callback) override {
+    if (!openscreen_test_senders_) {
+      return nullptr;
+    }
+    auto& sender = is_audio ? openscreen_test_senders_->audio_sender
+                            : openscreen_test_senders_->video_sender;
+    if (!sender) {
+      return nullptr;
+    }
+
+    MirrorSettings mirror_settings(/*target_playout_delay=*/std::nullopt);
+    auto config =
+        is_audio ? mirror_settings.GetAudioConfig(media::AudioCodec::kUnknown)
+                 : mirror_settings.GetVideoConfig(media::VideoCodec::kUnknown);
+    return std::make_unique<RemotingSender>(
+        cast_environment(), std::move(sender), config, std::move(pipe),
+        std::move(receiver), std::move(error_callback));
+  }
+
   void CreateRemoter() {
     EXPECT_FALSE(media_remoter_);
     EXPECT_CALL(*this, OnConnectToRemotingSource());
@@ -209,12 +184,16 @@ class MediaRemoterTest : public mojom::CastMessageChannel,
   void RemotingStreamingStarted() {
     ASSERT_TRUE(media_remoter_);
 
-    openscreen_test_senders_ = std::make_unique<OpenscreenTestSenders>();
-    media_remoter_->StartRpcMessaging(
-        cast_environment(), std::move(openscreen_test_senders_->audio_sender),
-        std::move(openscreen_test_senders_->video_sender),
-        MirrorSettings::GetDefaultAudioConfig(media::AudioCodec::kUnknown),
-        MirrorSettings::GetDefaultVideoConfig(media::VideoCodec::kUnknown));
+    // Cannot have two instances of test senders at once.
+    openscreen_test_senders_.reset();
+    openscreen_test_senders_ =
+        std::make_unique<media::cast::OpenscreenTestSenders>(
+            media::cast::OpenscreenTestSenders::Config(
+                base::SequencedTaskRunner::GetCurrentDefault(),
+                GetMockTickClock(),
+                openscreen::cast::RtpPayloadType::kAudioVarious,
+                openscreen::cast::RtpPayloadType::kVideoVarious));
+    media_remoter_->OnRemotingStarted();
     RunUntilIdle();
     Mock::VerifyAndClear(&remoting_source_);
   }
@@ -292,7 +271,7 @@ class MediaRemoterTest : public mojom::CastMessageChannel,
   mojo::Remote<media::mojom::Remoter> remoter_;
 
   // Configured for use by the media remoter.
-  std::unique_ptr<OpenscreenTestSenders> openscreen_test_senders_;
+  std::unique_ptr<media::cast::OpenscreenTestSenders> openscreen_test_senders_;
   std::unique_ptr<DataStreamHandles> data_stream_handles_;
   std::unique_ptr<MediaRemoter> media_remoter_;
 };

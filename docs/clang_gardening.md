@@ -1,55 +1,161 @@
-# Clang Gardening
+# Clang and Rust Gardening
 
-Chromium bundles its own pre-built version of [Clang](clang.md). This is done so
-that Chromium developers have access to the latest and greatest developer tools
-provided by Clang and LLVM (ASan, CFI, coverage, etc). In order to [update the
-compiler](updating_clang.md) (roll clang), it has to be tested so that we can be
-confident that it works in the configurations that Chromium cares about.
+Chromium is built using a pre-built version of [Clang](clang.md) and
+[Rust](rust.md), which are downloaded from a Google Cloud bucket by depot_tools
+as part of `gclient sync`. This is done so that Chromium developers have access
+to the latest and greatest developer tools, fixes and optimizations provided by
+Clang and LLVM (ASan, CFI, coverage, etc). It also means the build is entirely
+self-contained ("hermetic"), which is fantastic for debugging and support -- we
+only have to support one version of a single compiler at a time. As clang
+gardeners, we're responsible for putting together new versions of the toolchain
+package that developers download from the cloud (referred to as
+["rolling clang"](updating_clang.md)).
 
-We maintain a [waterfall of
-builders](https://ci.chromium.org/p/chromium/g/chromium.clang/console) that
-continuously build fresh versions of Clang and use them to build and test
-Chromium. "Clang gardening" is the process of monitoring that waterfall,
-determining if any compile or test failures are due to an upstream compiler
-change, filing bugs upstream, and often reverting bad changes in LLVM. This
-document describes some of the processes and techniques for doing that.
+Both clang and rust are actively developed, receiving hundreds of commits per
+day. This means that things break frequently. Since Chromium is one of the
+largest open-source codebases, it's common for us to be the first to discover
+issues and corner cases that evaded the upstream CI. The
+[primary activity](#gardening-process) of gardening is to monitor our
+infrastructure to detect new issues. When you notice an issue, file a bug, then dig into it (or find someone else to do so).
 
-Some may find the
-[sheriff-o-matic](https://sheriff-o-matic.appspot.com/chromium.clang)
-view of the waterfall easier to work with.
+Should you find yourself in a position where there aren't any outstanding
+issues, you've got a roll candidate! Try out the current revision of the
+compiler on the CQ, and if it passes you can land a CL that will make that
+package the default for all developers going forward.
+[Full instructions here](updating_clang.md).
 
-To keep others informed, [file a
-bug](https://bugs.chromium.org/p/chromium/issues/entry).
-earlier rather than later for build breaks likely caused by changes in
-clang or the rest fo the toolchain. Make sure to set the component field to
-`Tools > LLVM`, which will include the entire Chrome toolchain (Lexan) team.
+## Infrastructure
 
-At the beginning of your gardener rotation, it may be
-useful to [search for recent bot
-breaks](https://bugs.chromium.org/p/chromium/issues/list?q=component%3ATools%3ELLVM&can=2&sort=-modified).
-We prefer searching like this to having gardeners compose status email at the
-end of their week.
+There are two main sources of information about the state of the build:
 
-In addition to the waterfall, make sure
-[dry run attempts at updating clang](https://chromium-review.googlesource.com/q/path:tools/clang/scripts/update.py)
-are green. As part of the Clang release process we run upstream LLVM tests.
-Ideally these tests are covered by upstream LLVM bots and breakages are
-quickly noticed and fixed by the original author of a breaking commit,
-but that is sadly not always the case.
+### Dry Runs
 
-Each gardener should attempt to update the compiler by performing
-[a Clang roll](updating_clang.md) during their week, assuming the bots are
-green enough.
+New toolchain packages are generally created by running special trybots like
+`linux_upload_clang`, `mac_upload_rust`, etc. These bots can be run from gerrit
+using the "Choose Tryjobs" button. Unlike regular trybots, which just test for
+success or failure, the upload bots have side effects: they attempt to construct
+ a new package, and if they succeed, they upload the package to a Google Cloud
+ bucket called the _staging bucket_.
 
-The gardener is also responsible for taking notes during the weekly Chrome toolchain
-(Lexan) status sync-up meeting.
+Since anyone can run upload jobs, the staging bucket is untrusted. During a
+clang roll, you'll run a script that copies the packages you specify from the
+staging bucket to a production bucket, allowing them to be downloaded by
+depot_tools.
+
+The package they construct is determined by the CLANG_REVISION variable in
+[tools/clang/scripts/update.py](https://source.chromium.org/chromium/chromium/src/+/main:tools/clang/scripts/update.py;l=42;drc=6f920cff25ae8852f16c3bb71007b7a9aaebc497),
+and RUST_REVISION in
+[tools/rust/update_rust.py](https://source.chromium.org/chromium/chromium/src/+/main:tools/rust/update_rust.py;drc=8758f776da008edac978399f0d0e703ffd5e33b7).
+The upload bots pull that revision from github; the SUB_REVISION field is
+appended to the package name, to distinguish between different builds at the
+same revision (perhaps with different settings).
+
+Usually you won't have to run the upload bots yourself; instead, we have
+several automatically generated
+[Clang roll CLs](https://chromium-review.googlesource.com/q/path:tools/clang/scripts/update.py)
+("dry run CLs"). These are generated every few hours by a Cron job and attempt
+to package the latest version of Clang and Rust. The cron job runs on a team
+member's workstation. If the CLs stop coming and that team member is out, anyone else can run the script; search for
+[`clang_packaging_cron.sh`](https://cs/clang_packaging_cron.sh) internally.
+The script essentially just runs
+[`upload_revision.py`](https://source.chromium.org/chromium/chromium/src/+/main:tools/clang/scripts/upload_revision.py).
+
+### Tip-of-tree Waterfall
+
+Buildbots on the
+[tip-of-tree clang waterfall](https://ci.chromium.org/p/chromium/g/chromium.clang/console)
+continuously build the latest version of Clang or Rust and use that to build and
+test Chromium in various build configurations. These provide the fastest
+signal about problems such as the compiler crashing, new warnings causing
+build failures, miscompiles causing test failures, etc. Unlike production
+buildbots, these build Clang with assertions enabled to detect as many
+problems as possible. (Clicking 'Log in' in the top right corner with a
+Google account will reveal a few more bots.)
+
+For alternate views of the waterfall, you can try using
+[Sheriff-o-matic](https://sheriff-o-matic.appspot.com/chromium.clang) or
+[LUCI monitoring view](https://ci.chromium.org/ui/monitoring/chromium.clang),
+though YMMV as to whether they're better experiences than clicking on red
+bots manually.
+
+## Gardening Process
+
+As gardener, you should keep an eye on both the dry run CLs and the waterfall.
+Both of them are building the latest version of clang, but they run different
+tests. The dry runs don't build chromium, and the ToT buildbots don't run the
+entire clang/rust test suites.
+
+Issues should be filed in the [Chromium > Tools >
+LLVM](https://g-issues.chromium.org/issues?q=status:open%20componentid:1457173)
+bug tracker component, and marked as blockers of the tracking bug for the next
+toolchain update. That bug should be named "roll clang and rust again", so that
+it can easily be found by a [search in the LLVM component](https://g-issues.chromium.org/issues?q=componentid:1457173%20%22roll%20clang%20and%20rust%20again%22).
+
+The roll bug should be filed as a P1 Process bug. Anything that blocks the roll
+should should be filed and treated as P1 bugs. Non-blocking issues should be
+logged as a child issue of our [long-term tracking bug](https://g-issues.chromium.org/issues/417753763).
+
+Here is a suggested set of steps to iterate over while gardening:
+
+1. If there is no bug for tracking the next toolchain update, file one.
+
+1. Go over the blockers of the toolchain update tracking bug. Close obsolete
+  ones, try to fix or find someone to fix the remaining ones.
+
+1. Check the [dry run
+  CLs](https://chromium-review.googlesource.com/q/path:tools/clang/scripts/update.py).
+  File a bug if any upload bots are red. File a bug if the CLs stop being produced.
+    1. Protip: since the upload bots take a while to run, it's often easiest to look at the _second_-most-recent CL in the list, which has already finished.
+
+1. Check the [tip-of-tree clang
+  waterfall](https://ci.chromium.org/p/chromium/g/chromium.clang/console) and
+  file bugs for any issues.
+    1. Make sure to check the [long-term tracking bug](https://g-issues.chromium.org/issues/417753763) to see if an issue has been around for a while. If so, you can try to follow up on it if you have spare time, it's not a roll blocker.
+
+1. When packaging succeeds on a roll CL, and the ToT waterfall is reasonably
+  green, attempt a clang roll by following the instructions to [update the
+  compiler](updating_clang.md). This will push the packages from the roll CL to
+  production and begin a commit queue dry run. File a bug for any issues that
+  come up.
+
+1. If the commit queue dry run was successful, review and land the CL.
+
+## Tips and Tricks
+
+The key to success is to detect as many problems as early as possible. Rather
+than stopping to dig deeply into the first problem encountered, it's better to
+do a broad sweep to find all the problems. That way they can be shared among
+the team. Also, problems are often much easier to address when found early.
+
+The other key to success is communication. The bug tracker is the main tool for
+that, and the other is the team chat room. When it's not clear whether
+something is an issue or not, how to resolve an problem, how something works,
+etc., just ask away.
+
+The gardener is also responsible for taking notes during the weekly Chrome
+toolchain sync meeting.
 
 [TOC]
+
+## Clang packaging test failures
+
+When packaging clang/LLVM on our various supported platforms (`upload_*_clang`
+tryjobs), we run the entire LLVM test suite and block the build if any
+test failed. The most common test failures we see are Mac and Windows-specific
+tests since upstream LLVM is mostly Linux-focused. There are public bots that
+also run LLVM tests, mostly accessible from <https://lab.llvm.org/buildbot>.
+There are also some Apple bots running at
+<https://green.lab.llvm.org/job/llvm.org/> which mirror test failures we see on
+Mac. Reverting the culprit change upstream with a pointer to a public bot
+showing the test failure is encouraged.
+
+See LLVM's [Patch reversion
+policy](https://llvm.org/docs/DeveloperPolicy.html#patch-reversion-policy).
 
 ## Disk out of space
 
 If there are any issues with disk running out of space, file a go/bug-a-trooper
-bug, for example https://crbug.com/1105134.
+bug, for example <https://crbug.com/1105134>.
 
 ## Is it the compiler?
 
@@ -124,13 +230,15 @@ things:
 
    If that doesn't work, use `git bisect`. Use this as a template for the bisect
    run script:
+
    ```shell
    #!/bin/bash
    cd $(dirname $0)  # get into llvm build dir
    ninja -j900 clang || exit 125 # skip revisions that don't compile
    ./t-8f292b.sh || exit 1  # exit 0 if good, 1 if bad
    ```
-1. File an upstream bug like http://llvm.org/PR43016. Usually the unminimized repro
+
+1. File an upstream bug like <https://llvm.org/PR43016>. Usually the unminimized repro
    is too large for LLVM's bugzilla, so attach it to a (public) crbug and link
    to that from the LLVM bug. Then revert with a commit message like
    "Revert r368987, it caused PR43016."
@@ -160,11 +268,11 @@ Chromium. Once you understand the code pattern Clang is complaining about, file
 a bug to do either fix or silence the new warning.
 
 If this is a completely new warning, disable it by adding `-Wno-NEW-WARNING` to
-[this list of disabled
-warnings](https://cs.chromium.org/chromium/src/build/config/compiler/BUILD.gn?l=1479)
-if `llvm_force_head_revision` is true. Here is [an
-example](https://chromium-review.googlesource.com/1251622). This will keep the
-ToT bots green while you decide what to do.
+the "tot_warnings" config. Here is [an example](https://source.chromium.org/chromium/chromium/src/+/main:build/config/compiler/BUILD.gn;l=1959;drc=b3280fe4347b9093c0e4ef2ff592ee0353037fe7).
+This will keep the ToT bots green while you decide what to do. You may need to
+add additional checks if the warning is only needed for some configurations, but
+you will always need to check `llvm_force_head_revision` to ensure you don't
+pass the warning flag to older versions of clang that don't recognize it.
 
 Sometimes, behavior changes and a pre-existing warning changes to warn on new
 code. In this case, fixing Chromium may be the easiest and quickest fix. If
@@ -205,8 +313,8 @@ work on linker bugs without having to have a Chromium build environment.
 
 To use `ld.lld`'s `--reproduce` flag, follow these steps:
 
-1. Locally (build Chromium with a locally-built
-   clang)[https://chromium.googlesource.com/chromium/src.git/+/main/docs/clang.md#Using-a-custom-clang-binary]
+1. Locally [build Chromium with a locally-built
+   clang](https://chromium.googlesource.com/chromium/src.git/+/main/docs/clang.md#Using-a-custom-clang-binary)
 
 1. After reproducing the link error, build just the failing target with
    ninja's `-v -d keeprsp` flags added:
@@ -225,7 +333,7 @@ To use `ld.lld`'s `--reproduce` flag, follow these steps:
    address, you won't be able to make a world-shareable link to it, so upload
    it in a Window where you're signed in with your @chromium account.
 
-1. File an LLVM bug linking to the file. Example: http://llvm.org/PR43241
+1. File an LLVM bug linking to the file. Example: <https://llvm.org/PR43241>
 
 TODO: Describe object file bisection, identify obj with symbol that no longer
 has the section.
@@ -237,13 +345,13 @@ These steps can be used to debug such problems.
 
 Notes:
 
- - All steps assume they are run from the output directory (the same directory args.gn is in).
+- All steps assume they are run from the output directory (the same directory args.gn is in).
 
- - Commands have been shortened for clarity. In particular, Chromium build commands are
+- Commands have been shortened for clarity. In particular, Chromium build commands are
    generally long, with many parts that you just copy-paste when debugging. These have
    largely been omitted.
 
- - The commands below use "clang++", where in practice there would be some path prefix
+- The commands below use "clang++", where in practice there would be some path prefix
    in front of this. Make sure you are invoking the right clang++. In particular, there
    may be one in the PATH which behaves very differently.
 
@@ -252,8 +360,8 @@ Notes:
 To get the command that is used to link base_unittests:
 
 ```sh
-$ rm base_unittests
-$ ninja -n -d keeprsp -v base_unittests
+rm base_unittests
+ninja -n -d keeprsp -v base_unittests
 ```
 
 This will print a command line. It will also write a file called `base_unittests.rsp`, which
@@ -272,7 +380,7 @@ The script `tools/clang/scripts/expand_thin_archives.py` can be used for this pu
 For example:
 
 ```sh
-$ ../../tools/clang/scripts/expand_thin_archives.py -p=-Wl, -- @base_unittests.rsp > base_unittests.expanded.rsp
+../../tools/clang/scripts/expand_thin_archives.py -p=-Wl, -- @base_unittests.rsp > base_unittests.expanded.rsp
 ```
 
 The `-p` parameter here specifies the prefix for parameters to be passed to the linker.
@@ -280,7 +388,7 @@ If you are invoking the linker directly (as opposed to through clang++), the pre
 be empty.
 
 ```sh
-$ ../../tools/clang/scripts/expand_thin_archives.py -p='', -- @base_unittests.rsp > base_unittests.expanded.rsp
+../../tools/clang/scripts/expand_thin_archives.py -p='', -- @base_unittests.rsp > base_unittests.expanded.rsp
 ```
 
 ### Remove -Wl,--start-group and -Wl,--end-group
@@ -303,20 +411,20 @@ In a ThinLTO build, what is normally the compile step that produces native objec
 instead produces LLVM bitcode files. A simple example would be:
 
 ```sh
-$ clang++ -c -flto=thin foo.cpp -o foo.o
+clang++ -c -flto=thin foo.cpp -o foo.o
 ```
 
 In a Chromium build, these files reside under `obj/`, and you can generate them using ninja.
 For example:
 
 ```sh
-$ ninja obj/base/base/lock.o
+ninja obj/base/base/lock.o
 ```
 
 These can be fed to `llvm-dis` to produce textual LLVM IR:
-   
+
 ```
-$ llvm-dis -o - obj/base/base/lock.o | less
+llvm-dis -o - obj/base/base/lock.o | less
 ```
 
 When using split LTO unit (`-fsplit-lto-unit`, which is required for
@@ -325,9 +433,9 @@ some features, CFI among them), this may produce a message like:
     llvm-dis: error: Expected a single module
 
    In that case, you can use `llvm-modextract`:
-   
+
 ```sh
-$ llvm-modextract -n 0 -o - obj/base/base/lock.o | llvm-dis -o - | less
+llvm-modextract -n 0 -o - obj/base/base/lock.o | llvm-dis -o - | less
 ```
 
 ### Saving Intermediate Bitcode
@@ -336,23 +444,25 @@ The ThinLTO linking process proceeds in a number of stages. The bitcode that is
 generated during these stages can be saved by passing `-save-temps` to the linker:
 
 ```
-$ clang++ -fuse-ld=lld -Wl,-save-temps -o ./base_unittests @base_unittests.expanded.rsp
+clang++ -fuse-ld=lld -Wl,-save-temps -o ./base_unittests @base_unittests.expanded.rsp
 ```
 
 This generates files such as:
- - lock.o.0.preopt.bc
- - lock.o.3.import.bc
- - lock.o.5.precodegen.bc
+
+- lock.o.0.preopt.bc
+- lock.o.3.import.bc
+- lock.o.5.precodegen.bc
 
 in the directory where lock.o is (obj/base/base).
 
 These can be fed to `llvm-dis` to produce textual LLVM IR. They show
 how the code is transformed as it progresses through ThinLTO stages.
 Of particular interest are:
- - .3.import.bc, which shows the IR after definitions have been imported from
+
+- .3.import.bc, which shows the IR after definitions have been imported from
    other modules, but before optimizations. Running this through LLVM's `opt`
    tool with the right optimization level can often reproduce issues.
- - .5.precodegen.bc, which shows the IR just before it is transformed to native
+- .5.precodegen.bc, which shows the IR just before it is transformed to native
    code. Running this through LLVM's `llc` tool with the right optimization level
    can often reproduce issues.
 
@@ -363,12 +473,13 @@ shows symbol resolutions. These look like:
 
 In this example, run_all_base_unittests.o contains a symbol named
 main, with flags plx.
-   
+
 The possible flags are:
- - p: prevailing: of symbols with this name, this one has been chosen.
- - l: final definition in this linkage unit.
- - r: redefined by the linker.
- - x: visible to regular (that is, non-LTO) objects.
+
+- p: prevailing: of symbols with this name, this one has been chosen.
+- l: final definition in this linkage unit.
+- r: redefined by the linker.
+- x: visible to regular (that is, non-LTO) objects.
 
 ### Code Generation for a Single Module
 
@@ -381,7 +492,7 @@ optimizations/codegen on files matching the pattern and skip linking. This is
 helpful especially in combination with `-Wl,-save-temps`.
 
 ```sh
-$ clang++ -fuse-ld=lld -Wl,--thinlto-single-module=obj/base/base/lock.o -o ./base_unittests @base_unittests.expanded.rsp
+clang++ -fuse-ld=lld -Wl,--thinlto-single-module=obj/base/base/lock.o -o ./base_unittests @base_unittests.expanded.rsp
 ```
 
 You should see
@@ -391,6 +502,11 @@ You should see
 ```
 
 being printed.
+
+## Crubit Failure
+
+If one of the ToT Rust bots fails with an error that looks related to crubit,
+you can file a bug against the current crubit gardener (go/crubit-onduty).
 
 ## Tips and tricks
 
@@ -404,5 +520,5 @@ $ diff -u <(cd out.good && find . -name "*.o" -exec sha1sum {} \; | sort -k2) \
 Or with cmp:
 
 ```
-$ find good -name "*.o" -exec bash -c 'cmp -s $0 ${0/good/bad} || echo $0' {} \;
+find good -name "*.o" -exec bash -c 'cmp -s $0 ${0/good/bad} || echo $0' {} \;
 ```

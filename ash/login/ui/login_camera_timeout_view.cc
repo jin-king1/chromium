@@ -9,6 +9,7 @@
 #include "ash/login/ui/arrow_button_view.h"
 #include "ash/login/ui/views_utils.h"
 #include "ash/style/ash_color_id.h"
+#include "base/strings/string_util.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -80,11 +81,11 @@ LoginCameraTimeoutView::LoginCameraTimeoutView(
   AddChildViewRaw(text_container);
   // TODO(dkuzmin): Make title in Google Sans font once
   // https://crbug.com/1288022 is resolved.
-  title_ = text_container->AddChildView(CreateLabel(
+  title_ = text_container->AddChildViewRaw(CreateLabel(
       l10n_util::GetStringFUTF16(IDS_ASH_LOGIN_CAMERA_TIME_OUT_TITLE,
                                  ui::GetChromeOSDeviceName()),
       kFontDeltaTitle));
-  subtitle_ = text_container->AddChildView(CreateLabel(
+  subtitle_ = text_container->AddChildViewRaw(CreateLabel(
       l10n_util::GetStringUTF16(IDS_ASH_LOGIN_CAMERA_TIME_OUT_SUBTITLE),
       kFontDeltaSubtitle));
 

@@ -18,7 +18,6 @@
 #include "services/network/public/mojom/url_response_head.mojom.h"
 #include "services/network/trust_tokens/proto/public.pb.h"
 #include "services/network/trust_tokens/trust_token_database_owner.h"
-#include "services/network/trust_tokens/trust_token_key_commitment_parser.h"
 #include "services/network/trust_tokens/trust_token_parameterization.h"
 #include "services/network/trust_tokens/trust_token_store.h"
 #include "url/url_constants.h"
@@ -27,8 +26,8 @@ namespace network {
 
 namespace {
 
-base::Value::Dict CreateLogValue(std::string_view outcome) {
-  return base::Value::Dict().Set("outcome", outcome);
+base::DictValue CreateLogValue(std::string_view outcome) {
+  return base::DictValue().Set("outcome", outcome);
 }
 
 // Define convenience aliases for the NetLogEventTypes for brevity.
@@ -50,16 +49,12 @@ TrustTokenRequestRedemptionHelper::TrustTokenRequestRedemptionHelper(
     mojom::TrustTokenRefreshPolicy refresh_policy,
     TrustTokenStore* token_store,
     const TrustTokenKeyCommitmentGetter* key_commitment_getter,
-    std::optional<std::string> custom_key_commitment,
-    std::optional<url::Origin> custom_issuer,
     std::unique_ptr<Cryptographer> cryptographer,
     net::NetLogWithSource net_log)
     : top_level_origin_(top_level_origin),
       refresh_policy_(refresh_policy),
       token_store_(token_store),
       key_commitment_getter_(std::move(key_commitment_getter)),
-      custom_key_commitment_(custom_key_commitment),
-      custom_issuer_(custom_issuer),
       cryptographer_(std::move(cryptographer)),
       net_log_(std::move(net_log)) {
   DCHECK(token_store_);
@@ -77,29 +72,12 @@ void TrustTokenRequestRedemptionHelper::Begin(
   net_log_.BeginEvent(
       net::NetLogEventType::TRUST_TOKEN_OPERATION_BEGIN_REDEMPTION);
 
-  if (custom_issuer_) {
-    issuer_ = SuitableTrustTokenOrigin::Create(*custom_issuer_);
-  } else {
-    issuer_ = SuitableTrustTokenOrigin::Create(url);
-  }
+  issuer_ = SuitableTrustTokenOrigin::Create(url);
 
   if (!issuer_) {
     LogOutcome(net_log_, kBegin, "Unsuitable issuer URL (request destination)");
     std::move(done).Run(std::nullopt,
                         mojom::TrustTokenOperationStatus::kInvalidArgument);
-    return;
-  }
-
-  if (custom_key_commitment_) {
-    mojom::TrustTokenKeyCommitmentResultPtr keys =
-        TrustTokenKeyCommitmentParser().Parse(*custom_key_commitment_);
-    if (!keys) {
-      LogOutcome(net_log_, kBegin, "Failed to parse custom keys");
-      std::move(done).Run(std::nullopt,
-                          mojom::TrustTokenOperationStatus::kInvalidArgument);
-      return;
-    }
-    OnGotKeyCommitment(std::move(done), std::move(keys));
     return;
   }
 
@@ -155,9 +133,15 @@ void TrustTokenRequestRedemptionHelper::OnGotKeyCommitment(
     return;
   }
 
+  if (commitment_result->protocol_version !=
+      mojom::TrustTokenProtocolVersion::kPrivateStateTokenV1Voprf) {
+    std::move(done).Run(std::nullopt,
+                        mojom::TrustTokenOperationStatus::kInvalidArgument);
+    return;
+  }
+
   if (!commitment_result->batch_size ||
-      !cryptographer_->Initialize(commitment_result->protocol_version,
-                                  commitment_result->batch_size)) {
+      !cryptographer_->Initialize(commitment_result->batch_size)) {
     LogOutcome(net_log_, kBegin,
                "Internal error initializing BoringSSL redemption state "
                "(possibly due to bad batch size)");
@@ -241,24 +225,12 @@ void TrustTokenRequestRedemptionHelper::Finalize(
     return;
   }
 
-  // 4. Get lifetime from response header
+  // 4. Get lifetime from response header.
   // If there are multiple lifetime headers, the last one is used.
-  bool has_lifetime = false;
-  uint64_t lifetime = 0;
-  if (response_headers.HasHeader(
-          kTrustTokensResponseHeaderSecTrustTokenLifetime)) {
-    // GetInt64HeaderValue returns -1 in case of errors, if not -1, then
-    // non-negative values ensuring non-negative values is important since we
-    // cast it to unsigned
-    int64_t maybe_lifetime = response_headers.GetInt64HeaderValue(
-        kTrustTokensResponseHeaderSecTrustTokenLifetime);
-    if (maybe_lifetime != -1) {
-      has_lifetime = true;
-      lifetime = static_cast<uint64_t>(maybe_lifetime);
-    }
-    response_headers.RemoveHeader(
-        kTrustTokensResponseHeaderSecTrustTokenLifetime);
-  }
+  std::optional<int64_t> lifetime = response_headers.GetInt64HeaderValue(
+      kTrustTokensResponseHeaderSecTrustTokenLifetime);
+  response_headers.RemoveHeader(
+      kTrustTokensResponseHeaderSecTrustTokenLifetime);
 
   // 5. Otherwise, if these checks succeed, store the RR and return success.
   TrustTokenRedemptionRecord record_to_store;
@@ -267,8 +239,9 @@ void TrustTokenRequestRedemptionHelper::Finalize(
       std::move(token_verification_key_));
   *record_to_store.mutable_creation_time() =
       internal::TimeToTimestamp(base::Time::Now());
-  if (has_lifetime)
-    record_to_store.set_lifetime(lifetime);
+  if (lifetime) {
+    record_to_store.set_lifetime(lifetime.value());
+  }
   token_store_->SetRedemptionRecord(*issuer_, top_level_origin_,
                                     std::move(record_to_store));
 

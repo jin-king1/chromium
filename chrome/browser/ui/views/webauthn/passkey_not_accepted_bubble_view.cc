@@ -32,7 +32,7 @@
 
 PasskeyNotAcceptedBubbleView::PasskeyNotAcceptedBubbleView(
     content::WebContents* web_contents,
-    views::View* anchor_view,
+    views::BubbleAnchor anchor_view,
     DisplayReason display_reason,
     std::string passkey_rp_id)
     : PasswordBubbleViewBase(web_contents,
@@ -54,7 +54,7 @@ PasskeyNotAcceptedBubbleView::PasskeyNotAcceptedBubbleView(
   const std::u16string link =
       l10n_util::GetStringUTF16(IDS_WEBAUTHN_GPM_PASSKEY_DELETED_LINK);
   std::u16string text = l10n_util::GetStringFUTF16(
-      IDS_WEBAUTHN_GPM_PASSKEY_DELETED_LABEL, link, &offset);
+      IDS_WEBAUTHN_GPM_PASSKEY_DOESNT_WORK_LABEL, link, &offset);
 
   auto label = std::make_unique<views::StyledLabel>();
   label->SetText(text);

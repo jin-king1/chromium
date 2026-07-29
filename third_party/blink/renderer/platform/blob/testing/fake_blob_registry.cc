@@ -4,20 +4,22 @@
 
 #include "third_party/blink/renderer/platform/blob/testing/fake_blob_registry.h"
 
+#include "base/notimplemented.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "mojo/public/cpp/bindings/self_owned_receiver.h"
 #include "third_party/blink/public/mojom/blob/data_element.mojom-blink.h"
 #include "third_party/blink/renderer/platform/blob/testing/fake_blob.h"
+#include "third_party/blink/renderer/platform/wtf/functional.h"
 
 namespace {
 namespace mojob = ::blink::mojom::blink;
 class DataElementReader {
  public:
   DataElementReader(mojo::PendingReceiver<mojob::Blob> blob,
-                    const String& uuid,
-                    Vector<mojob::DataElementPtr> elements)
+                    const blink::String& uuid,
+                    blink::Vector<mojob::DataElementPtr> elements)
       : blob_(std::move(blob)),
         uuid_(uuid),
         elements_(std::move(elements)),
@@ -37,7 +39,7 @@ class DataElementReader {
     switch (element->which()) {
       case mojob::DataElement::Tag::kBytes: {
         const mojob::DataElementBytesPtr& bytes = element->get_bytes();
-        blob_body_bytes_.AppendVector(*bytes->embedded_data);
+        blob_body_bytes_.append_range(*bytes->embedded_data);
         return CreateFakeBlob();
       }
       case mojob::DataElement::Tag::kFile: {
@@ -55,8 +57,8 @@ class DataElementReader {
         blob_remote->ReadAll(std::move(data_pipe_producer), mojo::NullRemote());
         async_reader_ = std::make_unique<DataPipeReader>(
             std::move(data_pipe_consumer), blob_body_bytes_,
-            base::BindOnce(&DataElementReader::OnReadBlobComplete,
-                           base::Unretained(this)));
+            BindOnce(&DataElementReader::OnReadBlobComplete,
+                     blink::Unretained(this)));
         return;
       }
     }
@@ -71,30 +73,30 @@ class DataElementReader {
   class DataPipeReader : public mojo::DataPipeDrainer::Client {
    public:
     DataPipeReader(mojo::ScopedDataPipeConsumerHandle pipe,
-                   Vector<uint8_t>& blob_body_bytes,
+                   blink::Vector<uint8_t>& blob_body_bytes,
                    base::OnceClosure done_callback)
         : drainer_(this, std::move(pipe)),
           blob_body_bytes_(blob_body_bytes),
           done_callback_(std::move(done_callback)) {}
 
     void OnDataAvailable(base::span<const uint8_t> data) override {
-      blob_body_bytes_->AppendSpan(data);
+      blob_body_bytes_->append_range(data);
     }
 
     void OnDataComplete() override { std::move(done_callback_).Run(); }
 
    private:
     mojo::DataPipeDrainer drainer_;
-    raw_ref<Vector<uint8_t>> blob_body_bytes_;
+    raw_ref<blink::Vector<uint8_t>> blob_body_bytes_;
     base::OnceClosure done_callback_;
   };
 
   mojo::PendingReceiver<mojob::Blob> blob_;
-  String uuid_;
-  Vector<mojob::DataElementPtr> elements_;
+  blink::String uuid_;
+  blink::Vector<mojob::DataElementPtr> elements_;
 
-  Vector<mojob::DataElementPtr>::iterator elements_index_;
-  Vector<uint8_t> blob_body_bytes_;
+  blink::Vector<mojob::DataElementPtr>::iterator elements_index_;
+  blink::Vector<uint8_t> blob_body_bytes_;
   std::unique_ptr<DataPipeReader> async_reader_;
 };
 
@@ -152,8 +154,8 @@ void FakeBlobRegistry::Register(mojo::PendingReceiver<mojom::blink::Blob> blob,
   DataElementReader* element_reader =
       new DataElementReader(std::move(blob), uuid, std::move(body_elements));
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-      FROM_HERE, base::BindOnce(&DataElementReader::CreateFakeBlob,
-                                base::Unretained(element_reader)));
+      FROM_HERE,
+      BindOnce(&DataElementReader::CreateFakeBlob, Unretained(element_reader)));
 
   std::move(callback).Run();
 }

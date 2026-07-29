@@ -27,8 +27,9 @@ Element* LayoutTextControlSingleLine::ContainerElement() const {
 
 void LayoutTextControlSingleLine::StyleDidChange(
     StyleDifference style_diff,
-    const ComputedStyle* old_style) {
-  LayoutBlockFlow::StyleDidChange(style_diff, old_style);
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
+  LayoutBlockFlow::StyleDidChange(style_diff, old_style, style_change_context);
   layout_text_control::StyleDidChange(InnerEditorElement(), old_style,
                                       StyleRef());
 }
@@ -61,12 +62,6 @@ bool LayoutTextControlSingleLine::NodeAtPoint(
         *this, *inner_editor, result, hit_test_location, accumulated_offset);
   }
   return stop_hit_testing;
-}
-
-bool LayoutTextControlSingleLine::RespectsCSSOverflow() const {
-  NOT_DESTROYED();
-  // Do not show scrollbars even if overflow:scroll is specified.
-  return false;
 }
 
 }  // namespace blink

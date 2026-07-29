@@ -8,7 +8,7 @@ import SwiftUI
 
 /// `PreferenceKey` used to retrieve the width of a view during the layout process.
 struct TooltipViewWidthKey: PreferenceKey {
-  static var defaultValue: CGFloat = 0
+  static let defaultValue: CGFloat = 0
   static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
     value = nextValue()
   }
@@ -69,7 +69,9 @@ struct TooltipView: View {
         }
       )
       .onPreferenceChange(TooltipViewWidthKey.self) { newWidth in
-        tooltipWidth = newWidth
+        Task { @MainActor in
+          tooltipWidth = newWidth
+        }
       }
       .position(x: xPosition, y: 0.0)
       .offset(
@@ -197,8 +199,6 @@ struct HistoryGraph: View {
     let axisXRange =
       (sortedHistoryDates.first?.key ?? Date())...(sortedHistoryDates.last?.key ?? Date())
 
-    /// TODO(b/333894542): Configure audio graph for accessibility and ensure labels
-    /// for line marks and rule marks are accessible.
     Chart {
       ForEach(sortedHistoryDates, id: \.key) { date, price in
         /// Displaying the area mark under the line mark.
@@ -321,7 +321,11 @@ struct HistoryGraph: View {
   /// Updates the selected data when the given `location` is selected inside the given
   /// `geometry` and `chart`.
   private func updateSelectionData(location: CGPoint, geometry: GeometryProxy, chart: ChartProxy) {
-    let startX = geometry[chart.plotAreaFrame].origin.x
+    let frame = getFrameFrom(chart: chart)
+    if frame == nil {
+      return
+    }
+    let startX = geometry[frame!].origin.x
     let currentX = location.x - startX
     if let index: Date = chart.value(atX: currentX) {
       selectedDate = closestDate(to: index, in: history)
@@ -340,7 +344,11 @@ struct HistoryGraph: View {
   /// and chart geometry.
   private func updateTooltipPosition(geometry: GeometryProxy, chart: ChartProxy) {
     if let selectedDate = selectedDate {
-      let startX = geometry[chart.plotAreaFrame].origin.x
+      let frame = getFrameFrom(chart: chart)
+      if frame == nil {
+        return
+      }
+      let startX = geometry[frame!].origin.x
       if let xPosition = chart.position(forX: selectedDate) {
         selectedXPosition = xPosition + startX
       }
@@ -396,5 +404,11 @@ struct HistoryGraph: View {
 
     let rangeTail = (ticks.last ?? 0.0) + (tickInterval / 2)
     return (ticks, (ticks.first ?? 0.0)...rangeTail)
+  }
+
+  /// This function encapsulates the mechanism used to the frame for the plot contained
+  /// within the ChartProxy object.
+  private func getFrameFrom(chart: ChartProxy) -> Anchor<CGRect>? {
+    return chart.plotFrame
   }
 }

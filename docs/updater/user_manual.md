@@ -51,6 +51,15 @@ UpdaterSetup.exe also provides UI and manages integration with the updater.
 UpdaterSetup.exe can also be used to install the updater alone, by running
 `UpdaterSetup.exe --install --system`. (For user installs, elide `--system`.)
 
+By default, if a silent install is triggered (e.g. by passing `--silent`
+on the command line) and elevation is required, the installer will fail
+silently with `UNEXPECTED_ELEVATION_LOOP_SILENT` to avoid rendering UAC
+prompts or blocking unattended installations. If prompting for UAC is
+permissible (for instance, allowing a non-elevated user to approve the
+UAC prompt for a silent install), the `--silent` parameter value can
+be set to `allow-uac` to explicitly allow elevation:
+`UpdaterSetup.exe --install --system --silent=allow-uac`.
+
 For security reasons, applications that install at system scope must install
 into `C:\Program Files` or a similar path that non-admins don't have write
 access to. System-scope installers are run with system privileges, and writing
@@ -84,7 +93,7 @@ If the app is running as root, it must add ` --system` to the install command
 above, use `-S` instead of `-U` in the ksadmin command, and use the ksadmin in
 `/Library` instead of `~/Library`.
 
-Additional [registration arguments](functional_spec#keystone-shims) are
+Additional [registration arguments](functional_spec.md#keystone-shims) are
 available to register additional data and provide alternative ways to track the
 version of a product.
 
@@ -94,23 +103,31 @@ and registration process.
 
 #### CRURegistration library
 
-An Objective-C library to perform these operations is in development. When
-available, applications will be able to initialize
 [`CRURegistration`](https://chromium.googlesource.com/chromium/src/+/main/chrome/updater/mac/client_lib)
-with their product IDs, then use `installUpdaterWithReply:` and
+is an Objective-C library that simplifies interactions with the updater. macOS
+applications can use CRURegistration by bundling an updater ZIP archive in their
+app's `Resources` folder and then using `installUpdaterWithReply:` and
 `registerVersion:existenceCheckerPath:serverURLString:reply:` to install the
-updater (if needed) and register. These methods operate asynchronously using
-[`dispatch/dispatch.h`](https://developer.apple.com/documentation/dispatch/dispatch_queue)
-mechanisms. `CRURegistration` maintains an internal task queue, so clients can
-call `register...` immediately after `install...` without waiting for a result.
+updater and register. It's normal to call `install...` and then immediately
+`register...` (before waiting for a result) every time the application starts.
+The library will use its internal mechanisms to sequence the tasks and avoid
+unnecessary work.
 
-`CRURegistration` uses the helpers and command line binaries documented above.
-To install the updater using `CRURegistration`, the updater must be embedded
-as a Helper as documented above.
+**Googlers** can find [CRURegistration here](http://go/cruregistration) and a
+ready-to-bundle [GoogleUpdater.zip here](http://go/googleupdatermacoszip).
 
-`CRURegistration` is designed to depend only on APIs published in macOS SDKs
-and compile as pure Objective-C (without requiring C++ support) so it can be
-dropped into projects without incurring Chromium dependencies.
+## Updating Applications
+
+Serving updates to your application depends on your server integration. Googlers
+should consult the [guide here](http://go/omaharelease-getting-started).
+
+Updates are delivered as CRX archives containing your application's installer
+executables. When run, the executables should emplace the new version of your
+software on the disk.
+
+More details are available:
+[Windows details](https://source.chromium.org/chromium/chromium/src/+/main:chrome/updater/win/installer_api.h),
+[macOS details](installer_api_mac.md).
 
 ## Uninstalling Applications and the Updater
 
@@ -280,3 +297,19 @@ installed. Note that there are two possible product directories (one for
 system scope and one for user scope), and so there are often two log files.
 
 See [the functional spec](functional_spec.md#logging) for more details.
+
+## Force updates to all apps
+
+Updates can be force-triggered by running the updater as follows for Windows:
+* Run the following from a medium `cmd` prompt for `user` installs, and from an
+  elevated prompt with the `--system` switch for `system` installs:
+  `Start /w {%LocalAppData%|%programfiles(x86)%}\{Company}\{Company}Updater\{latest version}\updater.exe --update-apps {--system}`.
+* For example, using "Google" as the `Company`:
+  `Start /w {%LocalAppData%|%programfiles(x86)%}\Google\GoogleUpdater\142.0.7416.0\updater.exe --update-apps {--system}`.
+
+Similar steps apply for macOS. The example below is using "Google" as the
+`Company`:
+* (macOS, per-user):
+`~/Library/Application\ Support/Google/GoogleUpdater/*/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --update-apps`
+* (macOS, system-wide):
+`sudo /Library/Application\ Support/Google/GoogleUpdater/*/GoogleUpdater.app/Contents/MacOS/GoogleUpdater --update-apps --system`

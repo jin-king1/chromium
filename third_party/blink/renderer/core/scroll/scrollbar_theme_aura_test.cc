@@ -4,13 +4,15 @@
 
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_aura.h"
 
+#include "base/notimplemented.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
+#include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_test_suite.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/paint/paint_controller.h"
 #include "third_party/blink/renderer/platform/heap/thread_state.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 
 namespace blink {
 
@@ -33,12 +35,12 @@ class ScrollbarThemeAuraButtonOverride final : public ScrollbarThemeAura {
                               scrollbar.CSSScrollbarWidth());
   }
 
-  void PaintTrackBackground(GraphicsContext&,
+  void PaintTrackBackground(const PaintInfo&,
                             const Scrollbar&,
                             const gfx::Rect& rect) override {
     last_painted_track_rect = rect;
   }
-  void PaintButton(GraphicsContext&,
+  void PaintButton(const PaintInfo&,
                    const Scrollbar&,
                    const gfx::Rect& rect,
                    ScrollbarPart part) override {
@@ -134,8 +136,7 @@ void SendEvent(Scrollbar* scrollbar,
 }
 
 TEST_P(ScrollbarThemeAuraTest, ButtonSizeHorizontal) {
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
 
   MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
   ScrollbarThemeAuraButtonOverride theme;
@@ -158,8 +159,7 @@ TEST_P(ScrollbarThemeAuraTest, ButtonSizeHorizontal) {
 }
 
 TEST_P(ScrollbarThemeAuraTest, ButtonSizeVertical) {
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
 
   MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
   ScrollbarThemeAuraButtonOverride theme;
@@ -182,8 +182,7 @@ TEST_P(ScrollbarThemeAuraTest, ButtonSizeVertical) {
 }
 
 TEST_P(ScrollbarThemeAuraTest, NoButtonsReturnsSize0) {
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
 
   MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
   ScrollbarThemeAuraButtonOverride theme;
@@ -200,8 +199,7 @@ TEST_P(ScrollbarThemeAuraTest, NoButtonsReturnsSize0) {
 }
 
 TEST_P(ScrollbarThemeAuraTest, ScrollbarPartsInvalidationTest) {
-  ScopedTestingPlatformSupport<TestingPlatformSupportWithMockScheduler>
-      platform;
+  ScopedTestingPlatformSupport<TestingPlatformSupport> platform;
 
   MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
   ScrollbarThemeAuraButtonOverride theme;
@@ -238,7 +236,8 @@ TEST_P(ScrollbarThemeAuraTest, ScrollbarPartsInvalidationTest) {
   // scroll extent.
   EXPECT_FALSE(scrollbar->TrackAndButtonsNeedRepaint());
   mock_scrollable_area->SetScrollOffset(ScrollOffset(0, 10),
-                                        mojom::blink::ScrollType::kCompositor);
+                                        mojom::blink::ScrollType::kCompositor,
+                                        cc::ScrollSourceType::kNone);
   EXPECT_TRUE(scrollbar->TrackAndButtonsNeedRepaint());
 
   // Tests that when the scroll offset changes from a value greater than 0 to a
@@ -246,14 +245,16 @@ TEST_P(ScrollbarThemeAuraTest, ScrollbarPartsInvalidationTest) {
   // *not* triggered.
   scrollbar->ClearTrackAndButtonsNeedRepaint();
   mock_scrollable_area->SetScrollOffset(ScrollOffset(0, 20),
-                                        mojom::blink::ScrollType::kCompositor);
+                                        mojom::blink::ScrollType::kCompositor,
+                                        cc::ScrollSourceType::kNone);
   EXPECT_FALSE(scrollbar->TrackAndButtonsNeedRepaint());
 
   // Tests that when the scroll offset changes to 0, a track-and-buttons
   // invalidation gets triggered (for the arrow).
   scrollbar->ClearTrackAndButtonsNeedRepaint();
   mock_scrollable_area->SetScrollOffset(ScrollOffset(0, 0),
-                                        mojom::blink::ScrollType::kCompositor);
+                                        mojom::blink::ScrollType::kCompositor,
+                                        cc::ScrollSourceType::kNone);
   EXPECT_TRUE(scrollbar->TrackAndButtonsNeedRepaint());
 
   // Tests that mousedown on the arrow causes an invalidation.
@@ -280,10 +281,6 @@ TEST_P(ScrollbarThemeAuraTest, ScrollbarPartsInvalidationTest) {
 // consideration when the scrollbars' width is even to expand the width of the
 // center-patch.
 TEST_P(ScrollbarThemeAuraTest, NinePatchLargerThanMinimalSize) {
-  if (!RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled()) {
-    GTEST_SKIP();
-  }
-
   ScrollbarThemeAuraButtonOverride theme;
   ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
   MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
@@ -301,7 +298,10 @@ TEST_P(ScrollbarThemeAuraTest, NinePatchLargerThanMinimalSize) {
   PaintController paint_controller;
   paint_controller.UpdateCurrentPaintChunkProperties(PropertyTreeState::Root());
   GraphicsContext context(paint_controller);
-  theme.PaintTrackBackgroundAndButtons(context, *scrollbar, gfx::Rect(canvas));
+  PaintInfo paint_info(context, CullRect(gfx::Rect(canvas)),
+                       PaintPhase::kForeground, false);
+  theme.PaintTrackBackgroundAndButtons(paint_info, *scrollbar,
+                                       gfx::Rect(canvas));
   EXPECT_EQ(gfx::Rect(0, width, width, 1), theme.last_painted_track_rect);
   EXPECT_EQ(gfx::Rect(0, 0, width, width), theme.last_painted_back_button_rect);
   EXPECT_EQ(gfx::Rect(0, width + 1, width, width),
@@ -310,10 +310,6 @@ TEST_P(ScrollbarThemeAuraTest, NinePatchLargerThanMinimalSize) {
 
 // Same as above, but the scrollbar is smaller than the minimal size.
 TEST_P(ScrollbarThemeAuraTest, NinePatchSmallerThanMinimalSize) {
-  if (!RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled()) {
-    GTEST_SKIP();
-  }
-
   ScrollbarThemeAuraButtonOverride theme;
   ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
   MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
@@ -333,7 +329,10 @@ TEST_P(ScrollbarThemeAuraTest, NinePatchSmallerThanMinimalSize) {
   PaintController paint_controller;
   paint_controller.UpdateCurrentPaintChunkProperties(PropertyTreeState::Root());
   GraphicsContext context(paint_controller);
-  theme.PaintTrackBackgroundAndButtons(context, *scrollbar, gfx::Rect(canvas));
+  PaintInfo paint_info(context, CullRect(gfx::Rect(canvas)),
+                       PaintPhase::kForeground, false);
+  theme.PaintTrackBackgroundAndButtons(paint_info, *scrollbar,
+                                       gfx::Rect(canvas));
   if (int track_height = height - button_size.height() * 2) {
     EXPECT_EQ(track_height, 1);
     EXPECT_EQ(gfx::Rect(0, button_size.height(), width, track_height),
@@ -347,10 +346,6 @@ TEST_P(ScrollbarThemeAuraTest, NinePatchSmallerThanMinimalSize) {
 }
 
 TEST_P(ScrollbarThemeAuraTest, NinePatchTrackWithoutButtons) {
-  if (!RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled()) {
-    GTEST_SKIP();
-  }
-
   ScrollbarThemeAuraButtonOverride theme;
   ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
   theme.SetHasScrollbarButtons(false);
@@ -366,7 +361,9 @@ TEST_P(ScrollbarThemeAuraTest, NinePatchTrackWithoutButtons) {
   PaintController paint_controller;
   paint_controller.UpdateCurrentPaintChunkProperties(PropertyTreeState::Root());
   GraphicsContext context(paint_controller);
-  theme.PaintTrackBackgroundAndButtons(context, *scrollbar, gfx::Rect(1, 1));
+  PaintInfo paint_info(context, CullRect(gfx::Rect(1, 1)),
+                       PaintPhase::kForeground, false);
+  theme.PaintTrackBackgroundAndButtons(paint_info, *scrollbar, gfx::Rect(1, 1));
   EXPECT_EQ(gfx::Rect(1, 1), theme.last_painted_track_rect);
   EXPECT_EQ(gfx::Rect(), theme.last_painted_back_button_rect);
   EXPECT_EQ(gfx::Rect(), theme.last_painted_forward_button_rect);
@@ -376,10 +373,6 @@ TEST_P(ScrollbarThemeAuraTest, NinePatchTrackWithoutButtons) {
 // invalidations when the scrollbar uses nine-patch track and buttons
 // resources.
 TEST_P(ScrollbarThemeAuraTest, TestPaintInvalidationsWhenNinePatchScaled) {
-  if (!RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled()) {
-    GTEST_SKIP();
-  }
-
   ScrollbarThemeAuraButtonOverride theme;
   ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
   Scrollbar* scrollbar = Scrollbar::CreateForTesting(
@@ -426,20 +419,16 @@ TEST_P(ScrollbarThemeAuraTest, TestPaintInvalidationsWhenNinePatchScaled) {
 }
 
 TEST_P(ScrollbarThemeAuraTest, VerticalNinePatchScalesCorrectly) {
-  if (!RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled()) {
-    GTEST_SKIP();
-  }
-
   ScrollbarThemeAuraButtonOverride theme;
   ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
-  MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
-  Scrollbar* scrollbar = Scrollbar::CreateForTesting(
+  MockScrollableArea* const mock_scrollable_area = CreateMockScrollableArea();
+  Scrollbar* const scrollbar = Scrollbar::CreateForTesting(
       mock_scrollable_area, kVerticalScrollbar, &theme);
-  gfx::Rect frame_rect(12, 34, 15, 100);
+  const gfx::Rect frame_rect(12, 34, 15, 100);
   scrollbar->SetFrameRect(frame_rect);
   const float scale = GetParam();
   const gfx::Size expected_canvas_size(
-      frame_rect.width() * scale,
+      base::ClampFloor(frame_rect.width() * scale),
       base::ClampCeil(frame_rect.width() * scale * 2 + scale));
   EXPECT_EQ(expected_canvas_size,
             theme.NinePatchTrackAndButtonsCanvasSize(*scrollbar, scale));
@@ -450,26 +439,52 @@ TEST_P(ScrollbarThemeAuraTest, VerticalNinePatchScalesCorrectly) {
 }
 
 TEST_P(ScrollbarThemeAuraTest, HorizontalNinePatchScalesCorrectly) {
-  if (!RuntimeEnabledFeatures::AuraScrollbarUsesNinePatchTrackEnabled()) {
-    GTEST_SKIP();
-  }
-
   ScrollbarThemeAuraButtonOverride theme;
   ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
-  MockScrollableArea* mock_scrollable_area = CreateMockScrollableArea();
-  Scrollbar* scrollbar = Scrollbar::CreateForTesting(
+  MockScrollableArea* const mock_scrollable_area = CreateMockScrollableArea();
+  Scrollbar* const scrollbar = Scrollbar::CreateForTesting(
       mock_scrollable_area, kHorizontalScrollbar, &theme);
-  gfx::Rect frame_rect(12, 34, 100, 15);
+  const gfx::Rect frame_rect(12, 34, 100, 15);
   scrollbar->SetFrameRect(frame_rect);
   const float scale = GetParam();
   const gfx::Size expected_canvas_size(
       base::ClampCeil(frame_rect.height() * scale * 2 + scale),
-      frame_rect.height() * scale);
+      base::ClampFloor(frame_rect.height() * scale));
   EXPECT_EQ(expected_canvas_size,
             theme.NinePatchTrackAndButtonsCanvasSize(*scrollbar, scale));
   const int offset = 1 - expected_canvas_size.width() % 2;
   EXPECT_EQ(gfx::Rect(expected_canvas_size.width() / 2 - offset, 0, 1 + offset,
                       expected_canvas_size.height()),
+            theme.NinePatchTrackAndButtonsAperture(*scrollbar, scale));
+}
+
+// Tests that nine patch functions properly when the scale is greater than the
+// max int size.
+TEST_F(ScrollbarThemeAuraTest, NinePatchScalesCorrectlyWithOverflow) {
+  ScrollbarThemeAuraButtonOverride theme;
+  ASSERT_TRUE(theme.UsesNinePatchTrackAndButtonsResource());
+  MockScrollableArea* const mock_scrollable_area =
+      MockScrollableArea::Create(ScrollOffset(0, 1000));
+  const gfx::Rect frame_rect(12, 34, 100, 15);
+  // Greater than INT_MAX.
+  const float scale = 1e32;
+  const gfx::Size expected_canvas_size(INT_MAX, INT_MAX);
+  // Test for horizontal scrollbars.
+  Scrollbar* scrollbar = Scrollbar::CreateForTesting(
+      mock_scrollable_area, kHorizontalScrollbar, &theme);
+  scrollbar->SetFrameRect(frame_rect);
+  EXPECT_EQ(expected_canvas_size,
+            theme.NinePatchTrackAndButtonsCanvasSize(*scrollbar, scale));
+  EXPECT_EQ(gfx::Rect(expected_canvas_size),
+            theme.NinePatchTrackAndButtonsAperture(*scrollbar, scale));
+
+  // Test for vertical scrollbars.
+  scrollbar = Scrollbar::CreateForTesting(mock_scrollable_area,
+                                          kVerticalScrollbar, &theme);
+  scrollbar->SetFrameRect(frame_rect);
+  EXPECT_EQ(expected_canvas_size,
+            theme.NinePatchTrackAndButtonsCanvasSize(*scrollbar, scale));
+  EXPECT_EQ(gfx::Rect(expected_canvas_size),
             theme.NinePatchTrackAndButtonsAperture(*scrollbar, scale));
 }
 

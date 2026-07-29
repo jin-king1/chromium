@@ -9,24 +9,16 @@
 
 #include "components/viz/service/frame_sinks/gmb_video_frame_pool_context_provider.h"
 #include "components/viz/service/viz_service_export.h"
-#include "media/video/renderable_gpu_memory_buffer_video_frame_pool.h"
-
-namespace gpu {
-class GpuMemoryBufferFactory;
-}  // namespace gpu
+#include "media/video/renderable_mappable_shared_image_video_frame_pool.h"
 
 namespace viz {
 
 class GpuServiceImpl;
-class InProcessGpuMemoryBufferManager;
 
 class VIZ_SERVICE_EXPORT GmbVideoFramePoolContextProviderImpl
     : public GmbVideoFramePoolContextProvider {
  public:
-  explicit GmbVideoFramePoolContextProviderImpl(
-      GpuServiceImpl* gpu_service,
-      InProcessGpuMemoryBufferManager* gpu_memory_buffer_manager,
-      gpu::GpuMemoryBufferFactory* gpu_memory_buffer_factory);
+  explicit GmbVideoFramePoolContextProviderImpl(GpuServiceImpl* gpu_service);
 
   GmbVideoFramePoolContextProviderImpl(
       const GmbVideoFramePoolContextProviderImpl& other) = delete;
@@ -35,13 +27,11 @@ class VIZ_SERVICE_EXPORT GmbVideoFramePoolContextProviderImpl
 
   ~GmbVideoFramePoolContextProviderImpl() override;
 
-  std::unique_ptr<media::RenderableGpuMemoryBufferVideoFramePool::Context>
+  std::unique_ptr<media::RenderableMappableSharedImageVideoFramePool::Context>
   CreateContext(base::OnceClosure on_context_lost) override;
 
  private:
   const raw_ptr<GpuServiceImpl> gpu_service_;
-  const raw_ptr<InProcessGpuMemoryBufferManager> gpu_memory_buffer_manager_;
-  const raw_ptr<gpu::GpuMemoryBufferFactory> gpu_memory_buffer_factory_;
 };
 
 }  // namespace viz

@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "base/containers/flat_set.h"
+#include "base/containers/span.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
@@ -43,14 +44,30 @@ class AndroidAutofillManager : public AutofillManager,
 
   void OnFocusOnNonFormFieldImpl() override;
 
-  void OnDidFillAutofillFormDataImpl(const FormData& form,
-                                     const base::TimeTicks timestamp) override;
+  void OnDidAutofillFormImpl(const FormData& form) override;
+
+  void SuppressAutomaticRefillsImpl(const FillId& fill_id) override {}
+
+  void RequestRefillImpl(const FillId& fill_id) override {}
 
   void OnDidEndTextFieldEditingImpl() override {}
   void OnHidePopupImpl() override;
-  void OnSelectFieldOptionsDidChangeImpl(const FormData& form) override {}
+  void OnSelectFieldOptionsDidChangeImpl(
+      const FormData& form,
+      const FieldGlobalId& field_id) override {}
+
+  void FillOrPreviewField(mojom::ActionPersistence action_persistence,
+                          mojom::FieldActionType action_type,
+                          const FormGlobalId& form_id,
+                          const FieldGlobalId& field_id,
+                          const std::u16string& value,
+                          FillingProduct filling_product,
+                          std::optional<FieldType> field_type_used) override;
 
   void ReportAutofillWebOTPMetrics(bool used_web_otp) override {}
+
+  CreditCardAccessManager* GetCreditCardAccessManager() override;
+  const CreditCardAccessManager* GetCreditCardAccessManager() const override;
 
   bool has_server_prediction(FormGlobalId form) const {
     return forms_with_server_predictions_.contains(form);
@@ -75,6 +92,10 @@ class AndroidAutofillManager : public AutofillManager,
   void OnFormSubmittedImpl(const FormData& form,
                            mojom::SubmissionSource source) override;
 
+  void OnFormWithEmailVerificationTokenSubmittedImpl(
+      const FormData& form,
+      const FieldGlobalId& field_id) override {}
+
   void OnCaretMovedInFormFieldImpl(const FormData& form,
                                    const FieldGlobalId& field_id,
                                    const gfx::Rect& caret_bounds) override {}
@@ -90,7 +111,8 @@ class AndroidAutofillManager : public AutofillManager,
       const FormData& form,
       const FieldGlobalId& field_id,
       const gfx::Rect& caret_bounds,
-      AutofillSuggestionTriggerSource trigger_source) override;
+      AutofillSuggestionTriggerSource trigger_source,
+      std::optional<PasswordSuggestionRequest> password_request) override;
 
   void OnFocusOnFormFieldImpl(const FormData& form,
                               const FieldGlobalId& field_id) override;
@@ -104,18 +126,27 @@ class AndroidAutofillManager : public AutofillManager,
       const FieldGlobalId& field_id,
       const std::u16string& old_value) override {}
 
+  void OnDidDetectJavaScriptAutofillImpl(
+      const FormData& form,
+      const FieldGlobalId& trigger_field_id,
+      const std::vector<autofill::JavaScriptFieldModification>&
+          field_modifications) override {}
+
+  void OnLoadedServerPredictionsImpl(
+      base::span<const raw_ref<FormStructure>> forms) override {}
+
   bool ShouldParseForms() override;
 
   void OnBeforeProcessParsedForms() override {}
 
-  void OnFormProcessed(const FormData& form,
-                       const FormStructure& form_structure) override;
+  void OnFormProcessed(const FormStructure& form_structure) override;
 
  private:
   // AutofillManager::Observer:
   void OnFieldTypesDetermined(AutofillManager& manager,
                               FormGlobalId form,
-                              FieldTypeSource source) override;
+                              FieldTypeSource source,
+                              bool small_forms_were_parsed) override;
 
   AutofillProvider* GetAutofillProvider();
 
@@ -135,6 +166,7 @@ class AndroidAutofillManager : public AutofillManager,
   // The forms that have received server predictions.
   base::flat_set<FormGlobalId> forms_with_server_predictions_;
   std::unique_ptr<AndroidFormEventLogger> address_logger_;
+  std::unique_ptr<AndroidFormEventLogger> loyalty_card_logger_;
   std::unique_ptr<AndroidFormEventLogger> payments_logger_;
   std::unique_ptr<AndroidFormEventLogger> password_logger_;
 

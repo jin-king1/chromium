@@ -5,7 +5,10 @@
 package org.chromium.chrome.browser.browserservices.ui.controller.trustedwebactivity;
 
 import android.os.Bundle;
+import android.os.PersistableBundle;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
 import org.chromium.chrome.browser.customtabs.CustomTabsConnection;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
@@ -15,11 +18,12 @@ import org.chromium.chrome.browser.lifecycle.SaveInstanceStateObserver;
  * Provides the client package name for TWAs - this can come from either the Custom Tabs Connection
  * or one previously stored in the Activity's save instance state.
  */
+@NullMarked
 public class ClientPackageNameProvider implements SaveInstanceStateObserver {
     /** Key for storing in Activity instance state. */
     private static final String KEY_CLIENT_PACKAGE = "twaClientPackageName";
 
-    private final String mClientPackageName;
+    private final @Nullable String mClientPackageName;
 
     public ClientPackageNameProvider(
             ActivityLifecycleDispatcher lifecycleDispatcher,
@@ -38,11 +42,14 @@ public class ClientPackageNameProvider implements SaveInstanceStateObserver {
 
     @Override
     public void onSaveInstanceState(Bundle outState) {
-        // TODO(pshmakov): address this problem in a more general way, http://crbug.com/952221
+        // TODO(pshmakov): address this problem in a more general way, http://crbug.com/41452609
         outState.putString(KEY_CLIENT_PACKAGE, mClientPackageName);
     }
 
-    public String get() {
+    @Override
+    public void onSaveInstanceState(Bundle outState, PersistableBundle outPersistentState) {}
+
+    public @Nullable String get() {
         return mClientPackageName;
     }
 }

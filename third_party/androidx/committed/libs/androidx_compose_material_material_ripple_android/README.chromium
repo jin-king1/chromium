@@ -1,7 +1,8 @@
 Name: Compose Material Ripple
 Short Name: material-ripple-android
-URL: https://developer.android.com/jetpack/androidx/releases/compose-material#1.9.0-SNAPSHOT
-Version: 1.9.0-SNAPSHOT
+URL: https://androidx.dev/snapshots/builds/15963504/artifacts/repository/androidx/compose/material/material-ripple-android/1.13.0-SNAPSHOT/material-ripple-android-1.13.0-20260728.210420-1.aar
+Version: 1.13.0-SNAPSHOT
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 Material ripple used to build interactive components
+
+See also: https://developer.android.com/jetpack/androidx/releases/compose-material#1.13.0-SNAPSHOT
+
 
 Local Modifications:
 No modifications.

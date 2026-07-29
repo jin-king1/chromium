@@ -4,43 +4,37 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.entity;
 
-import android.content.Context;
 import android.graphics.Color;
 import android.text.TextUtils;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.chrome.browser.omnibox.UrlBarEditingTextStateProvider;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.omnibox.styles.OmniboxDrawableState;
-import org.chromium.chrome.browser.omnibox.styles.OmniboxImageSupplier;
 import org.chromium.chrome.browser.omnibox.styles.SuggestionSpannable;
-import org.chromium.chrome.browser.omnibox.suggestions.SuggestionHost;
+import org.chromium.chrome.browser.omnibox.suggestions.AutocompleteUIContext;
 import org.chromium.chrome.browser.omnibox.suggestions.basic.BasicSuggestionProcessor;
 import org.chromium.chrome.browser.omnibox.suggestions.basic.SuggestionViewProperties;
 import org.chromium.components.omnibox.AutocompleteInput;
 import org.chromium.components.omnibox.AutocompleteMatch;
-import org.chromium.components.omnibox.OmniboxFeatures;
+import org.chromium.components.omnibox.OmniboxCapabilities;
 import org.chromium.components.omnibox.OmniboxSuggestionType;
 import org.chromium.components.omnibox.suggestions.OmniboxSuggestionUiType;
 import org.chromium.ui.modelutil.PropertyModel;
 
-import java.util.Optional;
-
 /** A class that handles model and view creation for the Entity suggestions. */
+@NullMarked
 public class EntitySuggestionProcessor extends BasicSuggestionProcessor {
-    public EntitySuggestionProcessor(
-            @NonNull Context context,
-            @NonNull SuggestionHost suggestionHost,
-            @NonNull UrlBarEditingTextStateProvider editingTextProvider,
-            @NonNull Optional<OmniboxImageSupplier> imageSupplier,
-            @NonNull BookmarkState bookmarkState) {
-        super(context, suggestionHost, editingTextProvider, imageSupplier, bookmarkState);
+    /**
+     * @param uiContext Context object containing common UI dependencies.
+     */
+    public EntitySuggestionProcessor(AutocompleteUIContext uiContext) {
+        super(uiContext);
     }
 
     @Override
-    public boolean doesProcessSuggestion(@NonNull AutocompleteMatch suggestion, int position) {
+    public boolean doesProcessSuggestion(AutocompleteMatch suggestion, int position) {
         // TODO(ender): Expand with Categorical Suggestions once these get their dedicated type:
         // - Confirm whether custom handling applicable to Entities should also be applied to
         //   Categorical Suggestions,
@@ -55,15 +49,15 @@ public class EntitySuggestionProcessor extends BasicSuggestionProcessor {
     }
 
     @Override
-    public @NonNull PropertyModel createModel() {
+    public PropertyModel createModel() {
         return new PropertyModel(EntitySuggestionViewProperties.ALL_KEYS);
     }
 
     @Override
     public void populateModel(
             AutocompleteInput input,
-            @NonNull AutocompleteMatch suggestion,
-            @NonNull PropertyModel model,
+            AutocompleteMatch suggestion,
+            PropertyModel model,
             int position) {
         super.populateModel(input, suggestion, model, position);
         model.set(SuggestionViewProperties.ALLOW_WRAP_AROUND, false);
@@ -71,8 +65,10 @@ public class EntitySuggestionProcessor extends BasicSuggestionProcessor {
 
     @VisibleForTesting
     @Override
-    public @NonNull OmniboxDrawableState getFallbackIcon(@NonNull AutocompleteMatch match) {
-        if (OmniboxFeatures.isLowMemoryDevice()) return super.getFallbackIcon(match);
+    public OmniboxDrawableState getFallbackIcon(AutocompleteMatch match) {
+        if (OmniboxCapabilities.isLowMemoryDevice() || OmniboxCapabilities.isDesktopPlatform()) {
+            return super.getFallbackIcon(match);
+        }
 
         var colorSpec = match.getImageDominantColor();
         if (TextUtils.isEmpty(colorSpec)) return super.getFallbackIcon(match);

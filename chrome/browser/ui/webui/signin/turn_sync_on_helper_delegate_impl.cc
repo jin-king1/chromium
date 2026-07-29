@@ -21,13 +21,14 @@
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/signin/signin_util.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_list.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/chrome_pages.h"
 #include "chrome/browser/ui/profiles/profile_colors_util.h"
-#include "chrome/browser/ui/sync/profile_signin_confirmation_helper.h"
+#include "chrome/browser/ui/signin/signin_view_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/webui/signin/login_ui_service_factory.h"
@@ -38,26 +39,32 @@
 #include "components/policy/core/browser/signin/profile_separation_policies.h"
 #include "components/policy/core/browser/signin/user_cloud_signin_restriction_policy_fetcher.h"
 #include "components/policy/core/common/policy_utils.h"
+#include "components/prefs/pref_service.h"
 #include "components/signin/public/base/signin_pref_names.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "third_party/skia/include/core/SkColor.h"
+#include "ui/base/base_window.h"
 
 namespace {
 
 // If the |browser| argument is non-null, returns the pointer directly.
 // Otherwise creates a new browser for the profile, adds an empty tab and makes
 // sure the browser is visible.
-Browser* EnsureBrowser(Browser* browser, Profile* profile) {
+BrowserWindowInterface* EnsureBrowser(BrowserWindowInterface* browser,
+                                      Profile* profile) {
   if (!browser) {
     // The user just created a new profile or has closed the browser that
-    // we used previously. Grab the most recently active browser or else
+    // we used previously. Grab an existing browser for the profile or else
     // create a new one.
-    browser = chrome::FindLastActiveWithProfile(profile);
+    browser = ProfileBrowserCollection::GetForProfile(profile)
+                  ->GetLastActiveBrowser();
     if (!browser) {
-      browser = Browser::Create(Browser::CreateParams(profile, true));
-      chrome::AddTabAt(browser, GURL(), -1, true);
+      Browser* new_browser =
+          Browser::Create(Browser::CreateParams(profile, true));
+      chrome::AddTabAt(new_browser, GURL(), -1, true);
+      browser = new_browser;
     }
-    browser->window()->Show();
+    browser->GetWindow()->Show();
   }
   return browser;
 }
@@ -84,21 +91,21 @@ void OnEmailConfirmation(signin::SigninChoiceCallback callback,
 }  // namespace
 
 TurnSyncOnHelperDelegateImpl::TurnSyncOnHelperDelegateImpl(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     bool is_sync_promo,
-    bool turn_sync_on_signed_profile)
+    bool user_already_signed_in)
     : browser_(browser),
-      profile_(browser_->profile()),
+      profile_(browser_->GetProfile()),
       is_sync_promo_(is_sync_promo),
-      turn_sync_on_signed_profile_(turn_sync_on_signed_profile) {
+      user_already_signed_in_(user_already_signed_in) {
   DCHECK(browser);
   DCHECK(profile_);
-  BrowserList::AddObserver(this);
+  browser_close_subscription_ = browser_->RegisterBrowserDidClose(
+      base::BindRepeating(&TurnSyncOnHelperDelegateImpl::OnBrowserDidClose,
+                          base::Unretained(this)));
 }
 
-TurnSyncOnHelperDelegateImpl::~TurnSyncOnHelperDelegateImpl() {
-  BrowserList::RemoveObserver(this);
-}
+TurnSyncOnHelperDelegateImpl::~TurnSyncOnHelperDelegateImpl() = default;
 
 bool TurnSyncOnHelperDelegateImpl::IsProfileCreationRequiredByPolicy() const {
   return profile_creation_required_by_policy_;
@@ -120,12 +127,7 @@ void TurnSyncOnHelperDelegateImpl::
     ShouldEnterpriseConfirmationPromptForNewProfile(
         Profile* profile,
         base::OnceCallback<void(bool)> callback) {
-  if (base::FeatureList::IsEnabled(
-          features::kEnterpriseUpdatedProfileCreationScreen)) {
     std::move(callback).Run(/*prompt_for_new_profile=*/true);
-    return;
-  }
-  ui::CheckShouldPromptForNewProfile(profile, std::move(callback));
 }
 
 void TurnSyncOnHelperDelegateImpl::ShowEnterpriseAccountConfirmation(
@@ -154,8 +156,10 @@ void TurnSyncOnHelperDelegateImpl::ShowSyncConfirmation(
   scoped_login_ui_service_observation_.Observe(
       LoginUIServiceFactory::GetForProfile(profile_));
   browser_ = EnsureBrowser(browser_, profile_);
-  browser_->signin_view_controller()->ShowModalSyncConfirmationDialog(
-      /*is_signin_intercept=*/false, is_sync_promo_);
+  browser_->GetFeatures()
+      .signin_view_controller()
+      ->ShowModalSyncConfirmationDialog(
+          /*is_signin_intercept=*/false, is_sync_promo_);
 }
 
 bool TurnSyncOnHelperDelegateImpl::
@@ -178,9 +182,11 @@ void TurnSyncOnHelperDelegateImpl::ShowMergeSyncDataConfirmation(
     signin::SigninChoiceCallback callback) {
   DCHECK(callback);
   browser_ = EnsureBrowser(browser_, profile_);
-  browser_->signin_view_controller()->ShowModalSigninEmailConfirmationDialog(
-      previous_email, new_email,
-      base::BindOnce(&OnEmailConfirmation, std::move(callback)));
+  browser_->GetFeatures()
+      .signin_view_controller()
+      ->ShowModalSigninEmailConfirmationDialog(
+          previous_email, new_email,
+          base::BindOnce(&OnEmailConfirmation, std::move(callback)));
 }
 
 void TurnSyncOnHelperDelegateImpl::ShowSyncSettings() {
@@ -195,19 +201,21 @@ void TurnSyncOnHelperDelegateImpl::SwitchToProfile(Profile* new_profile) {
 
 void TurnSyncOnHelperDelegateImpl::OnSyncConfirmationUIClosed(
     LoginUIService::SyncConfirmationUIClosedResult result) {
+  scoped_login_ui_service_observation_.Reset();
   DCHECK(sync_confirmation_callback_);
   // Treat closing the ui as an implicit ABORT_SYNC action.
   if (result == LoginUIService::UI_CLOSED) {
     result = LoginUIService::ABORT_SYNC;
   }
   if (browser_) {
-    browser_->signin_view_controller()->CloseModalSignin();
+    browser_->GetFeatures().signin_view_controller()->CloseModalSignin();
   }
   std::move(sync_confirmation_callback_).Run(result);
 }
 
-void TurnSyncOnHelperDelegateImpl::OnBrowserRemoved(Browser* browser) {
-  if (browser == browser_) {
+void TurnSyncOnHelperDelegateImpl::OnBrowserDidClose(
+    BrowserWindowInterface* browser) {
+  if (browser_ == browser) {
     browser_ = nullptr;
   }
 }
@@ -215,27 +223,31 @@ void TurnSyncOnHelperDelegateImpl::OnBrowserRemoved(Browser* browser) {
 void TurnSyncOnHelperDelegateImpl::OnProfileSigninRestrictionsFetched(
     const AccountInfo& account_info,
     signin::SigninChoiceCallback callback,
-    const policy::ProfileSeparationPolicies& profile_separation_policies) {
+    policy::ProfileSeparationPolicies profile_separation_policies) {
   if (!browser_) {
     std::move(callback).Run(signin::SIGNIN_CHOICE_CANCEL);
     return;
   }
   profile_creation_required_by_policy_ =
-      signin_util::IsProfileSeparationEnforcedByProfile(browser_->profile(),
+      signin_util::IsProfileSeparationEnforcedByProfile(browser_->GetProfile(),
                                                         account_info.email) ||
       signin_util::IsProfileSeparationEnforcedByPolicies(
           profile_separation_policies);
   bool show_link_data_option = signin_util::
       ProfileSeparationAllowsKeepingUnmanagedBrowsingDataInManagedProfile(
-          browser_->profile(), profile_separation_policies);
-  browser_->signin_view_controller()->ShowModalManagedUserNoticeDialog(
-      std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
-          account_info, /*is_oidc_account=*/false,
-          /*turn_sync_on_signed_profile=*/turn_sync_on_signed_profile_,
-          profile_creation_required_by_policy_, show_link_data_option,
-          std::move(callback),
-          base::BindOnce(&SigninViewController::CloseModalSignin,
-                         browser_->signin_view_controller()->AsWeakPtr())));
+          browser_->GetProfile(), profile_separation_policies);
+  browser_->GetFeatures()
+      .signin_view_controller()
+      ->ShowModalManagedUserNoticeDialog(
+          std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
+              account_info, /*is_oidc_account=*/false,
+              /*user_already_signed_in=*/user_already_signed_in_,
+              profile_creation_required_by_policy_, show_link_data_option,
+              std::move(callback),
+              base::BindOnce(&SigninViewController::CloseModalSignin,
+                             browser_->GetFeatures()
+                                 .signin_view_controller()
+                                 ->AsWeakPtr())));
 }
 
 void TurnSyncOnHelperDelegateImpl::OnProfileCheckComplete(
@@ -250,15 +262,15 @@ void TurnSyncOnHelperDelegateImpl::OnProfileCheckComplete(
   if (prompt_for_new_profile) {
     account_level_signin_restriction_policy_fetcher_
         ->GetManagedAccountsSigninRestriction(
-            IdentityManagerFactory::GetForProfile(browser_->profile()),
+            IdentityManagerFactory::GetForProfile(browser_->GetProfile()),
             account_info.account_id,
             base::BindOnce(&TurnSyncOnHelperDelegateImpl::
                                OnProfileSigninRestrictionsFetched,
                            weak_ptr_factory_.GetWeakPtr(), account_info,
                            std::move(callback)),
             policy::utils::IsPolicyTestingEnabled(
-                browser_->profile()->GetPrefs(), chrome::GetChannel())
-                ? browser_->profile()
+                browser_->GetProfile()->GetPrefs(), chrome::GetChannel())
+                ? browser_->GetProfile()
                       ->GetPrefs()
                       ->GetDefaultPrefValue(
                           prefs::
@@ -268,26 +280,30 @@ void TurnSyncOnHelperDelegateImpl::OnProfileCheckComplete(
     return;
   }
 
-  browser_->signin_view_controller()->ShowModalManagedUserNoticeDialog(
-      std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
-          account_info, /*is_oidc_account=*/false,
-          /*turn_sync_on_signed_profile=*/turn_sync_on_signed_profile_,
-          /*profile_creation_required_by_policy=*/false,
-          /*show_link_data_option=*/false,
-          base::BindOnce(
-              [](signin::SigninChoiceCallback callback,
-                 signin::SigninChoice choice) {
-                // When `show_link_data_option` is false,
-                // `ShowModalManagedUserNoticeDialog()` calls back
-                // with either `SIGNIN_CHOICE_CANCEL` or
-                // `SIGNIN_CHOICE_NEW_PROFILE`. The profile is clean here, no
-                // need to create a new one.
-                std::move(callback).Run(
-                    choice == signin::SigninChoice::SIGNIN_CHOICE_CANCEL
-                        ? signin::SigninChoice::SIGNIN_CHOICE_CANCEL
-                        : signin::SigninChoice::SIGNIN_CHOICE_CONTINUE);
-              },
-              std::move(callback)),
-          base::BindOnce(&SigninViewController::CloseModalSignin,
-                         browser_->signin_view_controller()->AsWeakPtr())));
+  browser_->GetFeatures()
+      .signin_view_controller()
+      ->ShowModalManagedUserNoticeDialog(
+          std::make_unique<signin::EnterpriseProfileCreationDialogParams>(
+              account_info, /*is_oidc_account=*/false,
+              /*user_already_signed_in=*/user_already_signed_in_,
+              /*profile_creation_required_by_policy=*/false,
+              /*show_link_data_option=*/false,
+              base::BindOnce(
+                  [](signin::SigninChoiceCallback callback,
+                     signin::SigninChoice choice) {
+                    // When `show_link_data_option` is false,
+                    // `ShowModalManagedUserNoticeDialog()` calls back
+                    // with either `SIGNIN_CHOICE_CANCEL` or
+                    // `SIGNIN_CHOICE_NEW_PROFILE`. The profile is clean here,
+                    // no need to create a new one.
+                    std::move(callback).Run(
+                        choice == signin::SigninChoice::SIGNIN_CHOICE_CANCEL
+                            ? signin::SigninChoice::SIGNIN_CHOICE_CANCEL
+                            : signin::SigninChoice::SIGNIN_CHOICE_CONTINUE);
+                  },
+                  std::move(callback)),
+              base::BindOnce(&SigninViewController::CloseModalSignin,
+                             browser_->GetFeatures()
+                                 .signin_view_controller()
+                                 ->AsWeakPtr())));
 }

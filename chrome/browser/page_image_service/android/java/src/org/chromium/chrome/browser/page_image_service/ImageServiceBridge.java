@@ -34,7 +34,7 @@ public class ImageServiceBridge {
     private final CallbackController mCallbackController = new CallbackController();
     private final ImageFetcher mImageFetcher;
 
-    private long mNativeImageServiceBridge;
+    private final long mNativeImageServiceBridge;
 
     /**
      * @param clientId The ImageService client the salient image url is being fetched for.
@@ -96,15 +96,6 @@ public class ImageServiceBridge {
                                     callback);
                         });
         fetchImageUrlFor(isAccountData, pageUrl, imageUrlCallback);
-    }
-
-    /**
-     * @param isAccountData Whether the underlying primitive being fetched for is account-bound.
-     * @return Whether the client has the necessary consent pre-conditions to send an image request.
-     */
-    public boolean hasConsentToFetchImages(boolean isAccountData) {
-        return ImageServiceBridgeJni.get()
-                .hasConsentToFetchImages(mNativeImageServiceBridge, isAccountData);
     }
 
     /**
@@ -173,7 +164,5 @@ public class ImageServiceBridge {
                 @ClientId.EnumType int clientId,
                 @JniType("GURL") GURL pageUrl,
                 Callback<GURL> callback);
-
-        boolean hasConsentToFetchImages(long nativeImageServiceBridge, boolean isAccountData);
     }
 }

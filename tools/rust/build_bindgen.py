@@ -7,6 +7,7 @@
 import argparse
 import collections
 import os
+from pathlib import Path
 import platform
 import shutil
 import subprocess
@@ -26,8 +27,9 @@ from build import (CheckoutGitRepo, DownloadAndUnpack, LLVM_BUILD_TOOLS_DIR,
                    DownloadDebianSysroot, RunCommand)
 from update import (RmTree)
 
-# The git hash to use.
-BINDGEN_GIT_VERSION = 'f93d5dfa6d5d7409bea584f3eab38e1fc52b8360'
+# The git hash to use.  See https://github.com/rust-lang/rust-bindgen/tags.
+# The current hash below corresponds to 0.72.1
+BINDGEN_GIT_VERSION = 'd874de8d646d9b8a3e7ba2db2bcd52f2fba8f1f5'
 BINDGEN_GIT_REPO = ('https://chromium.googlesource.com/external/' +
                     'github.com/rust-lang/rust-bindgen')
 
@@ -43,25 +45,18 @@ BINDGEN_CROSS_TARGET_BUILD_DIR = os.path.join(THIRD_PARTY_DIR,
 NCURSESW_CIPD_LINUX_AMD_PATH = 'infra/3pp/static_libs/ncursesw/linux-amd64'
 NCURSESW_CIPD_LINUX_AMD_VERSION = '6.0.chromium.1'
 
-RUST_BETA_SYSROOT_DIR = os.path.join(THIRD_PARTY_DIR,
-                                     'rust-toolchain-intermediate',
-                                     'beta-sysroot')
-
 EXE = '.exe' if sys.platform == 'win32' else ''
 
-
-def InstallRustBetaSysroot(rust_git_hash, target_triples):
-    if os.path.exists(RUST_BETA_SYSROOT_DIR):
-        RmTree(RUST_BETA_SYSROOT_DIR)
-    InstallBetaPackage(FetchBetaPackage('cargo', rust_git_hash),
-                       RUST_BETA_SYSROOT_DIR)
-    InstallBetaPackage(FetchBetaPackage('rustc', rust_git_hash),
-                       RUST_BETA_SYSROOT_DIR)
-    for t in target_triples:
-        InstallBetaPackage(
-            FetchBetaPackage('rust-std', rust_git_hash, triple=t),
-            RUST_BETA_SYSROOT_DIR)
-
+# TODO(crbug.com/440975178) Not all tests pass.
+EXCLUDED_TESTS = [
+    'emit_depfile',
+    'header_allowlist_file_hpp',
+    'header_blocklist_file_hpp',
+    'header_constified_enum_module_overflow_hpp',
+    'header_issue_544_stylo_creduce_2_hpp',
+    'header_nsbasehashtable_hpp',
+    'header_typedef_pointer_overlap_h'
+]
 
 def FetchNcurseswLibrary():
     assert sys.platform.startswith('linux')
@@ -82,8 +77,8 @@ def RunCargo(cargo_args):
     wouldn't work on the toolchain bots.
 
     Note that some environment variables populated below are not necessary for
-    all users of this function (e.g. `build_vet.py` doesn't need clang/llvm
-    parts).  That's a bit icky, but ultimately okay.
+    all potential users of this function (e.g. `build_vet.py` didn't need
+    clang/llvm parts).  That's a bit icky, but ultimately okay.
     """
     ncursesw_dir = None
     if sys.platform.startswith('linux'):
@@ -180,6 +175,9 @@ def main():
         '--skip-checkout',
         action='store_true',
         help='skip downloading the git repo. Useful for trying local changes')
+    parser.add_argument('--skip-test',
+                        action='store_true',
+                        help='skip running tests')
     args, rest = parser.parse_known_args()
 
     if not args.skip_checkout:
@@ -191,17 +189,32 @@ def main():
         RmTree(build_dir)
 
     print(f'Building bindgen in {build_dir} ...')
-    cargo_args = [
-        'build',
+    cargo_shared_args = [
         f'--manifest-path={BINDGEN_SRC_DIR}/Cargo.toml',
         f'--target-dir={build_dir}',
+    ]
+    # We've run into incremental compilation bugs while building bindgen in
+    # https://crbug.com/488049150, so clean the build directory first. This
+    # doesn't take long compared to the rest of the build anyway.
+    # `cargo clean` requires a CACHEDIR.TAG file in the directory.
+    cachedir_tag = Path(build_dir) / 'CACHEDIR.TAG'
+    cachedir_tag.parent.mkdir(exist_ok=True, parents=True)
+    cachedir_tag.write_bytes(
+        b"Signature: 8a477f597d28d172789f06886806bc55\n"
+        b"# Written by build_bindgen.py to make `cargo clean` happy.\n")
+    RunCargo([
+        'clean',
+    ] + cargo_shared_args)
+    static_feature = ",static" if ('windows' not in RustTargetTriple()) else ""
+    cargo_args = [
+        'build',
         f'--target={RustTargetTriple()}',
         f'--no-default-features',
-        f'--features=logging',
+        f'--features=logging' + static_feature,
         '--release',
         '--bin',
         'bindgen',
-    ]
+    ] + cargo_shared_args
     RunCargo(cargo_args)
 
     install_dir = os.path.join(RUST_TOOLCHAIN_OUT_DIR)
@@ -227,6 +240,16 @@ def main():
                 shutil.copy(os.path.join(llvm_dir, 'lib', filename),
                             os.path.join(install_dir, 'lib'),
                             follow_symlinks=False)
+
+    if not args.skip_test:
+        test_args = ['test', '--lib', '--bins', '--tests']
+        test_args += cargo_shared_args
+        test_args.append('--')
+        for excluded in EXCLUDED_TESTS:
+            test_args.append('--skip')
+            test_args.append(excluded)
+        RunCargo(test_args)
+
     return 0
 
 

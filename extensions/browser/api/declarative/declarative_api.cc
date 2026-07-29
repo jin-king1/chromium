@@ -13,7 +13,7 @@
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/strings/string_util.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/values.h"
@@ -64,7 +64,7 @@ enum class DeclarativeAPIType {
 // Describes the possible types of declarative API function calls.
 // These values are recorded as UMA. New enum values can be added, but existing
 // enum values must never be renumbered or deleted and reused.
-enum DeclarativeAPIFunctionType {
+enum class DeclarativeAPIFunctionType {
   kDeclarativeContentAddRules = 0,
   kDeclarativeContentRemoveRules = 1,
   kDeclarativeContentGetRules = 2,
@@ -74,7 +74,8 @@ enum DeclarativeAPIFunctionType {
   kDeclarativeWebRequestWebviewAddRules = 6,
   kDeclarativeWebRequestWebviewRemoveRules = 7,
   kDeclarativeWebRequestWebviewGetRules = 8,
-  kDeclarativeApiFunctionCallTypeMax,
+
+  kMaxValue = kDeclarativeWebRequestWebviewGetRules,
 };
 
 DeclarativeAPIType GetDeclarativeAPIType(const std::string& event_name) {
@@ -91,12 +92,11 @@ DeclarativeAPIType GetDeclarativeAPIType(const std::string& event_name) {
 }
 
 void RecordUMAHelper(DeclarativeAPIFunctionType type) {
-  DCHECK_LT(type, kDeclarativeApiFunctionCallTypeMax);
-  UMA_HISTOGRAM_ENUMERATION("Extensions.DeclarativeAPIFunctionCalls", type,
-                            kDeclarativeApiFunctionCallTypeMax);
+  DCHECK_LE(type, DeclarativeAPIFunctionType::kMaxValue);
+  base::UmaHistogramEnumeration("Extensions.DeclarativeAPIFunctionCalls", type);
 }
 
-void ConvertBinaryDictValuesToBase64(base::Value::Dict& dict);
+void ConvertBinaryDictValuesToBase64(base::DictValue& dict);
 
 // Encodes |binary| as base64 and returns a new string value populated with the
 // encoded string.
@@ -107,7 +107,7 @@ base::Value ConvertBinaryToBase64(const base::Value& binary) {
 // Parses through |args| replacing any binary values with base64 encoded
 // string values. Recurses over any nested List values, and calls
 // ConvertBinaryDictValuesToBase64 for any nested Dict values.
-void ConvertBinaryListElementsToBase64(base::Value::List& args) {
+void ConvertBinaryListElementsToBase64(base::ListValue& args) {
   for (auto& value : args) {
     if (value.is_blob()) {
       value = ConvertBinaryToBase64(value);
@@ -122,7 +122,7 @@ void ConvertBinaryListElementsToBase64(base::Value::List& args) {
 // Parses through |dict| replacing any BinaryValues with base64 encoded
 // string values. Recurses over any nested Dict values, and calls
 // ConvertBinaryListElementsToBase64 for any nested List values.
-void ConvertBinaryDictValuesToBase64(base::Value::Dict& dict) {
+void ConvertBinaryDictValuesToBase64(base::DictValue& dict) {
   for (auto it : dict) {
     auto& value = it.second;
     if (value.is_blob()) {
@@ -202,7 +202,7 @@ EventsEventAddRulesFunction::EventsEventAddRulesFunction() = default;
 EventsEventAddRulesFunction::~EventsEventAddRulesFunction() = default;
 
 bool EventsEventAddRulesFunction::CreateParams() {
-  ConvertBinaryListElementsToBase64(mutable_args());
+  ConvertBinaryListElementsToBase64(GetMutableArgs());
   params_ = AddRules::Params::Create(args());
   return params_.has_value();
 }
@@ -215,7 +215,7 @@ ExtensionFunction::ResponseValue EventsEventAddRulesFunction::RunInternal() {
     return Error(error);
   }
 
-  base::Value::List rules_value;
+  base::ListValue rules_value;
   rules_value.reserve(rules_out.size());
   for (const auto* rule : rules_out)
     rules_value.Append(rule->ToValue());
@@ -224,16 +224,16 @@ ExtensionFunction::ResponseValue EventsEventAddRulesFunction::RunInternal() {
 
 void EventsEventAddRulesFunction::RecordUMA(
     const std::string& event_name) const {
-  DeclarativeAPIFunctionType type = kDeclarativeApiFunctionCallTypeMax;
+  DeclarativeAPIFunctionType type;
   switch (GetDeclarativeAPIType(event_name)) {
     case DeclarativeAPIType::kContent:
-      type = kDeclarativeContentAddRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeContentAddRules;
       break;
     case DeclarativeAPIType::kWebRequest:
-      type = kDeclarativeWebRequestAddRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeWebRequestAddRules;
       break;
     case DeclarativeAPIType::kWebRequestWebview:
-      type = kDeclarativeWebRequestWebviewAddRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeWebRequestWebviewAddRules;
       break;
     case DeclarativeAPIType::kUnknown:
       NOTREACHED();
@@ -264,16 +264,17 @@ ExtensionFunction::ResponseValue EventsEventRemoveRulesFunction::RunInternal() {
 
 void EventsEventRemoveRulesFunction::RecordUMA(
     const std::string& event_name) const {
-  DeclarativeAPIFunctionType type = kDeclarativeApiFunctionCallTypeMax;
+  DeclarativeAPIFunctionType type;
   switch (GetDeclarativeAPIType(event_name)) {
     case DeclarativeAPIType::kContent:
-      type = kDeclarativeContentRemoveRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeContentRemoveRules;
       break;
     case DeclarativeAPIType::kWebRequest:
-      type = kDeclarativeWebRequestRemoveRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeWebRequestRemoveRules;
       break;
     case DeclarativeAPIType::kWebRequestWebview:
-      type = kDeclarativeWebRequestWebviewRemoveRules;
+      type =
+          DeclarativeAPIFunctionType::kDeclarativeWebRequestWebviewRemoveRules;
       break;
     case DeclarativeAPIType::kUnknown:
       NOTREACHED();
@@ -299,7 +300,7 @@ ExtensionFunction::ResponseValue EventsEventGetRulesFunction::RunInternal() {
     rules_registry_->GetAllRules(extension_id(), &rules);
   }
 
-  base::Value::List rules_value;
+  base::ListValue rules_value;
   rules_value.reserve(rules.size());
   for (const auto* rule : rules)
     rules_value.Append(rule->ToValue());
@@ -308,16 +309,16 @@ ExtensionFunction::ResponseValue EventsEventGetRulesFunction::RunInternal() {
 
 void EventsEventGetRulesFunction::RecordUMA(
     const std::string& event_name) const {
-  DeclarativeAPIFunctionType type = kDeclarativeApiFunctionCallTypeMax;
+  DeclarativeAPIFunctionType type;
   switch (GetDeclarativeAPIType(event_name)) {
     case DeclarativeAPIType::kContent:
-      type = kDeclarativeContentGetRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeContentGetRules;
       break;
     case DeclarativeAPIType::kWebRequest:
-      type = kDeclarativeWebRequestGetRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeWebRequestGetRules;
       break;
     case DeclarativeAPIType::kWebRequestWebview:
-      type = kDeclarativeWebRequestWebviewGetRules;
+      type = DeclarativeAPIFunctionType::kDeclarativeWebRequestWebviewGetRules;
       break;
     case DeclarativeAPIType::kUnknown:
       NOTREACHED();

@@ -5,11 +5,11 @@
 #include "components/web_package/test_support/signed_web_bundles/web_bundle_signer.h"
 
 #include <limits>
+#include <variant>
 
 #include "base/check_is_test.h"
 #include "base/containers/extend.h"
 #include "base/containers/to_vector.h"
-#include "base/functional/overloaded.h"
 #include "base/notreached.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/types/expected_macros.h"
@@ -21,7 +21,8 @@
 #include "components/web_package/signed_web_bundles/signed_web_bundle_id.h"
 #include "components/web_package/signed_web_bundles/signed_web_bundle_utils.h"
 #include "components/web_package/signed_web_bundles/types.h"
-#include "crypto/secure_hash.h"
+#include "crypto/hash.h"
+#include "third_party/abseil-cpp/absl/functional/overload.h"
 
 namespace web_package::test {
 
@@ -38,10 +39,10 @@ cbor::Value CreateSignatureStackEntryAttributes(
     const PublicKey& public_key,
     IntegritySignatureErrorsForTesting errors_for_testing = {}) {
   std::vector<uint8_t> public_key_bytes =
-      absl::visit(base::Overloaded{[](const auto& public_key) {
-                    return base::ToVector(public_key.bytes());
-                  }},
-                  public_key);
+      std::visit(absl::Overload{[](const auto& public_key) {
+                   return base::ToVector(public_key.bytes());
+                 }},
+                 public_key);
   if (errors_for_testing.Has(
           IntegritySignatureErrorForTesting::kInvalidPublicKeyLength)) {
     public_key_bytes.push_back(42);
@@ -66,16 +67,25 @@ cbor::Value CreateSignatureStackEntryAttributes(
                    IntegritySignatureErrorForTesting::
                        kWrongSignatureStackEntryAttributeNameLength)) {
       attributes.emplace("ed25519", public_key_bytes);
+    } else if (errors_for_testing.Has(
+                   IntegritySignatureErrorForTesting::
+                       kSignatureStackEntryUnsupportedArrayAttribute)) {
+      attributes.emplace(kEd25519PublicKeyAttributeName,
+                         cbor::Value::ArrayValue());
+    } else if (errors_for_testing.Has(
+                   IntegritySignatureErrorForTesting::
+                       kSignatureStackEntryUnsupportedMapAttribute)) {
+      attributes.emplace(kEcdsaP256PublicKeyAttributeName,
+                         cbor::Value::MapValue());
     } else {
       attributes.emplace(
-          absl::visit(
-              base::Overloaded{[](const Ed25519PublicKey&) {
-                                 return kEd25519PublicKeyAttributeName;
-                               },
-                               [](const EcdsaP256PublicKey&) {
-                                 return kEcdsaP256PublicKeyAttributeName;
-                               }},
-              public_key),
+          std::visit(absl::Overload{[](const Ed25519PublicKey&) {
+                                      return kEd25519PublicKeyAttributeName;
+                                    },
+                                    [](const EcdsaP256PublicKey&) {
+                                      return kEcdsaP256PublicKeyAttributeName;
+                                    }},
+                     public_key),
           public_key_bytes);
     }
   }
@@ -97,17 +107,6 @@ cbor::Value CreateSignatureStackEntryAttributes(
     // Negative integer values: one less than 24 (modulo) & one large.
     attributes.emplace("kNegativeInt_small", -12);
     attributes.emplace("kNegativeInt", std::numeric_limits<int64_t>::min());
-  }
-
-  if (errors_for_testing.Has(
-          IntegritySignatureErrorForTesting::
-              kSignatureStackEntryUnsupportedArrayAttribute)) {
-    attributes.emplace("kArrayUnsupported", cbor::Value::ArrayValue());
-  }
-
-  if (errors_for_testing.Has(IntegritySignatureErrorForTesting::
-                                 kSignatureStackEntryUnsupportedMapAttribute)) {
-    attributes.emplace("kMapUnsupported", cbor::Value::MapValue());
   }
 
   return cbor::Value(attributes);
@@ -188,11 +187,8 @@ cbor::Value CreateIntegrityBlockForBundle(
         errors_for_testing.signatures_errors.size() == key_pairs.size());
   auto use_signatures_errors = !errors_for_testing.signatures_errors.empty();
 
-  // Calculate the SHA512 hash of the bundle.
-  auto secure_hash = crypto::SecureHash::Create(crypto::SecureHash::SHA512);
-  secure_hash->Update(unsigned_bundle.data(), unsigned_bundle.size());
-  std::vector<uint8_t> unsigned_bundle_hash(secure_hash->GetHashLength());
-  secure_hash->Finish(unsigned_bundle_hash.data(), unsigned_bundle_hash.size());
+  auto unsigned_bundle_hash =
+      base::ToVector(crypto::hash::Sha512(unsigned_bundle));
 
   std::vector<cbor::Value> signature_stack;
   for (size_t i = 0; i < key_pairs.size(); ++i) {
@@ -203,8 +199,8 @@ cbor::Value CreateIntegrityBlockForBundle(
         CreateIntegrityBlock(/*signature_stack=*/{}, ib_attributes,
                              errors_for_testing.integrity_block_errors));
 
-    absl::visit(
-        base::Overloaded{[&](const auto& key_pair) {
+    std::visit(
+        absl::Overload{[&](const auto& key_pair) {
           // Create the attributes map for the current signature stack entry.
           std::optional<std::vector<uint8_t>> attributes = cbor::Writer::Write(
               CreateSignatureStackEntryAttributes(key_pair.public_key));
@@ -243,7 +239,7 @@ void FillIdAttributesIfPossibleAndNecessary(
       errors_for_testing.Has(IntegrityBlockErrorForTesting::kNoAttributes)) {
     return;
   }
-  ib_attributes = {.web_bundle_id = absl::visit(
+  ib_attributes = {.web_bundle_id = std::visit(
                        [](const auto& key_pair) {
                          return SignedWebBundleId::CreateForPublicKey(
                                     key_pair.public_key)

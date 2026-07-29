@@ -5,6 +5,7 @@
 #import "ios/chrome/browser/history/ui_bundled/base_history_view_controller.h"
 
 #import "base/apple/foundation_util.h"
+#import "base/cancelable_callback.h"
 #import "base/i18n/time_formatting.h"
 #import "base/ios/ios_util.h"
 #import "base/metrics/user_metrics.h"
@@ -20,8 +21,6 @@
 #import "ios/chrome/browser/drag_and_drop/model/drag_item_util.h"
 #import "ios/chrome/browser/drag_and_drop/model/table_view_url_drag_drop_handler.h"
 #import "ios/chrome/browser/history/ui_bundled/base_history_view_controller+subclassing.h"
-#import "ios/chrome/browser/history/ui_bundled/history_entries_status_item.h"
-#import "ios/chrome/browser/history/ui_bundled/history_entries_status_item_delegate.h"
 #import "ios/chrome/browser/history/ui_bundled/history_entry_inserter.h"
 #import "ios/chrome/browser/history/ui_bundled/history_entry_item.h"
 #import "ios/chrome/browser/history/ui_bundled/history_menu_provider.h"
@@ -33,15 +32,14 @@
 #import "ios/chrome/browser/metrics/model/new_tab_page_uma.h"
 #import "ios/chrome/browser/net/model/crurl.h"
 #import "ios/chrome/browser/policy/model/policy_util.h"
-#import "ios/chrome/browser/settings/ui_bundled/clear_browsing_data/features.h"
 #import "ios/chrome/browser/shared/coordinator/alert/action_sheet_coordinator.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
-#import "ios/chrome/browser/shared/public/commands/application_commands.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
 #import "ios/chrome/browser/shared/public/commands/quick_delete_commands.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_item.h"
@@ -103,7 +101,6 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 }  // namespace
 
 @interface BaseHistoryViewController () <
-    HistoryEntriesStatusItemDelegate,
     HistoryEntryInserterDelegate,
     TableViewLinkHeaderFooterItemDelegate> {
   // Closure to request next page of history.
@@ -124,6 +121,11 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 
   // Indicates the current state of the loading indicator.
   IndicatorState _indicatorState;
+
+  // Callbacks for the loading indicator delayed tasks. Allows for them to be
+  // canceled if results are displayed between callback runs.
+  base::CancelableOnceCallback<void(void)> _maybeRemoveLoadingIndicatorTask;
+  base::CancelableOnceCallback<void(void)> _displayLoadingIndicatorTask;
 }
 // YES if there are no results to show.
 @property(nonatomic, assign) BOOL empty;
@@ -158,6 +160,9 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   // Clear C++ ivars.
   _browser = nullptr;
   _historyService = nullptr;
+
+  // Cancel all pending callbacks related to loading indicator.
+  [self cancelIndicatorCallbacks];
 }
 
 #pragma mark - ViewController Lifecycle.
@@ -167,9 +172,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   [self loadModel];
 
   // TableView configuration
-  self.tableView.estimatedRowHeight = 56;
   self.tableView.rowHeight = UITableViewAutomaticDimension;
-  self.tableView.estimatedSectionHeaderHeight = 56;
   self.tableView.sectionFooterHeight = 0.0;
   self.tableView.keyboardDismissMode = UIScrollViewKeyboardDismissModeOnDrag;
   self.tableView.allowsMultipleSelectionDuringEditing = YES;
@@ -254,13 +257,17 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   // request again.
   BOOL waiting_for_results = _indicatorState != IndicatorState::IDLE;
   if ([self shouldDisplayLoadingIndicator] && !waiting_for_results) {
+    // Cancel all pending callbacks related to loading indicator.
+    [self cancelIndicatorCallbacks];
+
     // Wait for kDelayUntilShowLoadingMessageMs, before displaying the loading
     // indicator. If the query returns before, then the results are displayed.
     __weak __typeof(self) weakSelf = self;
+    _displayLoadingIndicatorTask.Reset(base::BindOnce(^{
+      [weakSelf displayLoadingIndicator];
+    }));
     base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-        FROM_HERE, base::BindOnce(^{
-          [weakSelf displayLoadingIndicator];
-        }),
+        FROM_HERE, _displayLoadingIndicatorTask.callback(),
         kDelayUntilShowLoadingMessageMs);
   }
 
@@ -280,6 +287,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   std::u16string queryString =
       fetchAllHistory ? std::u16string() : base::SysNSStringToUTF16(query);
   history::QueryOptions options;
+  options.policy_for_404_visits = history::VisitQuery404sPolicy::kExclude404s;
   options.duplicate_policy =
       fetchAllHistory ? history::QueryOptions::REMOVE_DUPLICATES_PER_DAY
                       : history::QueryOptions::REMOVE_ALL_DUPLICATES;
@@ -358,14 +366,6 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
   // history via delete browsing data.
   self.filterQueryResult = YES;
   [self showHistoryMatchingQuery:_currentQuery];
-}
-
-#pragma mark - HistoryEntriesStatusItemDelegate
-
-- (void)historyEntriesStatusItem:(HistoryEntriesStatusItem*)item
-               didRequestOpenURL:(const GURL&)URL {
-  // TODO(crbug.com/41366648): Migrate. This will navigate to the status message
-  // "Show Full History" URL.
 }
 
 #pragma mark - HistoryEntryInserterDelegate
@@ -470,7 +470,11 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
         [self.tableViewModel itemAtIndexPath:indexPath]);
     BrowsingHistoryService::HistoryEntry entry;
     entry.url = object.URL;
-    entry.all_timestamps.insert(object.timestamp);
+    // Since the similar visits grouping logic does not exist on iOS, we only
+    // need to pass the timestamp for the current URL. See b/460405414 for more
+    // details.
+    // TODO(b/483287809): Enable similar visits grouping for iOS.
+    entry.all_timestamps[object.URL].insert(object.timestamp);
     entries.push_back(entry);
   }
   self.historyService->RemoveVisits(entries);
@@ -531,6 +535,12 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 - (UIContextMenuConfiguration*)tableView:(UITableView*)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath
                                         point:(CGPoint)point {
+  // TODO(crbug.com/428177163): Remove this workaround when the underlying iOS
+  // issue handling context menu presentation during an active drag/drop session
+  // is resolved.
+  if (tableView.hasActiveDrag || tableView.hasActiveDrop) {
+    return nil;
+  }
   if (![self.tableViewModel hasItemAtIndexPath:indexPath]) {
     // It's possible that indexPath is invalid due to crossing action (like
     // query refresh or animations).
@@ -571,27 +581,28 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 
 - (UITableViewCell*)tableView:(UITableView*)tableView
         cellForRowAtIndexPath:(NSIndexPath*)indexPath {
-  UITableViewCell* cellToReturn = [super tableView:tableView
-                             cellForRowAtIndexPath:indexPath];
   TableViewItem* item = [self.tableViewModel itemAtIndexPath:indexPath];
-  cellToReturn.userInteractionEnabled = !(item.type == kItemTypeEntriesStatus);
   if (item.type == kItemTypeHistoryEntry) {
     HistoryEntryItem* URLItem =
         base::apple::ObjCCastStrict<HistoryEntryItem>(item);
-    TableViewURLCell* URLCell =
-        base::apple::ObjCCastStrict<TableViewURLCell>(cellToReturn);
-    CrURL* crurl = [[CrURL alloc] initWithGURL:URLItem.URL];
-    [self.imageDataSource
-        faviconForPageURL:crurl
-               completion:^(FaviconAttributes* attributes) {
-                 // Only set favicon if the cell hasn't been reused.
-                 if ([URLCell.cellUniqueIdentifier
-                         isEqualToString:URLItem.uniqueIdentifier]) {
-                   DCHECK(attributes);
-                   [URLCell.faviconView configureWithAttributes:attributes];
-                 }
-               }];
+    if (!URLItem.faviconAttributes) {
+      __weak __typeof(self) weakSelf = self;
+      CrURL* crurl = [[CrURL alloc] initWithGURL:URLItem.URL];
+      [self.imageDataSource
+          faviconForPageURL:crurl
+                 completion:^(FaviconAttributes* attributes, bool cached) {
+                   [weakSelf didFetchFaviconAttributes:attributes
+                                                cached:cached
+                                                  item:URLItem
+                                             indexPath:indexPath];
+                 }];
+    }
   }
+
+  UITableViewCell* cellToReturn = [super tableView:tableView
+                             cellForRowAtIndexPath:indexPath];
+  cellToReturn.userInteractionEnabled = !(item.type == kItemTypeEntriesStatus);
+
   return cellToReturn;
 }
 
@@ -649,6 +660,32 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 
 #pragma mark - Private methods
 
+// Called when a favicon is fetched.
+- (void)didFetchFaviconAttributes:(FaviconAttributes*)attributes
+                           cached:(bool)cached
+                             item:(HistoryEntryItem*)item
+                        indexPath:(NSIndexPath*)indexPath {
+  item.faviconAttributes = attributes;
+  if (!cached && attributes.faviconImage) {
+    // Since the favicon fetch is asynchronous, `self.tableViewModel` may have
+    // updated. Ensure `indexPath` is still valid for this item before updating.
+    if (![self.tableViewModel hasItemAtIndexPath:indexPath] ||
+        [self.tableViewModel itemAtIndexPath:indexPath] != item) {
+      return;
+    }
+    LegacyTableViewCell* cell =
+        base::apple::ObjCCastStrict<LegacyTableViewCell>(
+            [self.tableView cellForRowAtIndexPath:indexPath]);
+    if (!cell) {
+      return;
+    }
+    // Even if Apple documentation hints toward reconfiguring the row instead
+    // of just updating the cell, it creates a visible jank. Use the item
+    // configuration method instead. See crbug.com/479692041 for more info.
+    [item configureCell:cell];
+  }
+}
+
 // Opens URL in a new non-incognito tab and dismisses the history view.
 - (void)openURLInNewTab:(const GURL&)URL {
   base::RecordAction(
@@ -685,18 +722,16 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
     return;  // UI has been updated in the meaning time.
   }
 
-  // TODO(crbug.com/371568658): Remove NotFatalUntil when we're sure this
-  // check doesn't fail.
-  CHECK_EQ(_indicatorState, IndicatorState::FETCHING_RESULTS,
-           base::NotFatalUntil::M136);
+  CHECK_EQ(_indicatorState, IndicatorState::FETCHING_RESULTS);
   _indicatorState = IndicatorState::SHOWING_LOADING_INDICATOR;
   [self startLoadingIndicatorWithLoadingMessage:l10n_util::GetNSString(
                                                     IDS_HISTORY_NO_RESULTS)];
   __weak __typeof(self) weakSelf = self;
+  _maybeRemoveLoadingIndicatorTask.Reset(base::BindOnce(^{
+    [weakSelf maybeRemoveLoadingIndicator];
+  }));
   base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE, base::BindOnce(^{
-        [weakSelf maybeRemoveLoadingIndicator];
-      }),
+      FROM_HERE, _maybeRemoveLoadingIndicatorTask.callback(),
       kDelayUntilReadyToRemoveLoadingIndicatorsMs);
 }
 
@@ -704,10 +739,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 // removes the loading indicator and updates the UI with the results. If the
 // query hasn't returned, then no-op.
 - (void)maybeRemoveLoadingIndicator {
-  // TODO(crbug.com/371568658): Remove NotFatalUntil when we're sure this
-  // check doesn't fail.
-  CHECK_EQ(_indicatorState, IndicatorState::SHOWING_LOADING_INDICATOR,
-           base::NotFatalUntil::M136);
+  CHECK_EQ(_indicatorState, IndicatorState::SHOWING_LOADING_INDICATOR);
   _indicatorState = IndicatorState::WAITING_FOR_RESULTS;
 
   // If results have returned, then the UI is updated right away.
@@ -729,12 +761,12 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
     return;
   }
 
-  // TODO(crbug.com/371568658): Remove NotFatalUntil when we're sure this
-  // check doesn't fail.
   CHECK(_indicatorState == IndicatorState::WAITING_FOR_RESULTS ||
-            _indicatorState == IndicatorState::FETCHING_RESULTS,
-        base::NotFatalUntil::M136);
+        _indicatorState == IndicatorState::FETCHING_RESULTS);
   _indicatorState = IndicatorState::IDLE;
+
+  // Cancel all pending callbacks related to loading indicator.
+  [self cancelIndicatorCallbacks];
 
   // Remove the loading indicator if it's being displayed.
   [self stopLoadingIndicatorWithCompletion:nil];
@@ -811,6 +843,9 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 // performBatchUpdates block.
 - (void)deleteItemsFromTableViewModelWithIndex:(NSArray*)indexArray
                       deleteItemsFromTableView:(BOOL)deleteItemsFromTableView {
+  // Dismiss any context menu so it's not attached to a wrong row.
+  [self.tableView.contextMenuInteraction dismissMenu];
+
   NSArray* sortedIndexPaths =
       [indexArray sortedArrayUsingSelector:@selector(compare:)];
   for (NSIndexPath* indexPath in [sortedIndexPaths reverseObjectEnumerator]) {
@@ -910,6 +945,14 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 
 #pragma mark - Helper Methods
 
+// Cancels all the callbacks and as a result the tasks associated with showing
+// the loading indicator. At some point, these callbacks were scheduled to run
+// within a delayed task.
+- (void)cancelIndicatorCallbacks {
+  _maybeRemoveLoadingIndicatorTask.Cancel();
+  _displayLoadingIndicatorTask.Cancel();
+}
+
 // Loads and opens a tab using `params`. If `incognito` is YES the tab will be
 // opened in incognito mode.
 - (void)loadAndActivateTabFromHistoryWithParams:(const UrlLoadParams&)params
@@ -950,7 +993,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
                         }];
 }
 
-#pragma mark - Accessibility
+#pragma mark - UIAccessibilityAction
 
 - (BOOL)accessibilityPerformEscape {
   [self.delegate dismissViewController:self];
@@ -970,7 +1013,7 @@ static const base::TimeDelta kDelayUntilReadyToRemoveLoadingIndicatorsMs =
 }
 
 - (void)keyCommand_close {
-  base::RecordAction(base::UserMetricsAction("MobileKeyCommandClose"));
+  base::RecordAction(base::UserMetricsAction(kMobileKeyCommandClose));
   [self.delegate dismissViewController:self];
 }
 

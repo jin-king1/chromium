@@ -42,7 +42,7 @@ DeviceTrustConnectorService::DeviceTrustConnectorService(
 DeviceTrustConnectorService::~DeviceTrustConnectorService() = default;
 
 bool DeviceTrustConnectorService::IsConnectorEnabled() const {
-  return !GetEnabledInlinePolicyLevels().empty();
+  return !GetSignalsPolicyScope().empty();
 }
 
 const std::set<DTCPolicyLevel> DeviceTrustConnectorService::Watches(
@@ -71,7 +71,7 @@ void DeviceTrustConnectorService::AddObserver(
 }
 
 const std::set<DTCPolicyLevel>
-DeviceTrustConnectorService::GetEnabledInlinePolicyLevels() const {
+DeviceTrustConnectorService::GetSignalsPolicyScope() const {
   std::set<DTCPolicyLevel> levels;
   for (auto const& policy_details : policy_details_map_) {
     if (policy_details.second.enabled) {
@@ -100,7 +100,7 @@ DeviceTrustConnectorService::DTCPolicyDetails::~DTCPolicyDetails() = default;
 
 void DeviceTrustConnectorService::OnPolicyUpdated(const DTCPolicyLevel& level,
                                                   const std::string& pref) {
-  const base::Value::List* url_patterns = GetPolicyUrlPatterns(pref);
+  const base::ListValue* url_patterns = GetPolicyUrlPatterns(pref);
   auto& policy_details = policy_details_map_.at(level);
   // Reset the matcher and update the policy details.
   policy_details.matcher = std::make_unique<url_matcher::URLMatcher>();
@@ -128,7 +128,7 @@ void DeviceTrustConnectorService::OnInlinePolicyDisabled(DTCPolicyLevel level) {
   }
 }
 
-const base::Value::List* DeviceTrustConnectorService::GetPolicyUrlPatterns(
+const base::ListValue* DeviceTrustConnectorService::GetPolicyUrlPatterns(
     const std::string& pref) const {
   if (!profile_prefs_->IsManagedPreference(pref)) {
     return nullptr;

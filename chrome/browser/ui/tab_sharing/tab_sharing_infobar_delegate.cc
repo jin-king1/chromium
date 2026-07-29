@@ -11,27 +11,31 @@
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/strings/utf_string_conversions.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/media/webrtc/webrtc_logging_controller.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/bubble_anchor_util.h"
 #include "chrome/browser/ui/page_info/page_info_dialog.h"
 #include "chrome/browser/ui/tab_sharing/tab_sharing_ui.h"
+#include "chrome/browser/ui/views/screen_sharing_util.h"
 #include "chrome/grit/generated_resources.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
 #include "components/infobars/core/infobar.h"
 #include "components/page_load_metrics/browser/metrics_web_contents_observer.h"
 #include "components/strings/grit/components_strings.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/common/content_features.h"
+#include "media/capture/capture_switches.h"
 #include "net/base/url_util.h"
 #include "third_party/blink/public/mojom/use_counter/metrics/web_feature.mojom.h"
+#include "ui/base/base_window.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/strings/grit/ui_strings.h"
 
 namespace {
@@ -69,7 +73,9 @@ class TabSharingInfoBarDelegate::StopButton
       : ui_(ui), capture_type_(capture_type) {}
   ~StopButton() override = default;
 
-  void Click(infobars::InfoBar* infobar) override { ui_->StopSharing(); }
+  void Click(infobars::InfoBar* infobar) override {
+    ui_->StopSharing("StopButton clicked");
+  }
 
   std::u16string GetLabel() const override {
     switch (capture_type_) {
@@ -130,69 +136,6 @@ class TabSharingInfoBarDelegate::ShareTabInsteadButton
   const TabSharingInfoBarDelegate::TabShareType capture_type_;
 };
 
-// Represents a button which, when clicked, changes the activated tab to be
-// the one which was hard-coded into this infobar. The intended use for this
-// class is for the captured tab to activate the capturing tab, and vice versa.
-class TabSharingInfoBarDelegate::SwitchToTabButton
-    : public TabSharingInfoBarDelegateButton {
- public:
-  SwitchToTabButton(const TabSharingInfoBarDelegate::FocusTarget& focus_target,
-                    bool focus_target_is_capturer)
-      : focus_target_(focus_target),
-        focus_target_is_capturer_(focus_target_is_capturer) {}
-  ~SwitchToTabButton() override = default;
-
-  void Click(infobars::InfoBar* infobar) override {
-    content::RenderFrameHost* const rfh =
-        content::RenderFrameHost::FromID(focus_target_.id);
-    if (!rfh) {
-      return;
-    }
-
-    page_load_metrics::MetricsWebContentsObserver::RecordFeatureUsage(
-        rfh, focus_target_is_capturer_
-                 ? blink::mojom::WebFeature::kTabSharingBarSwitchToCapturer
-                 : blink::mojom::WebFeature::kTabSharingBarSwitchToCapturee);
-
-    content::WebContents* const web_contents =
-        content::WebContents::FromRenderFrameHost(rfh);
-    DCHECK(web_contents);
-
-    web_contents->GetDelegate()->ActivateContents(web_contents);
-    Browser* const browser = chrome::FindBrowserWithTab(web_contents);
-    if (browser && browser->window()) {
-      browser->window()->Activate();
-    }
-  }
-
-  std::u16string GetLabel() const override {
-    // TODO(crbug.com/40188004): Hard-code this text into the button.
-    content::RenderFrameHost* const rfh =
-        content::RenderFrameHost::FromID(focus_target_.id);
-    if (!rfh) {
-      return GetDefaultLabel();
-    }
-    return l10n_util::GetStringFUTF16(
-        IDS_TAB_SHARING_INFOBAR_SWITCH_TO_BUTTON,
-        url_formatter::FormatOriginForSecurityDisplay(
-            rfh->GetLastCommittedOrigin(),
-            url_formatter::SchemeDisplay::OMIT_HTTP_AND_HTTPS));
-  }
-
-  ui::ImageModel GetImage() const override { return focus_target_.icon; }
-
- private:
-  std::u16string GetDefaultLabel() const {
-    return l10n_util::GetStringUTF16(
-        focus_target_is_capturer_
-            ? IDS_TAB_SHARING_INFOBAR_SWITCH_TO_CAPTURER_BUTTON
-            : IDS_TAB_SHARING_INFOBAR_SWITCH_TO_CAPTURED_BUTTON);
-  }
-
-  const TabSharingInfoBarDelegate::FocusTarget focus_target_;
-  const bool focus_target_is_capturer_;
-};
-
 class TabSharingInfoBarDelegate::CscIndicatorButton
     : public TabSharingInfoBarDelegateButton {
  public:
@@ -218,17 +161,16 @@ class TabSharingInfoBarDelegate::CscIndicatorButton
 
   ui::ImageModel GetImage() const override {
     return ui::ImageModel::FromVectorIcon(
-        vector_icons::kTouchpadMouseIcon, ui::kColorSysPrimary,
-        kCapturedSurfaceControlIndicatorButtonIconHeight);
+        features::IsRoundedIconsEnabled() ? vector_icons::kTouchpadMouseIcon
+                                          : vector_icons::kTouchpadMouseOldIcon,
+        ui::kColorSysPrimary, kCapturedSurfaceControlIndicatorButtonIconHeight);
   }
 
  private:
   const base::WeakPtr<content::WebContents> web_contents_;
 };
 
-namespace {
-
-bool IsCapturedTab(TabRole role) {
+bool TabSharingInfoBarDelegate::IsCapturedTab(TabRole role) {
   switch (role) {
     case TabRole::kCapturingTab:
     case TabRole::kOtherTab:
@@ -240,29 +182,42 @@ bool IsCapturedTab(TabRole role) {
   NOTREACHED();
 }
 
-}  // namespace
+bool TabSharingInfoBarDelegate::IsCapturingTab(TabRole role) {
+  switch (role) {
+    case TabRole::kCapturingTab:
+    case TabRole::kSelfCapturingTab:
+      return true;
+    case TabRole::kCapturedTab:
+    case TabRole::kOtherTab:
+      return false;
+  }
+  NOTREACHED();
+}
 
 // static
 infobars::InfoBar* TabSharingInfoBarDelegate::Create(
     infobars::InfoBarManager* infobar_manager,
     infobars::InfoBar* old_infobar,
+    content::GlobalRenderFrameHostId shared_tab_id,
+    content::GlobalRenderFrameHostId capturer_id,
     const std::u16string& shared_tab_name,
     const std::u16string& capturer_name,
     content::WebContents* web_contents,
     TabRole role,
     ButtonState share_this_tab_instead_button_state,
-    std::optional<FocusTarget> focus_target,
     bool captured_surface_control_active,
     TabSharingUI* ui,
-    TabShareType capture_type,
-    bool favicons_used_for_switch_to_tab_button) {
-  DCHECK(infobar_manager);
+    TabShareType capture_type) {
+  CHECK(infobar_manager);
+  CHECK(ui);
+
   std::unique_ptr<infobars::InfoBar> new_infobar = CreateTabSharingInfoBar(
       base::WrapUnique(new TabSharingInfoBarDelegate(
-          web_contents, role, share_this_tab_instead_button_state, focus_target,
-          captured_surface_control_active, ui, capture_type,
-          favicons_used_for_switch_to_tab_button)),
-      shared_tab_name, capturer_name, role, capture_type);
+          web_contents, role, share_this_tab_instead_button_state,
+          captured_surface_control_active, ui, capture_type)),
+      shared_tab_id, capturer_id, shared_tab_name, capturer_name, role,
+      capture_type, ui->GetUmaLogger().GetWeakPtr());
+
   return old_infobar ? infobar_manager->ReplaceInfoBar(old_infobar,
                                                        std::move(new_infobar))
                      : infobar_manager->AddInfoBar(std::move(new_infobar));
@@ -272,11 +227,9 @@ TabSharingInfoBarDelegate::TabSharingInfoBarDelegate(
     content::WebContents* web_contents,
     TabRole role,
     ButtonState share_this_tab_instead_button_state,
-    std::optional<FocusTarget> focus_target,
     bool captured_surface_control_active,
     TabSharingUI* ui,
-    TabShareType capture_type,
-    bool favicons_used_for_switch_to_tab_button)
+    TabShareType capture_type)
     : ui_(ui), capture_type_(capture_type) {
   stop_button_ = std::make_unique<StopButton>(ui_, capture_type_);
 
@@ -285,20 +238,13 @@ TabSharingInfoBarDelegate::TabSharingInfoBarDelegate(
         ui_, share_this_tab_instead_button_state, capture_type);
   }
 
-  if (focus_target.has_value()) {
-    quick_nav_button_ =
-        std::make_unique<SwitchToTabButton>(*focus_target, IsCapturedTab(role));
-  }
-
   // Note that kSelfCapturingTab is intentionally disregarded,
   // because write-access CapturedSurfaceControl APIs are disallowed
   // in that case anyway.
   //
   // TODO(crbug.com/324468211): Hide the button if Captured Surface Control
   // is set to BLOCKED or ASK through the user's interaction with PageInfo.
-  if (role == TabRole::kCapturingTab && captured_surface_control_active &&
-      base::FeatureList::IsEnabled(
-          features::kCapturedSurfaceControlStickyPermissions)) {
+  if (role == TabRole::kCapturingTab && captured_surface_control_active) {
     csc_indicator_button_ = std::make_unique<CscIndicatorButton>(web_contents);
   }
 }
@@ -318,6 +264,11 @@ bool TabSharingInfoBarDelegate::ShouldExpire(
 infobars::InfoBarDelegate::InfoBarIdentifier
 TabSharingInfoBarDelegate::GetIdentifier() const {
   return TAB_SHARING_INFOBAR_DELEGATE;
+}
+
+infobars::InfoBarDelegate::InfobarPriority
+TabSharingInfoBarDelegate::GetPriority() const {
+  return infobars::InfoBarDelegate::InfobarPriority::kCriticalSecurity;
 }
 
 std::u16string TabSharingInfoBarDelegate::GetButtonLabel(
@@ -343,7 +294,6 @@ std::u16string TabSharingInfoBarDelegate::GetButtonTooltip(
 int TabSharingInfoBarDelegate::GetButtons() const {
   return (stop_button_ ? kStop : 0) |
          (share_this_tab_instead_button_ ? kShareThisTabInstead : 0) |
-         (quick_nav_button_ ? kQuickNav : 0) |
          (csc_indicator_button_ ? kCapturedSurfaceControlIndicator : 0);
 }
 
@@ -353,10 +303,6 @@ void TabSharingInfoBarDelegate::Stop() {
 
 void TabSharingInfoBarDelegate::ShareThisTabInstead() {
   GetButton(kShareThisTabInstead).Click(infobar());
-}
-
-void TabSharingInfoBarDelegate::QuickNav() {
-  GetButton(kQuickNav).Click(infobar());
 }
 
 void TabSharingInfoBarDelegate::
@@ -369,7 +315,8 @@ bool TabSharingInfoBarDelegate::IsCloseable() const {
 }
 
 const gfx::VectorIcon& TabSharingInfoBarDelegate::GetVectorIcon() const {
-  return vector_icons::kScreenShareIcon;
+  return features::IsRoundedIconsEnabled() ? vector_icons::kScreenShareIcon
+                                           : vector_icons::kScreenShareOldIcon;
 }
 
 const TabSharingInfoBarDelegateButton& TabSharingInfoBarDelegate::GetButton(
@@ -381,8 +328,6 @@ const TabSharingInfoBarDelegateButton& TabSharingInfoBarDelegate::GetButton(
       return *stop_button_;
     case TabSharingInfoBarButton::kShareThisTabInstead:
       return *share_this_tab_instead_button_;
-    case TabSharingInfoBarButton::kQuickNav:
-      return *quick_nav_button_;
     case TabSharingInfoBarButton::kCapturedSurfaceControlIndicator:
       return *csc_indicator_button_;
   }

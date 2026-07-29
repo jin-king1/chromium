@@ -4,14 +4,13 @@
 
 package org.chromium.chrome.browser.magic_stack;
 
-import android.app.Activity;
-import android.content.Context;
-import android.os.SystemClock;
-import android.view.ViewGroup;
-import android.view.ViewGroup.LayoutParams;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
+import android.app.Activity;
+import android.os.SystemClock;
+import android.view.View;
+import android.view.ViewGroup;
+
 import androidx.annotation.VisibleForTesting;
 import androidx.recyclerview.widget.LinearLayoutManager;
 import androidx.recyclerview.widget.PagerSnapHelper;
@@ -21,7 +20,10 @@ import androidx.recyclerview.widget.SnapHelper;
 import org.chromium.base.Callback;
 import org.chromium.base.CallbackController;
 import org.chromium.base.ResettersForTesting;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.magic_stack.ModuleRegistry.OnViewCreatedCallback;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.tab.Tab;
@@ -37,34 +39,34 @@ import org.chromium.url.GURL;
 import java.util.Set;
 
 /** Root coordinator which is responsible for showing modules on home surfaces. */
+@NullMarked
 public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCallback {
     public static int MAXIMUM_MODULE_SIZE = 5;
-    private final Context mContext;
     private final ModuleDelegateHost mModuleDelegateHost;
     private HomeModulesMediator mMediator;
     private final HomeModulesRecyclerView mRecyclerView;
-    private final ObservableSupplier<Profile> mProfileSupplier;
+    private final MonotonicObservableSupplier<Profile> mProfileSupplier;
     private final ModuleRegistry mModuleRegistry;
 
     private ModelList mModel;
     private HomeModulesContextMenuManager mHomeModulesContextMenuManager;
-    private SimpleRecyclerViewAdapter mAdapter;
+    private @Nullable SimpleRecyclerViewAdapter mAdapter;
     private CirclePagerIndicatorDecoration mPageIndicatorDecoration;
     private SnapHelper mSnapHelper;
     private boolean mIsSnapHelperAttached;
     private int mItemPerScreen;
     private HomeModulesConfigManager mHomeModulesConfigManager;
-    private HomeModulesConfigManager.HomeModulesStateListener mHomeModulesStateListener;
+    private final HomeModulesConfigManager.HomeModulesStateListener mHomeModulesStateListener;
 
     /** It is non-null for tablets. */
-    @Nullable private UiConfig mUiConfig;
+    private @Nullable UiConfig mUiConfig;
 
     /** It is non-null for tablets. */
-    @Nullable private DisplayStyleObserver mDisplayStyleObserver;
+    private @Nullable DisplayStyleObserver mDisplayStyleObserver;
 
-    @Nullable private Callback<Profile> mOnProfileAvailableObserver;
+    private @Nullable Callback<Profile> mOnProfileAvailableObserver;
     private boolean mHasHomeModulesBeenScrolled;
-    private RecyclerView.OnScrollListener mOnScrollListener;
+    private RecyclerView.@Nullable OnScrollListener mOnScrollListener;
     private CallbackController mCallbackController;
 
     /**
@@ -77,16 +79,29 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
      * @param moduleRegistry The instance of {@link ModuleRegistry}.
      */
     public HomeModulesCoordinator(
-            @NonNull Activity activity,
-            @NonNull ModuleDelegateHost moduleDelegateHost,
-            @NonNull ViewGroup parentView,
-            @NonNull HomeModulesConfigManager homeModulesConfigManager,
-            @NonNull ObservableSupplier<Profile> profileSupplier,
-            @NonNull ModuleRegistry moduleRegistry) {
-        mContext = activity;
+            Activity activity,
+            ModuleDelegateHost moduleDelegateHost,
+            ViewGroup parentView,
+            HomeModulesConfigManager homeModulesConfigManager,
+            MonotonicObservableSupplier<Profile> profileSupplier,
+            ModuleRegistry moduleRegistry) {
         mModuleDelegateHost = moduleDelegateHost;
         mHomeModulesConfigManager = homeModulesConfigManager;
-        mHomeModulesStateListener = this::onModuleConfigChanged;
+        mHomeModulesStateListener =
+                new HomeModulesConfigManager.HomeModulesStateListener() {
+                    @Override
+                    public void onModuleConfigChanged(int moduleType, boolean isEnabled) {
+                        HomeModulesCoordinator.this.onModuleConfigChanged(moduleType, isEnabled);
+                    }
+
+                    @Override
+                    public void allCardsConfigChanged(boolean isEnabled) {
+                        if (ChromeFeatureList.isEnabled(
+                                ChromeFeatureList.HOME_MODULE_PREF_REFACTOR)) {
+                            mRecyclerView.setVisibility(isEnabled ? View.VISIBLE : View.GONE);
+                        }
+                    }
+                };
         mHomeModulesConfigManager.addListener(mHomeModulesStateListener);
         mModuleRegistry = moduleRegistry;
 
@@ -182,6 +197,7 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
             return;
         }
 
+        assumeNonNull(mUiConfig);
         mItemPerScreen =
                 CirclePagerIndicatorDecoration.getItemPerScreen(mUiConfig.getCurrentDisplayStyle());
         if (mItemPerScreen == 1) {
@@ -233,16 +249,17 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
             return;
         }
 
-        if (mProfileSupplier.hasValue()) {
-            mMediator.showModules(callback, this);
+        var profile = mProfileSupplier.get();
+        if (profile != null) {
+            mMediator.showModules(callback, this, /* useCachedSegmentationRanking= */ false);
         } else {
             long waitForProfileStartTimeMs = SystemClock.elapsedRealtime();
             mOnProfileAvailableObserver =
-                    (profile) -> {
+                    (p) -> {
                         onProfileAvailable(callback, waitForProfileStartTimeMs);
                     };
 
-            mProfileSupplier.addObserver(mOnProfileAvailableObserver);
+            mProfileSupplier.addSyncObserverAndPostIfNonNull(mOnProfileAvailableObserver);
         }
     }
 
@@ -269,8 +286,10 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
     private void onProfileAvailable(
             Runnable onHomeModulesChangedCallback, long waitForProfileStartTimeMs) {
         long delay = SystemClock.elapsedRealtime() - waitForProfileStartTimeMs;
-        mMediator.showModules(onHomeModulesChangedCallback, this);
+        mMediator.showModules(
+                onHomeModulesChangedCallback, this, /* useCachedSegmentationRanking= */ false);
 
+        assumeNonNull(mOnProfileAvailableObserver);
         mProfileSupplier.removeObserver(mOnProfileAvailableObserver);
         mOnProfileAvailableObserver = null;
         HomeModulesMetricsUtils.recordProfileReadyDelay(delay);
@@ -283,15 +302,6 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
 
         if (!isEnabled) {
             removeModule(moduleType);
-
-            // The single tab module and the tab resumption modules are controlled by the same
-            // preference key. Once it is turned on or off, both modules will be enabled or
-            // disabled.
-            if (moduleType == ModuleType.SINGLE_TAB) {
-                removeModule(ModuleType.TAB_RESUMPTION);
-            } else if (moduleType == ModuleType.TAB_RESUMPTION) {
-                removeModule(ModuleType.SINGLE_TAB);
-            }
 
             // All the educational tip modules are controlled by the same preference key. Once it is
             // turned on or off, all educational tip modules will be enabled or disabled.
@@ -306,6 +316,11 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
         }
     }
 
+    /** Asks all of the modules being shown to reload their data if necessary. */
+    public void updateModules() {
+        mMediator.updateModules();
+    }
+
     /** Hides the modules and cleans up. */
     public void hide() {
         if (!mHasHomeModulesBeenScrolled) {
@@ -314,13 +329,16 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
         mHasHomeModulesBeenScrolled = false;
         mMediator.hide();
 
+        if (mIsSnapHelperAttached) {
+            mSnapHelper.attachToRecyclerView(null);
+        }
         destroyAdapter();
     }
 
     // ModuleDelegate implementation.
 
     @Override
-    public void onDataReady(@ModuleType int moduleType, @NonNull PropertyModel propertyModel) {
+    public void onDataReady(@ModuleType int moduleType, PropertyModel propertyModel) {
         mMediator.addToRecyclerViewOrCache(moduleType, propertyModel);
     }
 
@@ -330,7 +348,7 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
     }
 
     @Override
-    public void onUrlClicked(@NonNull GURL gurl, @ModuleType int moduleType) {
+    public void onUrlClicked(GURL gurl, @ModuleType int moduleType) {
         int moduleRank = mMediator.getModuleRank(moduleType);
         mModuleDelegateHost.onUrlClicked(gurl);
         onModuleClicked(moduleType, moduleRank);
@@ -380,29 +398,27 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
     }
 
     @Override
-    public Tab getTrackingTab() {
+    public @Nullable Tab getTrackingTab() {
         return mModuleDelegateHost.getTrackingTab();
     }
 
     @Override
     public void prepareBuildAndShow() {
         maybeSetUpAdapter();
-        mRecyclerView.addOnScrollListener(mOnScrollListener);
+        mRecyclerView.addOnScrollListener(assumeNonNull(mOnScrollListener));
+    }
+
+    @Override
+    public void refreshModules() {
+        mMediator.refreshModules();
     }
 
     // OnViewCreatedCallback implementation.
 
     @Override
-    public void onViewCreated(@ModuleType int moduleType, @NonNull ViewGroup group) {
+    public void onViewCreated(@ModuleType int moduleType, ViewGroup group) {
         ModuleProvider moduleProvider = getModuleProvider(moduleType);
-        assert moduleProvider != null;
 
-        LayoutParams layoutParams = group.getLayoutParams();
-        layoutParams.height =
-                mContext.getResources()
-                        .getDimensionPixelSize(
-                                org.chromium.chrome.browser.magic_stack.R.dimen.home_module_height);
-        group.setLayoutParams(layoutParams);
         // Handle long clicks.
         group.setOnLongClickListener(
                 view -> {
@@ -418,7 +434,11 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
                     mHomeModulesContextMenuManager.displayMenu(view, moduleProvider);
                 });
 
+        group.setFocusable(true);
+
         moduleProvider.onViewCreated();
+
+        assumeNonNull(mAdapter);
         int position = mMediator.findModuleIndexInRecyclerView(moduleType, mAdapter.getItemCount());
         HomeModulesMetricsUtils.recordModuleShown(
                 moduleType, position, mModuleDelegateHost.isHomeSurface());
@@ -433,9 +453,11 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
         return mModuleDelegateHost;
     }
 
+    @SuppressWarnings("NullAway") // Restrict non-@Nullable assumptions to before destroy().
     public void destroy() {
         hide();
         if (mUiConfig != null) {
+            assumeNonNull(mDisplayStyleObserver);
             mUiConfig.removeObserver(mDisplayStyleObserver);
             mUiConfig = null;
         }
@@ -451,6 +473,12 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
             mCallbackController.destroy();
             mCallbackController = null;
         }
+        if (mSnapHelper != null) {
+            mSnapHelper = null;
+        }
+        if (mOnScrollListener != null) {
+            mOnScrollListener = null;
+        }
     }
 
     public boolean getIsSnapHelperAttachedForTesting() {
@@ -463,7 +491,8 @@ public class HomeModulesCoordinator implements ModuleDelegate, OnViewCreatedCall
      */
     private void recordMagicStackScroll(boolean hasHomeModulesBeenScrolled) {
         mMediator.recordMagicStackScroll(hasHomeModulesBeenScrolled);
-        mRecyclerView.removeOnScrollListener(mOnScrollListener);
+        mRecyclerView.removeOnScrollListener(assumeNonNull(mOnScrollListener));
+        mOnScrollListener = null;
     }
 
     private void destroyAdapter() {

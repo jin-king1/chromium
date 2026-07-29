@@ -41,8 +41,8 @@ static void JNI_ContentCaptureTestSupport_DisableGetFaviconFromWebContents(
 
 static void JNI_ContentCaptureTestSupport_SimulateDidUpdateFaviconURL(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& jwebContents,
-    const base::android::JavaParamRef<jstring>& jfaviconJson) {
+    const base::android::JavaRef<jobject>& jwebContents,
+    const base::android::JavaRef<jstring>& jfaviconJson) {
   content::WebContents* web_contents =
       content::WebContents::FromJavaWebContents(jwebContents);
   CHECK(web_contents);
@@ -51,17 +51,18 @@ static void JNI_ContentCaptureTestSupport_SimulateDidUpdateFaviconURL(
   CHECK(provider);
 
   std::string json = base::android::ConvertJavaStringToUTF8(env, jfaviconJson);
-  std::optional<base::Value> root = base::JSONReader::Read(json);
+  std::optional<base::Value> root =
+      base::JSONReader::Read(json, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   CHECK(root);
   CHECK(root->is_list());
   std::vector<blink::mojom::FaviconURLPtr> favicon_urls;
   for (const base::Value& icon_val : root->GetList()) {
-    const base::Value::Dict& icon = icon_val.GetDict();
+    const base::DictValue& icon = icon_val.GetDict();
     std::vector<gfx::Size> sizes;
     // The sizes is optional.
-    if (const base::Value::List* icon_sizes = icon.FindList("sizes")) {
+    if (const base::ListValue* icon_sizes = icon.FindList("sizes")) {
       for (const base::Value& size_val : CHECK_DEREF(icon_sizes)) {
-        const base::Value::Dict& size = size_val.GetDict();
+        const base::DictValue& size = size_val.GetDict();
 
         const std::optional<int> width = size.FindInt("width");
         const std::optional<int> height = size.FindInt("height");
@@ -84,3 +85,5 @@ static void JNI_ContentCaptureTestSupport_SimulateDidUpdateFaviconURL(
 }
 
 }  // namespace content_capture
+
+DEFINE_JNI(ContentCaptureTestSupport)

@@ -4,17 +4,14 @@
 
 package org.chromium.media;
 
-import static android.content.Context.UI_MODE_SERVICE;
-
 import android.annotation.SuppressLint;
-import android.app.UiModeManager;
 import android.content.Context;
-import android.content.res.Configuration;
 import android.graphics.Point;
 import android.os.Build;
 import android.text.TextUtils;
 import android.view.Display;
 
+import org.chromium.base.DeviceInfo;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 
@@ -71,21 +68,9 @@ public final class DisplayCompat {
     }
 
     /**
-     * Returns whether the app is running on a TV device
-     *
-     * @return true iff the app is running on a TV device
-     */
-    public static boolean isTv(Context context) {
-        // See https://developer.android.com/training/tv/start/hardware.html#runtime-check.
-        UiModeManager uiModeManager = (UiModeManager) context.getSystemService(UI_MODE_SERVICE);
-        return uiModeManager != null
-                && uiModeManager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION;
-    }
-
-    /**
-     * Parses a string which represents the display-size which contains 'x' as a delimiter
-     * between two integers representing the display's width and height and returns the
-     * display size as a Point object.
+     * Parses a string which represents the display-size which contains 'x' as a delimiter between
+     * two integers representing the display's width and height and returns the display size as a
+     * Point object.
      *
      * @param displaySize a string
      * @return a Point object containing the size in x and y direction in pixels
@@ -162,20 +147,16 @@ public final class DisplayCompat {
     /**
      * Gets the physical size of the given display in pixels. The size is collected in the
      * following order:
-     * 1) sys.display-size if API < 28 (P) and the system-property is set
-     * 2) vendor.display-size if API >= 28 (P) and the system-property is set
-     * 3) physical width and height from display.getMode() for API >= 23
-     * 4) display.getRealSize() for API >= 17
-     * 5) display.getSize()
+     * 1) the system-property is set
+     * 2) physical width and height from display.getMode()
+     * 3) display.getRealSize()
+     * 4) display.getSize()
      *
      * @return the physical display size, in pixels
      */
     private static Point getPhysicalDisplaySize(Context context, Display display) {
         Point displaySize =
-                Build.VERSION.SDK_INT < Build.VERSION_CODES.P
-                        ? parsePhysicalDisplaySizeFromSystemProperties("sys.display-size", display)
-                        : parsePhysicalDisplaySizeFromSystemProperties(
-                                "vendor.display-size", display);
+                parsePhysicalDisplaySizeFromSystemProperties("vendor.display-size", display);
         if (displaySize != null) {
             return displaySize;
         } else if (isSonyBravia4kTv(context)) {
@@ -199,7 +180,7 @@ public final class DisplayCompat {
      * @return true if the display is a Sony BRAVIA TV that supports 4k
      */
     private static boolean isSonyBravia4kTv(Context context) {
-        return isTv(context)
+        return DeviceInfo.isTV()
                 && "Sony".equals(Build.MANUFACTURER)
                 && Build.MODEL.startsWith("BRAVIA")
                 && context.getPackageManager().hasSystemFeature("com.sony.dtv.hardware.panel.qfhd");

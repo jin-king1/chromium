@@ -14,7 +14,6 @@
 #include "base/debug/debugging_buildflags.h"
 #include "base/functional/callback.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/weak_ptr.h"
 #include "base/profiler/sampling_profiler_thread_token.h"
 #include "base/profiler/stack_sampling_profiler.h"
 #include "base/profiler/unwinder.h"
@@ -29,7 +28,12 @@
 
 #if BUILDFLAG(IS_ANDROID) && defined(ARCH_CPU_ARM64) && \
     BUILDFLAG(CAN_UNWIND_WITH_FRAME_POINTERS)
+#include "base/android/library_loader/anchor_functions_buildflags.h"
+#if BUILDFLAG(SUPPORTS_CODE_ORDERING)
 #define ANDROID_ARM64_UNWINDING_SUPPORTED 1
+#else
+#define ANDROID_ARM64_UNWINDING_SUPPORTED 0
+#endif
 #else
 #define ANDROID_ARM64_UNWINDING_SUPPORTED 0
 #endif
@@ -66,7 +70,7 @@ class COMPONENT_EXPORT(TRACING_CPP) TracingSamplerProfiler {
 
     using TraceContext = perfetto::DataSource<DataSource>::TraceContext;
 
-    DataSource() = default;
+    DataSource();
     ~DataSource() override;
 
     void OnSetup(const SetupArgs& args) override;

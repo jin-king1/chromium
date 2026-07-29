@@ -15,7 +15,7 @@ class ProfileIOS;
 namespace ios {
 
 // A factory to create a unique `AutocompleteScoringModelService` per
-// profile. Has a dependency on `OptimizationGuideKeyedServiceFactory`.
+// profile. Has a dependency on `OptimizationGuideServiceFactory`.
 class AutocompleteScoringModelServiceFactory
     : public ProfileKeyedServiceFactoryIOS {
  public:
@@ -28,10 +28,10 @@ class AutocompleteScoringModelServiceFactory
   AutocompleteScoringModelServiceFactory();
   ~AutocompleteScoringModelServiceFactory() override;
 
-  // BrowserStateKeyedServiceFactory:
+  // ProfileKeyedServiceFactoryIOS:
   // Returns nullptr if `OptimizationGuideKeyedService` is null.
   std::unique_ptr<KeyedService> BuildServiceInstanceFor(
-      web::BrowserState* context) const override;
+      ProfileIOS* profile) const override;
 };
 
 }  // namespace ios

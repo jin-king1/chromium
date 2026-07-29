@@ -18,6 +18,7 @@ class CSSSuperellipseValue : public CSSValue {
  public:
   explicit CSSSuperellipseValue(const CSSPrimitiveValue& param)
       : CSSValue(kSuperellipseClass), param_(param) {}
+
   String CustomCSSText() const;
 
   bool Equals(const CSSSuperellipseValue& other) const {
@@ -27,6 +28,8 @@ class CSSSuperellipseValue : public CSSValue {
   unsigned CustomHash() const { return param_->Hash(); }
 
   const CSSPrimitiveValue& Param() const { return *param_; }
+
+  bool HasRandomFunctions() const;
 
   void TraceAfterDispatch(blink::Visitor*) const;
 

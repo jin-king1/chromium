@@ -44,6 +44,7 @@ android_library("javatests") {
     "//base:base_java_test_support",
     "//chrome/browser/flags:java",
     "//chrome/test/android:chrome_java_integration_test_support",
+    "//chrome/test/android:chrome_java_transit",
     "//components/content_relationship_verification/android:java",
     "//components/embedder_support/android:util_java",
     "//components/externalauth/android:java",
@@ -56,6 +57,8 @@ android_library("javatests") {
 }
 
 robolectric_binary("verification_junit_tests") {
+  shared_libraries =
+      [ "//chrome/android/junit:libchrome_junit_tests($robolectric_toolchain)" ]
   sources = [ "java/src/org/chromium/chrome/browser/browserservices/verification/ChromeOriginVerifierJunitTest.java" ]
   deps = [
     ":java",
@@ -73,6 +76,7 @@ robolectric_binary("verification_junit_tests") {
     "//content/public/test/android:content_java_test_support",
     "//third_party/androidx:androidx_browser_browser_java",
     "//third_party/androidx:androidx_test_core_java",
+    "//third_party/google-truth:google_truth_java",
     "//third_party/jni_zero:jni_zero_java",
     "//third_party/junit",
     "//third_party/mockito:mockito_java",

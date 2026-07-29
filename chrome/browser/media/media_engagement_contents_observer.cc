@@ -8,7 +8,6 @@
 
 #include "base/functional/bind.h"
 #include "base/metrics/histogram.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/task/sequenced_task_runner.h"
 #include "build/build_config.h"
 #include "chrome/browser/media/media_engagement_preloaded_list.h"
@@ -25,8 +24,9 @@
 #include "third_party/blink/public/mojom/autoplay/autoplay.mojom.h"
 
 #if !BUILDFLAG(IS_ANDROID)
+#include "base/time/time.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_list.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #endif  // !BUILDFLAG(IS_ANDROID)
 
@@ -496,24 +496,28 @@ void MediaEngagementContentsObserver::ReadyToCommitNavigation(
 }
 
 content::WebContents* MediaEngagementContentsObserver::GetOpener() const {
+  content::WebContents* result = nullptr;
 #if !BUILDFLAG(IS_ANDROID)
-  for (Browser* browser : *BrowserList::GetInstance()) {
-    if (browser->profile() != service_->profile())
-      continue;
+  ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+      [this, &result](BrowserWindowInterface* browser) {
+        if (browser->GetProfile() != service_->profile()) {
+          return true;  // Continue iteration
+        }
 
-    int index =
-        browser->tab_strip_model()->GetIndexOfWebContents(web_contents());
-    if (index == TabStripModel::kNoTab)
-      continue;
+        const TabStripModel* tab_strip_model = browser->GetTabStripModel();
+        int index = tab_strip_model->GetIndexOfWebContents(web_contents());
+        if (index == TabStripModel::kNoTab) {
+          return true;
+        }
 
-    // Whether or not the `opener` is null, this is the right tab strip.
-    const tabs::TabInterface* tab =
-        browser->tab_strip_model()->GetOpenerOfTabAt(index);
-    return tab ? tab->GetContents() : nullptr;
-  }
+        // Whether or not the `opener` is null, this is the right tab strip.
+        const tabs::TabInterface* tab =
+            tab_strip_model->GetOpenerOfTabAt(index);
+        result = tab ? tab->GetContents() : nullptr;
+        return false;  // Stop iteration, we found what we need
+      });
 #endif  // !BUILDFLAG(IS_ANDROID)
-
-  return nullptr;
+  return result;
 }
 
 scoped_refptr<MediaEngagementSession>

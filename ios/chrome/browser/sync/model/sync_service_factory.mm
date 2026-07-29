@@ -8,51 +8,53 @@
 
 #import "base/feature_list.h"
 #import "base/functional/bind.h"
+#import "base/functional/callback_helpers.h"
 #import "base/no_destructor.h"
 #import "base/time/time.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
 #import "components/browser_sync/common_controller_builder.h"
-#import "components/history/core/browser/features.h"
-#import "components/history/core/browser/history_service.h"
+#import "components/collaboration/public/collaboration_service.h"
 #import "components/keyed_service/core/service_access_type.h"
 #import "components/network_time/network_time_tracker.h"
+#import "components/password_manager/core/browser/features/password_features.h"
 #import "components/password_manager/core/browser/password_store/password_store_interface.h"
 #import "components/password_manager/core/browser/sharing/password_receiver_service.h"
-#import "components/plus_addresses/webdata/plus_address_webdata_service.h"
 #import "components/prefs/pref_service.h"
 #import "components/send_tab_to_self/features.h"
 #import "components/send_tab_to_self/send_tab_to_self_sync_service.h"
 #import "components/sync/base/command_line_switches.h"
 #import "components/sync/base/features.h"
 #import "components/sync/base/sync_util.h"
+#import "components/sync/engine/net/http_bridge.h"
 #import "components/sync/service/sync_service.h"
 #import "components/sync/service/sync_service_impl.h"
-#import "components/sync_device_info/device_info.h"
-#import "components/sync_device_info/device_info_sync_service.h"
-#import "components/sync_device_info/device_info_tracker.h"
-#import "components/sync_device_info/local_device_info_provider.h"
+#import "components/sync/service/syncable_service_based_data_type_controller.h"
 #import "components/sync_preferences/pref_service_syncable.h"
 #import "components/variations/service/google_groups_manager.h"
+#import "ios/chrome/browser/account_settings/model/ios_account_setting_service_factory.h"
+#import "ios/chrome/browser/aim/model/ios_chrome_aim_eligibility_service_factory.h"
 #import "ios/chrome/browser/bookmarks/model/account_bookmark_sync_service_factory.h"
 #import "ios/chrome/browser/bookmarks/model/bookmark_model_factory.h"
 #import "ios/chrome/browser/bookmarks/model/local_or_syncable_bookmark_sync_service_factory.h"
+#import "ios/chrome/browser/cobrowse/model/ios_contextual_tasks_service_factory.h"
+#import "ios/chrome/browser/collaboration/model/collaboration_service_factory.h"
 #import "ios/chrome/browser/consent_auditor/model/consent_auditor_factory.h"
 #import "ios/chrome/browser/data_sharing/model/data_sharing_service_factory.h"
+#import "ios/chrome/browser/data_sharing/model/personal_collaboration_data/personal_collaboration_data_service_factory.h"
 #import "ios/chrome/browser/favicon/model/favicon_service_factory.h"
 #import "ios/chrome/browser/gcm/model/ios_chrome_gcm_profile_service_factory.h"
 #import "ios/chrome/browser/history/model/history_service_factory.h"
+#import "ios/chrome/browser/home_customization/model/home_background_customization_service.h"
+#import "ios/chrome/browser/home_customization/model/home_background_customization_service_factory.h"
 #import "ios/chrome/browser/metrics/model/google_groups_manager_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_account_password_store_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_receiver_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_password_sender_service_factory.h"
 #import "ios/chrome/browser/passwords/model/ios_chrome_profile_password_store_factory.h"
-#import "ios/chrome/browser/plus_addresses/model/plus_address_setting_service_factory.h"
-#import "ios/chrome/browser/power_bookmarks/model/power_bookmark_service_factory.h"
 #import "ios/chrome/browser/reading_list/model/reading_list_model_factory.h"
 #import "ios/chrome/browser/saved_tab_groups/model/tab_group_sync_service_factory.h"
 #import "ios/chrome/browser/search_engines/model/template_url_service_factory.h"
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
-#import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
@@ -60,7 +62,7 @@
 #import "ios/chrome/browser/signin/model/about_signin_internals_factory.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service_factory.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
-#import "ios/chrome/browser/supervised_user/model/supervised_user_settings_service_factory.h"
+#import "ios/chrome/browser/supervised_user/model/family_link_settings_service_factory.h"
 #import "ios/chrome/browser/sync/model/data_type_store_service_factory.h"
 #import "ios/chrome/browser/sync/model/device_info_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/ios_chrome_sync_client.h"
@@ -68,6 +70,7 @@
 #import "ios/chrome/browser/sync/model/send_tab_to_self_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/session_sync_service_factory.h"
 #import "ios/chrome/browser/sync/model/sync_invalidations_service_factory.h"
+#import "ios/chrome/browser/sync/model/tab_context_sync_service_factory.h"
 #import "ios/chrome/browser/trusted_vault/model/ios_trusted_vault_service_factory.h"
 #import "ios/chrome/browser/webauthn/model/ios_passkey_model_factory.h"
 #import "ios/chrome/browser/webdata_services/model/web_data_service_factory.h"
@@ -87,6 +90,8 @@ syncer::DataTypeController::TypeVector CreateControllers(
           profile, ServiceAccessType::IMPLICIT_ACCESS);
 
   browser_sync::CommonControllerBuilder builder;
+  builder.SetAccountSettingService(
+      IOSAccountSettingServiceFactory::GetForProfile(profile));
   builder.SetAutofillWebDataService(
       web::GetUIThreadTaskRunner({}), profile_web_data_service,
       ios::WebDataServiceFactory::GetAutofillWebDataForAccount(
@@ -96,8 +101,17 @@ syncer::DataTypeController::TypeVector CreateControllers(
       ios::LocalOrSyncableBookmarkSyncServiceFactory::GetForProfile(profile),
       ios::AccountBookmarkSyncServiceFactory::GetForProfile(profile));
   builder.SetConsentAuditor(ConsentAuditorFactory::GetForProfile(profile));
+  builder.SetCollaborationService(
+      collaboration::CollaborationServiceFactory::GetForProfile(profile));
+  builder.SetAimEligibilityService(
+      IOSChromeAimEligibilityServiceFactory::GetForProfile(profile));
+  builder.SetContextualTasksService(
+      IOSContextualTasksServiceFactory::GetForProfile(profile));
   builder.SetDataSharingService(
       data_sharing::DataSharingServiceFactory::GetForProfile(profile));
+  builder.SetPersonalCollaborationDataService(
+      data_sharing::personal_collaboration_data::
+          PersonalCollaborationDataServiceFactory::GetForProfile(profile));
   builder.SetDeviceInfoSyncService(
       DeviceInfoSyncServiceFactory::GetForProfile(profile));
   builder.SetDualReadingListModel(
@@ -111,9 +125,7 @@ syncer::DataTypeController::TypeVector CreateControllers(
   builder.SetIdentityManager(IdentityManagerFactory::GetForProfile(profile));
   builder.SetDataTypeStoreService(
       DataTypeStoreServiceFactory::GetForProfile(profile));
-  builder.SetPasskeyModel(syncer::IsWebauthnCredentialSyncEnabled()
-                              ? IOSPasskeyModelFactory::GetForProfile(profile)
-                              : nullptr);
+  builder.SetPasskeyModel(IOSPasskeyModelFactory::GetForProfile(profile));
   builder.SetPasswordReceiverService(
       IOSChromePasswordReceiverServiceFactory::GetForProfile(profile));
   builder.SetPasswordSenderService(
@@ -122,46 +134,55 @@ syncer::DataTypeController::TypeVector CreateControllers(
                                profile, ServiceAccessType::IMPLICIT_ACCESS),
                            IOSChromeAccountPasswordStoreFactory::GetForProfile(
                                profile, ServiceAccessType::IMPLICIT_ACCESS));
-  builder.SetPlusAddressServices(
-      PlusAddressSettingServiceFactory::GetForProfile(profile),
-      ios::WebDataServiceFactory::GetPlusAddressWebDataForProfile(
-          profile, ServiceAccessType::IMPLICIT_ACCESS));
-  builder.SetPowerBookmarkService(
-      PowerBookmarkServiceFactory::GetForProfile(profile));
   builder.SetPrefService(profile->GetPrefs());
   builder.SetPrefServiceSyncable(profile->GetSyncablePrefs());
-  // TODO(crbug.com/330201909) implement for iOS.
-  builder.SetProductSpecificationsService(nullptr);
   builder.SetSendTabToSelfSyncService(
       SendTabToSelfSyncServiceFactory::GetForProfile(profile));
   builder.SetSessionSyncService(
       SessionSyncServiceFactory::GetForProfile(profile));
+  builder.SetTabContextSyncService(
+      TabContextSyncServiceFactory::GetForProfile(profile));
   builder.SetSharingMessageBridge(
-      base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfIOSPushNotifications)
-          ? IOSSharingMessageBridgeFactory::GetForProfile(profile)
-          : nullptr);
+      IOSSharingMessageBridgeFactory::GetForProfile(profile));
 #if BUILDFLAG(ENABLE_SUPERVISED_USERS)
-  builder.SetSupervisedUserSettingsService(
-      SupervisedUserSettingsServiceFactory::GetForProfile(profile));
+  builder.SetFamilyLinkSettingsService(
+      supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(
+          profile));
 #endif  // BUILDFLAG(ENABLE_SUPERVISED_USERS)
   builder.SetTabGroupSyncService(
-      IsTabGroupSyncEnabled()
-          ? tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile)
-          : nullptr);
+      tab_groups::TabGroupSyncServiceFactory::GetForProfile(profile));
   builder.SetTemplateURLService(nullptr);
   builder.SetUserEventService(
       IOSUserEventServiceFactory::GetForProfile(profile));
+  builder.SetNotebooksService(nullptr);
 
   syncer::DataTypeController::TypeVector controllers = builder.Build(
       /*disabled_types=*/{}, sync_service, ::GetChannel());
 
+  if (base::FeatureList::IsEnabled(syncer::kSyncThemesIos)) {
+    HomeBackgroundCustomizationService* service =
+        HomeBackgroundCustomizationServiceFactory::GetForProfile(profile);
+    // TODO(crbug.com/481713548): Log metrics indicating service
+    // unavailability.
+    CHECK(service);
+
+    syncer::SyncableService* theme_service = service->GetThemeSyncableService();
+    // TODO(crbug.com/481713548): Log metrics indicating service
+    // unavailability.
+    CHECK(theme_service);
+
+    controllers.push_back(
+        std::make_unique<syncer::SyncableServiceBasedDataTypeController>(
+            syncer::THEMES_IOS,
+            DataTypeStoreServiceFactory::GetForProfile(profile)
+                ->GetStoreFactory(),
+            theme_service->AsWeakPtr(), base::DoNothing(),
+            syncer::SyncableServiceBasedDataTypeController::DelegateMode::
+                kTransportModeWithSingleModel));
+  }
+
   return controllers;
 }
-
-// The maximum number of New Tab Page displays to show with synced segments
-// data.
-constexpr int kMaxSyncedNewTabPageDisplays = 5;
 
 std::unique_ptr<syncer::SyncClient> BuildSyncClient(ProfileIOS* profile) {
   CHECK(profile);
@@ -172,12 +193,11 @@ std::unique_ptr<syncer::SyncClient> BuildSyncClient(ProfileIOS* profile) {
       SyncInvalidationsServiceFactory::GetForProfile(profile),
       DeviceInfoSyncServiceFactory::GetForProfile(profile),
       DataTypeStoreServiceFactory::GetForProfile(profile),
-      SupervisedUserSettingsServiceFactory::GetForProfile(profile));
+      supervised_user::FamilyLinkSettingsServiceFactory::GetForProfile(
+          profile));
 }
 
-std::unique_ptr<KeyedService> BuildSyncService(web::BrowserState* context) {
-  ProfileIOS* profile = ProfileIOS::FromBrowserState(context);
-
+std::unique_ptr<KeyedService> BuildSyncService(ProfileIOS* profile) {
   CHECK(profile);
   CHECK(!profile->IsOffTheRecord());
 
@@ -193,38 +213,22 @@ std::unique_ptr<KeyedService> BuildSyncService(web::BrowserState* context) {
   syncer::SyncServiceImpl::InitParams init_params;
   init_params.sync_client = BuildSyncClient(profile);
   init_params.url_loader_factory = profile->GetSharedURLLoaderFactory();
+  init_params.create_http_post_provider_factory = base::BindRepeating(
+      [](const std::string& user_agent,
+         std::unique_ptr<network::PendingSharedURLLoaderFactory>
+             pending_url_loader_factory)
+          -> std::unique_ptr<syncer::HttpPostProviderFactory> {
+        return std::make_unique<syncer::HttpBridgeFactory>(
+            user_agent, std::move(pending_url_loader_factory));
+      });
   init_params.network_connection_tracker =
       GetApplicationContext()->GetNetworkConnectionTracker();
   init_params.channel = ::GetChannel();
   init_params.debug_identifier = profile->GetProfileName();
-
+  init_params.os_crypt_async = GetApplicationContext()->GetOSCryptAsync();
   auto sync_service =
       std::make_unique<syncer::SyncServiceImpl>(std::move(init_params));
   sync_service->Initialize(CreateControllers(profile, sync_service.get()));
-
-  // TODO(crbug.com/40250371): Remove the workaround below once
-  // PrivacySandboxSettingsFactory correctly declares its KeyedServices
-  // dependencies.
-  history::HistoryService* history_service =
-      ios::HistoryServiceFactory::GetForProfile(
-          profile, ServiceAccessType::EXPLICIT_ACCESS);
-
-  syncer::DeviceInfoSyncService* device_info_sync_service =
-      DeviceInfoSyncServiceFactory::GetForProfile(profile);
-
-  if (history_service && device_info_sync_service) {
-    PrefService* pref_service = profile->GetPrefs();
-
-    const int display_count =
-        pref_service->GetInteger(prefs::kIosSyncSegmentsNewTabPageDisplayCount);
-
-    history_service->SetCanAddForeignVisitsToSegmentsOnBackend(
-        display_count < kMaxSyncedNewTabPageDisplays);
-
-    history_service->SetDeviceInfoServices(
-        device_info_sync_service->GetDeviceInfoTracker(),
-        device_info_sync_service->GetLocalDeviceInfoProvider());
-  }
 
   password_manager::PasswordReceiverService* password_receiver_service =
       IOSChromePasswordReceiverServiceFactory::GetForProfile(profile);
@@ -239,10 +243,31 @@ std::unique_ptr<KeyedService> BuildSyncService(web::BrowserState* context) {
 
   SendTabToSelfSyncServiceFactory::GetForProfile(profile)
       ->OnSyncServiceInitialized(sync_service.get());
+  collaboration::CollaborationServiceFactory::GetForProfile(profile)
+      ->OnSyncServiceInitialized(sync_service.get());
 
   if (GoogleGroupsManager* groups_updater_service =
           GoogleGroupsManagerFactory::GetForProfile(profile)) {
     groups_updater_service->OnSyncServiceInitialized(sync_service.get());
+  }
+
+  if (base::FeatureList::IsEnabled(
+          password_manager::features::kPasswordSaveInContextErrorResolution)) {
+    scoped_refptr<password_manager::PasswordStoreInterface>
+        profile_password_store =
+            IOSChromeProfilePasswordStoreFactory::GetForProfile(
+                profile, ServiceAccessType::EXPLICIT_ACCESS);
+    if (profile_password_store) {
+      profile_password_store->OnSyncServiceInitialized(sync_service.get());
+    }
+
+    scoped_refptr<password_manager::PasswordStoreInterface>
+        account_password_store =
+            IOSChromeAccountPasswordStoreFactory::GetForProfile(
+                profile, ServiceAccessType::EXPLICIT_ACCESS);
+    if (account_password_store) {
+      account_password_store->OnSyncServiceInitialized(sync_service.get());
+    }
   }
 
   return sync_service;
@@ -303,18 +328,29 @@ SyncServiceFactory::GetAllSyncServices() {
   return sync_services;
 }
 
+// static
+SyncServiceFactory::TestingFactory SyncServiceFactory::GetDefaultFactory() {
+  return base::BindOnce(&BuildSyncService);
+}
+
 SyncServiceFactory::SyncServiceFactory()
-    : ProfileKeyedServiceFactoryIOS("SyncService") {
+    : ProfileKeyedServiceFactoryIOS("SyncService",
+                                    TestingCreation::kNoServiceForTests) {
   // The SyncServiceImpl depends on various KeyedServices being around
   // when it is shut down.  Specify those dependencies here to build the proper
   // destruction order. Note that some of the dependencies are listed here but
   // actually plumbed in IOSChromeSyncClient, which this factory constructs.
   DependsOn(ConsentAuditorFactory::GetInstance());
   DependsOn(DataTypeStoreServiceFactory::GetInstance());
+  DependsOn(collaboration::CollaborationServiceFactory::GetInstance());
   DependsOn(data_sharing::DataSharingServiceFactory::GetInstance());
+  DependsOn(data_sharing::personal_collaboration_data::
+                PersonalCollaborationDataServiceFactory::GetInstance());
   DependsOn(DeviceInfoSyncServiceFactory::GetInstance());
   DependsOn(GoogleGroupsManagerFactory::GetInstance());
   DependsOn(IdentityManagerFactory::GetInstance());
+  DependsOn(IOSChromeAimEligibilityServiceFactory::GetInstance());
+  DependsOn(IOSContextualTasksServiceFactory::GetInstance());
   DependsOn(ios::AboutSigninInternalsFactory::GetInstance());
   DependsOn(ios::AccountBookmarkSyncServiceFactory::GetInstance());
   DependsOn(ios::BookmarkModelFactory::GetInstance());
@@ -327,28 +363,23 @@ SyncServiceFactory::SyncServiceFactory()
   DependsOn(IOSChromePasswordReceiverServiceFactory::GetInstance());
   DependsOn(IOSChromePasswordSenderServiceFactory::GetInstance());
   DependsOn(IOSChromeProfilePasswordStoreFactory::GetInstance());
-  if (syncer::IsWebauthnCredentialSyncEnabled()) {
-    DependsOn(IOSPasskeyModelFactory::GetInstance());
-  }
-  if (base::FeatureList::IsEnabled(
-          send_tab_to_self::kSendTabToSelfIOSPushNotifications)) {
-    DependsOn(IOSSharingMessageBridgeFactory::GetInstance());
-  }
+  DependsOn(IOSPasskeyModelFactory::GetInstance());
+  DependsOn(IOSSharingMessageBridgeFactory::GetInstance());
   DependsOn(IOSTrustedVaultServiceFactory::GetInstance());
   DependsOn(IOSUserEventServiceFactory::GetInstance());
-  DependsOn(PlusAddressSettingServiceFactory::GetInstance());
-  DependsOn(PowerBookmarkServiceFactory::GetInstance());
   DependsOn(ReadingListModelFactory::GetInstance());
   DependsOn(SendTabToSelfSyncServiceFactory::GetInstance());
   DependsOn(SessionSyncServiceFactory::GetInstance());
-  DependsOn(SupervisedUserSettingsServiceFactory::GetInstance());
+  DependsOn(TabContextSyncServiceFactory::GetInstance());
+  DependsOn(supervised_user::FamilyLinkSettingsServiceFactory::GetInstance());
   DependsOn(SyncInvalidationsServiceFactory::GetInstance());
   DependsOn(tab_groups::TabGroupSyncServiceFactory::GetInstance());
+  DependsOn(HomeBackgroundCustomizationServiceFactory::GetInstance());
 }
 
 SyncServiceFactory::~SyncServiceFactory() {}
 
 std::unique_ptr<KeyedService> SyncServiceFactory::BuildServiceInstanceFor(
-    web::BrowserState* context) const {
-  return BuildSyncService(context);
+    ProfileIOS* profile) const {
+  return BuildSyncService(profile);
 }

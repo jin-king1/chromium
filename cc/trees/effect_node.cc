@@ -70,6 +70,8 @@ const char* RenderSurfaceReasonToString(RenderSurfaceReason reason) {
       return "view transition participant";
     case RenderSurfaceReason::k2DScaleTransformWithCompositedDescendants:
       return "2D scale transform with composited descendants";
+    case RenderSurfaceReason::kUnboundedElement:
+      return "unbounded element";
     case RenderSurfaceReason::kTest:
       return "test";
   }
@@ -105,6 +107,10 @@ void EffectNode::AsValueInto(base::trace_event::TracedValue* value) const {
       MathUtil::AddToTracedValue("mask_filter_gradient_mask",
                                  mask_filter_info.gradient_mask().value(),
                                  value);
+    }
+    if (mask_filter_info.clip_id()) {
+      value->SetInteger("mask_filter_clip_id",
+                        mask_filter_info.clip_id().value());
     }
   }
   value->SetString("blend_mode", SkBlendMode_Name(blend_mode));

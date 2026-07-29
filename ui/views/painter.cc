@@ -7,6 +7,8 @@
 #include <utility>
 
 #include "base/check.h"
+#include "third_party/skia/include/core/SkPath.h"
+#include "third_party/skia/include/core/SkRRect.h"
 #include "ui/compositor/layer.h"
 #include "ui/compositor/layer_delegate.h"
 #include "ui/compositor/layer_owner.h"
@@ -95,15 +97,14 @@ void SolidRoundRectPainter::Paint(gfx::Canvas* canvas, const gfx::Size& size) {
   }
   flags.setStyle(cc::PaintFlags::kFill_Style);
   flags.setColor(bg_color_);
-  SkPath fill_path;
-  const std::array<SkScalar, 8> scaled_radii = {
-      {radii_.upper_left() * scale, radii_.upper_left() * scale,
-       radii_.upper_right() * scale, radii_.upper_right() * scale,
-       radii_.lower_right() * scale, radii_.lower_right() * scale,
-       radii_.lower_left() * scale, radii_.lower_left() * scale}};
+  const std::array<SkVector, 4> scaled_radii = {
+      {{radii_.upper_left() * scale, radii_.upper_left() * scale},
+       {radii_.upper_right() * scale, radii_.upper_right() * scale},
+       {radii_.lower_right() * scale, radii_.lower_right() * scale},
+       {radii_.lower_left() * scale, radii_.lower_left() * scale}}};
 
-  UNSAFE_TODO(fill_path.addRoundRect(gfx::RectFToSkRect(fill_rect),
-                                     scaled_radii.data()));
+  const SkPath fill_path = SkPath::RRect(SkRRect::MakeRectRadii(
+      gfx::RectFToSkRect(fill_rect), scaled_radii.data()));
   canvas->DrawPath(fill_path, flags);
 
   if (stroke_color_ != SK_ColorTRANSPARENT) {
@@ -114,14 +115,14 @@ void SolidRoundRectPainter::Paint(gfx::Canvas* canvas, const gfx::Size& size) {
     flags.setStrokeWidth(stroke_width);
     flags.setColor(stroke_color_);
 
-    SkPath stroke_path;
-    std::array<SkScalar, 8> stroke_radii;
-    for (size_t i = 0; i < 8; i++) {
-      stroke_radii[i] = scaled_radii[i] - stroke_width / 2;
+    std::array<SkVector, 4> stroke_radii;
+    for (size_t i = 0; i < 4; i++) {
+      stroke_radii[i] =
+          scaled_radii[i] - SkVector{stroke_width / 2, stroke_width / 2};
     }
 
-    UNSAFE_TODO(stroke_path.addRoundRect(gfx::RectFToSkRect(stroke_rect),
-                                         stroke_radii.data()));
+    const SkPath stroke_path = SkPath::RRect(SkRRect::MakeRectRadii(
+        gfx::RectFToSkRect(stroke_rect), stroke_radii.data()));
     canvas->DrawPath(stroke_path, flags);
   }
 }
@@ -171,7 +172,7 @@ class ImagePainter : public Painter {
  public:
   // Constructs an ImagePainter with the specified image resource ids.
   // See CreateImageGridPainter()'s comment regarding image ID count and order.
-  explicit ImagePainter(const int image_ids[]);
+  explicit ImagePainter(const ui::NineImageIds& image_ids);
 
   // Constructs an ImagePainter with the specified image and insets.
   ImagePainter(const gfx::ImageSkia& image, const gfx::Insets& insets);
@@ -189,7 +190,7 @@ class ImagePainter : public Painter {
   std::unique_ptr<gfx::NineImagePainter> nine_painter_;
 };
 
-ImagePainter::ImagePainter(const int image_ids[])
+ImagePainter::ImagePainter(const ui::NineImageIds& image_ids)
     : nine_painter_(ui::CreateNineImagePainter(image_ids)) {}
 
 ImagePainter::ImagePainter(const gfx::ImageSkia& image,
@@ -226,7 +227,7 @@ class PaintedLayer : public ui::LayerOwner, public ui::LayerDelegate {
 
 PaintedLayer::PaintedLayer(std::unique_ptr<Painter> painter)
     : painter_(std::move(painter)) {
-  SetLayer(std::make_unique<ui::Layer>(ui::LAYER_TEXTURED));
+  SetLayer(std::make_unique<ui::LayerTextured>());
   layer()->set_delegate(this);
 }
 
@@ -327,7 +328,7 @@ std::unique_ptr<Painter> Painter::CreateImagePainter(
 
 // static
 std::unique_ptr<Painter> Painter::CreateImageGridPainter(
-    const int image_ids[]) {
+    const ui::NineImageIds& image_ids) {
   return std::make_unique<ImagePainter>(image_ids);
 }
 

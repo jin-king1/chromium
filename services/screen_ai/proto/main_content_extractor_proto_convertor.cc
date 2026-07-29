@@ -5,7 +5,6 @@
 #include "services/screen_ai/proto/main_content_extractor_proto_convertor.h"
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_map.h"
 #include "base/containers/fixed_flat_set.h"
 #include "base/strings/string_util.h"
@@ -188,7 +187,7 @@ void AddSubTree(const ui::AXTree& tree,
                 const ::screenai::BoundingBoxPixels& parent_bounds,
                 gfx::SizeF& tree_dimensions) {
   // Ensure that node id and index are the same.
-  DCHECK(proto.ui_elements_size() == next_unused_node_id);
+  CHECK(proto.ui_elements_size() == next_unused_node_id);
 
   // Create and add proto.
   int current_node_id = next_unused_node_id;
@@ -200,9 +199,9 @@ void AddSubTree(const ui::AXTree& tree,
 
   // Add children.
   std::vector<int> child_ids;
-  for (auto it = node->AllChildrenBegin(); it != node->AllChildrenEnd(); ++it) {
+  for (ui::AXNode* child : node->GetAllChildren()) {
     child_ids.push_back(++next_unused_node_id);
-    AddSubTree(tree, it.get(), proto, next_unused_node_id, current_node_id,
+    AddSubTree(tree, child, proto, next_unused_node_id, current_node_id,
                current_node_bounds, tree_dimensions);
   }
 
@@ -240,8 +239,8 @@ std::optional<ViewHierarchyAndTreeSize> SnapshotToViewHierarchy(
       tree_dimensions.width());
   proto.mutable_ui_elements(0)->mutable_bounding_box_pixels()->set_bottom(
       tree_dimensions.height());
-  DCHECK_EQ(proto.ui_elements(0).bounding_box().right(), 0);
-  DCHECK_EQ(proto.ui_elements(0).bounding_box().top(), 0);
+  CHECK_EQ(proto.ui_elements(0).bounding_box().right(), 0);
+  CHECK_EQ(proto.ui_elements(0).bounding_box().top(), 0);
 
   // Set relative sizes.
   for (int i = 0; i < proto.ui_elements_size(); i++) {

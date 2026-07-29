@@ -32,6 +32,15 @@ class SyncCreatePassphraseTableViewControllerTest
  public:
   SyncCreatePassphraseTableViewControllerTest() {}
 
+  void SetUp() override {
+    PassphraseTableViewControllerTest::SetUp();
+    // PassphraseTableViewControllerTest::SetUp() sets IsPassphraseRequired() to
+    // true, this behavior is not relevant to this test, so set it back to
+    // false.
+    ON_CALL(*fake_sync_service_->GetMockUserSettings(), IsPassphraseRequired())
+        .WillByDefault(Return(false));
+  }
+
  protected:
   LegacyChromeTableViewController* InstantiateController() override {
     return [[SyncCreatePassphraseTableViewController alloc]
@@ -90,7 +99,7 @@ TEST_F(SyncCreatePassphraseTableViewControllerTest, TestCredentialsOkPressed) {
               SetEncryptionPassphrase(_))
       .Times(0);
   EXPECT_FALSE([[sync_controller navigationItem].rightBarButtonItem isEnabled]);
-  [sync_controller signInPressed];
+  [sync_controller enterPressed];
 }
 
 TEST_F(SyncCreatePassphraseTableViewControllerTest, TestNextTextField) {
@@ -135,7 +144,7 @@ TEST_F(SyncCreatePassphraseTableViewControllerTest, TestTextFieldsDoNotMatch) {
   [[sync_controller passphrase] setText:@"decodeme"];
   [[sync_controller confirmPassphrase] setText:@"donothing"];
   [sync_controller textFieldDidChange:[sync_controller passphrase]];
-  [sync_controller signInPressed];
+  [sync_controller enterPressed];
 
   // Check the error cell.
   NSInteger const kSection = 0;
@@ -165,7 +174,7 @@ TEST_F(SyncCreatePassphraseTableViewControllerTest, TestTextFieldsMatch) {
   [[sync_controller passphrase] setText:@"decodeme"];
   [[sync_controller confirmPassphrase] setText:@"decodeme"];
   [sync_controller textFieldDidChange:[sync_controller passphrase]];
-  [sync_controller signInPressed];
+  [sync_controller enterPressed];
 }
 
 TEST_F(SyncCreatePassphraseTableViewControllerTest, TestOnStateChanged) {
@@ -214,6 +223,39 @@ TEST_F(SyncCreatePassphraseTableViewControllerTest, TestOnStateChangedError) {
   EXPECT_NE(nil, sync_controller.title);
   EXPECT_EQ(leftBarButtonItem,
             sync_controller.navigationItem.leftBarButtonItem);
+}
+
+// Verify that passphrase is not set when trusted vault keys become required.
+// Regression test for crbug.com/40904402.
+TEST_F(SyncCreatePassphraseTableViewControllerTest,
+       TestShouldNotSetPassphraseWhenTrustedVaultKeysRequired) {
+  SyncCreatePassphraseTableViewController* sync_controller = SyncController();
+  ON_CALL(*fake_sync_service_->GetMockUserSettings(),
+          IsTrustedVaultKeyRequired())
+      .WillByDefault(Return(true));
+  EXPECT_CALL(*fake_sync_service_->GetMockUserSettings(),
+              SetEncryptionPassphrase(_))
+      .Times(0);
+  [[sync_controller passphrase] setText:@"decodeme"];
+  [[sync_controller confirmPassphrase] setText:@"decodeme"];
+  [sync_controller textFieldDidChange:[sync_controller passphrase]];
+  [sync_controller enterPressed];
+}
+
+// Verify that the passphrase is not set when decryption passphrase is required.
+// Regression test for crbug.com/40904402.
+TEST_F(SyncCreatePassphraseTableViewControllerTest,
+       TestShouldNotSetPassphraseWhenDecryptionPassphraseRequired) {
+  SyncCreatePassphraseTableViewController* sync_controller = SyncController();
+  ON_CALL(*fake_sync_service_->GetMockUserSettings(), IsPassphraseRequired())
+      .WillByDefault(Return(true));
+  EXPECT_CALL(*fake_sync_service_->GetMockUserSettings(),
+              SetEncryptionPassphrase(_))
+      .Times(0);
+  [[sync_controller passphrase] setText:@"decodeme"];
+  [[sync_controller confirmPassphrase] setText:@"decodeme"];
+  [sync_controller textFieldDidChange:[sync_controller passphrase]];
+  [sync_controller enterPressed];
 }
 
 }  // namespace

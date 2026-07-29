@@ -23,7 +23,8 @@ class AutocompleteResult;
 // chrome://version, as well as the built-in Starter Pack search engines.
 class FeaturedSearchProvider : public AutocompleteProvider {
  public:
-  explicit FeaturedSearchProvider(AutocompleteProviderClient* client);
+  FeaturedSearchProvider(AutocompleteProviderClient* client,
+                         bool show_iph_matches);
   FeaturedSearchProvider(const FeaturedSearchProvider&) = delete;
   FeaturedSearchProvider& operator=(const FeaturedSearchProvider&) = delete;
 
@@ -37,10 +38,6 @@ class FeaturedSearchProvider : public AutocompleteProvider {
 
  private:
   ~FeaturedSearchProvider() override;
-
-  static const int kGeminiRelevance;
-  static const int kFeaturedEnterpriseSearchRelevance;
-  static const int kStarterPackRelevance;
 
   // Populates `matches_` with matching starter pack keywords such as @history,
   // and @bookmarks
@@ -59,46 +56,48 @@ class FeaturedSearchProvider : public AutocompleteProvider {
                    const std::u16string& matched_term,
                    const std::u16string& iph_link_text,
                    const GURL& iph_link_url,
+                   int relevance,
                    bool deletable);
 
   void AddFeaturedEnterpriseSearchMatch(const TemplateURL& template_url,
                                         const AutocompleteInput& input);
 
-  // Whether to show the @gemini IPH row. This takes into account factors like
-  // feature flags, zero suggest state, how many times its been shown, and past
-  // user behavior.
-  bool ShouldShowGeminiIPHMatch(const AutocompleteInput& input) const;
-
-  // Whether to show the Enterprise featured Search IPH row. This takes into
-  // account factors like feature flags, zero suggest state, how many times it's
-  // been shown, and past user behavior.
-  bool ShouldShowEnterpriseFeaturedSearchIPHMatch(
-      const AutocompleteInput& input) const;
-
-  // Returns whether Chrome should show the IPH for `iph_type`, meaning that:
-  // - It has been shown fewer times than the session limit;
-  // - The user has not manually deleted it.
-  // If the limit is set to INT_MAX, it is not limited.
+  // Returns whether to show the IPH match for `iph_type`.
   bool ShouldShowIPH(IphType iph_type) const;
 
-  void AddFeaturedEnterpriseSearchIPHMatch();
+  // Whether to show the @gemini keyword promo row in zero-state.
+  bool ShouldShowGeminiIPHMatch() const;
+  void AddGeminiIPHMatch();
 
+  // Whether to show the Enterprise Search Aggregator keyword promo row
+  // in zero-state.
+  bool ShouldShowEnterpriseSearchAggregatorIPHMatch() const;
+  void AddEnterpriseSearchAggregatorIPHMatch();
+
+  // Whether to show the Featured Enterprise Site Search keyword promo row in
+  // zero-state.
+  bool ShouldShowFeaturedEnterpriseSiteSearchIPHMatch() const;
+  void AddFeaturedEnterpriseSiteSearchIPHMatch();
+
+  // Whether to show the History Embeddings promo row in @history scope.
   bool ShouldShowHistoryEmbeddingsSettingsPromoIphMatch() const;
   void AddHistoryEmbeddingsSettingsPromoIphMatch();
 
+  // Whether to show the History Embeddings disclaimer row in @history scope.
   bool ShouldShowHistoryEmbeddingsDisclaimerIphMatch() const;
   void AddHistoryEmbeddingsDisclaimerIphMatch();
 
-  bool ShouldShowHistoryScopePromoIphMatch(
-      const AutocompleteInput& input) const;
+  // Whether to show the @history keyword promo row in zero-state.
+  bool ShouldShowHistoryScopePromoIphMatch() const;
   void AddHistoryScopePromoIphMatch();
 
-  bool ShouldShowHistoryEmbeddingsScopePromoIphMatch(
-      const AutocompleteInput& input) const;
+  // Whether to show the @history (embeddings) keyword promo row in zero-state.
+  bool ShouldShowHistoryEmbeddingsScopePromoIphMatch() const;
   void AddHistoryEmbeddingsScopePromoIphMatch();
 
   raw_ptr<AutocompleteProviderClient> client_;
   raw_ptr<TemplateURLService> template_url_service_;
+  const bool show_iph_matches_;
 
   // The number of times the IPH row has been shown so far in this browser
   // session. Shared by all IPH types. Reset when, e.g., the user opens a new

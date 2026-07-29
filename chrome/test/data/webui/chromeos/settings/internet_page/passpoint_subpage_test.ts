@@ -72,14 +72,14 @@ suite('PasspointSubpage', () => {
     const div = passpointSubpage_.shadowRoot!.querySelector<HTMLElement>(
         '#passpointSourceText');
     assertTrue(!!div);
-    return div.textContent!.trim();
+    return div.textContent.trim();
   }
 
   function getCertificateName(): string {
     const div = passpointSubpage_.shadowRoot!.querySelector<HTMLElement>(
         '#passpointCertificateName');
     assertTrue(!!div);
-    return div.textContent!.trim();
+    return div.textContent.trim();
   }
 
   function getRemovalDialog(): HTMLDialogElement|null {
@@ -322,7 +322,8 @@ suite('PasspointSubpage', () => {
     const row = list[0]!.querySelector('cr-link-row');
     assertTrue(!!row);
 
-    const showDetailPromise = eventToPromise('show-detail', window);
+    const showDetailPromise =
+        eventToPromise<CustomEvent<{guid: string}>>('show-detail', window);
     row.click();
     const showDetailEvent = await showDetailPromise;
     assertEquals('wifi1_guid', showDetailEvent.detail.guid);

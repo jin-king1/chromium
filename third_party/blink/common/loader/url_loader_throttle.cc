@@ -4,6 +4,7 @@
 
 #include "third_party/blink/public/common/loader/url_loader_throttle.h"
 
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "services/network/public/mojom/url_loader.mojom.h"
 #include "services/network/public/mojom/url_response_head.mojom.h"
@@ -43,9 +44,7 @@ void URLLoaderThrottle::WillRedirectRequest(
     net::RedirectInfo* redirect_info,
     const network::mojom::URLResponseHead& response_head,
     bool* defer,
-    std::vector<std::string>* to_be_removed_request_headers,
-    net::HttpRequestHeaders* modified_request_headers,
-    net::HttpRequestHeaders* modified_cors_exempt_request_headers) {}
+    network::HttpRequestHeadersUpdateParams* headers_update_params) {}
 
 void URLLoaderThrottle::WillProcessResponse(
     const GURL& response_url,
@@ -62,12 +61,9 @@ void URLLoaderThrottle::BeforeWillProcessResponse(
     RestartWithURLReset* restart_with_url_reset) {}
 
 void URLLoaderThrottle::BeforeWillRedirectRequest(
-    net::RedirectInfo* redirect_info,
+    const net::RedirectInfo& redirect_info,
     const network::mojom::URLResponseHead& response_head,
-    RestartWithURLReset* restart_with_url_reset,
-    std::vector<std::string>* to_be_removed_request_headers,
-    net::HttpRequestHeaders* modified_request_headers,
-    net::HttpRequestHeaders* modified_cors_exempt_request_headers) {}
+    RestartWithURLReset* restart_with_url_reset) {}
 
 void URLLoaderThrottle::WillOnCompleteWithError(
     const network::URLLoaderCompletionStatus& status) {}

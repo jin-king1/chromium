@@ -10,13 +10,15 @@
 #include <string>
 #include <vector>
 
+#include "base/memory/weak_ptr.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "ui/aura/aura_export.h"
 #include "ui/aura/window.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
 #include "ui/base/mojom/window_show_state.mojom-forward.h"
 #include "ui/base/ui_base_types.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/geometry/rounded_corners_f.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace gfx {
 class ImageSkia;
@@ -102,10 +104,12 @@ AURA_EXPORT extern const WindowProperty<gfx::Rect*>* const kHeadlessBoundsKey;
 
 // A property key to store the host window of a window. This lets
 // WebContentsViews find the windows that should constrain NPAPI plugins.
-AURA_EXPORT extern const WindowProperty<Window*>* const kHostWindowKey;
+AURA_EXPORT extern const WindowProperty<base::WeakPtr<Window>*>* const
+    kHostWindowKey;
 
 // The modal parent of a child modal window.
-AURA_EXPORT extern const WindowProperty<Window*>* const kChildModalParentKey;
+AURA_EXPORT extern const WindowProperty<base::WeakPtr<Window>*>* const
+    kChildModalParentKey;
 
 // A property key to store the window modality.
 AURA_EXPORT extern const WindowProperty<ui::mojom::ModalType>* const kModalKey;
@@ -138,9 +142,6 @@ AURA_EXPORT extern const WindowProperty<bool>* const kUseWindowBoundsForShadow;
 // walking up the accessibility tree via platform APIs.
 AURA_EXPORT extern const aura::WindowProperty<gfx::NativeViewAccessible>* const
     kParentNativeViewAccessibleKey;
-
-// A property key to store the preferred size of the window.
-AURA_EXPORT extern const WindowProperty<gfx::Size*>* const kPreferredSize;
 
 // A property key to store the resize behavior, which is a bitmask of the
 // ResizeBehavior values.
@@ -175,6 +176,11 @@ AURA_EXPORT extern const WindowProperty<ui::mojom::WindowShowState>* const
 // does not have any effort on any other operation systems except Chrome OS.
 AURA_EXPORT extern const WindowProperty<bool>* const kIsRestoringKey;
 
+// A property that specifies that the system default caption and icon should not
+// be rendered, and that the client area should be equivalent to the window
+// area.
+AURA_EXPORT extern const WindowProperty<bool>* const kRemoveStandardFrame;
+
 // A property key to store key event dispatch policy. The default value is
 // false, which means IME receives a key event in PREDISPATCH phace before a
 // window receives it. If it's true, a window receives a key event before IME.
@@ -192,9 +198,11 @@ AURA_EXPORT extern const WindowProperty<int>* const kTopViewInset;
 // A property key to store the window icon, typically 16x16 for title bars.
 AURA_EXPORT extern const WindowProperty<gfx::ImageSkia*>* const kWindowIconKey;
 
-// The corner radius of a window in DIPs. Currently only used for shadows.
-// Default is -1, meaning "unspecified". 0 Ensures corners are square.
-AURA_EXPORT extern const WindowProperty<int>* const kWindowCornerRadiusKey;
+// Defines the roundness of window corners in DIPs. An empty value ensures
+// square corners. If unspecified, the window server may determines corner
+// roundness.
+AURA_EXPORT extern const WindowProperty<gfx::RoundedCornersF*>* const
+    kWindowRoundedCornersKey;
 
 // A property key to indicate a desk index of a workspace this window belongs
 // to. The default value is kWindowWorkspaceUnassignedWorkspace.
@@ -212,6 +220,8 @@ AURA_EXPORT extern const WindowProperty<ui::ZOrderLevel>* const kZOrderingKey;
 // is an error.
 DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, aura::client::FocusClient*)
 DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, aura::Window*)
+DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT,
+                                        base::WeakPtr<aura::Window>*)
 DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::ImageSkia*)
 DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::NativeViewAccessible)
 DECLARE_EXPORTED_UI_CLASS_PROPERTY_TYPE(AURA_EXPORT, gfx::Rect*)

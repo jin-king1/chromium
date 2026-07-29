@@ -32,7 +32,6 @@
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
     BUILDFLAG(IS_WIN)
-#include "chrome/browser/send_tab_to_self/desktop_notification_handler.h"
 #include "chrome/browser/sharing/sharing_notification_handler.h"
 #endif
 
@@ -44,6 +43,10 @@
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/notifications/muted_notification_handler.h"
 #include "chrome/browser/notifications/screen_capture_notification_blocker.h"
+#if !BUILDFLAG(IS_CHROMEOS)
+#include "chrome/browser/default_browser/default_browser_changed_notification_handler.h"
+#include "chrome/browser/default_browser/default_browser_features.h"
+#endif
 #endif
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -75,14 +78,6 @@ NotificationDisplayServiceImpl::NotificationDisplayServiceImpl(Profile* profile)
     AddNotificationHandler(NotificationHandler::Type::WEB_PERSISTENT,
                            std::make_unique<PersistentNotificationHandler>());
 
-#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
-    BUILDFLAG(IS_WIN)
-    AddNotificationHandler(
-        NotificationHandler::Type::SEND_TAB_TO_SELF,
-        std::make_unique<send_tab_to_self::DesktopNotificationHandler>(
-            profile_));
-#endif
-
 #if (BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_MAC) || \
      BUILDFLAG(IS_WIN)) &&                                                 \
     BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -110,6 +105,16 @@ NotificationDisplayServiceImpl::NotificationDisplayServiceImpl(Profile* profile)
                                screen_capture_blocker.get()));
     notification_queue_.AddNotificationBlocker(
         std::move(screen_capture_blocker));
+
+#if !BUILDFLAG(IS_CHROMEOS)
+    if (default_browser::IsDefaultBrowserFrameworkEnabled() &&
+        default_browser::IsDefaultBrowserChangedOsNotificationEnabled()) {
+      AddNotificationHandler(
+          NotificationHandler::Type::DEFAULT_BROWSER_CHANGED,
+          std::make_unique<
+              default_browser::DefaultBrowserChangedNotificationHandler>());
+    }
+#endif
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
@@ -141,6 +146,7 @@ void NotificationDisplayServiceImpl::ProcessNotificationOperation(
     const std::optional<int>& action_index,
     const std::optional<std::u16string>& reply,
     const std::optional<bool>& by_user,
+    const std::optional<bool>& is_suspicious,
     base::OnceClosure on_completed_cb) {
   NotificationHandler* handler = GetNotificationHandler(notification_type);
   DCHECK(handler);
@@ -164,10 +170,25 @@ void NotificationDisplayServiceImpl::ProcessNotificationOperation(
         observer.OnNotificationClosed(notification_id);
       break;
     case NotificationOperation::kDisablePermission:
-      handler->DisableNotifications(profile_, origin);
+      handler->DisableNotifications(profile_, origin, notification_id,
+                                    is_suspicious);
       break;
     case NotificationOperation::kSettings:
       handler->OpenSettings(profile_, origin);
+      break;
+    case NotificationOperation::kReportAsSafe:
+      handler->ReportNotificationAsSafe(notification_id, origin, profile_);
+      break;
+    case NotificationOperation::kReportWarnedAsSpam:
+      handler->ReportWarnedNotificationAsSpam(notification_id, origin,
+                                              profile_);
+      break;
+    case NotificationOperation::kReportUnwarnedAsSpam:
+      handler->ReportUnwarnedNotificationAsSpam(notification_id, origin,
+                                                profile_);
+      break;
+    case NotificationOperation::kShowOriginalNotification:
+      handler->OnShowOriginalNotification(origin, notification_id, profile_);
       break;
   }
 }
@@ -293,6 +314,7 @@ void NotificationDisplayServiceImpl::ProfileLoadedCallback(
     const std::optional<int>& action_index,
     const std::optional<std::u16string>& reply,
     const std::optional<bool>& by_user,
+    const std::optional<bool>& is_suspicious,
     base::OnceClosure on_completed_cb,
     Profile* profile) {
   base::UmaHistogramBoolean("Notifications.LoadProfileResult",
@@ -307,7 +329,7 @@ void NotificationDisplayServiceImpl::ProfileLoadedCallback(
       NotificationDisplayServiceImpl::GetForProfile(profile);
   display_service->ProcessNotificationOperation(
       operation, notification_type, origin, notification_id, action_index,
-      reply, by_user, std::move(on_completed_cb));
+      reply, by_user, is_suspicious, std::move(on_completed_cb));
 }
 
 void NotificationDisplayServiceImpl::SetBlockersForTesting(

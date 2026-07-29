@@ -4,6 +4,8 @@
 
 #import "ios/web/public/web_state_delegate_bridge.h"
 
+#import "base/functional/callback.h"
+#import "base/functional/callback_helpers.h"
 #import "ios/web/public/ui/context_menu_params.h"
 
 namespace web {
@@ -59,6 +61,52 @@ void WebStateDelegateBridge::ShowRepostFormWarningDialog(
   }
 }
 
+void WebStateDelegateBridge::ShouldAllowCopy(
+    WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  SEL selector = @selector(webState:shouldAllowCopyWithDecisionHandler:);
+  if ([delegate_ respondsToSelector:selector]) {
+    [delegate_ webState:source
+        shouldAllowCopyWithDecisionHandler:base::CallbackToBlock(
+                                               std::move(callback))];
+  } else {
+    std::move(callback).Run(true);
+  }
+}
+
+void WebStateDelegateBridge::ShouldAllowPaste(
+    WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  SEL selector = @selector(webState:shouldAllowPasteWithDecisionHandler:);
+  if ([delegate_ respondsToSelector:selector]) {
+    [delegate_ webState:source
+        shouldAllowPasteWithDecisionHandler:base::CallbackToBlock(
+                                                std::move(callback))];
+  } else {
+    std::move(callback).Run(true);
+  }
+}
+
+void WebStateDelegateBridge::ShouldAllowCut(
+    WebState* source,
+    base::OnceCallback<void(bool)> callback) {
+  SEL selector = @selector(webState:shouldAllowCutWithDecisionHandler:);
+  if ([delegate_ respondsToSelector:selector]) {
+    [delegate_ webState:source
+        shouldAllowCutWithDecisionHandler:base::CallbackToBlock(
+                                              std::move(callback))];
+  } else {
+    std::move(callback).Run(true);
+  }
+}
+
+void WebStateDelegateBridge::DidFinishClipboardRead(WebState* source) {
+  if ([delegate_
+          respondsToSelector:@selector(webStateDidFinishClipboardRead:)]) {
+    [delegate_ webStateDidFinishClipboardRead:source];
+  }
+}
+
 JavaScriptDialogPresenter* WebStateDelegateBridge::GetJavaScriptDialogPresenter(
     WebState* source) {
   SEL selector = @selector(javaScriptDialogPresenterForWebState:);
@@ -86,13 +134,13 @@ void WebStateDelegateBridge::OnAuthRequired(
     WebState* source,
     NSURLProtectionSpace* protection_space,
     NSURLCredential* proposed_credential,
-    AuthCallback callback) {
+    HTTPAuthCallback callback) {
   if ([delegate_
           respondsToSelector:@selector
           (webState:
               didRequestHTTPAuthForProtectionSpace:proposedCredential
                                                   :completionHandler:)]) {
-    __block AuthCallback local_callback = std::move(callback);
+    __block HTTPAuthCallback local_callback = std::move(callback);
     [delegate_ webState:source
         didRequestHTTPAuthForProtectionSpace:protection_space
                           proposedCredential:proposed_credential
@@ -102,6 +150,23 @@ void WebStateDelegateBridge::OnAuthRequired(
                            }];
   } else {
     std::move(callback).Run(nil, nil);
+  }
+}
+
+void WebStateDelegateBridge::OnAuthRequired(
+    WebState* source,
+    NSURLProtectionSpace* protection_space,
+    ClientCertAuthCallback callback) {
+  if ([delegate_
+          respondsToSelector:@selector
+          (webState:
+              didRequestClientCertAuthForProtectionSpace:completionHandler:)]) {
+    [delegate_ webState:source
+        didRequestClientCertAuthForProtectionSpace:protection_space
+                                 completionHandler:base::CallbackToBlock(
+                                                       std::move(callback))];
+  } else {
+    std::move(callback).Run(nil);
   }
 }
 

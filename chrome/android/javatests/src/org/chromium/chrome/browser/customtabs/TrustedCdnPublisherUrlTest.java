@@ -4,10 +4,14 @@
 
 package org.chromium.chrome.browser.customtabs;
 
+import static androidx.test.espresso.assertion.ViewAssertions.matches;
+import static androidx.test.espresso.matcher.ViewMatchers.isDisplayed;
 import static androidx.test.espresso.matcher.ViewMatchers.withId;
 import static androidx.test.espresso.matcher.ViewMatchers.withText;
 
 import static org.hamcrest.CoreMatchers.allOf;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
 
 import static org.chromium.ui.test.util.ViewUtils.onViewWaiting;
 
@@ -26,7 +30,6 @@ import android.view.View;
 import android.widget.ImageView;
 
 import androidx.annotation.Nullable;
-import androidx.appcompat.content.res.AppCompatResources;
 import androidx.browser.customtabs.CustomTabsIntent;
 import androidx.core.widget.ImageViewCompat;
 import androidx.test.core.app.ApplicationProvider;
@@ -41,6 +44,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.RuleChain;
 import org.junit.runner.RunWith;
+import org.mockito.Mock;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.CommandLine;
 import org.chromium.base.ContextUtils;
@@ -48,6 +54,7 @@ import org.chromium.base.ThreadUtils;
 import org.chromium.base.library_loader.LibraryLoader;
 import org.chromium.base.task.PostTask;
 import org.chromium.base.task.TaskTraits;
+import org.chromium.base.test.transit.ViewElement;
 import org.chromium.base.test.util.AnnotationRule;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.CommandLineFlags;
@@ -55,6 +62,7 @@ import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.app.ChromeActivity;
 import org.chromium.chrome.browser.browserservices.intents.SessionHolder;
@@ -72,9 +80,11 @@ import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TrustedCdn;
 import org.chromium.chrome.browser.test.ScreenShooter;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.R;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.components.offlinepages.SavePageResult;
+import org.chromium.components.security_state.ConnectionSecurityLevel;
+import org.chromium.components.security_state.SecurityStateModel;
+import org.chromium.components.security_state.SecurityStateModelJni;
 import org.chromium.components.url_formatter.SchemeDisplay;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.browser.test.util.TestTouchUtils;
@@ -94,6 +104,10 @@ import java.util.concurrent.TimeoutException;
 @CommandLineFlags.Add({ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE})
 public class TrustedCdnPublisherUrlTest {
     public CustomTabActivityTestRule mCustomTabActivityTestRule = new CustomTabActivityTestRule();
+
+    @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
+    @Mock SecurityStateModel.Natives mSecurityStateModelNatives;
+
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(ChromeRenderTestRule.Component.UI_BROWSER_MOBILE_CUSTOM_TABS)
@@ -146,6 +160,12 @@ public class TrustedCdnPublisherUrlTest {
         ThreadUtils.runOnUiThreadBlocking(() -> FirstRunStatus.setFirstRunFlowComplete(true));
 
         LibraryLoader.getInstance().ensureInitialized();
+
+        SecurityStateModelJni.setInstanceForTesting(mSecurityStateModelNatives);
+        doReturn(ConnectionSecurityLevel.SECURE)
+                .when(mSecurityStateModelNatives)
+                .getSecurityLevelForWebContents(any());
+
         mWebServer = TestWebServer.start();
         if (mOverrideTrustedCdn.isEnabled()) {
             CommandLine.getInstance()
@@ -234,6 +254,22 @@ public class TrustedCdnPublisherUrlTest {
     public void testUntrustedCdn() throws Exception {
         runTrustedCdnPublisherUrlTest(
                 "https://example.com/test", "com.example.test", null, getDefaultSecurityIcon());
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"UiCatalogue"})
+    @OverrideTrustedCdn
+    public void testNotSecureConnectionLevel() throws Exception {
+        doReturn(ConnectionSecurityLevel.WARNING)
+                .when(mSecurityStateModelNatives)
+                .getSecurityLevelForWebContents(any());
+
+        runTrustedCdnPublisherUrlTest(
+                "https://example.com/test",
+                "com.example.test",
+                null,
+                R.drawable.omnibox_not_secure_warning);
     }
 
     @Test
@@ -334,14 +370,16 @@ public class TrustedCdnPublisherUrlTest {
     @Test
     @SmallTest
     @OverrideTrustedCdn
-    @DisabledTest(message = "Disabled for flakiness! See http://crbug.com/847341")
+    @DisabledTest(message = "Disabled for flakiness! See http://crbug.com/40091497")
     public void testOfflinePage() throws TimeoutException {
         String publisherUrl = "https://example.com/test";
         runTrustedCdnPublisherUrlTest(
-                publisherUrl, "com.example.test", "example.com",
+                publisherUrl,
+                "com.example.test",
+                "example.com",
                 R.drawable.omnibox_https_valid_page_info);
 
-        // TODO (https://crbug.com/1063807):  Add incognito mode tests.
+        // TODO (https://crbug.com/40680929):  Add incognito mode tests.
         OfflinePageBridge offlinePageBridge =
                 ThreadUtils.runOnUiThreadBlocking(
                         () -> {
@@ -400,7 +438,7 @@ public class TrustedCdnPublisherUrlTest {
         verifyUrl(
                 UrlFormatter.formatUrlForSecurityDisplay(
                         testUrl, SchemeDisplay.OMIT_HTTP_AND_HTTPS));
-        verifySecurityIcon(R.drawable.ic_offline_pin_24dp);
+        verifySecurityIcon(R.drawable.ic_offline_pin_fill_24dp);
     }
 
     private void runTrustedCdnPublisherUrlTest(
@@ -443,7 +481,9 @@ public class TrustedCdnPublisherUrlTest {
     }
 
     private void verifyUrl(String expectedUrl) {
-        onViewWaiting(allOf(withId(R.id.url_bar), withText(expectedUrl)));
+        onViewWaiting(
+                allOf(withId(R.id.url_bar), withText(expectedUrl)),
+                ViewElement.allowDisabledOption());
     }
 
     private void verifySecurityIcon(int expectedSecurityIcon) {
@@ -456,16 +496,15 @@ public class TrustedCdnPublisherUrlTest {
             expectedSecurityIcon = 0;
         }
 
+        int securityId = nestIcon ? R.id.security_icon : R.id.security_button;
         ImageView securityButton =
-                mCustomTabActivityTestRule
-                        .getActivity()
-                        .findViewById(nestIcon ? R.id.security_icon : R.id.security_button);
+                mCustomTabActivityTestRule.getActivity().findViewById(securityId);
         // Clean up -- end
 
         if (expectedSecurityIcon == 0) {
             Assert.assertEquals(View.INVISIBLE, securityButton.getVisibility());
         } else {
-            Assert.assertEquals(View.VISIBLE, securityButton.getVisibility());
+            onViewWaiting(withId(securityId)).check(matches(isDisplayed()));
 
             // VectorDrawables don't have a good means for comparison so just verify resource IDs.
             if (securityButton.getDrawable() instanceof VectorDrawable) {
@@ -478,9 +517,8 @@ public class TrustedCdnPublisherUrlTest {
                         res.getResourceName(locationBar.getSecurityIconResourceForTesting()));
             } else {
                 ColorStateList colorStateList =
-                        AppCompatResources.getColorStateList(
-                                ApplicationProvider.getApplicationContext(),
-                                R.color.default_icon_color_light_tint_list);
+                        ApplicationProvider.getApplicationContext()
+                                .getColorStateList(R.color.default_icon_color_light_tint_list);
                 ImageView expectedSecurityButton =
                         new ImageView(ApplicationProvider.getApplicationContext());
                 expectedSecurityButton.setImageResource(expectedSecurityIcon);

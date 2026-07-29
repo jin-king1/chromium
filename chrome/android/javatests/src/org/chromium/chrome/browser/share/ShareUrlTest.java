@@ -50,7 +50,7 @@ public class ShareUrlTest {
 
     @Before
     public void setup() {
-        Mockito.doReturn(new WeakReference<Activity>(mActivity)).when(mWindow).getActivity();
+        Mockito.doReturn(new WeakReference<>(mActivity)).when(mWindow).getActivity();
     }
 
     private void assertCorrectUrl(final String originalUrl, final String sharedUrl) {
@@ -76,13 +76,13 @@ public class ShareUrlTest {
     @Test
     @SmallTest
     public void testDistilledUrl() {
-        final String DomDistillerScheme = "chrome-distiller";
+        final String domDistillerScheme = "chrome-distiller";
         String distilledHttpUrl =
                 DomDistillerUrlUtils.getDistillerViewUrlFromUrl(
-                        DomDistillerScheme, HTTP_URL, "Title");
+                        domDistillerScheme, HTTP_URL, "Title");
         String distilledHttpsUrl =
                 DomDistillerUrlUtils.getDistillerViewUrlFromUrl(
-                        DomDistillerScheme, HTTPS_URL, "Title");
+                        domDistillerScheme, HTTPS_URL, "Title");
 
         assertCorrectUrl(HTTP_URL, distilledHttpUrl);
         assertCorrectUrl(HTTPS_URL, distilledHttpsUrl);

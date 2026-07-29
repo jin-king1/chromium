@@ -5,10 +5,13 @@
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_modal/passwords/password_infobar_modal_overlay_coordinator.h"
 
 #import "base/check.h"
-#import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_password_table_view_controller.h"
+#import "ios/chrome/browser/infobars/ui_bundled/modals/infobar_password_container_view_controller.h"
 #import "ios/chrome/browser/overlays/model/public/default/default_infobar_overlay_request_config.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_modal/infobar_modal_overlay_coordinator+modal_configuration.h"
 #import "ios/chrome/browser/overlays/ui_bundled/infobar_modal/passwords/password_infobar_modal_overlay_mediator.h"
+#import "ios/chrome/browser/shared/model/browser/browser.h"
+#import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/settings_commands.h"
 
 @interface PasswordInfobarModalOverlayCoordinator ()
 // Redefine ModalConfiguration properties as readwrite.
@@ -41,14 +44,17 @@
 - (void)configureModal {
   DCHECK(!self.modalMediator);
   DCHECK(!self.modalViewController);
+  id<SettingsCommands> settingsCommandHandler = HandlerForProtocol(
+      self.browser->GetCommandDispatcher(), SettingsCommands);
   PasswordInfobarModalOverlayMediator* modalMediator =
       [[PasswordInfobarModalOverlayMediator alloc]
-          initWithRequest:self.request];
-  InfobarPasswordTableViewController* modalViewController =
-      [[InfobarPasswordTableViewController alloc]
+                 initWithRequest:self.request
+          settingsCommandHandler:settingsCommandHandler];
+  InfobarPasswordContainerViewController* modalViewController =
+      [[InfobarPasswordContainerViewController alloc]
           initWithDelegate:modalMediator
                       type:self.config->infobar_type()];
-  modalMediator.consumer = modalViewController;
+  modalMediator.consumer = modalViewController.passwordConsumer;
   self.modalMediator = modalMediator;
   self.modalViewController = modalViewController;
 }

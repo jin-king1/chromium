@@ -8,20 +8,19 @@
 #include "ash/constants/ash_pref_names.h"
 #include "ash/webui/projector_app/public/cpp/projector_app_constants.h"
 #include "ash/webui/projector_app/untrusted_projector_ui.h"
-#include "ash/webui/system_apps/public/system_web_app_type.h"
 #include "base/files/file_path.h"
+#include "chrome/browser/ash/browser_delegate/browser_delegate.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
 #include "chrome/browser/policy/profile_policy_connector.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/web_applications/web_app_launch_params.h"
-#include "chrome/browser/web_applications/web_app_launch_queue.h"
+#include "chrome/browser/ui/web_applications/web_app_launch_navigation_handle_user_data.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
+#include "chromeos/ash/components/system_web_apps/system_web_app_type.h"
 #include "components/prefs/pref_service.h"
 #include "components/user_manager/user.h"
+#include "components/webapps/browser/launch_queue/launch_params.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_ui.h"
@@ -68,10 +67,8 @@ bool IsProjectorAppEnabled(const Profile* profile) {
         ash::prefs::kProjectorDogfoodForFamilyLinkEnabled);
   }
 
-  // Projector for enterprise users is controlled by a combination of a feature
-  // flag and an enterprise policy.
-  return ash::features::IsProjectorManagedUserIgnorePolicyEnabled() ||
-         profile->GetPrefs()->GetBoolean(ash::prefs::kProjectorAllowByPolicy);
+  // Projector for enterprise users is controlled by an enterprise policy.
+  return profile->GetPrefs()->GetBoolean(ash::prefs::kProjectorAllowByPolicy);
 }
 
 bool IsMediaFile(const base::FilePath& path) {
@@ -85,15 +82,14 @@ bool IsMetadataFile(const base::FilePath& path) {
 
 void SendFilesToProjectorApp(std::vector<base::FilePath> files) {
   Profile* profile = ProfileManager::GetActiveUserProfile();
-  Browser* browser =
-      ash::FindSystemWebAppBrowser(profile, ash::SystemWebAppType::PROJECTOR);
+  ash::BrowserDelegate* browser = ash::FindSystemWebAppBrowser(
+      profile, ash::SystemWebAppType::PROJECTOR, ash::BrowserType::kApp);
   if (!browser) {
     // Do not call SendFilesToProjectorApp() unless the Projector app is already
     // open.
     return;
   }
-  content::WebContents* web_contents =
-      browser->tab_strip_model()->GetActiveWebContents();
+  content::WebContents* web_contents = browser->GetActiveWebContents();
   auto* web_ui = web_contents->GetWebUI();
   if (!web_ui) {
     return;
@@ -107,15 +103,20 @@ void SendFilesToProjectorApp(std::vector<base::FilePath> files) {
     return;
   }
 
-  web_app::WebAppLaunchParams launch_params;
-  launch_params.started_new_navigation = false;
-  launch_params.app_id = ash::kChromeUIUntrustedProjectorSwaAppId;
+  webapps::LaunchParams launch_params;
+  launch_params.set_started_new_navigation(false);
+  launch_params.set_app_id(ash::kChromeUIUntrustedProjectorSwaAppId);
   // Sending files should not navigate the app. This argument is used for
   // storage isolation, and won't impact navigation. It should be in scope of
   // the current WebContent's origin.
-  launch_params.target_url = web_contents->GetVisibleURL();
-  launch_params.paths = std::move(files);
-  web_app::WebAppTabHelper::FromWebContents(web_contents)
-      ->EnsureLaunchQueue()
-      .Enqueue(std::move(launch_params));
+  launch_params.set_target_url(web_contents->GetVisibleURL());
+  launch_params.set_paths(std::move(files));
+
+  // Dispatch the launch params directly instead of waiting for the navigation
+  // to finish, as `started_new_navigation` is set to false for the launch
+  // params.
+  web_app::WebAppLaunchNavigationHandleUserData::DispatchLaunchParams(
+      web_contents, std::move(launch_params),
+      apps::LaunchContainer::kLaunchContainerNone,
+      apps::LaunchSource::kUnknown);
 }

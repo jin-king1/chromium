@@ -4,10 +4,8 @@
 
 #include "third_party/blink/renderer/modules/accessibility/ax_debug_utils.h"
 
-#include <memory>
 #include <numeric>
 #include <string>
-#include <utility>
 
 #include "third_party/blink/renderer/core/layout/inline/fragment_items.h"
 #include "third_party/blink/renderer/core/layout/layout_block_flow.h"
@@ -167,7 +165,8 @@ void CheckTreeConsistency(
         msg << "\n* Serialized an unincluded node: " << obj;
       }
     }
-    NOTREACHED(base::NotFatalUntil::M140) << msg.str();
+    // TODO(crbug.com/456786676): Investigate why this is reached, fix it, and
+    // move to a NOTREACHED.
   }
 
 #if EXPENSIVE_DCHECKS_ARE_ON()
@@ -212,7 +211,7 @@ void DumpBlockFragmentationData(const FragmentItems* fragment_items,
     return;
   }
 
-  WTF::String indent_str = WTF::String(std::string(indent, '+'));
+  String indent_str = String(std::string(indent, '+'));
   for (wtf_size_t index = 0; index < fragment_items->Size(); index++) {
     const FragmentItem& item = fragment_items->Items()[index];
     StringBuilder sb;

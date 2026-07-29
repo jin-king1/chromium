@@ -7,25 +7,37 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/path_service.h"
+#include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "build/buildflag.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service.h"
+#include "chrome/browser/bookmarks/bookmark_merged_surface_service_factory.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/net/system_network_context_manager.h"
+#include "chrome/browser/ui/infobars/browser_infobar_registry.h"
+#include "chrome/browser/ui/views/bookmarks/bookmark_account_storage_move_dialog.h"
 #include "chrome/browser/ui/views/chrome_constrained_window_views_client.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_views_delegate.h"
-#include "chrome/browser/ui/views/devtools_process_observer.h"
 #include "chrome/browser/ui/views/media_router/media_router_dialog_controller_views.h"
 #include "chrome/browser/ui/views/relaunch_notification/relaunch_notification_controller.h"
 #include "chrome/common/chrome_paths.h"
+#include "chrome/grit/generated_resources.h"
 #include "components/constrained_window/constrained_window_views.h"
+#include "components/infobars/core/infobar_delegate.h"
 #include "components/media_router/browser/media_router_dialog_controller.h"
-#include "components/ui_devtools/connector_delegate.h"
+#include "components/strings/grit/components_strings.h"
+#include "components/ui_devtools/devtools_server.h"
 #include "components/ui_devtools/switches.h"
-#include "components/ui_devtools/views/devtools_server_util.h"
-#include "content/public/browser/browser_thread.h"
-#include "content/public/browser/tracing_service.h"
+#include "components/ui_devtools/views/server_holder.h"
+#include "components/vector_icons/vector_icons.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/web_contents.h"
 #include "sandbox/policy/switches.h"
+#include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 
 #if defined(USE_AURA)
 #include "base/run_loop.h"
@@ -58,19 +70,6 @@ ChromeBrowserMainExtraPartsViews* g_main_parts_views = nullptr;
 
 }  // namespace
 
-// This connector is used in ui_devtools's TracingAgent to hook up with the
-// tracing service.
-class UiDevtoolsConnector : public ui_devtools::ConnectorDelegate {
- public:
-  UiDevtoolsConnector() = default;
-  ~UiDevtoolsConnector() override = default;
-
-  void BindTracingConsumerHost(
-      mojo::PendingReceiver<tracing::mojom::ConsumerHost> receiver) override {
-    content::GetTracingService().BindConsumerHost(std::move(receiver));
-  }
-};
-
 ChromeBrowserMainExtraPartsViews::ChromeBrowserMainExtraPartsViews() {
   DCHECK(!g_main_parts_views);
   g_main_parts_views = this;
@@ -101,7 +100,7 @@ void ChromeBrowserMainExtraPartsViews::ToolkitInitialized() {
 #endif
 
   // TODO(pkasting): Try to move ViewsDelegate creation here as well;
-  // see https://crbug.com/691894#c1
+  // see https://crbug.com/41301678#comment2
   if (!views::LayoutProvider::Get()) {
     layout_provider_ = ChromeLayoutProvider::CreateLayoutProvider();
   }
@@ -110,16 +109,23 @@ void ChromeBrowserMainExtraPartsViews::ToolkitInitialized() {
 void ChromeBrowserMainExtraPartsViews::PreCreateThreads() {
 #if defined(USE_AURA) && !BUILDFLAG(IS_CHROMEOS)
   // The Screen instance may already be set in tests.
-  if (!display::Screen::GetScreen()) {
+  if (!display::Screen::Get()) {
     screen_ = views::CreateDesktopScreen();
   }
 #endif
 }
 
 void ChromeBrowserMainExtraPartsViews::PreProfileInit() {
+#if BUILDFLAG(CHROME_FOR_TESTING)
+  infobars::RegisterChromeForTestingInfoBar();
+#endif
   if (ui_devtools::UiDevToolsServer::IsUiDevToolsEnabled(
           ui_devtools::switches::kEnableUiDevTools)) {
-    CreateUiDevTools();
+    base::FilePath output_dir;
+    bool result = base::PathService::Get(chrome::DIR_USER_DATA, &output_dir);
+    DCHECK(result);
+
+    ui_devtools::ServerHolder::GetInstance()->CreateUiDevTools(output_dir);
   }
 
   media_router::MediaRouterDialogController::SetGetOrCreate(
@@ -162,7 +168,7 @@ void ChromeBrowserMainExtraPartsViews::PreProfileInit() {
   std::u16string message = l10n_util::GetStringFUTF16(
       IDS_REFUSE_TO_RUN_AS_ROOT_2, l10n_util::GetStringUTF16(IDS_PRODUCT_NAME));
 
-  chrome::ShowWarningMessageBox(nullptr, title, message);
+  chrome::ShowWarningMessageBoxAsync(nullptr, title, message);
 
   // Avoids gpu_process_transport_factory.cc(153)] Check failed:
   // per_compositor_data_.empty() when quit is chosen.
@@ -172,10 +178,26 @@ void ChromeBrowserMainExtraPartsViews::PreProfileInit() {
 #endif  // BUILDFLAG(IS_LINUX)
 }
 
+void ChromeBrowserMainExtraPartsViews::PostProfileInit(
+    Profile* profile,
+    bool is_initial_profile) {
+  auto* service = BookmarkMergedSurfaceServiceFactory::GetForProfile(profile);
+  if (service) {
+    service->SetShowMoveStorageDialogCallback(base::BindRepeating(
+        [](Browser* browser, const bookmarks::BookmarkNode* node,
+           const bookmarks::BookmarkNode* target_folder, size_t index) {
+          ShowBookmarkAccountStorageMoveDialog(browser, node, target_folder,
+                                               index);
+        }));
+  }
+}
+
 void ChromeBrowserMainExtraPartsViews::PostBrowserStart() {
   relaunch_notification_controller_ =
       std::make_unique<RelaunchNotificationController>(
           UpgradeDetector::GetInstance());
+
+  infobars::RegisterInfoBars();
 }
 
 void ChromeBrowserMainExtraPartsViews::PostMainMessageLoopRun() {
@@ -183,29 +205,4 @@ void ChromeBrowserMainExtraPartsViews::PostMainMessageLoopRun() {
   // down explicitly here to avoid a case where such an event arrives during
   // shutdown.
   relaunch_notification_controller_.reset();
-}
-
-void ChromeBrowserMainExtraPartsViews::CreateUiDevTools() {
-  DCHECK(!devtools_server_);
-  DCHECK(!devtools_process_observer_);
-
-  // Starts the UI Devtools server for browser UI (and Ash UI on Chrome OS).
-  auto connector = std::make_unique<UiDevtoolsConnector>();
-  base::FilePath output_dir;
-  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &output_dir);
-  DCHECK(result);
-  devtools_server_ = ui_devtools::CreateUiDevToolsServerForViews(
-      content::GetIOThreadTaskRunner(), std::move(connector), output_dir);
-  devtools_process_observer_ = std::make_unique<DevtoolsProcessObserver>(
-      devtools_server_->tracing_agent());
-}
-
-const ui_devtools::UiDevToolsServer*
-ChromeBrowserMainExtraPartsViews::GetUiDevToolsServerInstance() {
-  return devtools_server_.get();
-}
-
-void ChromeBrowserMainExtraPartsViews::DestroyUiDevTools() {
-  devtools_process_observer_.reset();
-  devtools_server_.reset();
 }

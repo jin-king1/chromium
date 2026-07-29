@@ -49,10 +49,6 @@
 #include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/vector_traits.h"
 
-namespace WTF {
-class String;
-}  // namespace WTF
-
 namespace blink {
 
 #if DCHECK_IS_ON()
@@ -163,6 +159,28 @@ class PLATFORM_EXPORT FixedPoint {
   template <typename T>
   static constexpr FixedPoint FromRawValueWithClamp(T raw_value) {
     return FromRawValue(ClampRawValue(raw_value));
+  }
+
+  // Given unrounded `start_value` and `end_value`, return a pair of rounded
+  // FixedPoints, where the final rounded values encompass the original passed
+  // in floats. However, if `start_value` and `end_value` are equal, the
+  // returned FixedPoints will also be equal, with both results being floored,
+  // ensuring that the pairs are also equivalent after rounding.
+  static std::pair<FixedPoint, FixedPoint> FromFloatEncompassRound(
+      float start_value,
+      float end_value) {
+    FixedPoint start_position;
+    FixedPoint end_position;
+    if (start_value < end_value) [[likely]] {
+      start_position = FromFloatFloor(start_value);
+      end_position = FromFloatCeil(end_value);
+    } else if (start_value > end_value) [[unlikely]] {
+      start_position = FromFloatCeil(start_value);
+      end_position = FromFloatFloor(end_value);
+    } else {
+      start_position = end_position = FromFloatFloor(start_value);
+    }
+    return {start_position, end_position};
   }
 
   // Construct from a `FixedPoint` with different template parameters. Implicit
@@ -347,11 +365,11 @@ class PLATFORM_EXPORT FixedPoint {
   std::optional<FixedPoint> NullOptIf(FixedPoint null_value) const;
   std::optional<FixedPoint> NullOptIfMin() const { return NullOptIf(Min()); }
 
-  WTF::String ToString() const;
+  String ToString() const;
 
  private:
 #if defined(ARCH_CPU_ARM_FAMILY) && defined(ARCH_CPU_32_BITS) && \
-    defined(COMPILER_GCC) && !BUILDFLAG(IS_NACL) && __OPTIMIZE__
+    defined(COMPILER_GCC) && __OPTIMIZE__
   // If we're building ARM 32-bit on GCC we replace the C++ versions with some
   // native ARM assembly for speed.
   constexpr inline void SaturatedSet(int value) {
@@ -499,14 +517,6 @@ inline bool operator>(const int a, const LayoutUnit& b) {
   return LayoutUnit(a) > b;
 }
 
-inline bool operator!=(const int a, const LayoutUnit& b) {
-  return LayoutUnit(a) != b;
-}
-
-inline bool operator!=(const LayoutUnit& a, int b) {
-  return a != LayoutUnit(b);
-}
-
 inline bool operator==(const LayoutUnit& a, int b) {
   return a == LayoutUnit(b);
 }
@@ -624,6 +634,15 @@ inline LayoutUnit operator/(std::integral auto a, const LayoutUnit& b) {
 }
 
 template <unsigned fractional_bits, typename RawValue>
+  requires(std::is_same_v<RawValue, int32_t>)
+inline FixedPoint<fractional_bits, RawValue> operator%(
+    const FixedPoint<fractional_bits, RawValue>& a,
+    const FixedPoint<fractional_bits, RawValue>& b) {
+  int64_t raw_val = a.RawValue() % b.RawValue();
+  return FixedPoint<fractional_bits, RawValue>::FromRawValueWithClamp(raw_val);
+}
+
+template <unsigned fractional_bits, typename RawValue>
 ALWAYS_INLINE FixedPoint<fractional_bits, RawValue> operator+(
     const FixedPoint<fractional_bits, RawValue>& a,
     const FixedPoint<fractional_bits, RawValue>& b) {
@@ -686,7 +705,7 @@ template <unsigned fractional_bits, typename RawValue>
 inline FixedPoint<fractional_bits, RawValue> operator-(
     const FixedPoint<fractional_bits, RawValue>& a) {
   return FixedPoint<fractional_bits, RawValue>::FromRawValue(
-      (-base::MakeClampedNum(a.RawValue())).RawValue());
+      (-base::ClampedNumeric(a.RawValue())).RawValue());
 }
 
 // Returns the remainder after a division with integer results.
@@ -824,7 +843,7 @@ FixedPoint<fractional_bits, RawValue>::NullOptIf(FixedPoint null_value) const {
 }
 
 #if defined(ARCH_CPU_ARM_FAMILY) && defined(ARCH_CPU_32_BITS) && \
-    defined(COMPILER_GCC) && !BUILDFLAG(IS_NACL) && __OPTIMIZE__
+    defined(COMPILER_GCC) && __OPTIMIZE__
 inline int GetMaxSaturatedSetResultForTesting() {
   // For ARM Asm version the set function maxes out to the biggest
   // possible integer part with the fractional part zero'd out.

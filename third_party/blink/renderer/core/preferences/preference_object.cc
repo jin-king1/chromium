@@ -53,12 +53,12 @@ AtomicString ContrastToString(mojom::blink::PreferredContrast contrast) {
   }
 }
 
-PreferenceObject::PreferenceObject(ExecutionContext* executionContext,
+PreferenceObject::PreferenceObject(ExecutionContext* execution_context,
                                    AtomicString name)
-    : ExecutionContextLifecycleObserver(executionContext), name_(name) {
+    : ExecutionContextLifecycleObserver(execution_context), name_(name) {
   LocalFrame* frame = nullptr;
-  if (executionContext && !executionContext->IsContextDestroyed()) {
-    frame = DynamicTo<LocalDOMWindow>(executionContext)->GetFrame();
+  if (execution_context && !execution_context->IsContextDestroyed()) {
+    frame = To<LocalDOMWindow>(*execution_context).GetFrame();
   }
   media_values_ = MediaValues::CreateDynamicIfFrameExists(frame);
   preferred_color_scheme_ = media_values_->GetPreferredColorScheme();
@@ -369,7 +369,7 @@ ScriptPromise<IDLUndefined> PreferenceObject::requestOverride(
     return ScriptPromise<IDLUndefined>::RejectWithDOMException(
         script_state, MakeGarbageCollected<DOMException>(
                           DOMExceptionCode::kTypeMismatchError,
-                          value.value() + " is not a valid value."));
+                          StrCat({value.value(), " is not a valid value."})));
   }
 
   if (!value_same_as_existing_override) {

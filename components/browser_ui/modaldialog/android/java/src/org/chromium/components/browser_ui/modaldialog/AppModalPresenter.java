@@ -6,31 +6,34 @@ package org.chromium.components.browser_ui.modaldialog;
 
 import static org.chromium.build.NullUtil.assumeNonNull;
 
-import static java.lang.Boolean.TRUE;
-
 import android.content.Context;
 import android.content.res.Configuration;
 import android.graphics.Rect;
 import android.os.Build;
+import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowManager;
+import android.widget.FrameLayout;
 
 import androidx.activity.ComponentDialog;
 import androidx.annotation.VisibleForTesting;
 import androidx.core.graphics.Insets;
 import androidx.core.view.OnApplyWindowInsetsListener;
 import androidx.core.view.ViewCompat;
+import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsCompat;
 
 import org.chromium.base.Callback;
+import org.chromium.base.DeviceInfo;
 import org.chromium.base.StrictModeContext;
-import org.chromium.base.supplier.ObservableSupplier;
+import org.chromium.base.supplier.NonNullObservableSupplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
-import org.chromium.ui.InsetObserver;
 import org.chromium.ui.LayoutInflaterUtils;
 import org.chromium.ui.base.ViewUtils;
+import org.chromium.ui.insets.InsetObserver;
 import org.chromium.ui.modaldialog.DialogDismissalCause;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -54,7 +57,7 @@ public class AppModalPresenter extends ModalDialogManager.Presenter {
 
     private @Nullable InsetObserver mInsetObserver;
     private @Nullable OnApplyWindowInsetsListener mWindowInsetsListener;
-    private @Nullable ObservableSupplier<Boolean> mEdgeToEdgeStateSupplier;
+    private @Nullable NonNullObservableSupplier<Boolean> mEdgeToEdgeStateSupplier;
     private boolean mIsEdgeToEdgeEverywhereEnabled;
 
     @SuppressWarnings("NullAway.Init")
@@ -131,7 +134,7 @@ public class AppModalPresenter extends ModalDialogManager.Presenter {
         } else if (dialogStyle == ModalDialogProperties.DialogStyles.DIALOG_WHEN_LARGE) {
             dialogIndex = 2;
         } else if (dialogStyle == ModalDialogProperties.DialogStyles.FULLSCREEN_DARK_DIALOG) {
-            dialogIndex = Build.VERSION.SDK_INT >= Build.VERSION_CODES.O ? 3 : 1;
+            dialogIndex = 3;
         }
         int buttonIndex = 0;
         int buttonStyle = mModel.get(ModalDialogProperties.BUTTON_STYLES);
@@ -143,10 +146,20 @@ public class AppModalPresenter extends ModalDialogManager.Presenter {
             buttonIndex = 2;
         }
         mDialog = new ComponentDialog(mContext, styles[buttonIndex][dialogIndex]);
+        if (mIsEdgeToEdgeEverywhereEnabled) {
+            drawDialogWindowEdgeToEdge();
+        }
         mDialog.setOnCancelListener(
                 dialogInterface -> {
                     dismissCurrentDialog(DialogDismissalCause.NAVIGATE_BACK_OR_TOUCH_OUTSIDE);
                 });
+
+        if (DeviceInfo.isXr() && mModel.get(ModalDialogProperties.DISABLE_SCRIM)) {
+            Window window = mDialog.getWindow();
+            if (window != null) {
+                window.clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
+            }
+        }
 
         // Cancel on touch outside should be disabled by default. The ModelChangeProcessor wouldn't
         // notify change if the property is not set during initialization.
@@ -170,7 +183,12 @@ public class AppModalPresenter extends ModalDialogManager.Presenter {
                 PropertyModelChangeProcessor.create(mModel, mDialogView, new ViewBinder());
         // setContentView() can trigger using LayoutInflater, which may read from disk.
         try (StrictModeContext ignored = StrictModeContext.allowDiskReads()) {
-            mDialog.setContentView(mDialogView);
+            FrameLayout.LayoutParams params =
+                    new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            Gravity.CENTER_HORIZONTAL);
+            mDialog.setContentView(mDialogView, params);
         }
 
         mDialog.setOnShowListener(
@@ -227,13 +245,39 @@ public class AppModalPresenter extends ModalDialogManager.Presenter {
 
     @Override
     protected void setEdgeToEdgeStateSupplier(
-            ObservableSupplier<Boolean> edgeToEdgeStateSupplier,
+            NonNullObservableSupplier<Boolean> edgeToEdgeStateSupplier,
             boolean isEdgeToEdgeEverywhereEnabled) {
         if (!ModalDialogFeatureMap.sModalDialogLayoutWithSystemInsets.isEnabled()) return;
         mEdgeToEdgeStateSupplier = edgeToEdgeStateSupplier;
         mIsEdgeToEdgeEverywhereEnabled = isEdgeToEdgeEverywhereEnabled;
-        mEdgeToEdgeStateObserver = isEdgeToEdgeActive -> applyWindowInsets();
-        mEdgeToEdgeStateSupplier.addObserver(mEdgeToEdgeStateObserver);
+        if (mIsEdgeToEdgeEverywhereEnabled) {
+            drawDialogWindowEdgeToEdge();
+        }
+        mEdgeToEdgeStateObserver =
+                isEdgeToEdgeActive -> {
+                    drawDialogWindowEdgeToEdge();
+                    applyWindowInsets();
+                };
+        mEdgeToEdgeStateSupplier.addSyncObserverAndPostIfNonNull(mEdgeToEdgeStateObserver);
+    }
+
+    /**
+     * Set decorFitsSystemWindows explicitly to ensure that the dialog window is drawing
+     * edge-to-edge if edge-to-edge is active, ensuring that no double-padding is applied to account
+     * for edge-to-edge status. On some devices, padding is applied to some of the parent views to
+     * the content view if this is not set explicitly, regardless of whether the caller has set this
+     * already.
+     */
+    private void drawDialogWindowEdgeToEdge() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return;
+        }
+        if (mDialog != null) {
+            Window window = mDialog.getWindow();
+            if (window != null) {
+                WindowCompat.setDecorFitsSystemWindows(window, !isEdgeToEdgeActive());
+            }
+        }
     }
 
     /**
@@ -328,7 +372,7 @@ public class AppModalPresenter extends ModalDialogManager.Presenter {
     }
 
     private boolean isEdgeToEdgeActive() {
-        return mEdgeToEdgeStateSupplier != null && TRUE.equals(mEdgeToEdgeStateSupplier.get());
+        return mEdgeToEdgeStateSupplier != null && mEdgeToEdgeStateSupplier.get();
     }
 
     private boolean isFullScreenDialog(Context context, @Nullable PropertyModel model) {

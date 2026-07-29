@@ -10,6 +10,9 @@ source_set("chromeos") {
     "ash_mojom_video_consumer.h",
     "ash_proxy.cc",
     "ash_proxy.h",
+    "audio_helper_chromeos.h",
+    "audio_helper_chromeos_impl.cc",
+    "audio_helper_chromeos_impl.h",
     "clipboard_aura.cc",
     "clipboard_aura.h",
     "frame_sink_desktop_capturer.cc",
@@ -43,8 +46,10 @@ source_set("chromeos") {
 
   deps = [
     ":features",
-    "//remoting/base:base",
+    "//media/mojo/common",
+    "//remoting/base",
     "//remoting/host:clipboard",
+    "//remoting/host/base",
     "//ui/base/cursor/mojom:cursor_type",
     "//ui/display/manager",
     "//ui/wm",
@@ -66,9 +71,10 @@ source_set("browser_interop") {
     "//base",
     "//chrome/browser:browser_process",
     "//chrome/browser:browser_public_dependencies",
-    "//content/public/browser:browser",
+    "//chrome/browser/net",
+    "//content/public/browser",
     "//net",
-    "//remoting/base:base",
+    "//remoting/base",
     "//remoting/host",
   ]
 }
@@ -98,9 +104,9 @@ source_set("remoting_service") {
     ":features",
     "//chrome/common:constants",
     "//mojo/public/cpp/bindings",
-    "//remoting/base:base",
+    "//remoting/base",
     "//remoting/host",
-    "//remoting/host/mojom:mojom",
+    "//remoting/host/mojom",
   ]
 }
 
@@ -138,6 +144,8 @@ source_set("unit_tests") {
   testonly = true
 
   sources = [
+    "ash_mojom_video_consumer_unittest.cc",
+    "audio_helper_chromeos_impl_unittest.cc",
     "clipboard_aura_unittest.cc",
     "file_session_storage_unittest.cc",
     "frame_sink_desktop_capturer_unittest.cc",
@@ -159,15 +167,18 @@ source_set("unit_tests") {
     "//components/policy/core/common:test_support",
     "//components/viz/service",
     "//content/public/browser",
+    "//media:test_support",
     "//remoting/host:common",
     "//remoting/host:test_support",
     "//remoting/host/it2me:common",
+    "//remoting/host/mojom",
     "//remoting/proto",
     "//remoting/resources",
     "//services/network:test_support",
     "//skia",
     "//testing/gmock",
     "//testing/gtest",
+    "//ui/base/clipboard:clipboard_test_support",
     "//ui/display/manager",
   ]
 

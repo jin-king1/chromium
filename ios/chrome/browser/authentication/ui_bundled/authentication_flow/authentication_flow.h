@@ -7,12 +7,14 @@
 
 #import <UIKit/UIKit.h>
 
+#import "components/policy/core/browser/signin/profile_separation_policies.h"
 #import "components/signin/public/base/signin_metrics.h"
+#import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/authentication_flow/authentication_flow_performer_delegate.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
 #import "ios/chrome/browser/signin/model/constants.h"
 
-@class AuthenticationFlowPerformer;
+@protocol AuthenticationFlowDelegate;
 class Browser;
 @class UIViewController;
 @protocol SystemIdentity;
@@ -23,10 +25,16 @@ class Browser;
 // needs to be signed in.
 @interface AuthenticationFlow : NSObject <AuthenticationFlowPerformerDelegate>
 
+// The object providing the code to execute after the sign-in.
+// It is unset after being used once.
+@property(nonatomic, weak) id<AuthenticationFlowDelegate> delegate;
+
 // Designated initializer.
-// * `browser` is the current browser where the authentication flow is being
-//   presented.
-// * `accessPoint` is the sign-in access point
+// * `browser` is the current regular browser where the authentication flow is
+// being presented.
+// * `accessPoint` is the sign-in access point.
+// * `precedingHistorySync` specifies whether the History Sync Opt-In screen
+//   follows after the flow completes with success.
 // * `postSignInActions` represents the actions to be taken once `identity` is
 //   signed in.
 // * `presentingViewController` is the top presented view controller.
@@ -34,6 +42,7 @@ class Browser;
 - (instancetype)initWithBrowser:(Browser*)browser
                        identity:(id<SystemIdentity>)identity
                     accessPoint:(signin_metrics::AccessPoint)accessPoint
+           precedingHistorySync:(BOOL)precedingHistorySync
               postSignInActions:(PostSignInActionSet)postSignInActions
        presentingViewController:(UIViewController*)presentingViewController
                      anchorView:(UIView*)anchorView
@@ -42,36 +51,34 @@ class Browser;
 - (instancetype)init NS_UNAVAILABLE;
 
 // Starts the sign in flow for the identity given in the constructor. Displays
-// the signed inconfirmation dialog allowing the user to sign out or configure
+// the signed in confirmation dialog allowing the user to sign out or configure
 // sync.
-// It is safe to destroy this authentication flow when `completion` is called.
-// `completion` must not be nil.
-- (void)startSignInWithCompletion:
-    (signin_ui::SigninCompletionCallback)completion;
+- (void)startSignIn;
 
 // * Interrupts the current sign-in operation (if any).
 // * Dismiss any UI presented accordingly to `action`.
 // * Calls synchronously the completion callback from
 // `startSignInWithCompletion` with the sign-in flag set to no.
 //
-// Does noting if the sign-in flow is already done
+// Does noting if the sign-in flow is already done.
 - (void)interrupt;
 
 // Identity to sign-in.
 @property(nonatomic, strong, readonly) id<SystemIdentity> identity;
 
-// Sign-in access point
+// Sign-in access point.
 @property(nonatomic, assign, readonly) signin_metrics::AccessPoint accessPoint;
 
-// Whether the History Sync Opt-In screen follows after authentication flow
-// completes with success.
-@property(nonatomic, assign) BOOL precedingHistorySync;
+// Whether the user can authenticate even if the identity needs a reauth.
+// Defaults to NO.
+@property(nonatomic, assign) BOOL skipReauthIfNeeded;
 
-@end
+// A block called if the successful authentication flow would cause a profile
+// switch in order to get the user to decide whether they want this switch to
+// occur or not.
+@property(nonatomic, copy)
+    SigninChangeProfileConfirmationBlock confirmChangeProfile;
 
-// Private methods in AuthenticationFlow to test.
-@interface AuthenticationFlow (TestingAdditions)
-- (void)setPerformerForTesting:(AuthenticationFlowPerformer*)performer;
 @end
 
 #endif  // IOS_CHROME_BROWSER_AUTHENTICATION_UI_BUNDLED_AUTHENTICATION_FLOW_AUTHENTICATION_FLOW_H_

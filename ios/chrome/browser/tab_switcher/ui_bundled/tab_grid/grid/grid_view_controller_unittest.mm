@@ -6,8 +6,8 @@
 #import "base/numerics/safe_conversions.h"
 #import "base/test/ios/wait_util.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_view_controller+Testing.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/base_grid_view_controller.h"
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/ui/base_grid_view_controller+Testing.h"
+#import "ios/chrome/browser/tab_switcher/tab_grid/base_grid/ui/base_grid_view_controller.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_cell.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_item_identifier.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_switcher_item.h"
@@ -214,8 +214,8 @@ TEST_F(BaseGridViewControllerTest, MoveUnselectedItem) {
   EXPECT_EQ(1U, view_controller_.selectedIndex);
 }
 
-// Tests that `replaceItem:withReplacementItem:` does not crash when updating an
-// item that is scrolled offscreen.
+// Tests that `replaceItem:withReplacementItem:` does not
+// crash when updating an item that is scrolled offscreen.
 TEST_F(BaseGridViewControllerTest, ReplaceScrolledOffScreenCell) {
   // This test requires that the collection view be placed on the screen.
   SetRootViewController(view_controller_);

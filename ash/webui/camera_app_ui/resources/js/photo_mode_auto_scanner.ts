@@ -5,8 +5,10 @@
 import {assertExists} from './assert.js';
 import {OcrEventType, sendOcrEvent} from './metrics.js';
 import {AsyncIntervalRunner} from './models/async_interval.js';
-import {BarcodeScanner, ScanBarcodeResult} from './models/barcode.js';
-import {Ocr, PerformOcrResult} from './ocr.js';
+import type {ScanBarcodeResult} from './models/barcode.js';
+import {BarcodeScanner} from './models/barcode.js';
+import type {PerformOcrResult} from './ocr.js';
+import {Ocr} from './ocr.js';
 import {PerfLogger} from './perf.js';
 import * as scannerChip from './scanner_chip.js';
 import * as state from './state.js';
@@ -89,8 +91,6 @@ export class PhotoModeAutoScanner {
   constructor(private readonly video: HTMLVideoElement) {}
 
   start(): void {
-    // TODO(b/311592341): Show the object closer to the center of preview when
-    // both scanners detect objects at the same time.
     this.barcodeRunner = this.createBarcodeRunner(BARCODE_SCAN_INTERVAL);
     this.ocrRunner = this.createOcrRunner(OCR_SCAN_INTERVAL);
     this.slowdownTimer = new OneShotTimer(() => {

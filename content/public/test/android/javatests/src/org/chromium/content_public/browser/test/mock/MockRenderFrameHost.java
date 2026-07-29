@@ -38,6 +38,11 @@ public class MockRenderFrameHost implements RenderFrameHost {
     }
 
     @Override
+    public boolean isOutermostMainFrame() {
+        return false;
+    }
+
+    @Override
     public void getCanonicalUrlForSharing(Callback<GURL> callback) {}
 
     @Override
@@ -95,6 +100,8 @@ public class MockRenderFrameHost implements RenderFrameHost {
             String relyingPartyId,
             Origin effectiveOrigin,
             boolean isPaymentCredentialGetAssertion,
+            @Nullable Origin remoteDesktopClientOverrideOrigin,
+            @Nullable String appId,
             Callback<WebAuthSecurityChecksResults> callback) {
         callback.onResult(new WebAuthSecurityChecksResults(AuthenticatorStatus.SUCCESS, false));
     }
@@ -104,6 +111,16 @@ public class MockRenderFrameHost implements RenderFrameHost {
             String relyingPartyId,
             Origin effectiveOrigin,
             boolean isPaymentCredentialCreation,
+            @Nullable Origin remoteDesktopClientOverrideOrigin,
+            @Nullable String appId,
+            Callback<WebAuthSecurityChecksResults> callback) {
+        callback.onResult(new WebAuthSecurityChecksResults(AuthenticatorStatus.SUCCESS, false));
+    }
+
+    @Override
+    public void performReportWebAuthSecurityChecks(
+            String relyingPartyId,
+            Origin effectiveOrigin,
             Callback<WebAuthSecurityChecksResults> callback) {
         callback.onResult(new WebAuthSecurityChecksResults(AuthenticatorStatus.SUCCESS, false));
     }
@@ -124,4 +141,12 @@ public class MockRenderFrameHost implements RenderFrameHost {
     @Override
     public void executeJavaScriptInIsolatedWorld(
             String script, int worldId, @Nullable JavaScriptCallback callback) {}
+
+    @Override
+    public boolean hasHitTestDataForTesting() {
+        return true;
+    }
+
+    @Override
+    public void viewSource() {}
 }

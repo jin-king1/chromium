@@ -8,6 +8,7 @@
 #include "base/base_export.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/process/process_handle.h"
 #include "base/threading/thread_local_storage.h"
 #include "third_party/perfetto/include/perfetto/base/thread_utils.h"
 #include "third_party/perfetto/include/perfetto/tracing/platform.h"
@@ -20,7 +21,27 @@ class PerfettoTaskRunner;
 
 class BASE_EXPORT PerfettoPlatform : public perfetto::Platform {
  public:
-  explicit PerfettoPlatform(scoped_refptr<base::SequencedTaskRunner>);
+  struct Options final {
+    // The prefix to return in GetCurrentProcessName(). This makes it possible
+    // to customize the Perfetto "producer name", which can then be used as
+    // a filter in the Perfetto trace config (see
+    // TraceConfig.DataSource.producer_name_filter).
+    std::string process_name_prefix = "org.chromium-";
+
+    // Defer delayed tasks to PerfettoTaskRunner until task runner resets after
+    // sandbox entry.
+    bool defer_delayed_tasks = false;
+
+    // The real process ID of the current process (useful when in a PID
+    // namespace).
+    base::ProcessId real_process_id = base::kNullProcessId;
+
+    // Work around https://bugs.llvm.org/show_bug.cgi?id=36684
+    static Options Default() { return {}; }
+  };
+
+  explicit PerfettoPlatform(scoped_refptr<base::SequencedTaskRunner>,
+                            Options options = Options::Default());
   ~PerfettoPlatform() override;
 
   // perfetto::Platform implementation:
@@ -37,6 +58,9 @@ class BASE_EXPORT PerfettoPlatform : public perfetto::Platform {
   void ResetTaskRunner(scoped_refptr<base::SequencedTaskRunner> task_runner);
 
  private:
+  const std::string process_name_prefix_;
+  const bool defer_delayed_tasks_;
+  const base::ProcessId real_process_id_;
   WeakPtr<PerfettoTaskRunner> perfetto_task_runner_;
   scoped_refptr<base::SequencedTaskRunner> task_runner_;
   ThreadLocalStorage::Slot thread_local_object_;

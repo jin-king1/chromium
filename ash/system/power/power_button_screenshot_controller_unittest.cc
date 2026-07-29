@@ -104,7 +104,7 @@ class PowerButtonScreenshotControllerTest : public PowerButtonTestBase {
         "Ash.CaptureModeController.EntryPoint.ClamshellMode";
     constexpr char kTabletHistogram[] =
         "Ash.CaptureModeController.EntryPoint.TabletMode";
-    if (display::Screen::GetScreen()->InTabletMode()) {
+    if (display::Screen::Get()->InTabletMode()) {
       return histogram_tester_->GetBucketCount(
           kTabletHistogram, CaptureModeEntryType::kCaptureAllDisplays);
     }
@@ -148,7 +148,8 @@ class PowerButtonScreenshotControllerWithSystemKeysTest
     PowerButtonScreenshotControllerTest::SetUp();
     if (GetParam()) {
       aura::Window* window =
-          CreateTestWindowInShellWithDelegate(&delegate_, 1, gfx::Rect());
+          CreateTestWindowInShell({.delegate = &delegate_, .window_id = 1})
+              .release();
       window->SetProperty(ash::kCanConsumeSystemKeysKey, true);
     }
   }
@@ -268,8 +269,8 @@ TEST_F(PowerButtonScreenshotControllerTest, WindowWithSystemKeys) {
   EnableTabletMode(true);
 
   KeyEventWindowDelegate delegate;
-  std::unique_ptr<aura::Window> window = base::WrapUnique(
-      CreateTestWindowInShellWithDelegate(&delegate, 1, gfx::Rect()));
+  std::unique_ptr<aura::Window> window =
+      CreateTestWindowInShell({.delegate = &delegate, .window_id = 1});
   window->SetProperty(ash::kCanConsumeSystemKeysKey, true);
   ::wm::ActivateWindow(window.get());
 

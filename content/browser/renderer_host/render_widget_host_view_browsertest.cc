@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -12,6 +13,7 @@
 #include "base/functional/bind.h"
 #include "base/location.h"
 #include "base/memory/raw_ptr.h"
+#include "base/notimplemented.h"
 #include "base/path_service.h"
 #include "base/run_loop.h"
 #include "base/strings/stringprintf.h"
@@ -26,6 +28,7 @@
 #include "cc/slim/layer_tree.h"
 #include "cc/slim/surface_layer.h"
 #include "components/viz/common/features.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/browser/gpu/compositor_util.h"
 #include "content/browser/renderer_host/browser_compositor_ios.h"
 #include "content/browser/renderer_host/dip_util.h"
@@ -61,10 +64,15 @@
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/common/page/content_to_visible_time_reporter.h"
+#include "third_party/blink/public/common/page/content_to_visible_time_request.h"
 #include "third_party/blink/public/mojom/page/page_visibility_state.mojom-shared.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "ui/display/display_switches.h"
 #include "ui/gfx/geometry/size_conversions.h"
+
+#if BUILDFLAG(IS_OZONE)
+#include "ui/ozone/public/ozone_platform.h"
+#endif
 
 #if defined(USE_AURA)
 #include "content/browser/renderer_host/delegated_frame_host.h"
@@ -160,10 +168,11 @@ class RenderWidgetHostViewBrowserTest : public ContentBrowserTest {
 
   // Callback when using CopyFromSurface() API.
   void FinishCopyFromSurface(base::OnceClosure quit_closure,
-                             const SkBitmap& bitmap) {
+                             const content::CopyFromSurfaceResult& result) {
     ++callback_invoke_count_;
-    if (!bitmap.drawsNothing())
+    if (result.has_value()) {
       ++frames_captured_;
+    }
     std::move(quit_closure).Run();
   }
 
@@ -394,13 +403,26 @@ IN_PROC_BROWSER_TEST_F(NoCompositingRenderWidgetHostViewBrowserTest,
   // is maintained as the fallback. The DelegatedFrameHost should have not have
   // a valid active viz::LocalSurfaceId until the first surface after navigation
   // has been embedded.
+  //
+  // However, if the navigation involves a change of RenderFrameHosts the
+  // surface will be evicted when committing the new RenderFrameHost (see also
+  // ` DelegatedFrameHostAndroid::ClearFallbackSurfaceForCommitPending()`).
   rwhva = static_cast<RenderWidgetHostViewAndroid*>(rwhvb);
   dfh = rwhva->delegated_frame_host_for_testing();
-  EXPECT_TRUE(dfh->HasPrimarySurface());
-  EXPECT_FALSE(dfh->IsPrimarySurfaceEvicted());
-  EXPECT_EQ(initial_local_surface_id,
-            dfh->content_layer()->surface_id().local_surface_id());
-  EXPECT_FALSE(dfh->SurfaceId().local_surface_id().is_valid());
+
+  if (ShouldCreateNewHostForAllFrames()) {
+    EXPECT_FALSE(dfh->HasPrimarySurface());
+    EXPECT_TRUE(dfh->IsPrimarySurfaceEvicted());
+    EXPECT_NE(initial_local_surface_id,
+              dfh->content_layer()->surface_id().local_surface_id());
+    EXPECT_TRUE(dfh->SurfaceId().local_surface_id().is_valid());
+  } else {
+    EXPECT_TRUE(dfh->HasPrimarySurface());
+    EXPECT_FALSE(dfh->IsPrimarySurfaceEvicted());
+    EXPECT_EQ(initial_local_surface_id,
+              dfh->content_layer()->surface_id().local_surface_id());
+    EXPECT_FALSE(dfh->SurfaceId().local_surface_id().is_valid());
+  }
 #endif
 
   // Showing the view should lead to a new surface being embedded.
@@ -494,7 +516,10 @@ IN_PROC_BROWSER_TEST_F(NoCompositingRenderWidgetHostViewBrowserTest,
   EXPECT_FALSE(dfh->HasPrimarySurface());
   EXPECT_TRUE(dfh->IsPrimarySurfaceEvicted());
   EXPECT_FALSE(dfh->content_layer()->surface_id().is_valid());
-  EXPECT_FALSE(dfh->SurfaceId().local_surface_id().is_valid());
+  // However, if the navigation involves a change of RenderFrameHosts (and thus
+  // RenderWidgetViewHosts) a new surface is embedded (see comment a bit above).
+  EXPECT_EQ(ShouldCreateNewHostForAllFrames(),
+            dfh->SurfaceId().local_surface_id().is_valid());
 #endif
 
   // Showing the view should lead to a new surface being embedded.
@@ -623,6 +648,21 @@ IN_PROC_BROWSER_TEST_F(BFCachedRenderWidgetHostViewBrowserTest,
       NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
   RenderFrameHostWrapper rfh1(shell()->web_contents()->GetPrimaryMainFrame());
 
+#if BUILDFLAG(IS_OZONE)
+  if (ui::OzonePlatform::RunningOnWaylandForTest()) {
+    // Process any pending platform resize/configure events to stabilize the
+    // SurfaceId.
+    viz::SurfaceId stable_id;
+    viz::SurfaceId new_stable_id =
+        GetCurrentSurfaceIdOnDelegatedFrameHost(rfh1->GetView());
+    while (new_stable_id != stable_id) {
+      stable_id = new_stable_id;
+      GiveItSomeTime();
+      new_stable_id = GetCurrentSurfaceIdOnDelegatedFrameHost(rfh1->GetView());
+    }
+  }
+#endif
+
   const auto id_before_cached =
       GetCurrentSurfaceIdOnDelegatedFrameHost(rfh1->GetView());
   ASSERT_TRUE(id_before_cached.is_valid());
@@ -676,13 +716,21 @@ IN_PROC_BROWSER_TEST_F(BFCachedRenderWidgetHostViewBrowserTest,
   }
 }
 
+// TODO(crbug.com/345980824): This test is flaky on some Linux builders.
+#if BUILDFLAG(IS_LINUX)
+#define MAYBE_BFCachedPageResizedWhileHiddenShouldNotHavePreservedFallback \
+  DISABLED_BFCachedPageResizedWhileHiddenShouldNotHavePreservedFallback
+#else
+#define MAYBE_BFCachedPageResizedWhileHiddenShouldNotHavePreservedFallback \
+  BFCachedPageResizedWhileHiddenShouldNotHavePreservedFallback
+#endif
 // Same as the above test, except we resize the viewport while the page is in
 // BFCache. The net effect is that we will NOT be using the last surface as
 // the fallback for BFCache activation because resizing always regenerates a
 // new ID as the fallback.
 IN_PROC_BROWSER_TEST_F(
     BFCachedRenderWidgetHostViewBrowserTest,
-    BFCachedPageResizedWhileHiddenShouldNotHavePreservedFallback) {
+    MAYBE_BFCachedPageResizedWhileHiddenShouldNotHavePreservedFallback) {
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(
       NavigateToURL(shell(), embedded_test_server()->GetURL("/title1.html")));
@@ -856,7 +904,7 @@ IN_PROC_BROWSER_TEST_F(BFCachedRenderWidgetHostViewBrowserTest,
     const auto evicted_ids =
         static_cast<RenderWidgetHostImpl*>(rfh1->GetRenderWidgetHost())
             ->CollectSurfaceIdsForEviction();
-    ASSERT_TRUE(base::Contains(evicted_ids, id_after_cached));
+    ASSERT_TRUE(std::ranges::contains(evicted_ids, id_after_cached));
   }
 }
 
@@ -954,27 +1002,18 @@ std::unique_ptr<net::test_server::HttpResponse> HandleSlowStyleSheet(
   return std::make_unique<SlowHttpResponse>(SlowHttpResponse::NoResponse());
 }
 
-class DOMContentLoadedObserver : public WebContentsObserver {
+class FirstNonEmptyPaintObserver : public WebContentsObserver {
  public:
-  explicit DOMContentLoadedObserver(WebContents* web_contents)
+  explicit FirstNonEmptyPaintObserver(WebContents* web_contents)
       : WebContentsObserver(web_contents) {}
 
-  bool Wait() {
-    run_loop_.Run();
-    return dom_content_loaded_ && !did_paint_;
-  }
+  bool did_paint() const { return did_paint_; }
 
  private:
   // WebContentsObserver:
-  void DOMContentLoaded(RenderFrameHost* render_frame_host) override {
-    dom_content_loaded_ = true;
-    run_loop_.Quit();
-  }
   void DidFirstVisuallyNonEmptyPaint() override { did_paint_ = true; }
 
-  base::RunLoop run_loop_;
   bool did_paint_{false};
-  bool dom_content_loaded_{false};
 };
 
 }  // namespace
@@ -984,10 +1023,14 @@ IN_PROC_BROWSER_TEST_F(NoCompositingRenderWidgetHostViewBrowserTest,
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleSlowStyleSheet));
   ASSERT_TRUE(embedded_test_server()->Start());
-  DOMContentLoadedObserver observer(shell()->web_contents());
+  FirstNonEmptyPaintObserver observer(shell()->web_contents());
+  TestNavigationObserver navigation(shell()->web_contents());
   shell()->LoadURL(
       embedded_test_server()->GetURL("/dark_color_scheme_meta_slow.html"));
-  EXPECT_TRUE(observer.Wait());
+  navigation.WaitForNavigationFinished();
+  ASSERT_TRUE(
+      WaitForDOMContentLoaded(shell()->web_contents()->GetPrimaryMainFrame()));
+  EXPECT_FALSE(observer.did_paint());
   auto bg_color = GetRenderWidgetHostView()->content_background_color();
   ASSERT_TRUE(bg_color.has_value());
   EXPECT_EQ(SkColorSetRGB(18, 18, 18), bg_color.value());
@@ -998,10 +1041,14 @@ IN_PROC_BROWSER_TEST_F(NoCompositingRenderWidgetHostViewBrowserTest,
   embedded_test_server()->RegisterRequestHandler(
       base::BindRepeating(&HandleSlowStyleSheet));
   ASSERT_TRUE(embedded_test_server()->Start());
-  DOMContentLoadedObserver observer(shell()->web_contents());
+  FirstNonEmptyPaintObserver observer(shell()->web_contents());
+  TestNavigationObserver navigation(shell()->web_contents());
   shell()->LoadURL(
       embedded_test_server()->GetURL("/no_color_scheme_meta_slow.html"));
-  EXPECT_TRUE(observer.Wait());
+  navigation.WaitForNavigationFinished();
+  ASSERT_TRUE(
+      WaitForDOMContentLoaded(shell()->web_contents()->GetPrimaryMainFrame()));
+  EXPECT_FALSE(observer.did_paint());
   auto bg_color = GetRenderWidgetHostView()->content_background_color();
   ASSERT_FALSE(bg_color.has_value());
 }
@@ -1120,7 +1167,7 @@ IN_PROC_BROWSER_TEST_P(CompositingRenderWidgetHostViewBrowserTest,
     ++count_attempts;
     base::RunLoop run_loop;
     GetRenderWidgetHostView()->CopyFromSurface(
-        gfx::Rect(), frame_size(),
+        gfx::Rect(), frame_size(), base::TimeDelta(),
         base::BindOnce(&RenderWidgetHostViewBrowserTest::FinishCopyFromSurface,
                        base::Unretained(this), run_loop.QuitClosure()));
     run_loop.Run();
@@ -1143,7 +1190,7 @@ IN_PROC_BROWSER_TEST_P(CompositingRenderWidgetHostViewBrowserTest,
 
   base::RunLoop run_loop;
   GetRenderWidgetHostView()->CopyFromSurface(
-      gfx::Rect(), frame_size(),
+      gfx::Rect(), frame_size(), base::TimeDelta(),
       base::BindOnce(&RenderWidgetHostViewBrowserTest::FinishCopyFromSurface,
                      base::Unretained(this), run_loop.QuitClosure()));
   shell()->web_contents()->Close();
@@ -1162,7 +1209,9 @@ class CompositingRenderWidgetHostViewBrowserTestTabCapture
         allowable_error_(0),
         test_url_("data:text/html,<!doctype html>") {}
 
-  void VerifyResult(base::OnceClosure quit_callback, const SkBitmap& bitmap) {
+  void VerifyResult(base::OnceClosure quit_callback,
+                    const content::CopyFromSurfaceResult& result) {
+    const SkBitmap& bitmap = result.has_value() ? result->bitmap : SkBitmap();
     if (bitmap.drawsNothing()) {
       readback_result_ = READBACK_FAILED;
       std::move(quit_callback).Run();
@@ -1344,7 +1393,7 @@ class CompositingRenderWidgetHostViewBrowserTestTabCapture
 
       base::RunLoop run_loop;
       rwhv->CopyFromSurface(
-          copy_rect, output_size,
+          copy_rect, output_size, base::TimeDelta(),
           base::BindOnce(&CompositingRenderWidgetHostViewBrowserTestTabCapture::
                              VerifyResult,
                          base::Unretained(this), run_loop.QuitClosure()));
@@ -1584,15 +1633,24 @@ class RenderWidgetHostViewPresentationFeedbackBrowserTest
   // becomes visible. The default parameters request a tab switch measurement.
   void CreateVisibleTimeRequest(bool show_reason_tab_switching = true,
                                 bool show_reason_bfcache_restore = false) {
+    auto& request_trigger =
+        GetRenderWidgetHostView()->host()->GetVisibleTimeRequestTrigger();
+    if (show_reason_tab_switching) {
+      request_trigger.UpdateRequest(blink::VisibleTimeEvent{
+          .event_start_time = base::TimeTicks::Now(),
+          .reason = blink::VisibleTimeEvent::TabSwitchReason{
+              .destination_is_loaded = true,
+              .had_saved_frame_at_start =
+                  GetRenderWidgetHostView()->HasSavedCompositorFrame(),
+          }});
+    }
     if (show_reason_bfcache_restore) {
       GetRenderWidgetHostView()->OnOldViewDidNavigatePreCommit();
       GetRenderWidgetHostView()->DidEnterBackForwardCache();
+      request_trigger.UpdateRequest(blink::VisibleTimeEvent{
+          .event_start_time = base::TimeTicks::Now(),
+          .reason = blink::VisibleTimeEvent::BFCacheRestoreReason{}});
     }
-    GetRenderWidgetHostView()
-        ->host()
-        ->GetVisibleTimeRequestTrigger()
-        .UpdateRequest(base::TimeTicks::Now(), /*destination_is_loaded=*/true,
-                       show_reason_tab_switching, show_reason_bfcache_restore);
   }
 
   void ExpectPresentationFeedback(TabSwitchResult expected_result) {
@@ -1648,7 +1706,7 @@ class RenderWidgetHostViewPresentationFeedbackBrowserTest
 
    private:
     raw_ptr<BrowserCompositorMac> browser_compositor_;
-    ui::Layer layer_{ui::LAYER_SOLID_COLOR};
+    ui::LayerSolidColor layer_;
     std::unique_ptr<ui::RecyclableCompositorMac> recyclable_compositor_;
   };
 
@@ -1773,10 +1831,11 @@ IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewPresentationFeedbackBrowserTest,
 #endif  // !BUILDFLAG(IS_ANDROID)
 
 #if BUILDFLAG(IS_ANDROID)
-void CheckSurfaceRangeRemovedAfterCopy(viz::SurfaceRange range,
-                                       CompositorImpl* compositor,
-                                       base::RepeatingClosure resume_test,
-                                       const SkBitmap& btimap) {
+void CheckSurfaceRangeRemovedAfterCopy(
+    viz::SurfaceRange range,
+    CompositorImpl* compositor,
+    base::RepeatingClosure resume_test,
+    const content::CopyFromSurfaceResult& result) {
   // The surface range is removed first when the browser receives the result
   // of the copy request. Then the result callback (including this function) is
   // run.
@@ -1835,7 +1894,7 @@ IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewCopyFromSurfaceBrowserTest,
       std::nullopt, rwhv_android->GetCurrentSurfaceId());
   base::RunLoop run_loop;
   GetRenderViewHost()->GetWidget()->GetView()->CopyFromSurface(
-      gfx::Rect(), gfx::Size(),
+      gfx::Rect(), gfx::Size(), base::TimeDelta(),
       base::BindOnce(&CheckSurfaceRangeRemovedAfterCopy, range_for_copy,
                      compositor, run_loop.QuitClosure()));
 
@@ -1851,7 +1910,8 @@ IN_PROC_BROWSER_TEST_F(RenderWidgetHostViewCopyFromSurfaceBrowserTest,
 namespace {
 
 void AssertSnapshotIsPureWhite(base::RepeatingClosure resume_test,
-                               const SkBitmap& snapshot) {
+                               const content::CopyFromSurfaceResult& result) {
+  const SkBitmap& snapshot = result.has_value() ? result->bitmap : SkBitmap();
   for (int r = 0; r < snapshot.height(); ++r) {
     for (int c = 0; c < snapshot.width(); ++c) {
       ASSERT_EQ(snapshot.getColor(c, r), SK_ColorWHITE);

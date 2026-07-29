@@ -24,6 +24,10 @@
 #![allow(clippy::result_unit_err)]
 
 extern crate alloc;
+extern crate cbor;
+
+use alloc::vec::Vec;
+use cbor::cbor;
 
 pub const NONCE_LEN: usize = 12;
 pub const SHA1_OUTPUT_LEN: usize = 20;
@@ -34,6 +38,27 @@ pub const P256_X962_LENGTH: usize = 65;
 
 /// The length of a P-256 scalar value.
 pub const P256_SCALAR_LENGTH: usize = 32;
+
+// COSE Key Common Parameters (RFC 8152).
+const COSE_KEY_PARAMETER_KTY: i64 = 1;
+const COSE_KEY_PARAMETER_ALG: i64 = 3;
+
+// COSE Key Type Values.
+const COSE_KEY_TYPE_EC2: i64 = 2;
+
+// COSE Algorithm Values.
+const COSE_ALGORITHM_ES256: i64 = -7;
+
+// COSE Elliptic Curve Parameters (RFC 8152).
+const COSE_EC_PARAMETER_CRV: i64 = -1;
+const COSE_EC_PARAMETER_X: i64 = -2;
+const COSE_EC_PARAMETER_Y: i64 = -3;
+
+// COSE Elliptic Curve Values.
+const COSE_ELLIPTIC_CURVE_P256: i64 = 1;
+
+// X9.62 Uncompressed Point Format Prefix.
+const X962_UNCOMPRESSED_PREFIX: u8 = 0x04;
 
 #[cfg(feature = "rustcrypto")]
 pub use crate::rustcrypto::{
@@ -56,6 +81,22 @@ pub use crate::bsslimpl::{
     rand_bytes, rsa_verify, sha1_two_part, sha256, sha256_two_part, EcdsaKeyPair, P256Scalar,
     RsaKeyPair,
 };
+
+/// Encodes an X9.62 uncompressed ECDSA P-256 public key (65 bytes) as a COSE ES256 public key.
+pub fn cose_encode_ecdsa_public_key(public_key_bytes: &[u8]) -> Result<Vec<u8>, ()> {
+    if public_key_bytes.len() != P256_X962_LENGTH || public_key_bytes[0] != X962_UNCOMPRESSED_PREFIX
+    {
+        return Err(());
+    }
+    Ok(cbor!({
+        COSE_KEY_PARAMETER_KTY: COSE_KEY_TYPE_EC2,
+        COSE_KEY_PARAMETER_ALG: COSE_ALGORITHM_ES256,
+        COSE_EC_PARAMETER_CRV: COSE_ELLIPTIC_CURVE_P256,
+        COSE_EC_PARAMETER_X: (&public_key_bytes[1..33]),
+        COSE_EC_PARAMETER_Y: (&public_key_bytes[33..65]),
+    })
+    .to_bytes())
+}
 
 #[cfg(feature = "rustcrypto")]
 mod rustcrypto {
@@ -88,7 +129,9 @@ mod rustcrypto {
 
     /// Perform the HKDF operation from https://datatracker.ietf.org/doc/html/rfc5869
     pub fn hkdf_sha256(ikm: &[u8], salt: &[u8], info: &[u8], output: &mut [u8]) -> Result<(), ()> {
-        hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), ikm).expand(info, output).map_err(|_| ())
+        hkdf::Hkdf::<sha2::Sha256>::new(Some(salt), ikm)
+            .expand(info, output)
+            .map_err(|_| ())
     }
 
     pub fn aes_256_gcm_seal_in_place(
@@ -139,7 +182,9 @@ mod rustcrypto {
             let mut ret = [0u8; P256_SCALAR_LENGTH];
             // Warning: not very random.
             ret[0] = 1;
-            P256Scalar { v: p256::Scalar::from_repr(ret.into()).unwrap() }
+            P256Scalar {
+                v: p256::Scalar::from_repr(ret.into()).unwrap(),
+            }
         }
 
         pub fn compute_public_key(&self) -> [u8; P256_X962_LENGTH] {
@@ -383,7 +428,12 @@ mod ringimpl {
 
         pub fn compute_public_key(&self) -> [u8; P256_X962_LENGTH] {
             // unwrap: only returns an error if the input length is incorrect, but it isn't.
-            self.v.compute_public_key().unwrap().as_ref().try_into().unwrap()
+            self.v
+                .compute_public_key()
+                .unwrap()
+                .as_ref()
+                .try_into()
+                .unwrap()
         }
 
         pub fn bytes(&self) -> [u8; P256_SCALAR_LENGTH] {
@@ -492,7 +542,12 @@ mod ringimpl {
         pub fn sign(&self, to_be_signed: &[u8]) -> Result<impl AsRef<[u8]>, ()> {
             let mut signature = vec![0; self.key_pair.public_modulus_len()];
             self.key_pair
-                .sign(&ring::signature::RSA_PKCS1_SHA256, &PRNG, to_be_signed, &mut signature)
+                .sign(
+                    &ring::signature::RSA_PKCS1_SHA256,
+                    &PRNG,
+                    to_be_signed,
+                    &mut signature,
+                )
                 .unwrap();
             Ok(signature)
         }
@@ -545,7 +600,8 @@ mod bsslimpl {
 
         let tag: &[u8; GCM_TAG_LEN] = &tag.try_into().unwrap();
         let aead = Aes128Gcm::new(key);
-        aead.open_in_place(nonce, ciphertext_slice, tag, aad).map_err(|_| ())?;
+        aead.open_in_place(nonce, ciphertext_slice, tag, aad)
+            .map_err(|_| ())?;
         ciphertext.resize(ciphertext_len, 0u8);
         Ok(ciphertext)
     }
@@ -574,7 +630,8 @@ mod bsslimpl {
 
         let tag: &[u8; GCM_TAG_LEN] = &tag.try_into().unwrap();
         let aead = Aes256Gcm::new(key);
-        aead.open_in_place(nonce, ciphertext_slice, tag, aad).map_err(|_| ())?;
+        aead.open_in_place(nonce, ciphertext_slice, tag, aad)
+            .map_err(|_| ())?;
         ciphertext.resize(ciphertext_len, 0u8);
         Ok(ciphertext)
     }
@@ -659,7 +716,9 @@ mod bsslimpl {
 
     impl EcdsaKeyPair {
         pub fn from_pkcs8(pkcs8: &[u8]) -> Result<EcdsaKeyPair, ()> {
-            Ok(Self(ecdsa::PrivateKey::from_der_private_key_info(pkcs8).ok_or(())?))
+            Ok(Self(
+                ecdsa::PrivateKey::from_der_private_key_info(pkcs8).ok_or(())?,
+            ))
         }
 
         pub fn generate_pkcs8() -> impl AsRef<[u8]> {
@@ -686,7 +745,9 @@ mod bsslimpl {
 
     impl RsaKeyPair {
         pub fn from_pkcs8(pkcs8: &[u8]) -> Result<RsaKeyPair, ()> {
-            Ok(Self(rsa::PrivateKey::from_der_private_key_info(pkcs8).ok_or(())?))
+            Ok(Self(
+                rsa::PrivateKey::from_der_private_key_info(pkcs8).ok_or(())?,
+            ))
         }
 
         pub fn sign(&self, signed_data: &[u8]) -> Result<impl AsRef<[u8]>, ()> {
@@ -698,7 +759,9 @@ mod bsslimpl {
         let Some(pub_key) = rsa::PublicKey::from_der_rsa_public_key(pub_key) else {
             return false;
         };
-        pub_key.verify_pkcs1::<digest::Sha256>(signed_data, signature).is_ok()
+        pub_key
+            .verify_pkcs1::<digest::Sha256>(signed_data, signature)
+            .is_ok()
     }
 
     #[cfg(test)]
@@ -747,7 +810,11 @@ mod bsslimpl {
             let pub_key = priv_key.public_key();
             let signed_message = [42u8; 20];
             let signature = priv_key.sign(&signed_message).unwrap();
-            assert!(ecdsa_verify(pub_key.as_ref(), &signed_message, signature.as_ref()));
+            assert!(ecdsa_verify(
+                pub_key.as_ref(),
+                &signed_message,
+                signature.as_ref()
+            ));
         }
     }
 }

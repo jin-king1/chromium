@@ -6,7 +6,9 @@
 
 #import <UIKit/UIKit.h>
 
+#import "base/check.h"
 #import "base/containers/adapters.h"
+#import "base/functional/callback_helpers.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
 #import "base/strings/stringprintf.h"
@@ -20,98 +22,35 @@
 #import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
-#import "ios/chrome/browser/web/model/features.h"
 #import "ios/chrome/browser/web/model/font_size/font_size_java_script_feature.h"
 #import "ios/components/ui_util/dynamic_type_util.h"
 #import "ios/public/provider/chrome/browser/text_zoom/text_zoom_api.h"
 #import "services/metrics/public/cpp/ukm_builders.h"
 
-namespace {
-
-// Content size category to report UMA metrics.
-// These values are persisted to logs. Entries should not be renumbered and
-// numeric values should never be reused.
-enum class IOSContentSizeCategory {
-  kUnspecified = 0,
-  kExtraSmall = 1,
-  kSmall = 2,
-  kMedium = 3,
-  kLarge = 4,
-  kExtraLarge = 5,
-  kExtraExtraLarge = 6,
-  kExtraExtraExtraLarge = 7,
-  kAccessibilityMedium = 8,
-  kAccessibilityLarge = 9,
-  kAccessibilityExtraLarge = 10,
-  kAccessibilityExtraExtraLarge = 11,
-  kAccessibilityExtraExtraExtraLarge = 12,
-  kMaxValue = kAccessibilityExtraExtraExtraLarge,
-};
-
-// Converts a UIKit content size category to a content size category for
-// reporting.
-IOSContentSizeCategory IOSContentSizeCategoryForCurrentUIContentSizeCategory() {
-  UIContentSizeCategory size =
-      UIApplication.sharedApplication.preferredContentSizeCategory;
-  if ([size isEqual:UIContentSizeCategoryUnspecified]) {
-    return IOSContentSizeCategory::kUnspecified;
-  }
-  if ([size isEqual:UIContentSizeCategoryExtraSmall]) {
-    return IOSContentSizeCategory::kExtraSmall;
-  }
-  if ([size isEqual:UIContentSizeCategorySmall]) {
-    return IOSContentSizeCategory::kSmall;
-  }
-  if ([size isEqual:UIContentSizeCategoryMedium]) {
-    return IOSContentSizeCategory::kMedium;
-  }
-  if ([size isEqual:UIContentSizeCategoryLarge]) {
-    return IOSContentSizeCategory::kLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryExtraLarge]) {
-    return IOSContentSizeCategory::kExtraLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryExtraExtraLarge]) {
-    return IOSContentSizeCategory::kExtraExtraLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryExtraExtraExtraLarge]) {
-    return IOSContentSizeCategory::kExtraExtraExtraLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryAccessibilityMedium]) {
-    return IOSContentSizeCategory::kAccessibilityMedium;
-  }
-  if ([size isEqual:UIContentSizeCategoryAccessibilityLarge]) {
-    return IOSContentSizeCategory::kAccessibilityLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryAccessibilityExtraLarge]) {
-    return IOSContentSizeCategory::kAccessibilityExtraLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryAccessibilityExtraExtraLarge]) {
-    return IOSContentSizeCategory::kAccessibilityExtraExtraLarge;
-  }
-  if ([size isEqual:UIContentSizeCategoryAccessibilityExtraExtraExtraLarge]) {
-    return IOSContentSizeCategory::kAccessibilityExtraExtraExtraLarge;
-  }
-
-  return IOSContentSizeCategory::kUnspecified;
-}
-
-}  // namespace
-
 FontSizeTabHelper::FontSizeTabHelper(web::WebState* web_state)
     : web_state_(web_state), weak_factory_(this) {
   DCHECK(ios::provider::IsTextZoomEnabled());
-  web_state->AddObserver(this);
+  CHECK(web_state_->IsRealized());
+  web_state_->AddObserver(this);
+  FontSizeJavaScriptFeature* feature = FontSizeJavaScriptFeature::GetInstance();
+  feature->GetWebFramesManager(web_state_)->AddObserver(this);
 
-  if (web_state->IsRealized()) {
-    CreateNotificationObserver();
-  }
+  base::RepeatingCallback<void(NSNotification*)> callback =
+      base::IgnoreArgs<NSNotification*>(
+          base::BindRepeating(&FontSizeTabHelper::OnContentSizeCategoryChanged,
+                              weak_factory_.GetWeakPtr()));
+
+  notification_observer_ = [[NSNotificationCenter defaultCenter]
+      addObserverForName:UIContentSizeCategoryDidChangeNotification
+                  object:nil
+                   queue:nil
+              usingBlock:base::CallbackToBlock(callback)];
 }
 
 FontSizeTabHelper::~FontSizeTabHelper() {}
 
 // static
-void FontSizeTabHelper::RegisterBrowserStatePrefs(
+void FontSizeTabHelper::RegisterProfilePrefs(
     user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterDictionaryPref(prefs::kIosUserZoomMultipliers);
 }
@@ -142,8 +81,8 @@ void FontSizeTabHelper::UserZoom(Zoom zoom) {
 void FontSizeTabHelper::LogZoomEvent(Zoom zoom) const {
   // Log when the user zooms to see if there are certain websites that are
   // broken when zooming.
-  IOSContentSizeCategory content_size_category =
-      IOSContentSizeCategoryForCurrentUIContentSizeCategory();
+  ui_util::IOSContentSizeCategory content_size_category =
+      ui_util::GetPreferredContentSizeCategory();
   ukm::UkmRecorder* ukm_recorder = GetApplicationContext()->GetUkmRecorder();
   ukm::SourceId source_id = ukm::GetSourceIdForWebStateDocument(web_state_);
   ukm::builders::IOS_PageZoomChanged(source_id)
@@ -224,13 +163,8 @@ bool FontSizeTabHelper::CurrentPageSupportsTextZoom() const {
 }
 
 int FontSizeTabHelper::GetFontSize() const {
-  // Only add in the dynamic type multiplier if the flag is enabled.
-  double dynamic_type_multiplier =
-      base::FeatureList::IsEnabled(web::kWebPageDefaultZoomFromDynamicType)
-          ? ui_util::SystemSuggestedFontSizeMultiplier()
-          : 1;
   // Multiply by 100 as the web property needs a percentage.
-  return dynamic_type_multiplier * GetCurrentUserZoomMultiplier() * 100;
+  return GetCurrentUserZoomMultiplier() * 100;
 }
 
 void FontSizeTabHelper::OnContentSizeCategoryChanged() {
@@ -257,27 +191,6 @@ void FontSizeTabHelper::DidFinishNavigation(web::WebState* web_state,
   if (IsGoogleCachedAMPPage()) {
     NewPageZoom();
   }
-}
-
-void FontSizeTabHelper::WebStateRealized(web::WebState* web_state) {
-  CHECK(!notification_observer_, base::NotFatalUntil::M125);
-  CreateNotificationObserver();
-}
-
-void FontSizeTabHelper::CreateNotificationObserver() {
-  FontSizeJavaScriptFeature* feature = FontSizeJavaScriptFeature::GetInstance();
-  feature->GetWebFramesManager(web_state_)->AddObserver(this);
-
-  base::RepeatingCallback<void(NSNotification*)> callback =
-      base::IgnoreArgs<NSNotification*>(
-          base::BindRepeating(&FontSizeTabHelper::OnContentSizeCategoryChanged,
-                              weak_factory_.GetWeakPtr()));
-
-  notification_observer_ = [[NSNotificationCenter defaultCenter]
-      addObserverForName:UIContentSizeCategoryDidChangeNotification
-                  object:nil
-                   queue:nil
-              usingBlock:base::CallbackToBlock(callback)];
 }
 
 void FontSizeTabHelper::WebFrameBecameAvailable(
@@ -310,27 +223,22 @@ PrefService* FontSizeTabHelper::GetPrefService() const {
 }
 
 std::string FontSizeTabHelper::GetCurrentUserZoomMultiplierKey() const {
-  UIContentSizeCategory content_size_category =
-      base::FeatureList::IsEnabled(web::kWebPageDefaultZoomFromDynamicType)
-          ? UIApplication.sharedApplication.preferredContentSizeCategory
-          : UIContentSizeCategoryLarge;
-
   std::string content_size_category_key =
-      base::SysNSStringToUTF8(content_size_category);
+      base::SysNSStringToUTF8(UIContentSizeCategoryLarge);
   return base::StringPrintf("%s.%s", content_size_category_key.c_str(),
                             GetUserZoomMultiplierKeyUrlPart().c_str());
 }
 
 std::string FontSizeTabHelper::GetUserZoomMultiplierKeyUrlPart() const {
   if (IsGoogleCachedAMPPage()) {
-    return web_state_->GetLastCommittedURL().host().append("/amp");
+    return web_state_->GetLastCommittedURL().GetHost().append("/amp");
   }
 
-  return web_state_->GetLastCommittedURL().host();
+  return web_state_->GetLastCommittedURL().GetHost();
 }
 
 double FontSizeTabHelper::GetCurrentUserZoomMultiplier() const {
-  const base::Value::Dict& pref =
+  const base::DictValue& pref =
       GetPrefService()->GetDict(prefs::kIosUserZoomMultipliers);
 
   return pref.FindDoubleByDottedPath(GetCurrentUserZoomMultiplierKey())
@@ -358,11 +266,9 @@ bool FontSizeTabHelper::IsGoogleCachedAMPPage() const {
   if (!google_util::IsGoogleDomainUrl(
           url, google_util::DISALLOW_SUBDOMAIN,
           google_util::DISALLOW_NON_STANDARD_PORTS) ||
-      url.path().compare(0, 5, "/amp/") != 0) {
+      url.GetPath().compare(0, 5, "/amp/") != 0) {
     return false;
   }
 
   return true;
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(FontSizeTabHelper)

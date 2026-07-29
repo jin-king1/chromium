@@ -10,18 +10,22 @@
 #import "components/sync/base/data_type.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_delegate.h"
+#import "ios/chrome/browser/authentication/ui_bundled/change_profile_continuation_provider.h"
 
 class AuthenticationService;
 class ChromeAccountManagerService;
 class PrefService;
 @protocol SigninPresenter;
 @protocol AccountSettingsPresenter;
+typedef NS_ENUM(NSUInteger, SigninCoordinatorResult);
 @class SigninPromoViewConfigurator;
+@class ShowSigninCommand;
 @protocol SigninPromoViewConsumer;
 @protocol SystemIdentity;
 
 namespace signin {
 class IdentityManager;
+enum class Tribool;
 }  // namespace signin
 
 namespace signin_metrics {
@@ -37,20 +41,24 @@ class PrefRegistrySyncable;
 }  // namespace user_prefs
 
 // Enums for the sign-in promo view state. Those states are sequential, with no
-// way to go backwards. All states can be skipped except `NeverVisible` and
-// `Invalid`.
+// way to go backwards. All states can be skipped except `kNotYetDisplayed` and
+// `kDisconnected`.
 enum class SigninPromoViewState {
-  // Initial state. When -[SigninPromoViewMediator disconnect] is called with
-  // that state, no metrics is recorded.
-  kNeverVisible,
-  // None of the buttons has been used yet.
-  kUnused,
+  // Initial state, before the first time the view is displayed. If the state
+  // is still `kNotYetDisplayed` when -[SigninPromoViewMediator disconnect] is
+  // called, it means the view was never displayed, thus no metrics are
+  // recorded.
+  kNotYetDisplayed,
+  // None of the buttons has been used yet. The view has been displayed, but may
+  // have been removed again if the promo is not useful anymore.
+  kHadNoInteraction,
   // Sign-in buttons have been used at least once.
-  kUsedAtLeastOnce,
-  // Sign-in promo has been closed.
+  kUserInteracted,
+  // The user tapped on the button to remove the sign-in promo from the view
+  // displaying the promo.
   kClosed,
-  // Sign-in promo view has been removed.
-  kInvalid,
+  // The mediator has been disconnected.
+  kDisconnected,
 };
 
 // The action performed when accepting the promo.
@@ -68,6 +76,17 @@ enum class SigninPromoAction {
   kReviewAccountSettings,
 };
 
+@class SigninPromoViewMediator;
+
+// Protocol used to display signin UI.
+@protocol SigninPromoViewMediatorDelegate
+
+// Asks the presenter to display the signin UI configured by `command`.
+- (void)showSignin:(SigninPromoViewMediator*)mediator
+           command:(ShowSigninCommand*)command;
+
+@end
+
 // Class that monitors the available identities and creates
 // SigninPromoViewConfigurator. This class makes the link between the model and
 // the view. The consumer will receive notification if default identity is
@@ -84,20 +103,27 @@ enum class SigninPromoAction {
 // (in that case the button opens a dialog to add an account instead).
 // When the user is signed-out and has accounts on the device, this is the
 // default identity.
-// when the user is signed-in and not syncing, this is the signed-in identity
-// (not necessarily the default one).
+// When the user is signed-in, this is the signed-in identity (not necessarily
+// the default one).
 @property(nonatomic, strong, readonly) id<SystemIdentity> displayedIdentity;
 
 // Sign-in promo view state. kNeverVisible by default.
-@property(nonatomic, assign) SigninPromoViewState signinPromoViewState;
+@property(nonatomic, assign, readonly)
+    SigninPromoViewState signinPromoViewState;
+
+// kTrue if the sign-in flow is in progress.
+// kFalse if the sign-in flow is not in progress.
+// kUnknown if the sign-in flow is quite probably displayed but may have
+// disappeared silently. See crbug.com/395959814.
+@property(nonatomic, assign, readonly) signin::Tribool signinInProgress;
 
 // YES if the promo spinner should be displayed. Either the sign-in or the
 // initial sync is in progress.
 @property(nonatomic, assign, readonly) BOOL showSpinner;
 
-// Returns YES if the sign-in promo view is `Invalid`, `Closed` or invisible.
-@property(nonatomic, assign, readonly, getter=isInvalidClosedOrNeverVisible)
-    BOOL invalidClosedOrNeverVisible;
+// Returns YES if the sign-in promo view is in a state where its buttons may be
+// used.
+@property(nonatomic, assign, readonly, getter=isUsable) BOOL usable;
 
 // The action performed when accepting the promo. kInstantSignin by default.
 @property(nonatomic, assign) SigninPromoAction signinPromoAction;
@@ -129,15 +155,19 @@ enum class SigninPromoAction {
 // Designated initializer.
 // `baseViewController` is the view to present UI for sign-in.
 - (instancetype)
-     initWithIdentityManager:(signin::IdentityManager*)identityManager
-       accountManagerService:(ChromeAccountManagerService*)accountManagerService
-                 authService:(AuthenticationService*)authService
-                 prefService:(PrefService*)prefService
-                 syncService:(syncer::SyncService*)syncService
-                 accessPoint:(signin_metrics::AccessPoint)accessPoint
-             signinPresenter:(id<SigninPresenter>)signinPresenter
-    accountSettingsPresenter:
-        (id<AccountSettingsPresenter>)accountSettingsPresenter
+              initWithIdentityManager:(signin::IdentityManager*)identityManager
+                accountManagerService:
+                    (ChromeAccountManagerService*)accountManagerService
+                          authService:(AuthenticationService*)authService
+                          prefService:(PrefService*)prefService
+                          syncService:(syncer::SyncService*)syncService
+                          accessPoint:(signin_metrics::AccessPoint)accessPoint
+                             delegate:
+                                 (id<SigninPromoViewMediatorDelegate>)delegate
+             accountSettingsPresenter:
+                 (id<AccountSettingsPresenter>)accountSettingsPresenter
+    changeProfileContinuationProvider:(const ChangeProfileContinuationProvider&)
+                                          changeProfileContinuationProvider
     NS_DESIGNATED_INITIALIZER;
 
 - (SigninPromoViewConfigurator*)createConfigurator;
@@ -152,9 +182,12 @@ enum class SigninPromoAction {
 - (void)signinPromoViewIsHidden;
 
 // Disconnects the mediator, this method needs to be called when the sign-in
-// promo view is removed from the view hierarchy (it or one of its superviews is
-// removed). The mediator should not be used after this called.
+// promo view is removed from the view hierarchy (either the promo or one of its
+// superviews is removed). The mediator should not be used after this is called.
 - (void)disconnect;
+
+// Callback for the SigninPresenter.
+- (void)signinDidCompleteWithResult:(SigninCoordinatorResult)result;
 
 @end
 

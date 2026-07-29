@@ -135,7 +135,7 @@ class TransactionalLevelDBTransactionTest : public LevelDBScopesTestBase {
 
   TransactionalLevelDBDatabase* db() { return leveldb_database_.get(); }
 
-  scoped_refptr<TransactionalLevelDBTransaction> CreateTransaction() {
+  std::unique_ptr<TransactionalLevelDBTransaction> CreateTransaction() {
     return transactional_leveldb_factory_.CreateLevelDBTransaction(
         db(), db()->scopes()->CreateScope(AcquireLocksSync(
                   &lock_manager_, {CreateSimpleSharedLock()})));
@@ -165,7 +165,7 @@ TEST_F(TransactionalLevelDBTransactionTest, GetPutDelete) {
   EXPECT_TRUE(found);
   EXPECT_EQ(Compare(got_value, value), 0);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
 
   status = transaction->Get(key, &got_value, &found);
@@ -185,9 +185,7 @@ TEST_F(TransactionalLevelDBTransactionTest, GetPutDelete) {
 
   const std::string another_key("b-another key");
   const std::string another_value("b-another value");
-  EXPECT_EQ(12ull, transaction->GetTransactionSize());
   TransactionPut(transaction.get(), another_key, another_value);
-  EXPECT_EQ(43ull, transaction->GetTransactionSize());
 
   status = transaction->Get(another_key, &got_value, &found);
   EXPECT_TRUE(status.ok());
@@ -195,7 +193,6 @@ TEST_F(TransactionalLevelDBTransactionTest, GetPutDelete) {
   EXPECT_EQ(Compare(got_value, another_value), 0);
 
   TransactionRemove(transaction.get(), another_key);
-  EXPECT_EQ(124ull, transaction->GetTransactionSize());
 
   status = transaction->Get(another_key, &got_value, &found);
   EXPECT_FALSE(found);
@@ -212,7 +209,7 @@ TEST_F(TransactionalLevelDBTransactionTest, Iterator) {
   Put(key1, value1);
   Put(key2, value2);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
 
   leveldb::Status s;
@@ -249,7 +246,7 @@ TEST_F(TransactionalLevelDBTransactionTest, Commit) {
   std::string got_value;
   bool found;
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
 
   TransactionPut(transaction.get(), key1, value1);
@@ -277,7 +274,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IterationWithEvictedCursors) {
   Put("b-key2", "value2");
   Put("b-key3", "value3");
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
 
   std::unique_ptr<TransactionalLevelDBIterator> evicted_normal_location =
@@ -365,7 +362,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorReloadingNext) {
   Put(key2, value);
   Put(key3, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -404,7 +401,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorReloadingPrev) {
   Put(key3, value);
   Put(key4, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -439,7 +436,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorSkipsScopesMetadata) {
 
   Put(key1, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -470,7 +467,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorReflectsInitialChanges) {
   const std::string key1("b-key1");
   const std::string value("value");
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
 
   TransactionPut(transaction.get(), key1, value);
@@ -554,7 +551,7 @@ class LevelDBTransactionRangeTest
   const std::string key_after_range_ = "b6";
   const std::string value_ = "value";
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction_;
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction_;
 };
 
 TEST_P(LevelDBTransactionRangeTest, RemoveRangeUpperClosed) {
@@ -659,7 +656,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorValueStaysTheSame) {
 
   Put(key1, value1);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -703,7 +700,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorPutInvalidation) {
   Put(key2, value1);
   Put(key3, value1);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -787,7 +784,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorRemoveInvalidation) {
   Put(key4, value);
   Put(key5, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -856,7 +853,7 @@ TEST_F(TransactionalLevelDBTransactionTest, IteratorGoesInvalidAfterRemove) {
   Put(key1, value);
   Put(key2, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -929,7 +926,7 @@ TEST_F(TransactionalLevelDBTransactionTest,
   Put(key2, value);
   Put(key3, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -966,7 +963,7 @@ TEST_F(TransactionalLevelDBTransactionTest,
   Put(key1, value);
   Put(key2, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =
@@ -1004,7 +1001,7 @@ TEST_F(TransactionalLevelDBTransactionTest,
   Put(key1, value);
   Put(key2, value);
 
-  scoped_refptr<TransactionalLevelDBTransaction> transaction =
+  std::unique_ptr<TransactionalLevelDBTransaction> transaction =
       CreateTransaction();
   leveldb::Status s;
   std::unique_ptr<TransactionalLevelDBIterator> it =

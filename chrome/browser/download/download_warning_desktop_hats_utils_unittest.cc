@@ -7,6 +7,7 @@
 #include <memory>
 
 #include "base/files/file_path.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/ui/hats/hats_service.h"
@@ -83,9 +84,7 @@ MATCHER_P(UnorderedKeysAre, fields, "") {
 
 class DownloadWarningDesktopHatsUtilsTest : public ::testing::Test {
  public:
-  DownloadWarningDesktopHatsUtilsTest() {
-    features_.InitAndEnableFeature(safe_browsing::kDownloadTailoredWarnings);
-  }
+  DownloadWarningDesktopHatsUtilsTest() = default;
 
   ~DownloadWarningDesktopHatsUtilsTest() override = default;
 
@@ -145,12 +144,10 @@ class DownloadWarningDesktopHatsUtilsTest : public ::testing::Test {
     ON_CALL(*item, IsDone()).WillByDefault(Return(false));
 
 #if BUILDFLAG(SAFE_BROWSING_DOWNLOAD_PROTECTION)
-    // Set tailored verdict for cookie theft with account info.
+    // Set tailored verdict for cookie theft.
     safe_browsing::ClientDownloadResponse::TailoredVerdict tailored_verdict;
     tailored_verdict.set_tailored_verdict_type(
         safe_browsing::ClientDownloadResponse::TailoredVerdict::COOKIE_THEFT);
-    tailored_verdict.add_adjustments(safe_browsing::ClientDownloadResponse::
-                                         TailoredVerdict::ACCOUNT_INFO_STRING);
     safe_browsing::DownloadProtectionService::SetDownloadProtectionData(
         item, "token",
         safe_browsing::ClientDownloadResponse::DANGEROUS_ACCOUNT_COMPROMISE,
@@ -167,9 +164,8 @@ class DownloadWarningDesktopHatsUtilsTest : public ::testing::Test {
     EXPECT_THAT(psd, StringDataMatches(Fields::kDangerType,
                                        HasSubstr("AccountCompromise")));
 #if BUILDFLAG(FULL_SAFE_BROWSING)
-    EXPECT_THAT(psd,
-                StringDataMatches(Fields::kDangerType,
-                                  HasSubstr("Cookie theft with account info")));
+    EXPECT_THAT(
+        psd, StringDataMatches(Fields::kDangerType, HasSubstr("Cookie theft")));
 #endif
     EXPECT_THAT(psd, StringDataMatches(Fields::kWarningType, "Dangerous"));
     EXPECT_THAT(psd, BitsDataMatches(Fields::kUserGesture, true));
@@ -338,9 +334,9 @@ TEST_F(DownloadWarningDesktopHatsUtilsTest,
   EXPECT_TRUE(launcher.TryScheduleTask(
       DownloadWarningHatsType::kDownloadBubbleIgnore, item_.get()));
   launcher.RecordBrowserActivity();
-  EXPECT_CALL(
-      *mock_hats_service_,
-      LaunchSurvey(kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _, _, _));
+  EXPECT_CALL(*mock_hats_service_,
+              LaunchSurvey(kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _,
+                           _, _, _, _));
   task_environment_.FastForwardBy(kIgnoreDelay);
 }
 
@@ -389,7 +385,7 @@ TEST_F(DownloadWarningDesktopHatsUtilsTest,
         *mock_hats_service_,
         LaunchSurvey(
             kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _, _,
-            Contains(Pair(Fields::kFilename, HasSubstr("my_file.pdf")))));
+            Contains(Pair(Fields::kFilename, HasSubstr("my_file.pdf"))), _, _));
     task_environment_.FastForwardBy(kIgnoreDelay / 2);
   }
   launcher.RecordBrowserActivity();
@@ -398,7 +394,8 @@ TEST_F(DownloadWarningDesktopHatsUtilsTest,
         *mock_hats_service_,
         LaunchSurvey(
             kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _, _,
-            Contains(Pair(Fields::kFilename, HasSubstr("other_file.pdf")))));
+            Contains(Pair(Fields::kFilename, HasSubstr("other_file.pdf"))), _,
+            _));
     task_environment_.FastForwardBy(kIgnoreDelay / 2);
   }
 }
@@ -414,9 +411,9 @@ TEST_F(DownloadWarningDesktopHatsUtilsTest,
   DelayedDownloadWarningHatsLauncher launcher{profile_.get(), kIgnoreDelay};
   launcher.TryScheduleTask(DownloadWarningHatsType::kDownloadBubbleIgnore,
                            item_.get());
-  EXPECT_CALL(
-      *mock_hats_service_,
-      LaunchSurvey(kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _, _, _))
+  EXPECT_CALL(*mock_hats_service_,
+              LaunchSurvey(kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _,
+                           _, _, _, _))
       .Times(0);
   task_environment_.FastForwardBy(2 * kIgnoreDelay);
 }
@@ -435,9 +432,9 @@ TEST_F(DownloadWarningDesktopHatsUtilsTest,
   item_.reset();
 
   launcher.RecordBrowserActivity();
-  EXPECT_CALL(
-      *mock_hats_service_,
-      LaunchSurvey(kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _, _, _))
+  EXPECT_CALL(*mock_hats_service_,
+              LaunchSurvey(kHatsSurveyTriggerDownloadWarningBubbleIgnore, _, _,
+                           _, _, _, _))
       .Times(0);
   task_environment_.FastForwardBy(kIgnoreDelay);
 

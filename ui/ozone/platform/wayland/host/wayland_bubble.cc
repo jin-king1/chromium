@@ -9,6 +9,7 @@
 #include "ui/ozone/platform/wayland/host/wayland_buffer_manager_host.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_data_drag_controller.h"
+#include "ui/ozone/platform/wayland/host/wayland_window.h"
 #include "ui/ozone/platform/wayland/host/wayland_window_manager.h"
 #include "ui/platform_window/platform_window_init_properties.h"
 
@@ -33,8 +34,15 @@ void WaylandBubble::Show(bool inactive) {
     return;
   }
 
+  auto weak_this = AsWeakPtr();
   UpdateWindowScale(false);
+  if (!weak_this) {
+    return;
+  }
   AddToParentAsSubsurface();
+  if (!weak_this) {
+    return;
+  }
   WaylandWindow::Show(inactive);
 }
 
@@ -60,7 +68,11 @@ void WaylandBubble::SetBoundsInDIP(const gfx::Rect& bounds_dip) {
   // There is currently no guarantee that the 2 compositor frames arrive
   // together atomically.
   auto old_bounds_dip = GetBoundsInDIP();
+  auto weak_this = AsWeakPtr();
   WaylandWindow::SetBoundsInDIP(bounds_dip);
+  if (!weak_this) {
+    return;
+  }
 
   // TODO(crbug.com/329145822): Don't apply position immediately here, wait for
   // ackconfigure, otherwise it might jitter if offset changes.
@@ -91,7 +103,11 @@ void WaylandBubble::Deactivate() {
 }
 
 void WaylandBubble::UpdateWindowScale(bool update_bounds) {
+  auto weak_this = AsWeakPtr();
   WaylandWindow::UpdateWindowScale(update_bounds);
+  if (!weak_this) {
+    return;
+  }
   if (subsurface_) {
     SetSubsurfacePosition();
   }
@@ -126,7 +142,11 @@ void WaylandBubble::AddToParentAsSubsurface() {
   CHECK(parent_window());
 
   // We need to make sure that window scale matches the parent window.
+  auto weak_this = AsWeakPtr();
   UpdateWindowScale(true);
+  if (!weak_this) {
+    return;
+  }
 
   subsurface_ =
       root_surface()->CreateSubsurface(parent_window()->root_surface());
@@ -153,11 +173,15 @@ void WaylandBubble::AddToParentAsSubsurface() {
 }
 
 void WaylandBubble::SetSubsurfacePosition() {
-  // TODO(crbug.com/369213517): Handle ui scale before enabling this on Linux.
-  const auto bounds_dip_in_parent =
-      wl::TranslateWindowBoundsToParentDIP(this, parent_window());
-  wl_subsurface_set_position(subsurface_.get(), bounds_dip_in_parent.x(),
-                             bounds_dip_in_parent.y());
+  // bounds_dip here are in Chromium UI coordinates space (i.e ui_scale'd), as
+  // they have just been provided by upper UI layers. Since they are going to be
+  // used to issue Wayland requests, they must be reverse-transformed to Wayland
+  // DIP coordinates space.
+  const auto bounds_in_parent = gfx::ScaleToEnclosingRectIgnoringError(
+      wl::TranslateWindowBoundsToParentDIP(this, parent_window()),
+      applied_state().ui_scale);
+  wl_subsurface_set_position(subsurface_.get(), bounds_in_parent.x(),
+                             bounds_in_parent.y());
   parent_window()->root_surface()->Commit();
 }
 
@@ -169,6 +193,7 @@ bool WaylandBubble::OnInitialize(PlatformWindowInitProperties properties,
   state->window_state = PlatformWindowState::kNormal;
 
   state->window_scale = parent_window()->applied_state().window_scale;
+  state->ui_scale = parent_window()->applied_state().ui_scale;
   activatable_ = properties.activatable;
   accept_events_ = properties.accept_events;
 

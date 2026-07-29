@@ -16,8 +16,10 @@
 #include "ash/public/cpp/auth/active_session_auth_controller.h"
 #include "ash/public/cpp/auth/active_session_fingerprint_client.h"
 #include "ash/public/cpp/in_session_auth_token_provider.h"
+#include "ash/public/cpp/session/session_observer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
+#include "base/scoped_observation.h"
 #include "chromeos/ash/components/cryptohome/auth_factor.h"
 #include "chromeos/ash/components/dbus/userdataauth/userdataauth_client.h"
 #include "chromeos/ash/components/login/auth/auth_factor_editor.h"
@@ -41,6 +43,7 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
     : public ActiveSessionAuthController,
       public ActiveSessionAuthView::Observer,
       public UserDataAuthClient::AuthFactorStatusUpdateObserver,
+      public SessionObserver,
       public views::ViewObserver {
  public:
   class TestApi {
@@ -85,6 +88,9 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
   bool IsShown() const override;
   void SetFingerprintClient(ActiveSessionFingerprintClient* fp_client) override;
 
+  // SessionObserver:
+  void OnSessionStateChanged(session_manager::SessionState state) override;
+
   // views::ViewObserver:
   void OnViewPreferredSizeChanged(views::View* observed_view) override;
 
@@ -120,7 +126,8 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
 
   // Tracks the authentication flow for the active session.
   enum class ActiveSessionAuthState {
-    kWaitForInit,            // Initial state, awaiting session start.
+    kOnIdle,                 // Initial state, waiting for request.
+    kWaitForInit,            // Waiting session start.
     kInitialized,            // Session started, ready for user input.
     kPasswordAuthStarted,    // User submitted password, awaiting verification.
     kPasswordAuthSucceeded,  // Successful password authentication.
@@ -132,8 +139,9 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
                                        // progress, awaiting callback to get
                                        // back user_context to start the
                                        // authentication.
-    kCloseRequested,  // Close requested while we are waiting password/PIN
-                      // authentication callback.
+    kCloseRequested,    // Close requested while we are waiting password/PIN
+                        // authentication callback.
+    kAuthNotAvailable,  // No authentication factors are available.
     // Note: On authentication failure, the state reverts to kInitialized.
   };
 
@@ -158,6 +166,7 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
   // of the UI. Validates the transitions.
   void SetState(ActiveSessionAuthState state);
 
+  bool IsPreInitializedState() const;
   bool IsSucceedState() const;
 
   // Internal methods for authentication.
@@ -182,6 +191,8 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
 
   base::ScopedObservation<views::View, ViewObserver> contents_view_observer_{
       this};
+  base::ScopedObservation<SessionControllerImpl, SessionObserver>
+      session_controller_observation_{this};
 
   raw_ptr<ActiveSessionAuthView> contents_view_ = nullptr;
 
@@ -198,7 +209,7 @@ class ASH_EXPORT ActiveSessionAuthControllerImpl
   std::unique_ptr<UserContext> user_context_;
 
   AuthFactorSet available_factors_;
-  ActiveSessionAuthState state_ = ActiveSessionAuthState::kWaitForInit;
+  ActiveSessionAuthState state_ = ActiveSessionAuthState::kOnIdle;
 
   std::unique_ptr<AuthRequest> auth_request_;
 

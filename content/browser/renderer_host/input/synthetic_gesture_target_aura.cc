@@ -156,7 +156,7 @@ void SyntheticGestureTargetAura::DispatchWebTouchEventToPlatform(
   bool conversion_success = MakeUITouchEventsFromWebTouchEvents(
       touch_with_latency, &events,
       TouchEventCoordinateSystem::LOCAL_COORDINATES);
-  DCHECK(conversion_success);
+  CHECK(conversion_success, base::NotFatalUntil::M152);
 
   aura::Window* window = GetWindow();
   aura::WindowTreeHost* host = window->GetHost();
@@ -218,8 +218,10 @@ void SyntheticGestureTargetAura::DispatchWebMouseWheelEventToPlatform(
 void SyntheticGestureTargetAura::DispatchWebGestureEventToPlatform(
     const blink::WebGestureEvent& web_gesture,
     const ui::LatencyInfo& latency_info) {
-  DCHECK(blink::WebInputEvent::IsPinchGestureEventType(web_gesture.GetType()) ||
-         blink::WebInputEvent::IsFlingGestureEventType(web_gesture.GetType()));
+  CHECK(
+      blink::WebInputEvent::IsPinchGestureEventType(web_gesture.GetType()) ||
+          blink::WebInputEvent::IsFlingGestureEventType(web_gesture.GetType()),
+      base::NotFatalUntil::M152);
   ui::EventType event_type = web_gesture.GetTypeAsUiEventType();
   int flags = ui::WebEventModifiersToEventFlags(web_gesture.GetModifiers());
   aura::Window* window = GetWindow();
@@ -317,8 +319,10 @@ void SyntheticGestureTargetAura::GetVSyncParameters(
   interval = vsync_interval_;
 }
 
-void SyntheticGestureTargetAura::OnBeginFrame(base::TimeTicks frame_begin_time,
-                                              base::TimeDelta frame_interval) {
+void SyntheticGestureTargetAura::OnBeginFrame(
+    base::TimeTicks frame_begin_time,
+    base::TimeDelta frame_interval,
+    std::optional<base::TimeTicks> first_coalesced_frame_begin_time) {
   vsync_timebase_ = frame_begin_time;
   vsync_interval_ = frame_interval;
 }
@@ -346,13 +350,13 @@ float SyntheticGestureTargetAura::GetMinScalingSpanInDips() const {
 RenderWidgetHostViewAura* SyntheticGestureTargetAura::GetView() const {
   auto* view =
       static_cast<RenderWidgetHostViewAura*>(render_widget_host()->GetView());
-  DCHECK(view);
+  CHECK(view, base::NotFatalUntil::M152);
   return view;
 }
 
 aura::Window* SyntheticGestureTargetAura::GetWindow() const {
   aura::Window* window = GetView()->GetNativeView();
-  DCHECK(window);
+  CHECK(window, base::NotFatalUntil::M152);
   return window;
 }
 

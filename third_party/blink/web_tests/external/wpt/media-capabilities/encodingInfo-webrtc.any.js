@@ -100,9 +100,49 @@ promise_test(t => {
 promise_test(t => {
   return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
     type: 'webrtc',
+    video: {
+      contentType: 'video/webm; codecs="vp09.00.10.08"; foo="bar"',
+      width: 800,
+      height: 600,
+      bitrate: 3000,
+      framerate: 24,
+    },
+  }));
+}, "Test that encodingInfo rejects if the video configuration contentType has more than one parameter");
+
+promise_test(t => {
+  return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
+    video: {
+      contentType: 'video/webm; foo="bar"',
+      width: 800,
+      height: 600,
+      bitrate: 3000,
+      framerate: 24,
+    },
+  }));
+}, "Test that encodingInfo rejects if the video configuration contentType has one parameter that isn't codecs");
+
+promise_test(t => {
+  return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
     audio: { contentType: 'video/fgeoa' },
   }));
 }, "Test that encodingInfo rejects if the audio configuration contentType isn't of type audio");
+
+promise_test(t => {
+  return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
+    audio: { contentType: 'audio/webm; codecs="opus"; foo="bar"' },
+  }));
+}, "Test that encodingInfo rejects if the audio configuration contentType has more than one parameters");
+
+promise_test(t => {
+  return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
+    audio: { contentType: 'audio/webm; foo="bar"' },
+  }));
+}, "Test that encodingInfo rejects if the audio configuration contentType has one parameter that isn't codecs");
 
 promise_test(t => {
   return navigator.mediaCapabilities.encodingInfo({
@@ -226,3 +266,46 @@ validVideoCodecs.forEach(codec => {
 }, "Test that encodingInfo returns supported true for the codec " + codec + (isWorkerEnvironment ? "" : " returned by RTCRtpSender.getCapabilities()"))}
 );
 
+promise_test(t => {
+  return navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
+    video: {
+      contentType: 'video/VP9',
+      width: 800,
+      height: 600,
+      bitrate: 3000,
+      framerate: 24,
+      scalabilityMode: 'L1T2',
+    }
+  }).then(ability => {
+    assert_true(ability.supported);
+  });
+}, "Test that encodingInfo accepts scalabilityMode for webrtc video configuration");
+
+promise_test(t => {
+  return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
+    video: {
+      contentType: 'video/VP9',
+      width: 800,
+      height: 600,
+      bitrate: 3000,
+      framerate: 24,
+      colorGamut: 'srgb',
+    }
+  }));
+}, "Test that encodingInfo rejects if colorGamut is specified for type webrtc");
+
+promise_test(t => {
+  return promise_rejects_js(t, TypeError, navigator.mediaCapabilities.encodingInfo({
+    type: 'webrtc',
+    video: {
+      contentType: 'video/VP9',
+      width: 800,
+      height: 600,
+      bitrate: 3000,
+      framerate: 24,
+      transferFunction: 'srgb',
+    }
+  }));
+}, "Test that encodingInfo rejects if transferFunction is specified for type webrtc");

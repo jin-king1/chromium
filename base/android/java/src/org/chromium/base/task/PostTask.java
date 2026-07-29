@@ -15,6 +15,7 @@ import org.chromium.base.ResettersForTesting;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.BuildConfig;
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.NullUnmarked;
 import org.chromium.build.annotations.Nullable;
 
 import java.util.ArrayList;
@@ -45,21 +46,25 @@ public class PostTask {
     // one-way switch (outside of testing) and volatile makes writes to it immediately visible to
     // other threads.
     private static volatile boolean sNativeInitialized;
+    // Temporary boolean for an experiment crbug.com/489983480
+    // shuts down the thread pool when its no longer needed
+    // This variable is read by the main thread, but can be written from either
+    // the main thread or the background thread depending on whether WebView has been
+    // started asynchronously or not.
+    private static volatile boolean sShutdownPostTaskPreNativeThreadPoolEnabled;
+    private static volatile boolean sDisablePreNativeUiTasks;
     private static ChromeThreadPoolExecutor sPrenativeThreadPoolExecutor =
             new ChromeThreadPoolExecutor();
     private static volatile @Nullable Executor sPrenativeThreadPoolExecutorForTesting;
+    private static volatile @Nullable DelayedExecutorForTesting
+            sPrenativeThreadPoolDelayedExecutorForTesting;
     private static final @Nullable ThreadLocal<TaskOriginException> sTaskOrigin =
             ENABLE_TASK_ORIGINS ? new ThreadLocal<>() : null;
     private static final TaskRunner[] sTraitsToRunnerMap =
             new TaskRunner[TaskTraits.UI_TRAITS_END + 1];
 
     static {
-        for (@TaskTraits int i = 0; i <= TaskTraits.THREAD_POOL_TRAITS_END; i++) {
-            sTraitsToRunnerMap[i] = new TaskRunnerImpl(i);
-        }
-        for (@TaskTraits int i = TaskTraits.UI_TRAITS_START; i <= TaskTraits.UI_TRAITS_END; i++) {
-            sTraitsToRunnerMap[i] = new UiThreadTaskRunnerImpl(i);
-        }
+        resetTaskRunner();
     }
 
     // Used by AsyncTask / ChainedTask to auto-cancel tasks from prior tests.
@@ -88,19 +93,17 @@ public class PostTask {
         }
     }
 
+    /** Schedules delayed tasks to run on an Executor after a delay. */
+    public interface DelayedExecutorForTesting {
+        void scheduleDelayedTask(Runnable task, long delay);
+    }
+
     private static boolean isUiTaskTraits(@TaskTraits int taskTraits) {
         return taskTraits >= TaskTraits.UI_TRAITS_START;
     }
 
-    /**
-     * @param taskTraits The TaskTraits that describe the desired TaskRunner.
-     * @return The TaskRunner for the specified TaskTraits.
-     */
-    public static TaskRunner createTaskRunner(@TaskTraits int taskTraits) {
-        if (isUiTaskTraits(taskTraits)) {
-            return sTraitsToRunnerMap[taskTraits];
-        }
-        return new TaskRunnerImpl(taskTraits);
+    public static void setShutdownPostTaskPreNativeThreadPoolEnabled(boolean enabled) {
+        sShutdownPostTaskPreNativeThreadPoolEnabled = enabled;
     }
 
     /**
@@ -126,12 +129,34 @@ public class PostTask {
     }
 
     /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #postTask(int, Runnable)} instead.
+     *
+     * <p>Overload of {@link #postTask(int, Runnable)} for the Java location rewriter.
+     */
+    public static void postTask(
+            @TaskTraits int taskTraits, Runnable task, @Nullable Location location) {
+        postDelayedTask(taskTraits, task, 0, location);
+    }
+
+    /**
      * @param taskTraits The TaskTraits that describe the desired TaskRunner.
      * @param task The task to be run with the specified traits.
      * @param delay The delay in milliseconds before the task can be run.
      */
     public static void postDelayedTask(@TaskTraits int taskTraits, Runnable task, long delay) {
-        sTraitsToRunnerMap[taskTraits].postDelayedTask(task, delay);
+        postDelayedTask(taskTraits, task, delay, null);
+    }
+
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #postDelayedTask(int, Runnable, long)} instead.
+     *
+     * <p>Overload of {@link #postDelayedTask(int, Runnable, long)} for the Java location rewriter.
+     */
+    public static void postDelayedTask(
+            @TaskTraits int taskTraits, Runnable task, long delay, @Nullable Location location) {
+        sTraitsToRunnerMap[taskTraits].postDelayedTask(task, delay, location);
     }
 
     /**
@@ -144,19 +169,32 @@ public class PostTask {
      * @param task The task to be run with the specified traits.
      */
     public static void runOrPostTask(@TaskTraits int taskTraits, Runnable task) {
+        runOrPostTask(taskTraits, task, null);
+    }
+
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #runOrPostTask(int, Runnable)} instead.
+     *
+     * <p>Overload of {@link #runOrPostTask(int, Runnable)} for the Java location rewriter.
+     */
+    public static void runOrPostTask(
+            @TaskTraits int taskTraits, Runnable task, @Nullable Location location) {
         if (canRunTaskImmediately(taskTraits)) {
             task.run();
         } else {
-            postTask(taskTraits, task);
+            postTask(taskTraits, task, location);
         }
     }
 
-    /** Returns true if the traits are UI traits, and the current thread is the UI thread. */
+    /**
+     * Returns true if the traits are UI traits, the current thread is the UI thread and running UI
+     * tasks before native init is allowed.
+     */
     public static boolean canRunTaskImmediately(@TaskTraits int taskTraits) {
-        if (isUiTaskTraits(taskTraits)) {
-            return ThreadUtils.runningOnUiThread();
-        }
-        return false;
+        return isUiTaskTraits(taskTraits)
+                && ThreadUtils.runningOnUiThread()
+                && canRunUiTaskBeforeNativeInit(taskTraits);
     }
 
     /**
@@ -172,7 +210,18 @@ public class PostTask {
      */
     public static <T extends @Nullable Object> T runSynchronously(
             @TaskTraits int taskTraits, Callable<T> c) {
-        return runSynchronouslyInternal(taskTraits, new FutureTask<T>(c));
+        return runSynchronously(taskTraits, c, null);
+    }
+
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #runSynchronously(int, Callable)} instead.
+     *
+     * <p>Overload of {@link #runSynchronously(int, Callable)} for the Java location rewriter.
+     */
+    public static <T extends @Nullable Object> T runSynchronously(
+            @TaskTraits int taskTraits, Callable<T> c, @Nullable Location location) {
+        return runSynchronouslyInternal(taskTraits, new FutureTask<T>(c), location);
     }
 
     /**
@@ -186,15 +235,27 @@ public class PostTask {
      * @param r The task to be run with the specified traits.
      */
     public static void runSynchronously(@TaskTraits int taskTraits, Runnable r) {
-        runSynchronouslyInternal(taskTraits, new FutureTask<Void>(r, null));
+        runSynchronously(taskTraits, r, null);
     }
 
+    /**
+     * Do not call this method directly unless forwarding a location object. Use {@link
+     * #runSynchronously(int, Runnable)} instead.
+     *
+     * <p>Overload of {@link #runSynchronously(int, Runnable)} for the Java location rewriter.
+     */
+    public static void runSynchronously(
+            @TaskTraits int taskTraits, Runnable r, @Nullable Location location) {
+        runSynchronouslyInternal(taskTraits, new FutureTask<@Nullable Void>(r, null), location);
+    }
+
+    @NullUnmarked // https://github.com/uber/NullAway/issues/1075
     private static <T extends @Nullable Object> T runSynchronouslyInternal(
-            @TaskTraits int taskTraits, FutureTask<T> task) {
+            @TaskTraits int taskTraits, FutureTask<T> task, @Nullable Location location) {
         // Ensure no task origin "caused by" is added, since we are wrapping in a RuntimeException
         // anyways.
         Runnable r = ENABLE_TASK_ORIGINS ? populateTaskOrigin(null, task) : task;
-        runOrPostTask(taskTraits, r);
+        runOrPostTask(taskTraits, r, location);
         try {
             return task.get();
         } catch (Exception e) {
@@ -223,6 +284,30 @@ public class PostTask {
             return sPrenativeThreadPoolExecutorForTesting;
         }
         return sPrenativeThreadPoolExecutor;
+    }
+
+    /**
+     * Lets a test override _delayed_ task execution with a thread pool executor.
+     *
+     * <p>Outside of tests, non-UI delayed tasks always wait for native Post Task to execute them.
+     *
+     * @param executor The DelayedExecutorForTesting to post pre-native delayed thread pool tasks.
+     */
+    public static void setPrenativeThreadPoolDelayedExecutorForTesting(
+            DelayedExecutorForTesting executor) {
+        sPrenativeThreadPoolDelayedExecutorForTesting = executor;
+        ResettersForTesting.register(() -> sPrenativeThreadPoolDelayedExecutorForTesting = null);
+    }
+
+    /**
+     * @return The DelayedExecutorForTesting that PrenativeThreadPool delayed tasks should run on.
+     *     Returns null in production, as delayed tasks are only run on native PostTask.
+     */
+    static @Nullable DelayedExecutorForTesting getPrenativeThreadPoolDelayedExecutor() {
+        if (sPrenativeThreadPoolDelayedExecutorForTesting != null) {
+            return sPrenativeThreadPoolDelayedExecutorForTesting;
+        }
+        return null;
     }
 
     public static @Nullable Exception getTaskOrigin() {
@@ -298,6 +383,13 @@ public class PostTask {
         for (TaskRunnerImpl taskRunner : preNativeTaskRunners) {
             taskRunner.initNativeTaskRunner();
         }
+        if (sShutdownPostTaskPreNativeThreadPoolEnabled) {
+            PostTask.postTask(
+                    TaskTraits.BEST_EFFORT,
+                    () -> {
+                        sPrenativeThreadPoolExecutor.shutdown();
+                    });
+        }
     }
 
     /** Drops all queued pre-native tasks. */
@@ -325,13 +417,73 @@ public class PostTask {
             sTestIterationForTesting++;
         }
         sPrenativeThreadPoolExecutorForTesting = null;
+        sPrenativeThreadPoolDelayedExecutorForTesting = null;
         if (taskCount > 0) {
             Log.w(TAG, "%d background task(s) existed after test finished.", taskCount);
         }
     }
 
+    /**
+     * If set to true, prevents directly running or forwarding pre-native non-startup UI tasks to
+     * the Android UI thread handler. Instead, those tasks are left in the pre-native queue and thus
+     * handled by the native task runner.
+     */
+    public static void disablePreNativeUiTasks(boolean disable) {
+        sDisablePreNativeUiTasks = disable;
+    }
+
+    static boolean canRunUiTaskBeforeNativeInit(@TaskTraits int taskTraits) {
+        return taskTraits == TaskTraits.UI_STARTUP || !sDisablePreNativeUiTasks;
+    }
+
     public static void resetUiThreadForTesting() {
         // UI Thread cannot be reset cleanly after native initialization.
         assert !sNativeInitialized;
+    }
+
+    @CalledByNative
+    private static void resetTaskRunner() {
+        for (@TaskTraits int i = 0; i <= TaskTraits.THREAD_POOL_TRAITS_END; i++) {
+            sTraitsToRunnerMap[i] = new TaskRunnerImpl(i);
+        }
+        for (@TaskTraits int i = TaskTraits.UI_TRAITS_START; i <= TaskTraits.UI_TRAITS_END; i++) {
+            sTraitsToRunnerMap[i] = new UiThreadTaskRunnerImpl(i);
+        }
+    }
+
+    public static TaskRunner getTaskRunner(@TaskTraits int taskTraits) {
+        return sTraitsToRunnerMap[taskTraits];
+    }
+
+    public static TaskRunner getUiBestEffortExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.UI_BEST_EFFORT];
+    }
+
+    public static TaskRunner getUiUserVisibleExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.UI_USER_VISIBLE];
+    }
+
+    public static TaskRunner getUiUserBlockingExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.UI_USER_BLOCKING];
+    }
+
+    public static TaskRunner getBackgroundBestEffortExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.BEST_EFFORT];
+    }
+
+    public static TaskRunner getBackgroundBestEffortMayBlockExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.BEST_EFFORT_MAY_BLOCK];
+    }
+
+    public static TaskRunner getBackgroundUserVisibleExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.USER_VISIBLE];
+    }
+
+    public static TaskRunner getBackgroundUserBlockingExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.USER_BLOCKING];
+    }
+
+    public static TaskRunner getBackgroundUserBlockingMayBlockExecutor() {
+        return sTraitsToRunnerMap[TaskTraits.USER_BLOCKING_MAY_BLOCK];
     }
 }

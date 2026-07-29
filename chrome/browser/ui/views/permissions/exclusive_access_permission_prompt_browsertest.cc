@@ -4,46 +4,55 @@
 
 #include "chrome/browser/ui/views/permissions/exclusive_access_permission_prompt.h"
 
+#include <memory>
+#include <variant>
+#include <vector>
+
 #include "base/test/mock_callback.h"
 #include "chrome/browser/ui/permission_bubble/permission_bubble_browser_test_util.h"
 #include "chrome/browser/ui/views/permissions/exclusive_access_permission_prompt_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/content_settings/core/common/content_settings.h"
+#include "components/permissions/permission_prompt_decision.h"
 #include "components/permissions/permission_request.h"
+#include "components/permissions/permission_request_data.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/request_type.h"
+#include "components/permissions/resolvers/content_setting_permission_resolver.h"
+#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 
 using testing::_;
 
 class PermissionPromptDelegate : public TestPermissionBubbleViewDelegate {
  public:
-  explicit PermissionPromptDelegate(Browser* browser) : browser_(browser) {}
+  explicit PermissionPromptDelegate(content::WebContents* web_contents)
+      : web_contents_(web_contents) {}
 
   content::WebContents* GetAssociatedWebContents() override {
-    return browser_->tab_strip_model()->GetActiveWebContents();
+    return web_contents_;
   }
 
-  void Accept() override {
-    for (auto request : Requests()) {
-      request->PermissionGranted(/*is_one_time=*/false);
+  void Accept(const PromptOptions& prompt_options) override {
+    for (const auto& request : Requests()) {
+      request->PermissionGranted(prompt_options, /*is_one_time=*/false);
     }
   }
 
-  void AcceptThisTime() override {
-    for (auto request : Requests()) {
-      request->PermissionGranted(/*is_one_time=*/true);
+  void AcceptThisTime(const PromptOptions& prompt_options) override {
+    for (const auto& request : Requests()) {
+      request->PermissionGranted(prompt_options, /*is_one_time=*/true);
     }
   }
 
-  void Deny() override {
-    for (auto request : Requests()) {
+  void Deny(const PromptOptions& prompt_options) override {
+    for (const auto& request : Requests()) {
       request->PermissionDenied();
     }
   }
 
  private:
-  raw_ptr<Browser> browser_;
+  raw_ptr<content::WebContents> web_contents_;
 };
 
 class ExclusiveAccessPermissionPromptInteractiveTest
@@ -51,7 +60,8 @@ class ExclusiveAccessPermissionPromptInteractiveTest
  public:
   void PreRunTestOnMainThread() override {
     InProcessBrowserTest::PreRunTestOnMainThread();
-    prompt_delegate_ = std::make_unique<PermissionPromptDelegate>(browser());
+    prompt_delegate_ = std::make_unique<PermissionPromptDelegate>(
+        browser()->GetTabStripModel()->GetActiveWebContents());
   }
 
   void PostRunTestOnMainThread() override {
@@ -60,12 +70,30 @@ class ExclusiveAccessPermissionPromptInteractiveTest
   }
 
  protected:
+  std::unique_ptr<permissions::PermissionRequest> CreateKeyboardRequest() {
+    return std::make_unique<permissions::PermissionRequest>(
+        std::make_unique<permissions::PermissionRequestData>(
+            permissions::RequestType::kKeyboardLock,
+            /*user_gesture=*/false, GURL("https://example.com")),
+        keyboard_callback_.Get());
+  }
+
+  base::MockCallback<permissions::PermissionRequest::PermissionDecidedCallback>
+      pointer_callback_;
+
+  std::unique_ptr<permissions::PermissionRequest> CreatePointerRequest() {
+    return std::make_unique<permissions::PermissionRequest>(
+        std::make_unique<permissions::PermissionRequestData>(
+            permissions::RequestType::kPointerLock,
+            /*user_gesture=*/false, GURL("https://example.com")),
+        pointer_callback_.Get());
+  }
+
   std::unique_ptr<ExclusiveAccessPermissionPrompt> CreatePrompt(
-      std::vector<raw_ptr<permissions::PermissionRequest, VectorExperimental>>
-          requests) {
-    prompt_delegate_->set_requests(requests);
+      std::vector<std::unique_ptr<permissions::PermissionRequest>> requests) {
+    prompt_delegate_->set_requests(std::move(requests));
     return std::make_unique<ExclusiveAccessPermissionPrompt>(
-        browser(), browser()->tab_strip_model()->GetActiveWebContents(),
+        browser()->tab_strip_model()->GetActiveWebContents(),
         prompt_delegate_.get());
   }
 
@@ -94,62 +122,102 @@ class ExclusiveAccessPermissionPromptInteractiveTest
 
   base::MockCallback<permissions::PermissionRequest::PermissionDecidedCallback>
       keyboard_callback_;
-  permissions::PermissionRequest keyboard_request_{
-      GURL("https://example.com"), permissions::RequestType::kKeyboardLock,
-      /*has_gesture=*/false, keyboard_callback_.Get(), base::OnceClosure()};
-  base::MockCallback<permissions::PermissionRequest::PermissionDecidedCallback>
-      pointer_callback_;
-  permissions::PermissionRequest pointer_request_{
-      GURL("https://example.com"), permissions::RequestType::kPointerLock,
-      /*has_gesture=*/false, pointer_callback_.Get(), base::OnceClosure()};
+
   std::unique_ptr<PermissionPromptDelegate> prompt_delegate_;
 };
 
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessPermissionPromptInteractiveTest,
-                       AllowPermisison) {
+                       AllowPermission) {
+  std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
+  requests.emplace_back(CreateKeyboardRequest());
   std::unique_ptr<ExclusiveAccessPermissionPrompt> prompt =
-      CreatePrompt({&keyboard_request_});
+      CreatePrompt(std::move(requests));
   EXPECT_CALL(keyboard_callback_,
-              Run(CONTENT_SETTING_ALLOW, /*is_one_time=*/false, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kAllow,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   PressAllowButton(prompt.get());
 }
 
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessPermissionPromptInteractiveTest,
-                       AllowPermisisonThisTime) {
+                       AllowPermissionThisTime) {
+  std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
+  requests.emplace_back(CreateKeyboardRequest());
   std::unique_ptr<ExclusiveAccessPermissionPrompt> prompt =
-      CreatePrompt({&keyboard_request_});
+      CreatePrompt(std::move(requests));
   EXPECT_CALL(keyboard_callback_,
-              Run(CONTENT_SETTING_ALLOW, /*is_one_time=*/true, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kAllowThisTime,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   PressAllowThisTimeButton(prompt.get());
 }
 
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessPermissionPromptInteractiveTest,
                        DenyPermisison) {
+  std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
+  requests.emplace_back(CreateKeyboardRequest());
   std::unique_ptr<ExclusiveAccessPermissionPrompt> prompt =
-      CreatePrompt({&keyboard_request_});
+      CreatePrompt(std::move(requests));
   EXPECT_CALL(keyboard_callback_,
-              Run(CONTENT_SETTING_BLOCK, /*is_one_time=*/false, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kDeny,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   PressDenyButton(prompt.get());
 }
 
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessPermissionPromptInteractiveTest,
                        AllowMultiplePermisisons) {
+  std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
+  requests.emplace_back(CreateKeyboardRequest());
+  requests.emplace_back(CreatePointerRequest());
   std::unique_ptr<ExclusiveAccessPermissionPrompt> prompt =
-      CreatePrompt({&keyboard_request_, &pointer_request_});
+      CreatePrompt(std::move(requests));
   EXPECT_CALL(keyboard_callback_,
-              Run(CONTENT_SETTING_ALLOW, /*is_one_time=*/false, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kAllow,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   EXPECT_CALL(pointer_callback_,
-              Run(CONTENT_SETTING_ALLOW, /*is_one_time=*/false, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kAllow,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   PressAllowButton(prompt.get());
 }
 
 IN_PROC_BROWSER_TEST_F(ExclusiveAccessPermissionPromptInteractiveTest,
                        DenyMultiplePermisisons) {
+  std::vector<std::unique_ptr<permissions::PermissionRequest>> requests;
+  requests.emplace_back(CreateKeyboardRequest());
+  requests.emplace_back(CreatePointerRequest());
   std::unique_ptr<ExclusiveAccessPermissionPrompt> prompt =
-      CreatePrompt({&keyboard_request_, &pointer_request_});
+      CreatePrompt(std::move(requests));
   EXPECT_CALL(keyboard_callback_,
-              Run(CONTENT_SETTING_BLOCK, /*is_one_time=*/false, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kDeny,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   EXPECT_CALL(pointer_callback_,
-              Run(CONTENT_SETTING_BLOCK, /*is_one_time=*/false, _));
+              Run(
+                  permissions::PermissionPromptDecision{
+                      .overall_decision = PermissionDecision::kDeny,
+                      .prompt_options = std::monostate(),
+                      .is_final = true},
+                  _));
   PressDenyButton(prompt.get());
 }

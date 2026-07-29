@@ -23,6 +23,8 @@
 #include "third_party/blink/public/mojom/loader/resource_load_info.mojom-shared.h"
 #include "url/gurl.h"
 
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
 namespace extensions {
 namespace declarative_net_request {
 
@@ -45,6 +47,11 @@ class ActionTrackerTest : public DNRTestBase {
     action_tracker_->SetCheckTabIdOnRuleMatchForTest(false);
   }
 
+  void TearDown() override {
+    action_tracker_.reset();
+    DNRTestBase::TearDown();
+  }
+
  protected:
   using RequestActionType = RequestAction::Type;
 
@@ -58,7 +65,7 @@ class ActionTrackerTest : public DNRTestBase {
     ASSERT_TRUE(base::CreateDirectory(extension_dir));
     constexpr char kRulesetID[] = "id";
     constexpr char kJSONRulesFilename[] = "rules_file.json";
-    TestRulesetInfo info(kRulesetID, kJSONRulesFilename, base::Value::List());
+    TestRulesetInfo info(kRulesetID, kJSONRulesFilename, base::ListValue());
     WriteManifestAndRuleset(
         extension_dir, info,
         std::vector<std::string>({URLPattern::kAllUrlsPattern}), flags);
@@ -83,11 +90,11 @@ class ActionTrackerTest : public DNRTestBase {
       std::string_view url,
       WebRequestResourceType web_request_type,
       int tab_id) {
-    const int kRendererId = 1;
+    const content::ChildProcessId kRendererId(1);
     WebRequestInfoInitParams info;
     info.url = GURL(url);
     info.web_request_type = web_request_type;
-    info.render_process_id = kRendererId;
+    info.global_id.child_id = kRendererId;
     info.frame_data.tab_id = tab_id;
 
     if (web_request_type == WebRequestResourceType::MAIN_FRAME) {

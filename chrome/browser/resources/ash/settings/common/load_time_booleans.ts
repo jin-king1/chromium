@@ -36,10 +36,6 @@ export function isPlayStoreAvailable(): boolean {
   return loadTimeData.getBoolean('isPlayStoreAvailable');
 }
 
-export function isPluginVmAvailable(): boolean {
-  return loadTimeData.getBoolean('isPluginVmAvailable');
-}
-
 export function isAppParentalControlsFeatureAvailable(): boolean {
   return loadTimeData.getBoolean('isAppParentalControlsFeatureAvailable');
 }
@@ -56,10 +52,6 @@ export function isCrostiniSupported(): boolean {
 // Device page
 export function isExternalStorageEnabled(): boolean {
   return loadTimeData.getBoolean('isExternalStorageEnabled');
-}
-
-export function isInputDeviceSettingsSplitEnabled(): boolean {
-  return loadTimeData.getBoolean('enableInputDeviceSettingsSplit');
 }
 
 export function isDisplayBrightnessControlInSettingsEnabled(): boolean {
@@ -80,6 +72,11 @@ export function isAccountManagerEnabled(): boolean {
   return loadTimeData.getBoolean('isAccountManagerEnabled');
 }
 
+// Lockscreen page
+export function isManagedLocalPinAndPasswordEnabled(): boolean {
+  return loadTimeData.getBoolean('managedLocalPinAndPasswordEnabled');
+}
+
 // Reset page
 export function isPowerwashAllowed(): boolean {
   return loadTimeData.getBoolean('allowPowerwash');
@@ -91,10 +88,6 @@ export function isSanitizeAllowed(): boolean {
 }
 
 // Search page
-export function isAssistantAllowed(): boolean {
-  return loadTimeData.getBoolean('isAssistantAllowed');
-}
-
 export function isQuickAnswersSupported(): boolean {
   return loadTimeData.getBoolean('isQuickAnswersSupported');
 }
@@ -109,10 +102,6 @@ export function isMagicBoostNoticeBannerVisible(): boolean {
 
 export function isLobsterSettingsToggleVisible(): boolean {
   return loadTimeData.getBoolean('isLobsterSettingsToggleVisible');
-}
-
-export function isSunfishSettingsToggleVisible(): boolean {
-  return loadTimeData.getBoolean('isSunfishSettingsToggleVisible');
 }
 
 export function isScannerSettingsToggleVisible(): boolean {

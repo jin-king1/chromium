@@ -9,6 +9,7 @@
 
 #include "base/command_line.h"
 #include "base/functional/bind.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "cc/base/switches.h"
@@ -19,7 +20,6 @@
 #include "content/browser/gpu/gpu_process_host.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
-#include "gpu/command_buffer/service/gpu_switches.h"
 #include "gpu/command_buffer/service/service_utils.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "gpu/config/gpu_switches.h"
@@ -49,16 +49,6 @@ bool GetUintFromSwitch(const base::CommandLine* command_line,
 
 namespace content {
 
-bool ShouldEnableAndroidSurfaceControl(const base::CommandLine& cmd_line) {
-#if !BUILDFLAG(IS_ANDROID)
-  return false;
-#else
-  if (viz::PreferRGB565ResourcesForDisplay())
-    return false;
-  return features::IsAndroidSurfaceControlEnabled();
-#endif
-}
-
 const gpu::GpuPreferences GetGpuPreferencesFromCommandLine() {
   DCHECK(base::CommandLine::InitializedForCurrentProcess());
   const base::CommandLine* command_line =
@@ -79,7 +69,8 @@ const gpu::GpuPreferences GetGpuPreferencesFromCommandLine() {
 #endif
   gpu_preferences.disable_software_rasterizer =
       command_line->HasSwitch(switches::kDisableSoftwareRasterizer) ||
-      !features::IsSwiftShaderAllowed(command_line);
+      (!features::IsSwiftShaderAllowed(command_line) &&
+       !features::IsWARPAllowed(command_line));
   gpu_preferences.log_gpu_control_list_decisions =
       command_line->HasSwitch(switches::kLogGpuControlListDecisions);
   gpu_preferences.gpu_startup_dialog =
@@ -99,9 +90,6 @@ const gpu::GpuPreferences GetGpuPreferencesFromCommandLine() {
 
   gpu_preferences.enable_gpu_benchmarking_extension =
       command_line->HasSwitch(switches::kEnableGpuBenchmarking);
-
-  gpu_preferences.enable_android_surface_control =
-      ShouldEnableAndroidSurfaceControl(*command_line);
 
   gpu_preferences.enable_native_gpu_memory_buffers =
       command_line->HasSwitch(switches::kEnableNativeGpuMemoryBuffers);

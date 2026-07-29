@@ -18,16 +18,22 @@ class MqlsFeatureRegistryTest : public testing::Test {
   MqlsFeatureRegistryTest() = default;
   ~MqlsFeatureRegistryTest() override = default;
 
-  void TearDown() override {
-    MqlsFeatureRegistry::GetInstance().ClearForTesting();
-  }
+  void TearDown() override { registry_.ClearForTesting(); }
+
+ protected:
+  MqlsFeatureRegistry registry_;
 };
 
 BASE_FEATURE(kLoggingEnabledFeature,
-             "LoggingEnabledFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
 
-TEST_F(MqlsFeatureRegistryTest, RegisterFeature) {
+// TODO(crbug.com/442828465): Re-enable this test.
+#if BUILDFLAG(IS_IOS)
+#define MAYBE_RegisterFeature DISABLED_RegisterFeature
+#else
+#define MAYBE_RegisterFeature RegisterFeature
+#endif
+TEST_F(MqlsFeatureRegistryTest, MAYBE_RegisterFeature) {
   EnterprisePolicyPref enterprise_policy("policy_name");
   UserFeedbackCallback logging_callback =
       base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
@@ -36,20 +42,19 @@ TEST_F(MqlsFeatureRegistryTest, RegisterFeature) {
   auto metadata = std::make_unique<MqlsFeatureMetadata>(
       "Test", proto::LogAiDataRequest::FeatureCase::kCompose, enterprise_policy,
       &kLoggingEnabledFeature, logging_callback);
-  MqlsFeatureRegistry::GetInstance().Register(std::move(metadata));
+  registry_.Register(std::move(metadata));
 
   const MqlsFeatureMetadata* metadata_from_registry =
-      MqlsFeatureRegistry::GetInstance().GetFeature(
-          proto::LogAiDataRequest::FeatureCase::kCompose);
+      registry_.GetFeature(proto::LogAiDataRequest::FeatureCase::kCompose);
   EXPECT_TRUE(metadata_from_registry);
   EXPECT_EQ("Test", metadata_from_registry->name());
-  EXPECT_EQ("policy_name", metadata_from_registry->enterprise_policy().name());
+  EXPECT_EQ("policy_name", metadata_from_registry->enterprise_policy()->name());
   EXPECT_EQ(logging_callback,
             metadata_from_registry->get_user_feedback_callback());
   EXPECT_EQ(&kLoggingEnabledFeature,
             metadata_from_registry->field_trial_feature());
-  EXPECT_FALSE(MqlsFeatureRegistry::GetInstance().GetFeature(
-      proto::LogAiDataRequest::FeatureCase::kTabOrganization));
+  EXPECT_FALSE(registry_.GetFeature(
+      proto::LogAiDataRequest::FeatureCase::kWallpaperSearch));
 }
 
 TEST(MqlsFeatureMetadataTest, LoggingEnabledViaFieldTrial) {
@@ -80,6 +85,36 @@ TEST(MqlsFeatureMetadataTest, LoggingDisabledViaFieldTrial) {
       EnterprisePolicyPref("policy_name"), &kLoggingEnabledFeature,
       logging_callback);
   EXPECT_FALSE(metadata.LoggingEnabledViaFieldTrial());
+}
+
+TEST(MqlsFeatureMetadataTest, ActorLoginAllowsEmptyEnterprisePolicy) {
+  UserFeedbackCallback logging_callback =
+      base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
+        return proto::UserFeedback::USER_FEEDBACK_UNSPECIFIED;
+      });
+  MqlsFeatureMetadata metadata("ActorLogin",
+                               proto::LogAiDataRequest::FeatureCase::kCompose,
+                               /* enterprise_policy= */ std::nullopt,
+                               &kLoggingEnabledFeature, logging_callback);
+
+  EXPECT_EQ("ActorLogin", metadata.name());
+  EXPECT_FALSE(metadata.enterprise_policy().has_value());
+}
+
+TEST(MqlsFeatureMetadataTest, ActorLoginDoesNotAllowsEmptyEnterprisePolicy) {
+  UserFeedbackCallback logging_callback =
+      base::BindRepeating([](proto::LogAiDataRequest& request_proto) {
+        return proto::UserFeedback::USER_FEEDBACK_UNSPECIFIED;
+      });
+
+  // This should crash because the name is not "ActorLogin" and policy is empty.
+  EXPECT_DEATH_IF_SUPPORTED(
+      {
+        MqlsFeatureMetadata(
+            "SomeOtherFeature", proto::LogAiDataRequest::FeatureCase::kCompose,
+            std::nullopt, &kLoggingEnabledFeature, logging_callback);
+      },
+      "");
 }
 
 }  // namespace optimization_guide

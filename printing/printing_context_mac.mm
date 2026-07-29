@@ -28,15 +28,28 @@
 #include "printing/mojom/print.mojom.h"
 #include "printing/print_job_constants_cups.h"
 #include "printing/print_settings_initializer_mac.h"
-#include "printing/printing_features.h"
 #include "printing/units.h"
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
+#include "base/files/file_util.h"
 #include "base/numerics/safe_conversions.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/types/expected.h"
 #endif
 
 namespace printing {
+
+// Not in an anonymous namespace so it can be friends with
+// base::ScopedAllowBlocking.
+base::FilePath GetAbsoluteSystemDestinationLocation(
+    const base::FilePath& file_path) {
+  // Since `file_path` is a path that the user just picked, it likely will not
+  // block for too long.
+  base::ScopedAllowBlocking allow_blocking;
+  // Capture the absolute path to resolve symlinks. Otherwise
+  // ApplySystemDestination() will fail when it passes a symlink into macOS.
+  return base::MakeAbsoluteFilePath(file_path);
+}
 
 namespace {
 
@@ -143,28 +156,36 @@ base::expected<std::vector<uint8_t>, mojom::ResultCode> CaptureSystemPageFormat(
 base::expected<base::apple::ScopedCFTypeRef<CFStringRef>, mojom::ResultCode>
 CaptureSystemDestinationFormat(PMPrintSession& print_session,
                                PMPrintSettings& print_settings) {
-  CFStringRef destination_format_ref = nullptr;
+  base::apple::ScopedCFTypeRef<CFStringRef> destination_format_ref;
   OSStatus status = PMSessionCopyDestinationFormat(
-      print_session, print_settings, &destination_format_ref);
+      print_session, print_settings, destination_format_ref.InitializeInto());
   if (status != noErr) {
     OSSTATUS_LOG(ERROR, status) << "Failed to get printing destination format";
     return base::unexpected(mojom::ResultCode::kFailed);
   }
-  return base::apple::ScopedCFTypeRef<CFStringRef>(destination_format_ref);
+  return destination_format_ref;
 }
 
 base::expected<base::apple::ScopedCFTypeRef<CFURLRef>, mojom::ResultCode>
 CaptureSystemDestinationLocation(PMPrintSession& print_session,
                                  PMPrintSettings& print_settings) {
-  CFURLRef destination_location_ref = nullptr;
+  base::apple::ScopedCFTypeRef<CFURLRef> destination_location_ref;
   OSStatus status = PMSessionCopyDestinationLocation(
-      print_session, print_settings, &destination_location_ref);
+      print_session, print_settings, destination_location_ref.InitializeInto());
   if (status != noErr) {
     OSSTATUS_LOG(ERROR, status)
         << "Failed to get printing destination location";
     return base::unexpected(mojom::ResultCode::kFailed);
   }
-  return base::apple::ScopedCFTypeRef<CFURLRef>(destination_location_ref);
+  base::FilePath file_path =
+      base::apple::CFURLToFilePath(destination_location_ref.get());
+  if (!file_path.empty()) {
+    file_path = GetAbsoluteSystemDestinationLocation(file_path);
+    if (!file_path.empty()) {
+      return base::apple::FilePathToCFURL(file_path);
+    }
+  }
+  return destination_location_ref;
 }
 
 mojom::ResultCode CaptureSystemPrintDialogData(NSPrintInfo* print_info,
@@ -207,7 +228,7 @@ mojom::ResultCode CaptureSystemPrintDialogData(NSPrintInfo* print_info,
     return destination_location.error();
   }
 
-  base::Value::Dict dialog_data;
+  base::DictValue dialog_data;
   dialog_data.Set(kMacSystemPrintDialogDataPrintSettings,
                   std::move(print_settings_data.value()));
   dialog_data.Set(kMacSystemPrintDialogDataPageFormat,
@@ -219,7 +240,7 @@ mojom::ResultCode CaptureSystemPrintDialogData(NSPrintInfo* print_info,
         base::SysCFStringRefToUTF8(destination_format.value().get()));
   }
   if (destination_location.value()) {
-    dialog_data.Set(kMacSystemPrintDialogDataDestinationLocation,
+    dialog_data.Set(kMacSystemPrintDialogDataDestinationFileUrl,
                     base::SysCFStringRefToUTF8(
                         CFURLGetString(destination_location.value().get())));
   }
@@ -228,7 +249,7 @@ mojom::ResultCode CaptureSystemPrintDialogData(NSPrintInfo* print_info,
 }
 
 mojom::ResultCode ApplySystemPrintSettings(
-    const base::Value::Dict& system_print_dialog_data,
+    const base::DictValue& system_print_dialog_data,
     NSPrintInfo* print_info,
     PMPrintSession& print_session,
     PMPrintSettings& print_settings) {
@@ -268,7 +289,7 @@ mojom::ResultCode ApplySystemPrintSettings(
 }
 
 mojom::ResultCode ApplySystemPageFormat(
-    const base::Value::Dict& system_print_dialog_data,
+    const base::DictValue& system_print_dialog_data,
     NSPrintInfo* print_info,
     PMPrintSession& print_session,
     PMPageFormat& page_format) {
@@ -307,7 +328,7 @@ mojom::ResultCode ApplySystemPageFormat(
 
 mojom::ResultCode ApplySystemDestination(
     const std::u16string& device_name,
-    const base::Value::Dict& system_print_dialog_data,
+    const base::DictValue& system_print_dialog_data,
     PMPrintSession& print_session,
     PMPrintSettings& print_settings) {
   std::optional<int> destination_type = system_print_dialog_data.FindInt(
@@ -321,7 +342,7 @@ mojom::ResultCode ApplySystemDestination(
           kMacSystemPrintDialogDataDestinationFormat);
   const std::string* destination_location_str =
       system_print_dialog_data.FindString(
-          kMacSystemPrintDialogDataDestinationLocation);
+          kMacSystemPrintDialogDataDestinationFileUrl);
 
   base::apple::ScopedCFTypeRef<CFStringRef> destination_format;
   if (destination_format_str) {
@@ -331,11 +352,10 @@ mojom::ResultCode ApplySystemDestination(
 
   base::apple::ScopedCFTypeRef<CFURLRef> destination_location;
   if (destination_location_str) {
-    destination_location.reset(CFURLCreateWithFileSystemPath(
+    destination_location.reset(CFURLCreateWithString(
         kCFAllocatorDefault,
         base::SysUTF8ToCFStringRef(*destination_location_str).get(),
-        kCFURLPOSIXPathStyle,
-        /*isDirectory=*/FALSE));
+        /*baseURL=*/nullptr));
   }
 
   base::apple::ScopedCFTypeRef<CFStringRef> destination_name(
@@ -366,7 +386,7 @@ mojom::ResultCode ApplySystemDestination(
 
 mojom::ResultCode ApplySystemPrintDialogData(
     const std::u16string& device_name,
-    const base::Value::Dict& system_print_dialog_data,
+    const base::DictValue& system_print_dialog_data,
     NSPrintInfo* print_info) {
   PMPrintSession print_session =
       static_cast<PMPrintSession>([print_info PMPrintSession]);
@@ -395,13 +415,15 @@ mojom::ResultCode ApplySystemPrintDialogData(
 // static
 std::unique_ptr<PrintingContext> PrintingContext::CreateImpl(
     Delegate* delegate,
-    ProcessBehavior process_behavior) {
-  return std::make_unique<PrintingContextMac>(delegate, process_behavior);
+    OutOfProcessBehavior out_of_process_behavior) {
+  return std::make_unique<PrintingContextMac>(delegate,
+                                              out_of_process_behavior);
 }
 
-PrintingContextMac::PrintingContextMac(Delegate* delegate,
-                                       ProcessBehavior process_behavior)
-    : PrintingContext(delegate, process_behavior),
+PrintingContextMac::PrintingContextMac(
+    Delegate* delegate,
+    OutOfProcessBehavior out_of_process_behavior)
+    : PrintingContext(delegate, out_of_process_behavior),
       print_info_([NSPrintInfo.sharedPrintInfo copy]) {}
 
 PrintingContextMac::~PrintingContextMac() {
@@ -457,7 +479,8 @@ void PrintingContextMac::AskUserForSettings(int max_pages,
         InitPrintSettingsFromPrintInfo();
         mojom::ResultCode result = mojom::ResultCode::kSuccess;
 #if BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
-        if (process_behavior() == ProcessBehavior::kOopEnabledSkipSystemCalls) {
+        if (out_of_process_behavior() ==
+            OutOfProcessBehavior::kEnabledSkipSystemCalls) {
           // This is running in the browser process, where system calls are
           // normally not allowed except for this system dialog exception.
           // Capture the setting here to be transmitted to a PrintBackend
@@ -721,13 +744,6 @@ bool PrintingContextMac::SetDuplexModeInPrintSettings(mojom::DuplexMode mode) {
 bool PrintingContextMac::SetOutputColor(int color_mode) {
   const mojom::ColorModel color_model = ColorModeToColorModel(color_mode);
 
-  if (!base::FeatureList::IsEnabled(features::kCupsIppPrintingBackend)) {
-    std::string color_setting_name;
-    std::string color_value;
-    GetColorModelForModel(color_model, &color_setting_name, &color_value);
-    return SetKeyValue(color_setting_name, color_value);
-  }
-
   // First, set the default CUPS IPP output color.
   if (!SetKeyValue(CUPS_PRINT_COLOR_MODE,
                    GetIppColorModelForModel(color_model))) {
@@ -801,13 +817,15 @@ mojom::ResultCode PrintingContextMac::NewDocument(
   in_print_job_ = true;
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING)
-  if (process_behavior() == ProcessBehavior::kOopEnabledSkipSystemCalls) {
+  if (out_of_process_behavior() ==
+      OutOfProcessBehavior::kEnabledSkipSystemCalls) {
     return mojom::ResultCode::kSuccess;
   }
 #endif
 
 #if BUILDFLAG(ENABLE_OOP_PRINTING_NO_OOP_BASIC_PRINT_DIALOG)
-  if (process_behavior() == ProcessBehavior::kOopEnabledPerformSystemCalls &&
+  if (out_of_process_behavior() ==
+          OutOfProcessBehavior::kEnabledPerformSystemCalls &&
       !settings_->system_print_dialog_data().empty()) {
     // Settings which the browser process captured from the system dialog now
     // need to be applied to the printing context here which is running in a

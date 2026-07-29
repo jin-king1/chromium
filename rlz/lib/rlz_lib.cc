@@ -20,7 +20,6 @@
 #include "base/threading/platform_thread.h"
 #include "base/time/time.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "net/base/backoff_entry.h"
 #include "rlz/lib/assert.h"
 #include "rlz/lib/financial_ping.h"
@@ -198,6 +197,8 @@ bool GetProductEventsAsCgiHelper(rlz_lib::Product product, char* cgi,
   std::vector<std::string> events;
   if (!store->ReadProductEvents(product, &events))
     return false;
+
+  std::ranges::sort(events);
 
   // Append the events to the buffer.
   size_t num_values = 0;

@@ -5,14 +5,25 @@
 #ifndef COMPONENTS_REGIONAL_CAPABILITIES_ACCESS_COUNTRY_ACCESS_REASON_H_
 #define COMPONENTS_REGIONAL_CAPABILITIES_ACCESS_COUNTRY_ACCESS_REASON_H_
 
+#include "base/gtest_prod_util.h"
+
+class TemplateURLService;
+class ProfileInternalsHandler;
+class SearchEngineChoiceDialogService;
+class RegionalCapabilitiesInternalsUI;
+
+namespace search_engines {
+class SearchEngineChoiceService;
+}
+
+namespace metrics::private_metrics {
+class PumaService;
+}
+
 namespace regional_capabilities {
 
 // Keys for `CountryIdHolder::GetRestricted()`.
 enum class CountryAccessReason {
-  // TODO(crbug.com/328040066): To be removed when the migration away from
-  // `SearchEngineChoiceService::GetCountryId()` is done.
-  kSearchEngineChoiceServiceDeprecatedForwardCall,
-
   // Used to check whether the current country is in scope for re-triggering
   // the search engine choice screen.
   // Added with the initial access control migration, see crbug.com/328040066.
@@ -23,14 +34,35 @@ enum class CountryAccessReason {
   // Added with the initial access control migration, see crbug.com/328040066.
   kSearchEngineChoiceServiceCacheChoiceScreenData,
 
-  // Used for computing of the list of prepopulated search engines.
+  // Used to determine whether the local database of search engines needs to
+  // be refreshed with the latest prepopulated data set. The value obtained
+  // from this access will be cached in the DB to compared later with the
+  // current client state.
   // Added with the initial access control migration, see crbug.com/328040066.
-  kTemplateURLPrepopulateDataResolution,
+  kTemplateURLServiceDatabaseMetadataCaching,
+
+  // Used to print the profile country in the `chrome://profile-internals`
+  // debug page, which intends to help investigate b:380002162.
+  // Added with the initial access control migration, see crbug.com/328040066.
+  kProfileInternalsDisplayInDebugUi,
+
+  // Used in crash debug keys related to investigating crbug.com/318824817.
+  // Added with the initial access control migration, see crbug.com/328040066.
+  // TODO(crbug.com/318824817): Remove when the bug root cause is found.
+  kSearchEngineChoiceNotifyChoiceMadeDebug,
+
+  // Used to print debug info in the `chrome://regional-capabilities-internals`
+  // Added with the ease QA & debugging, see crbug.com/424381019.
+  kRegionalCapabilitiesInternalsDisplayInDebugUi,
+
+  // Used by Private Metrics to include the profile country in private metrics
+  // reports.
+  // Access Request: crbug.com/461922774.
+  kPrivateUserMetricsReporting,
 };
 
 // Pass key inspired from `base::NonCopyablePassKey` that also allows specifying
 // an access reason, for more granularity than class-level access control.
-template <typename T>
 class CountryAccessKey {
  public:
   CountryAccessKey(const CountryAccessKey&) = delete;
@@ -39,7 +71,15 @@ class CountryAccessKey {
   const CountryAccessReason reason;
 
  private:
-  friend T;
+  friend class search_engines::SearchEngineChoiceService;
+  friend class RegionalCapabilitiesService;
+  friend class ::TemplateURLService;
+  friend class ::ProfileInternalsHandler;
+  friend class ::SearchEngineChoiceDialogService;
+  friend class ::RegionalCapabilitiesInternalsUI;
+  friend class metrics::private_metrics::PumaService;
+  FRIEND_TEST_ALL_PREFIXES(RegionalCapabilitiesCountryIdTest, GetRestricted);
+
   explicit CountryAccessKey(CountryAccessReason reason) : reason(reason) {}
 };
 

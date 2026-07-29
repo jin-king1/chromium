@@ -10,7 +10,6 @@
 #include "content/browser/renderer_host/media/video_capture_provider.h"
 #include "content/public/browser/video_capture_device_launcher.h"
 #include "media/capture/mojom/video_capture_types.mojom.h"
-#include "services/video_effects/public/mojom/video_effects_processor.mojom-forward.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
 namespace content {
@@ -25,19 +24,31 @@ class MockVideoCaptureProvider : public VideoCaptureProvider {
               CreateDeviceLauncher,
               (),
               (override));
-  MOCK_METHOD(void,
-              OpenNativeScreenCapturePicker,
-              (DesktopMediaID::Type type,
-               base::OnceCallback<void(DesktopMediaID::Id)> created_callback,
-               base::OnceCallback<void(webrtc::DesktopCapturer::Source)>
-                   picker_callback,
-               base::OnceCallback<void()> cancel_callback,
-               base::OnceCallback<void()> error_callback),
-              (override));
+  MOCK_METHOD(
+      void,
+      OpenNativeScreenCapturePicker,
+      (DesktopMediaID::Type type,
+       base::OnceCallback<void(DesktopMediaID::Id)> created_callback,
+       base::OnceCallback<void(webrtc::DesktopCapturer::Source)>
+           picker_callback,
+       base::OnceCallback<void()> cancel_callback,
+       base::OnceCallback<void()> error_callback,
+       base::OnceCallback<void(DesktopMediaID::Id)> stop_audio_callback),
+      (override));
   MOCK_METHOD(void,
               CloseNativeScreenCapturePicker,
               (DesktopMediaID device_id),
               (override));
+#if BUILDFLAG(IS_MAC)
+  MOCK_METHOD(
+      void,
+      GetApplicationAudioCaptureId,
+      (DesktopMediaID::Id session_id,
+       base::OnceCallback<void(
+           const std::optional<desktop_capture::ApplicationAudioCaptureId>&)>
+           callback),
+      (override));
+#endif
 };
 
 class MockVideoCaptureDeviceLauncher : public VideoCaptureDeviceLauncher {
@@ -53,11 +64,7 @@ class MockVideoCaptureDeviceLauncher : public VideoCaptureDeviceLauncher {
                base::WeakPtr<media::VideoFrameReceiver> receiver,
                base::OnceClosure connection_lost_cb,
                Callbacks* callbacks,
-               base::OnceClosure done_cb,
-               mojo::PendingRemote<video_effects::mojom::VideoEffectsProcessor>
-                   video_effects_processor,
-               mojo::PendingRemote<media::mojom::ReadonlyVideoEffectsManager>
-                   readonly_video_effects_manager),
+               base::OnceClosure done_cb),
               (override));
 
   MOCK_METHOD(void, AbortLaunch, ());

@@ -12,6 +12,7 @@
 #include "base/time/time.h"
 #include "base/uuid.h"
 #include "base/values.h"
+#include "chromeos/ash/services/coral/public/mojom/coral_service.mojom.h"
 #include "components/app_restore/restore_data.h"
 #include "components/sync_device_info/device_info.h"
 
@@ -125,13 +126,6 @@ class ASH_PUBLIC_EXPORT DeskTemplate {
     device_form_factor_ = device_form_factor;
   }
 
-  // The lacros profile ID associated with the saved desk. Only used when type
-  // is `kSaveAndRecall`.
-  void set_lacros_profile_id(uint64_t lacros_profile_id) {
-    lacros_profile_id_ = lacros_profile_id;
-  }
-  uint64_t lacros_profile_id() const { return lacros_profile_id_; }
-
   // Used in cases where copies of a DeskTemplate are needed to be made.
   // This specifically used in the DeskSyncBridge which requires a map
   // of DeskTemplate unique pointers to be valid and needs to pass
@@ -162,6 +156,14 @@ class ASH_PUBLIC_EXPORT DeskTemplate {
   // stored ones.  Empty values imply user created template, this method will
   // return a base::value::Dict if policy is defined.
   const base::Value& policy_definition() const { return policy_definition_; }
+
+  void set_coral_tab_app_entities(
+      std::vector<coral::mojom::EntityPtr> coral_tab_app_entities) {
+    coral_tab_app_entities_ = std::move(coral_tab_app_entities);
+  }
+  const std::vector<coral::mojom::EntityPtr>& coral_tab_app_entities() const {
+    return coral_tab_app_entities_;
+  }
 
   // Returns `this` in string format. Used for feedback logs.
   std::string ToString() const;
@@ -204,9 +206,6 @@ class ASH_PUBLIC_EXPORT DeskTemplate {
   // Form Factor of device this template is from.
   syncer::DeviceInfo::FormFactor device_form_factor_;
 
-  // The lacros profile ID associated with the desk.
-  uint64_t lacros_profile_id_ = 0;
-
   // Contains the app launching and window information that can be used to
   // create a new desk instance with the same set of apps/windows specified in
   // it.
@@ -215,6 +214,10 @@ class ASH_PUBLIC_EXPORT DeskTemplate {
   // If this template was originally defined by a policy, store the policy in
   // this field. See GetPolicy for more information.
   base::Value policy_definition_;
+
+  // If this template is created by Coral, store the tab and app entities such
+  // that the groups with a similar topic will not be suggested.
+  std::vector<coral::mojom::EntityPtr> coral_tab_app_entities_;
 };
 
 }  // namespace ash

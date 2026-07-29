@@ -11,6 +11,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
+#include "build/config/linux/dbus/buildflags.h"
 #include "components/input/render_widget_host_input_event_router.h"
 #include "content/browser/gpu/gpu_data_manager_impl.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
@@ -39,10 +40,11 @@
 #include "content/test/test_render_widget_host_factory.h"
 #include "content/test/test_web_contents.h"
 #include "net/base/mock_network_change_notifier.h"
+#include "services/network/network_service.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/common/input/web_input_event.h"
 
-#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_ANDROID)
 #include "ui/display/screen.h"
 #endif
 
@@ -62,6 +64,10 @@
 #include "ui/accelerated_widget_mac/window_resize_helper_mac.h"
 #endif
 
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+#include "components/dbus/thread_linux/dbus_thread_linux.h"
+#endif
+
 namespace content {
 
 // RenderFrameHostTester ------------------------------------------------------
@@ -69,12 +75,6 @@ namespace content {
 // static
 RenderFrameHostTester* RenderFrameHostTester::For(RenderFrameHost* host) {
   return static_cast<TestRenderFrameHost*>(host);
-}
-
-// static
-bool RenderFrameHostTester::TestOnMessageReceived(RenderFrameHost* rfh,
-                                                  const IPC::Message& msg) {
-  return static_cast<RenderFrameHostImpl*>(rfh)->OnMessageReceived(msg);
 }
 
 // static
@@ -215,7 +215,7 @@ RenderViewHostTestHarness::CreateTestWebContents() {
 
   scoped_refptr<SiteInstance> instance =
       SiteInstance::Create(GetBrowserContext());
-  instance->GetOrCreateProcess()->Init();
+  instance->GetOrCreateProcessForTesting()->Init();
 
   return TestWebContents::Create(GetBrowserContext(), std::move(instance));
 }
@@ -243,7 +243,7 @@ void RenderViewHostTestHarness::SetUp() {
 #if BUILDFLAG(IS_WIN)
   ole_initializer_ = std::make_unique<ui::ScopedOleInitializer>();
 #endif
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_APPLE)
   screen_ = std::make_unique<display::ScopedNativeScreen>();
 #endif
 
@@ -275,6 +275,10 @@ void RenderViewHostTestHarness::TearDown() {
   // before we destroy the browser context.
   base::RunLoop().RunUntilIdle();
 
+#if BUILDFLAG(IS_LINUX) && BUILDFLAG(USE_DBUS)
+  dbus_thread_linux::ShutdownOnDBusThreadAndBlock();
+#endif
+
 #if BUILDFLAG(IS_WIN)
   ole_initializer_.reset();
 #endif
@@ -294,6 +298,21 @@ void RenderViewHostTestHarness::TearDown() {
   // properly if the |rph_factory_| reset above enqueued any tasks which
   // depend on |browser_context_|.
   GetUIThreadTaskRunner({})->DeleteSoon(FROM_HERE, browser_context_.release());
+
+  // The in-process NetworkService is a leaked singleton that outlives the
+  // test harness. Its HostResolverManager holds a raw_ptr to the
+  // SystemDnsConfigChangeNotifier owned by |network_change_notifier_|. Clear
+  // that pointer (and remove the observer) before |network_change_notifier_|
+  // is destroyed to avoid a dangling pointer detection under PartitionAlloc.
+  // Found while debugging BRP on Linux (CastOS) which uses
+  // InProcessNetworkService.
+  if (auto* network_service =
+          network::NetworkService::GetNetworkServiceForTesting()) {
+    if (auto* host_resolver_manager =
+            network_service->host_resolver_manager()) {
+      host_resolver_manager->ClearSystemDnsConfigNotifierForTesting();
+    }
+  }
 
   // Although this isn't required by many, some subclasses members require that
   // the task environment is gone by the time that they are destroyed (akin to

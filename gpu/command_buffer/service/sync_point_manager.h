@@ -7,6 +7,7 @@
 
 #include <stdint.h>
 
+#include <array>
 #include <functional>
 #include <memory>
 #include <queue>
@@ -28,8 +29,8 @@
 #include "gpu/command_buffer/common/command_buffer_id.h"
 #include "gpu/command_buffer/common/constants.h"
 #include "gpu/command_buffer/common/sync_token.h"
+#include "gpu/command_buffer/service/gpu_command_buffer_service_export.h"
 #include "gpu/command_buffer/service/sequence_id.h"
-#include "gpu/gpu_export.h"
 
 namespace gpu {
 
@@ -54,7 +55,7 @@ enum class ReleaseCause {
   kMaxValue = kForceRelease
 };
 
-class GPU_EXPORT SyncPointOrderData
+class GPU_COMMAND_BUFFER_SERVICE_EXPORT SyncPointOrderData
     : public base::RefCountedThreadSafe<SyncPointOrderData> {
  public:
   SyncPointOrderData(const SyncPointOrderData&) = delete;
@@ -65,17 +66,17 @@ class GPU_EXPORT SyncPointOrderData
 
   SequenceId sequence_id() { return sequence_id_; }
 
-  uint32_t processed_order_num() const {
+  uint64_t processed_order_num() const {
     base::AutoLock auto_lock(lock_);
     return processed_order_num_;
   }
 
-  uint32_t unprocessed_order_num() const {
+  uint64_t unprocessed_order_num() const {
     base::AutoLock auto_lock(lock_);
     return last_unprocessed_order_num_;
   }
 
-  uint32_t current_order_num() const {
+  uint64_t current_order_num() const {
     DCHECK(processing_thread_checker_.CalledOnValidThread());
     return current_order_num_;
   }
@@ -85,10 +86,10 @@ class GPU_EXPORT SyncPointOrderData
     return !paused_ && current_order_num_ > processed_order_num();
   }
 
-  uint32_t GenerateUnprocessedOrderNumber();
-  void BeginProcessingOrderNumber(uint32_t order_num);
-  void PauseProcessingOrderNumber(uint32_t order_num);
-  void FinishProcessingOrderNumber(uint32_t order_num);
+  uint64_t GenerateUnprocessedOrderNumber();
+  void BeginProcessingOrderNumber(uint64_t order_num);
+  void PauseProcessingOrderNumber(uint64_t order_num);
+  void FinishProcessingOrderNumber(uint64_t order_num);
 
  private:
   friend class base::RefCountedThreadSafe<SyncPointOrderData>;
@@ -96,14 +97,14 @@ class GPU_EXPORT SyncPointOrderData
   friend class SyncPointClientState;
 
   struct OrderFence {
-    uint32_t order_num;
+    uint64_t order_num;
     uint64_t fence_release;
     scoped_refptr<SyncPointClientState> client_state;
 
     // ID that is unique to the particular SyncPointOrderData.
     uint64_t callback_id;
 
-    OrderFence(uint32_t order,
+    OrderFence(uint64_t order,
                uint64_t release,
                scoped_refptr<SyncPointClientState> state,
                uint64_t callback_id);
@@ -131,7 +132,7 @@ class GPU_EXPORT SyncPointOrderData
   // Returns callback_id for created OrderFence on success, 0 on failure.
   uint64_t ValidateReleaseOrderNumber(
       scoped_refptr<SyncPointClientState> client_state,
-      uint32_t wait_order_num,
+      uint64_t wait_order_num,
       uint64_t fence_release) LOCKS_EXCLUDED(lock_);
 
   const raw_ptr<SyncPointManager> sync_point_manager_;
@@ -142,7 +143,7 @@ class GPU_EXPORT SyncPointOrderData
   base::ThreadChecker processing_thread_checker_;
 
   // Current IPC order number being processed (only used on processing thread).
-  uint32_t current_order_num_ = 0;
+  uint64_t current_order_num_ = 0;
 
   // Whether or not the current order number is being processed or paused.
   bool paused_ = false;
@@ -152,15 +153,15 @@ class GPU_EXPORT SyncPointOrderData
   bool destroyed_ GUARDED_BY(lock_) = false;
 
   // Last finished IPC order number.
-  uint32_t processed_order_num_ GUARDED_BY(lock_) = 0;
+  uint64_t processed_order_num_ GUARDED_BY(lock_) = 0;
 
   // Last unprocessed order number. Updated in GenerateUnprocessedOrderNumber.
-  uint32_t last_unprocessed_order_num_ GUARDED_BY(lock_) = 0;
+  uint64_t last_unprocessed_order_num_ GUARDED_BY(lock_) = 0;
 
   // Queue of unprocessed order numbers. Order numbers are enqueued in
   // GenerateUnprocessedOrderNumber, and dequeued in
   // FinishProcessingOrderNumber.
-  base::queue<uint32_t> unprocessed_order_nums_ GUARDED_BY(lock_);
+  base::queue<uint64_t> unprocessed_order_nums_ GUARDED_BY(lock_);
 
   // This variable is only used when graph-based validation is disabled.
   //
@@ -176,7 +177,7 @@ class GPU_EXPORT SyncPointOrderData
   OrderFenceQueue order_fence_queue_ GUARDED_BY(lock_);
 };
 
-class GPU_EXPORT SyncPointClientState
+class GPU_COMMAND_BUFFER_SERVICE_EXPORT SyncPointClientState
     : public base::RefCountedThreadSafe<SyncPointClientState> {
  public:
   SyncPointClientState(const SyncPointClientState&) = delete;
@@ -233,7 +234,7 @@ class GPU_EXPORT SyncPointClientState
   // is invalid this function will return False and the callback will never
   // be called.
   bool WaitForRelease(uint64_t release,
-                      uint32_t wait_order_num,
+                      uint64_t wait_order_num,
                       base::OnceClosure callback)
       LOCKS_EXCLUDED(fence_sync_lock_);
 
@@ -279,7 +280,7 @@ class GPU_EXPORT SyncPointClientState
 
 // This class manages the sync points, which allow cross-channel
 // synchronization.
-class GPU_EXPORT SyncPointManager {
+class GPU_COMMAND_BUFFER_SERVICE_EXPORT SyncPointManager {
  public:
   SyncPointManager();
 
@@ -304,10 +305,10 @@ class GPU_EXPORT SyncPointManager {
       LOCKS_EXCLUDED(lock_);
 
   // Returns the global last processed order number.
-  uint32_t GetProcessedOrderNum() const LOCKS_EXCLUDED(lock_);
+  uint64_t GetProcessedOrderNum() const LOCKS_EXCLUDED(lock_);
 
   // // Returns the global last unprocessed order number.
-  uint32_t GetUnprocessedOrderNum() const LOCKS_EXCLUDED(lock_);
+  uint64_t GetUnprocessedOrderNum() const LOCKS_EXCLUDED(lock_);
 
   // If the wait is valid (sync token hasn't been processed or command buffer
   // does not exist), the callback is queued to run when the sync point is
@@ -319,11 +320,11 @@ class GPU_EXPORT SyncPointManager {
   // (e.g., gpu::Scheduler, gpu::BlockingSequenceRunner).
   bool Wait(const SyncToken& sync_token,
             SequenceId sequence_id,
-            uint32_t wait_order_num,
+            uint64_t wait_order_num,
             base::OnceClosure callback) LOCKS_EXCLUDED(lock_);
 
   // Used by SyncPointOrderData.
-  uint32_t GenerateOrderNumber();
+  uint64_t GenerateOrderNumber();
 
   // Is called by SyncPointOrderData::Destroy to remove `order_data` from
   // client_state_map_.
@@ -382,19 +383,17 @@ class GPU_EXPORT SyncPointManager {
       EXCLUSIVE_LOCKS_REQUIRED(lock_);
 
   // Order number is global for all clients.
-  base::AtomicSequenceNumber order_num_generator_;
+  std::atomic<uint64_t> next_order_num_{1};
 
   // The following are protected by |lock_|.
   // Map of command buffer id to client state for each namespace.
-  ClientStateMap client_state_maps_[NUM_COMMAND_BUFFER_NAMESPACES] GUARDED_BY(
-      lock_);
+  std::array<ClientStateMap, NUM_COMMAND_BUFFER_NAMESPACES> client_state_maps_
+      GUARDED_BY(lock_);
 
   // Map of sequence id to order data.
   OrderDataMap order_data_map_ GUARDED_BY(lock_);
 
   SequenceId::Generator sequence_id_generator_ GUARDED_BY(lock_);
-
-  base::MetricsSubSampler metrics_subsampler_ GUARDED_BY(lock_);
 
   mutable base::Lock lock_;
 

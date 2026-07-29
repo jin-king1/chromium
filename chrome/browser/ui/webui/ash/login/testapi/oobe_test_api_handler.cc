@@ -8,11 +8,13 @@
 
 #include "ash/constants/ash_features.h"
 #include "ash/constants/ash_switches.h"
-#include "ash/public/ash_interfaces.h"
+#include "ash/display/cros_display_config.h"
 #include "ash/public/cpp/input_device_settings_controller.h"
 #include "ash/public/cpp/tablet_mode.h"
 #include "ash/public/mojom/input_device_settings.mojom.h"
+#include "ash/shell.h"
 #include "base/check.h"
+#include "base/check_deref.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "base/notreached.h"
@@ -34,7 +36,6 @@
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_screen_client_impl.h"
 #include "chrome/browser/ui/webui/ash/login/hid_detection_screen_handler.h"
-#include "chromeos/ash/components/assistant/buildflags.h"
 #include "chromeos/ash/components/login/auth/public/saml_password_attributes.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "components/account_id/account_id.h"
@@ -82,17 +83,22 @@ void OobeTestAPIHandler::DeclareJSCallbacks() {
               &OobeTestAPIHandler::HandleGetShouldSkipTouchpadScroll);
   AddCallback("OobeTestApi.getMetricsClientID",
               &OobeTestAPIHandler::HandleGetMetricsClientID);
+  AddCallback("OobeTestApi.getShouldSkipSplitModifierScreen",
+              &OobeTestAPIHandler::HandleGetShouldSkipSplitModifierScreen);
 }
 
-void OobeTestAPIHandler::GetAdditionalParameters(base::Value::Dict* dict) {
+void OobeTestAPIHandler::GetAdditionalParameters(base::DictValue* dict) {
+  // TODO(crbug.com/489929275): Avoid using g_browser_process.
+  PrefService* local_state = g_browser_process->local_state();
+
   login::NetworkStateHelper helper_;
   dict->Set("testapi_shouldSkipNetworkFirstShow",
             !switches::IsOOBENetworkScreenSkippingDisabledForTesting() &&
                 helper_.IsConnectedToEthernet());
 
-  dict->Set(
-      "testapi_shouldSkipGuestTos",
-      StartupUtils::IsEulaAccepted() || !BUILDFLAG(GOOGLE_CHROME_BRANDING));
+  dict->Set("testapi_shouldSkipGuestTos",
+            StartupUtils::IsEulaAccepted(CHECK_DEREF(local_state)) ||
+                !BUILDFLAG(GOOGLE_CHROME_BRANDING));
 
   dict->Set("testapi_isFingerprintSupported",
             quick_unlock::IsFingerprintSupported());
@@ -102,12 +108,11 @@ void OobeTestAPIHandler::GetAdditionalParameters(base::Value::Dict* dict) {
   dict->Set("testapi_shouldSkipGeminiIntro",
             GeminiIntroScreen::ShouldBeSkipped());
 
+  // TODO(bohdanty): Remove in a follow-up CL to prevent CQ from breaking.
   dict->Set("testapi_shouldSkipSplitModifierKeyboardInfo",
             SplitModifierKeyboardInfoScreen::ShouldBeSkipped());
 
-  dict->Set("testapi_shouldSkipAssistant",
-            features::IsOobeSkipAssistantEnabled() ||
-                !BUILDFLAG(ENABLE_CROS_LIBASSISTANT));
+  dict->Set("testapi_shouldSkipAssistant", true);
 
   dict->Set("testapi_isBrandedBuild",
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -118,15 +123,13 @@ void OobeTestAPIHandler::GetAdditionalParameters(base::Value::Dict* dict) {
   );
 
   dict->Set("testapi_isOobeInTabletMode",
-            display::Screen::GetScreen()->InTabletMode() ||
+            display::Screen::Get()->InTabletMode() ||
                 switches::ShouldOobeUseTabletModeFirstRun());
   dict->Set("testapi_shouldSkipConsolidatedConsent",
             !BUILDFLAG(GOOGLE_CHROME_BRANDING));
   dict->Set("testapi_isHPSEnabled", ash::features::IsQuickDimEnabled());
   dict->Set("testapi_shouldSkipDisplaySize",
             !features::IsOobeDisplaySizeEnabled());
-  dict->Set("testapi_shouldSkipGaiaInfoScreen",
-            !features::IsOobeGaiaInfoScreenEnabled());
   dict->Set("testapi_isCrossDeviceFeatureSuiteAllowed",
             features::IsCrossDeviceFeatureSuiteAllowed());
 
@@ -222,33 +225,25 @@ void OobeTestAPIHandler::ShowGaiaDialog() {
 
 void OobeTestAPIHandler::HandleGetPrimaryDisplayName(
     const std::string& callback_id) {
-  mojo::Remote<crosapi::mojom::CrosDisplayConfigController> cros_display_config;
-  BindCrosDisplayConfigController(
-      cros_display_config.BindNewPipeAndPassReceiver());
+  std::vector<ash::DisplayUnitInfo> info_list =
+      ash::Shell::Get()->cros_display_config()->GetDisplayUnitInfoList(
+          /*single_unified=*/false);
 
-  cros_display_config->GetDisplayUnitInfoList(
-      false /* single_unified */,
-      base::BindOnce(&OobeTestAPIHandler::OnGetDisplayUnitInfoList,
-                     base::Unretained(this), callback_id));
-}
-
-void OobeTestAPIHandler::OnGetDisplayUnitInfoList(
-    const std::string& callback_id,
-    std::vector<crosapi::mojom::DisplayUnitInfoPtr> info_list) {
   std::string display_name;
-  for (const crosapi::mojom::DisplayUnitInfoPtr& info : info_list) {
-    if (info->is_primary) {
-      display_name = info->name;
+  for (const auto& info : info_list) {
+    if (info.is_primary) {
+      display_name = info.name;
       break;
     }
   }
+
   if (display_name.empty()) {
     RejectJavascriptCallback(base::Value(callback_id),
                              base::Value(display_name));
-    return;
+  } else {
+    ResolveJavascriptCallback(base::Value(callback_id),
+                              base::Value(display_name));
   }
-  ResolveJavascriptCallback(base::Value(callback_id),
-                            base::Value(display_name));
 }
 
 void OobeTestAPIHandler::HandleGetShouldSkipChoobe(
@@ -290,6 +285,12 @@ void OobeTestAPIHandler::HandleGetMetricsClientID(
         metrics::prefs::kMetricsProvisionalClientID);
   }
   ResolveJavascriptCallback(base::Value(callback_id), client_id);
+}
+
+void OobeTestAPIHandler::HandleGetShouldSkipSplitModifierScreen(
+    const std::string& callback_id) {
+  ResolveJavascriptCallback(base::Value(callback_id),
+                            SplitModifierKeyboardInfoScreen::ShouldBeSkipped());
 }
 
 }  // namespace ash

@@ -19,10 +19,12 @@
 #include "base/containers/flat_map.h"
 #include "base/containers/heap_array.h"
 #include "base/debug/alias.h"
+#include "base/environment.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/nix/xdg_util.h"
+#include "base/no_destructor.h"
 #include "base/path_service.h"
 #include "base/strings/stringprintf.h"
 #include "base/threading/scoped_blocking_call.h"
@@ -36,14 +38,43 @@ namespace crypto {
 namespace {
 
 #if !BUILDFLAG(IS_CHROMEOS)
-base::FilePath GetDefaultConfigDirectory() {
-  base::FilePath dir;
-  base::PathService::Get(base::DIR_HOME, &dir);
+base::FilePath GetXdgDataNssdbDirectory() {
+  std::unique_ptr<base::Environment> env = base::Environment::Create();
+  return base::nix::GetXDGDataWriteLocation(env.get()).AppendASCII("pki/nssdb");
+}
+
+base::FilePath GetHomeNssdbDirectory() {
+  base::FilePath home_dir;
+  base::PathService::Get(base::DIR_HOME, &home_dir);
+  if (home_dir.empty()) {
+    return {};
+  }
+
+  return home_dir.AppendASCII(".pki/nssdb");
+}
+
+}  // namespace
+
+base::FilePath GetDefaultNSSConfigDirectory() {
+  // If the $HOME/.pki/nssdb directory already exists, use it
+  // for backwards compatibility.
+  if (auto nssdb_home = GetHomeNssdbDirectory();
+      !nssdb_home.empty() && base::DirectoryExists(nssdb_home)) {
+    return nssdb_home;
+  }
+
+  // Otherwise, use ${XDG_DATA_HOME:-$HOME/.local/share}/pki/nssdb.
+  return GetXdgDataNssdbDirectory();
+}
+
+namespace {
+
+base::FilePath PrepareDefaultConfigDirectory() {
+  base::FilePath dir = GetDefaultNSSConfigDirectory();
   if (dir.empty()) {
-    LOG(ERROR) << "Failed to get home directory.";
+    LOG(ERROR) << "Failed to get PKI directory.";
     return dir;
   }
-  dir = dir.AppendASCII(".pki").AppendASCII("nssdb");
   if (!base::CreateDirectory(dir)) {
     LOG(ERROR) << "Failed to create " << dir.value() << " directory.";
     dir.clear();
@@ -60,7 +91,7 @@ base::FilePath GetInitialConfigDirectory() {
 #if BUILDFLAG(IS_CHROMEOS)
   return base::FilePath();
 #else
-  return GetDefaultConfigDirectory();
+  return PrepareDefaultConfigDirectory();
 #endif  // BUILDFLAG(IS_CHROMEOS)
 }
 
@@ -89,7 +120,7 @@ char* PKCS11PasswordFunc(PK11SlotInfo* slot, PRBool retry, void* arg) {
 // singleton.
 class NSPRInitSingleton {
  private:
-  friend struct base::LazyInstanceTraitsBase<NSPRInitSingleton>;
+  friend class base::NoDestructor<NSPRInitSingleton>;
 
   NSPRInitSingleton() { PR_Init(PR_USER_THREAD, PR_PRIORITY_NORMAL, 0); }
 
@@ -99,8 +130,10 @@ class NSPRInitSingleton {
   ~NSPRInitSingleton() = delete;
 };
 
-base::LazyInstance<NSPRInitSingleton>::Leaky g_nspr_singleton =
-    LAZY_INSTANCE_INITIALIZER;
+NSPRInitSingleton& GetNSPRInitSingleton() {
+  static base::NoDestructor<NSPRInitSingleton> instance;
+  return *instance;
+}
 
 // Force a crash with error info on NSS_NoDB_Init failure.
 void CrashOnNSSInitFailure() {
@@ -156,9 +189,6 @@ class NSSInitSingleton {
     } else {
       LOG(ERROR) << "Error opening persistent database (" << modspec
                  << "): " << GetNSSErrorMessage();
-#if BUILDFLAG(IS_CHROMEOS)
-      DiagnosePublicSlotAndCrash(path);
-#endif  // BUILDFLAG(IS_CHROMEOS)
     }
 
     return ScopedPK11Slot(db_slot_info);
@@ -181,7 +211,7 @@ class NSSInitSingleton {
   }
 
  private:
-  friend struct base::LazyInstanceTraitsBase<NSSInitSingleton>;
+  friend class base::NoDestructor<NSSInitSingleton>;
 
   NSSInitSingleton() {
     // Initializing NSS causes us to do blocking IO.
@@ -279,25 +309,28 @@ class NSSInitSingleton {
   base::Lock slot_map_lock_;
 };
 
-base::LazyInstance<NSSInitSingleton>::Leaky g_nss_singleton =
-    LAZY_INSTANCE_INITIALIZER;
+NSSInitSingleton& GetNSSInitSingleton() {
+  static base::NoDestructor<NSSInitSingleton> instance;
+  return *instance;
+}
+
 }  // namespace
 
 ScopedPK11Slot OpenSoftwareNSSDB(const base::FilePath& path,
                                  const std::string& description) {
-  return g_nss_singleton.Get().OpenSoftwareNSSDB(path, description);
+  return GetNSSInitSingleton().OpenSoftwareNSSDB(path, description);
 }
 
 SECStatus CloseSoftwareNSSDB(PK11SlotInfo* slot) {
-  return g_nss_singleton.Get().CloseSoftwareNSSDB(slot);
+  return GetNSSInitSingleton().CloseSoftwareNSSDB(slot);
 }
 
 void EnsureNSPRInit() {
-  g_nspr_singleton.Get();
+  GetNSPRInitSingleton();
 }
 
 void EnsureNSSInit() {
-  g_nss_singleton.Get();
+  GetNSSInitSingleton();
 }
 
 bool CheckNSSVersion(const char* version) {

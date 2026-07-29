@@ -8,16 +8,17 @@
 #include "chrome/browser/ui/autofill/payments/payments_view_factory.h"
 #include "chrome/browser/ui/tabs/public/tab_dialog_manager.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
-#include "chrome/browser/ui/tabs/public/tab_interface.h"
 #include "chrome/browser/ui/views/autofill/payments/payments_view_util.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
 #include "chrome/browser/ui/views/chrome_typography.h"
 #include "components/autofill/core/browser/ui/payments/autofill_error_dialog_controller.h"
+#include "components/tabs/public/tab_interface.h"
 #include "components/vector_icons/vector_icons.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/models/image_model.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
 #include "ui/base/mojom/ui_base_types.mojom-shared.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/vector_icon_utils.h"
 #include "ui/views/bubble/bubble_frame_view.h"
@@ -72,8 +73,12 @@ views::View* AutofillErrorDialogViewNativeViews::GetContentsView() {
 
   auto* icon = AddChildView(
       std::make_unique<views::ImageView>(ui::ImageModel::FromVectorIcon(
-          vector_icons::kErrorIcon, ui::kColorAlertHighSeverity,
-          gfx::GetDefaultSizeOfVectorIcon(vector_icons::kErrorIcon))));
+          ::features::IsRoundedIconsEnabled() ? vector_icons::kErrorFilledIcon
+                                              : vector_icons::kErrorOldIcon,
+          ui::kColorAlertHighSeverity,
+          gfx::GetDefaultSizeOfVectorIcon(::features::IsRoundedIconsEnabled()
+                                              ? vector_icons::kErrorFilledIcon
+                                              : vector_icons::kErrorOldIcon))));
 
   if (controller_) {
     auto* label = AddChildView(std::make_unique<views::Label>(
@@ -82,6 +87,7 @@ views::View* AutofillErrorDialogViewNativeViews::GetContentsView() {
         views::style::STYLE_SECONDARY));
     label->SetHorizontalAlignment(gfx::ALIGN_LEFT);
     label->SetMultiLine(true);
+    label->SetFocusBehavior(views::View::FocusBehavior::ACCESSIBLE_ONLY);
 
     // Center-align the error icon vertically with the first line of the label.
     icon->SetBorder(views::CreateEmptyBorder(gfx::Insets().set_top(
@@ -101,6 +107,13 @@ std::u16string AutofillErrorDialogViewNativeViews::GetWindowTitle() const {
   return controller_ ? controller_->GetTitle() : std::u16string();
 }
 
+void AutofillErrorDialogViewNativeViews::OnWidgetInitialized() {
+  views::DialogDelegateView::OnWidgetInitialized();
+  if (auto* cancel_button = GetCancelButton()) {
+    cancel_button->RequestFocus();
+  }
+}
+
 base::WeakPtr<AutofillErrorDialogView>
 AutofillErrorDialogViewNativeViews::GetWeakPtr() {
   return weak_ptr_factory_.GetWeakPtr();
@@ -115,7 +128,8 @@ base::WeakPtr<AutofillErrorDialogView> CreateAndShowAutofillErrorDialog(
       tabs::TabInterface::GetFromContents(web_contents);
   tab_interface->GetTabFeatures()
       ->tab_dialog_manager()
-      ->CreateShowDialogAndBlockTabInteraction(dialog_view)
+      ->CreateAndShowDialog(dialog_view,
+                            std::make_unique<tabs::TabDialogManager::Params>())
       .release();
   return dialog_view->GetWeakPtr();
 }

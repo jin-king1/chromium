@@ -20,8 +20,6 @@
 #include "extensions/common/permissions/manifest_permission.h"
 #include "extensions/common/permissions/permissions_info.h"
 #include "extensions/common/permissions/settings_override_permission.h"
-#include "ipc/ipc_message.h"
-#include "ipc/ipc_message_utils.h"
 #include "url/gurl.h"
 
 using extensions::api::manifest_types::ChromeSettingsOverrides;
@@ -116,10 +114,14 @@ std::optional<ChromeSettingsOverrides::SearchProvider> ParseSearchEngine(
 std::string FormatUrlForDisplay(const GURL& url) {
   // A www. prefix is not informative and thus not worth the limited real estate
   // in the permissions UI.
-  return url_formatter::StripWWW(url.host());
+  return url_formatter::StripWWW(url.GetHost());
 }
 
 }  // namespace
+
+// static
+const char* SettingsOverrides::kManifestDataKey =
+    manifest_keys::kSettingsOverride;
 
 SettingsOverrides::SettingsOverrides() = default;
 
@@ -128,8 +130,7 @@ SettingsOverrides::~SettingsOverrides() = default;
 // static
 const SettingsOverrides* SettingsOverrides::Get(
     const Extension* extension) {
-  return static_cast<SettingsOverrides*>(
-      extension->GetManifestData(manifest_keys::kSettingsOverride));
+  return extension->GetManifestData<SettingsOverrides>();
 }
 
 SettingsOverridesHandler::SettingsOverridesHandler() = default;
@@ -138,7 +139,7 @@ SettingsOverridesHandler::~SettingsOverridesHandler() = default;
 
 bool SettingsOverridesHandler::Parse(Extension* extension,
                                      std::u16string* error) {
-  const base::Value::Dict* dict =
+  const base::DictValue* dict =
       extension->manifest()->FindDictPath(manifest_keys::kSettingsOverride);
   CHECK(dict != nullptr);
   auto settings = ChromeSettingsOverrides::FromValue(*dict);
@@ -198,7 +199,7 @@ bool SettingsOverridesHandler::Parse(Extension* extension,
             PermissionsInfo::GetInstance()->GetByID(APIPermissionID::kHomepage),
             FormatUrlForDisplay(*(info->homepage))));
   }
-  extension->SetManifestData(manifest_keys::kSettingsOverride, std::move(info));
+  extension->SetManifestData(std::move(info));
   return true;
 }
 

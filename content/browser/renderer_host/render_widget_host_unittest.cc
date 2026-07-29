@@ -35,17 +35,21 @@
 #include "content/browser/renderer_host/frame_token_message_queue.h"
 #include "content/browser/renderer_host/input/touch_emulator_impl.h"
 #include "content/browser/renderer_host/mock_render_widget_host.h"
+#include "content/browser/renderer_host/render_view_host_delegate.h"
 #include "content/browser/renderer_host/render_view_host_delegate_view.h"
+#include "content/browser/renderer_host/render_view_host_impl.h"
 #include "content/browser/renderer_host/render_widget_host_delegate.h"
 #include "content/browser/renderer_host/render_widget_host_view_base.h"
 #include "content/browser/renderer_host/visible_time_request_trigger.h"
 #include "content/browser/site_instance_group.h"
 #include "content/browser/storage_partition_impl.h"
 #include "content/common/content_constants_internal.h"
+#include "content/public/browser/global_dom_node_id.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/common/drop_data.h"
+#include "content/public/common/url_constants.h"
 #include "content/public/test/browser_task_environment.h"
 #include "content/public/test/mock_render_process_host.h"
 #include "content/public/test/test_browser_context.h"
@@ -55,12 +59,14 @@
 #include "content/test/stub_render_widget_host_owner_delegate.h"
 #include "content/test/test_render_view_host.h"
 #include "content/test/test_render_widget_host.h"
+#include "content/test/test_web_contents.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "skia/ext/skia_utils_base.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/dom/dom_node_id.h"
 #include "third_party/blink/public/common/input/synthetic_web_input_event_builders.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/common/page/page_zoom.h"
@@ -68,6 +74,7 @@
 #include "third_party/blink/public/mojom/drag/drag.mojom.h"
 #include "third_party/blink/public/mojom/input/input_handler.mojom-shared.h"
 #include "third_party/blink/public/mojom/input/touch_event.mojom.h"
+#include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/cursor/cursor.h"
 #include "ui/display/display_util.h"
 #include "ui/display/screen.h"
@@ -86,6 +93,9 @@
 
 #if BUILDFLAG(IS_MAC)
 #include "content/browser/renderer_host/test_render_widget_host_view_mac_factory.h"
+#endif
+
+#if BUILDFLAG(IS_APPLE)
 #include "ui/display/test/test_screen.h"
 #endif
 
@@ -281,21 +291,24 @@ class MockRenderViewHostDelegateView : public RenderViewHostDelegateView {
   ~MockRenderViewHostDelegateView() override = default;
 
   int start_dragging_count() const { return start_dragging_count_; }
+  const DropData& drop_data() const { return drop_data_; }
 
   // RenderViewHostDelegateView:
-  void StartDragging(const DropData& drop_data,
-                     const url::Origin& source_origin,
-                     blink::DragOperationsMask allowed_ops,
-                     const gfx::ImageSkia& image,
-                     const gfx::Vector2d& cursor_offset,
-                     const gfx::Rect& drag_obj_rect,
-                     const blink::mojom::DragEventSourceInfo& event_info,
-                     RenderWidgetHostImpl* source_rwh) override {
+  void StartDragging(
+      RenderFrameHost& source_rfh,
+      const DropData& drop_data,
+      blink::DragOperationsMask allowed_ops,
+      const gfx::ImageSkia& image,
+      const gfx::Vector2d& cursor_offset,
+      const gfx::Rect& drag_obj_rect,
+      const blink::mojom::DragEventSourceInfo& event_info) override {
     ++start_dragging_count_;
+    drop_data_ = drop_data;
   }
 
  private:
   int start_dragging_count_ = 0;
+  DropData drop_data_;
 };
 
 // FakeRenderFrameMetadataObserver -----------------------------------------
@@ -320,7 +333,7 @@ class FakeRenderFrameMetadataObserver
 
   ~FakeRenderFrameMetadataObserver() override {}
 
-#if BUILDFLAG(IS_ANDROID)
+#if BUILDFLAG(IS_ANDROID) || BUILDFLAG(IS_IOS)
   void UpdateRootScrollOffsetUpdateFrequency(
       cc::mojom::RootScrollOffsetUpdateFrequency frequency) override {}
 #endif
@@ -342,9 +355,12 @@ FakeRenderFrameMetadataObserver::FakeRenderFrameMetadataObserver(
 // MockInputEventObserver -------------------------------------------------
 class MockInputEventObserver : public RenderWidgetHost::InputEventObserver {
  public:
-  MOCK_METHOD2(OnInputEvent,
-               void(const RenderWidgetHost& widget,
-                    const blink::WebInputEvent&));
+  MOCK_METHOD(void,
+              OnInputEvent,
+              (const RenderWidgetHost& widget,
+               const blink::WebInputEvent&,
+               InputEventSource),
+              (override));
 #if BUILDFLAG(IS_ANDROID)
   MOCK_METHOD1(OnImeTextCommittedEvent, void(const std::u16string& text_str));
   MOCK_METHOD1(OnImeSetComposingTextEvent,
@@ -381,20 +397,12 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
     return unhandled_keyboard_event_type_;
   }
 
-  bool prehandle_mouse_event_called() const {
-    return prehandle_mouse_event_called_;
-  }
-
   bool prehandle_keyboard_event_called() const {
     return prehandle_keyboard_event_called_;
   }
 
   WebInputEvent::Type prehandle_keyboard_event_type() const {
     return prehandle_keyboard_event_type_;
-  }
-
-  void set_prehandle_mouse_event(bool handle) {
-    prehandle_mouse_event_ = handle;
   }
 
   void set_prehandle_keyboard_event(bool handle) {
@@ -464,14 +472,6 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
               (override));
 
  protected:
-  bool PreHandleMouseEvent(const blink::WebMouseEvent& event) override {
-    prehandle_mouse_event_called_ = true;
-    if (prehandle_mouse_event_) {
-      return true;
-    }
-    return false;
-  }
-
   KeyboardEventProcessingResult PreHandleKeyboardEvent(
       const input::NativeWebKeyboardEvent& event) override {
     prehandle_keyboard_event_type_ = event.GetType();
@@ -523,8 +523,6 @@ class MockRenderWidgetHostDelegate : public RenderWidgetHostDelegate {
   }
 
  private:
-  bool prehandle_mouse_event_ = false;
-  bool prehandle_mouse_event_called_ = false;
   bool prehandle_keyboard_event_;
   bool prehandle_keyboard_event_is_shortcut_;
   bool prehandle_keyboard_event_called_;
@@ -561,6 +559,8 @@ class MockRenderWidgetHostOwnerDelegate
  public:
   MOCK_METHOD1(SetBackgroundOpaque, void(bool opaque));
   MOCK_METHOD0(IsMainFrameActive, bool());
+  MOCK_METHOD1(ZoomToFindInPageRect, void(const gfx::Rect&));
+  MOCK_METHOD2(AnimateDoubleTapZoom, void(const gfx::Point&, const gfx::Rect&));
 };
 
 // RenderWidgetHostTest --------------------------------------------------------
@@ -606,7 +606,6 @@ class RenderWidgetHostTest : public testing::Test {
     site_instance_group_ =
         base::WrapRefCounted(SiteInstanceGroup::CreateForTesting(
             browser_context_.get(), process_.get()));
-    sink_ = &process_->sink();
 #if defined(USE_AURA) || BUILDFLAG(IS_APPLE)
     ImageTransportFactory::SetFactory(
         std::make_unique<TestImageTransportFactory>());
@@ -615,7 +614,7 @@ class RenderWidgetHostTest : public testing::Test {
     // calls display::Screen::SetScreenInstance().
     ui::SetScreenAndroid(false /* use_display_wide_color_gamut */);
 #endif
-#if BUILDFLAG(IS_MAC)
+#if BUILDFLAG(IS_APPLE)
     screen_ = std::make_unique<display::test::TestScreen>();
     display::Screen::SetScreenInstance(screen_.get());
 #endif
@@ -671,7 +670,6 @@ class RenderWidgetHostTest : public testing::Test {
   }
 
   void TearDown() override {
-    sink_ = nullptr;
     view_.reset();
     host_.reset();
     delegate_.reset();
@@ -682,7 +680,7 @@ class RenderWidgetHostTest : public testing::Test {
 #if defined(USE_AURA) || BUILDFLAG(IS_APPLE)
     ImageTransportFactory::Terminate();
 #endif
-#if defined(USE_AURA) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_ANDROID)
+#if defined(USE_AURA) || BUILDFLAG(IS_APPLE) || BUILDFLAG(IS_ANDROID)
     display::Screen::SetScreenInstance(nullptr);
     screen_.reset();
 #endif
@@ -845,13 +843,10 @@ class RenderWidgetHostTest : public testing::Test {
     touch_event_.ReleasePoint(index);
   }
 
-  const WebInputEvent* GetInputEventFromMessage(const IPC::Message& message) {
-    base::PickleIterator iter(message);
-    const char* data;
-    size_t data_length;
-    if (!iter.ReadData(&data, &data_length))
-      return nullptr;
-    return reinterpret_cast<const WebInputEvent*>(data);
+  void WaitForHang() {
+    task_environment_.FastForwardBy(input::kHungRendererDelay +
+                                    input::kHungRendererPingTimeout +
+                                    base::Milliseconds(10));
   }
 
   BrowserTaskEnvironment task_environment_{
@@ -868,7 +863,6 @@ class RenderWidgetHostTest : public testing::Test {
   bool handle_mouse_event_ = false;
   base::TimeTicks last_simulated_event_time_;
   base::TimeDelta simulated_event_time_delta_;
-  raw_ptr<IPC::TestSink> sink_;
   std::unique_ptr<FakeRenderFrameMetadataObserver>
       renderer_render_frame_metadata_observer_;
   MockWidget widget_;
@@ -1035,7 +1029,6 @@ TEST_F(RenderWidgetHostTest, SynchronizeVisualProperties) {
   // Sending out a new notification should NOT send out a new IPC message since
   // a visual properties ACK is pending.
   gfx::Rect third_size(0, 0, 120, 120);
-  process_->sink().ClearMessages();
   view_->SetBounds(third_size);
   EXPECT_FALSE(host_->SynchronizeVisualProperties());
   EXPECT_TRUE(host_->visual_properties_ack_pending_);
@@ -1212,6 +1205,59 @@ TEST_F(RenderWidgetHostTest, NewSizeIncludesScaleFactor) {
   EXPECT_TRUE(host_->visual_properties_ack_pending_);
 }
 
+// Tests that SynchronizeVisualProperties which occurs while hidden, before an
+// Eviction, becomes unthrottled when becoming visible again. So that we do not
+// wait for an ack that will never arrive.
+//
+// This ensures the Widget can begin frame production on the newly embedded
+// Surface after the initial eviction.
+TEST_F(RenderWidgetHostTest, EvictUnthrottlesSynchronizeVisualProperties) {
+  display::ScreenInfo screen_info;
+  screen_info.rect = gfx::Rect(0, 0, 800, 600);
+  screen_info.available_rect = gfx::Rect(0, 0, 800, 600);
+  screen_info.orientation_type =
+      display::mojom::ScreenOrientation::kPortraitPrimary;
+  screen_info.device_scale_factor = 2.f;
+
+  ClearVisualProperties();
+  // While hidden we will still synchronize to the Renderer. Though we will
+  // throttle future updates on `visual_properties_ack_pending_`.
+  host_->WasHidden();
+  view_->SetScreenInfo(screen_info);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0u, widget_.ReceivedVisualProperties().size());
+  gfx::Rect original_size(0, 0, 101, 100);
+  view_->SetBounds(original_size);
+  EXPECT_TRUE(host_->SynchronizeVisualProperties());
+  EXPECT_TRUE(host_->visual_properties_ack_pending_);
+  // blink::mojom::Widget::UpdateVisualProperties sent to the renderer.
+  base::RunLoop().RunUntilIdle();
+  ASSERT_EQ(1u, widget_.ReceivedVisualProperties().size());
+  auto new_size = widget_.ReceivedVisualProperties()[0].new_size_device_px;
+  EXPECT_EQ(202, new_size.width());
+  EXPECT_EQ(200, new_size.height());
+  auto visible_viewport_size =
+      widget_.ReceivedVisualProperties()[0].visible_viewport_size_device_px;
+  EXPECT_EQ(202, visible_viewport_size.width());
+  EXPECT_EQ(200, visible_viewport_size.height());
+  EXPECT_TRUE(host_->visual_properties_ack_pending_);
+
+  widget_.ClearVisualProperties();
+  // `MockRenderWidgetHostOwnerDelegate` doesn't extend `RenderViewHostImpl` so
+  // the legacy `static_cast` in `RenderViewHostImpl::From` crash here. So we
+  // cannot use `host_->CollectSurfaceIdsForEviction` in tests. Mark the view as
+  // evicted directly.
+  view_->set_is_evicted();
+
+  // Set a new size so we have difference in property to synchronize.
+  gfx::Rect restore_size(0, 0, 1337, 42);
+  view_->SetBounds(restore_size);
+  host_->WasShown({} /* record_tab_switch_time_request */);
+  EXPECT_TRUE(host_->visual_properties_ack_pending_);
+  base::RunLoop().RunUntilIdle();
+  ASSERT_EQ(1u, widget_.ReceivedVisualProperties().size());
+}
+
 // Ensure VisualProperties continues reporting the size of the current screen,
 // not the viewport, when the frame is fullscreen. See crbug.com/1367416.
 TEST_F(RenderWidgetHostTest, ScreenSizeInFullscreen) {
@@ -1279,7 +1325,7 @@ TEST_F(RenderWidgetHostTest, RootViewportSegments) {
       /* offset */ screen_rect.width() / 2 - kDisplayFeatureLength / 2,
       /* mask_length */ kDisplayFeatureLength};
   RenderWidgetHostViewBase* render_widget_host_view = view_.get();
-  render_widget_host_view->SetDisplayFeatureForTesting(
+  render_widget_host_view->OverrideDisplayFeatureForEmulation(
       &emulated_display_feature);
 
   ClearScreenRects();
@@ -1325,7 +1371,7 @@ TEST_F(RenderWidgetHostTest, RootViewportSegments) {
   // resized the widget and causes a pending ack. This is unrelated to what
   // we're testing here so ignore the pending ack by using
   // |SynchronizeVisualPropertiesIgnoringPendingAck()|.
-  render_widget_host_view->SetDisplayFeatureForTesting(nullptr);
+  render_widget_host_view->OverrideDisplayFeatureForEmulation(nullptr);
   host_->SynchronizeVisualPropertiesIgnoringPendingAck();
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(1u, widget_.ReceivedVisualProperties().size());
@@ -1341,7 +1387,7 @@ TEST_F(RenderWidgetHostTest, RootViewportSegments) {
       DisplayFeature::Orientation::kHorizontal,
       /* offset */ screen_rect.height() / 2 - kDisplayFeatureLength / 2,
       /* mask_length */ kDisplayFeatureLength};
-  render_widget_host_view->SetDisplayFeatureForTesting(
+  render_widget_host_view->OverrideDisplayFeatureForEmulation(
       &emulated_display_feature);
   host_->SynchronizeVisualPropertiesIgnoringPendingAck();
   base::RunLoop().RunUntilIdle();
@@ -1500,7 +1546,6 @@ TEST_F(RenderWidgetHostTest, HideShowMessages) {
   EXPECT_TRUE(widget_.IsHidden().value());
 
   // Send it an update as from the renderer.
-  process_->sink().ClearMessages();
   cc::RenderFrameMetadata metadata;
   metadata.viewport_size_in_pixels = gfx::Size(100, 100);
   metadata.local_surface_id = std::nullopt;
@@ -1554,37 +1599,6 @@ TEST_F(RenderWidgetHostTest, SendEditCommandsBeforeKeyEvent) {
   // Send the simulated response from the renderer back.
   dispatched_events[1]->ToEvent()->CallCallback(
       blink::mojom::InputEventResultState::kConsumed);
-}
-
-TEST_F(RenderWidgetHostTest, PreHandleMouseEvent) {
-  // Simulate the situation that the browser handled the mouse event during
-  // pre-handle phrase.
-  delegate_->set_prehandle_mouse_event(true);
-
-  // Simulate a mouse event.
-  SimulateMouseEvent(WebMouseEvent::Type::kMouseDown);
-
-  EXPECT_TRUE(delegate_->prehandle_mouse_event_called());
-
-  // Make sure the mouse event is not sent to the renderer.
-  MockWidgetInputHandler::MessageVector dispatched_events =
-      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
-  EXPECT_EQ(0u, dispatched_events.size());
-
-  // Simulate the situation that the browser didn't handle the mouse event
-  // during pre-handle phrase.
-  delegate_->set_prehandle_mouse_event(false);
-
-  // Simulate a mouse event.
-  SimulateMouseEvent(WebMouseEvent::Type::kMouseUp);
-
-  // Make sure the mouse event is sent to the renderer.
-  dispatched_events =
-      host_->mock_render_input_router()->GetAndResetDispatchedMessages();
-  ASSERT_EQ(1u, dispatched_events.size());
-  ASSERT_TRUE(dispatched_events[0]->ToEvent());
-  EXPECT_EQ(WebMouseEvent::Type::kMouseUp,
-            dispatched_events[0]->ToEvent()->Event()->Event().GetType());
 }
 
 TEST_F(RenderWidgetHostTest, PreHandleRawKeyDownEvent) {
@@ -1812,7 +1826,8 @@ TEST_F(RenderWidgetHostTest, UnhandledGestureEvent) {
 // Test that the hang monitor timer expires properly if a new timer is started
 // while one is in progress (see crbug.com/11007).
 TEST_F(RenderWidgetHostTest, DontPostponeInputEventAckTimeout) {
-  base::TimeDelta delay = input::kHungRendererDelay;
+  base::TimeDelta delay =
+      input::kHungRendererDelay + input::kHungRendererPingTimeout;
 
   // Start a timeout.
   host_->GetRenderInputRouter()->StartInputEventAckTimeoutForTesting();
@@ -1840,8 +1855,7 @@ TEST_F(RenderWidgetHostTest, StopAndStartInputEventAckTimeout) {
   host_->GetRenderInputRouter()->StartInputEventAckTimeoutForTesting();
 
   // Wait long enough for first timeout and see if it fired.
-  task_environment_.FastForwardBy(input::kHungRendererDelay +
-                                  base::Milliseconds(10));
+  WaitForHang();
   EXPECT_TRUE(delegate_->unresponsive_timer_fired());
 }
 
@@ -1855,21 +1869,18 @@ TEST_F(RenderWidgetHostTest, InputEventAckTimeoutDisabledForInputWhenHidden) {
 
   // The timeout should not fire.
   EXPECT_FALSE(delegate_->unresponsive_timer_fired());
-  task_environment_.FastForwardBy(input::kHungRendererDelay +
-                                  base::Milliseconds(10));
+  WaitForHang();
   EXPECT_FALSE(delegate_->unresponsive_timer_fired());
 
   // The timeout should never reactivate while hidden.
   SimulateMouseEvent(WebInputEvent::Type::kMouseMove, 10, 10, 0, false);
-  task_environment_.FastForwardBy(input::kHungRendererDelay +
-                                  base::Milliseconds(10));
+  WaitForHang();
   EXPECT_FALSE(delegate_->unresponsive_timer_fired());
 
   // Showing the widget should restore the timeout, as the events have
   // not yet been ack'ed.
   host_->WasShown({} /* record_tab_switch_time_request */);
-  task_environment_.FastForwardBy(input::kHungRendererDelay +
-                                  base::Milliseconds(10));
+  WaitForHang();
   EXPECT_TRUE(delegate_->unresponsive_timer_fired());
 }
 
@@ -1892,8 +1903,7 @@ TEST_F(RenderWidgetHostTest, MultipleInputEvents) {
       blink::mojom::InputEventResultState::kConsumed);
 
   // Wait long enough for second timeout and see if it fired.
-  task_environment_.FastForwardBy(input::kHungRendererDelay +
-                                  base::Milliseconds(10));
+  WaitForHang();
   EXPECT_TRUE(delegate_->unresponsive_timer_fired());
 }
 
@@ -2245,9 +2255,9 @@ TEST_F(RenderWidgetHostTest, RendererExitedResetsIsHidden) {
   host_->SetView(new TestView(host_.get()));
   host_->WasShown({} /* record_tab_switch_time_request */);
 
-  ASSERT_FALSE(host_->is_hidden());
+  ASSERT_FALSE(host_->IsHidden());
   host_->RendererExited();
-  ASSERT_TRUE(host_->is_hidden());
+  ASSERT_TRUE(host_->IsHidden());
 
   // Make sure the input router is in a fresh state.
   ASSERT_FALSE(host_->input_router()->HasPendingEvents());
@@ -2266,38 +2276,211 @@ TEST_F(RenderWidgetHostTest, VisualProperties) {
             visual_properties.compositor_viewport_pixel_rect);
 }
 
-// Make sure no dragging occurs after renderer exited. See crbug.com/704832.
-TEST_F(RenderWidgetHostTest, RendererExitedNoDrag) {
-  host_->SetView(new TestView(host_.get()));
+class DragTestContentBrowserClient : public ContentBrowserClient {
+ public:
+  // The default implementation returns `false`, but this means that
+  // `CanRequestURL()` for a URL with a file scheme ends up returning true,
+  // since `ChildProcessSecurityPolicy` assumes that unhandled schemes are
+  // external protocols.
+  bool IsHandledURL(const GURL& url) override {
+    return url.SchemeIs(url::kFileScheme);
+  }
+};
 
-  EXPECT_EQ(delegate_->mock_delegate_view()->start_dragging_count(), 0);
+class RenderWidgetHostDragTest : public RenderViewHostImplTestHarness {
+ public:
+  RenderWidgetHostDragTest() {
+    old_browser_client_ = SetBrowserClientForTesting(&drag_browser_client_);
+  }
+
+  ~RenderWidgetHostDragTest() override {
+    SetBrowserClientForTesting(old_browser_client_);
+  }
+
+  void SetUp() override {
+    RenderViewHostImplTestHarness::SetUp();
+    contents()->set_delegate_view(&mock_delegate_view_);
+    main_test_rfh()->InitializeRenderFrameIfNeeded();
+  }
+
+  void StartDragWithDropData(const DropData& drop_data) {
+    StartDragWithDragData(
+        DropDataToDragData(drop_data, GetFileSystemAccessManager(),
+                           main_test_rfh()->GetProcess()->GetDeprecatedID(),
+                           GetChromeBlobStorageContext()));
+  }
+
+  void StartDragWithDragData(blink::mojom::DragDataPtr drag_data) {
+    GetRenderWidgetHost()->StartDragging(
+        *main_test_rfh(), std::move(drag_data), blink::kDragOperationEvery,
+        SkBitmap(), gfx::Vector2d(), gfx::Rect(),
+        blink::mojom::DragEventSourceInfo::New());
+  }
+
+  RenderWidgetHostImpl* GetRenderWidgetHost() {
+    return static_cast<RenderWidgetHostImpl*>(
+        main_test_rfh()->GetRenderWidgetHost());
+  }
+
+  FileSystemAccessManagerImpl* GetFileSystemAccessManager() {
+    return static_cast<StoragePartitionImpl*>(
+               contents()->GetBrowserContext()->GetDefaultStoragePartition())
+        ->GetFileSystemAccessManager();
+  }
+
+  scoped_refptr<ChromeBlobStorageContext> GetChromeBlobStorageContext() {
+    return ChromeBlobStorageContext::GetFor(contents()->GetBrowserContext());
+  }
+
+  int start_dragging_count() const {
+    return mock_delegate_view_.start_dragging_count();
+  }
+
+  const DropData& drop_data() const { return mock_delegate_view_.drop_data(); }
+
+ private:
+  DragTestContentBrowserClient drag_browser_client_;
+  raw_ptr<ContentBrowserClient> old_browser_client_;
+  MockRenderViewHostDelegateView mock_delegate_view_;
+};
+
+// Make sure no dragging occurs after renderer exited. See crbug.com/704832.
+TEST_F(RenderWidgetHostDragTest, RendererExitedNoDrag) {
+  EXPECT_EQ(start_dragging_count(), 0);
 
   GURL http_url = GURL("http://www.domain.com/index.html");
   DropData drop_data;
-  drop_data.url = http_url;
+  drop_data.url_infos = {ui::ClipboardUrlInfo{http_url, u""}};
   drop_data.html_base_url = http_url;
-  FileSystemAccessManagerImpl* file_system_manager =
-      static_cast<StoragePartitionImpl*>(process_->GetStoragePartition())
-          ->GetFileSystemAccessManager();
-  blink::DragOperationsMask drag_operation = blink::kDragOperationEvery;
-  host_->StartDragging(
-      DropDataToDragData(
-          drop_data, file_system_manager, process_->GetDeprecatedID(),
-          ChromeBlobStorageContext::GetFor(process_->GetBrowserContext())),
-      url::Origin(), drag_operation, SkBitmap(), gfx::Vector2d(), gfx::Rect(),
-      blink::mojom::DragEventSourceInfo::New());
-  EXPECT_EQ(delegate_->mock_delegate_view()->start_dragging_count(), 1);
+
+  StartDragWithDropData(drop_data);
+  EXPECT_EQ(start_dragging_count(), 1);
 
   // Simulate that renderer exited due navigation to the next page.
-  host_->RendererExited();
-  EXPECT_FALSE(host_->GetView());
-  host_->StartDragging(
-      DropDataToDragData(
-          drop_data, file_system_manager, process_->GetDeprecatedID(),
-          ChromeBlobStorageContext::GetFor(process_->GetBrowserContext())),
-      url::Origin(), drag_operation, SkBitmap(), gfx::Vector2d(), gfx::Rect(),
-      blink::mojom::DragEventSourceInfo::New());
-  EXPECT_EQ(delegate_->mock_delegate_view()->start_dragging_count(), 1);
+  GetRenderWidgetHost()->RendererExited();
+  EXPECT_FALSE(GetRenderWidgetHost()->GetView());
+
+  StartDragWithDropData(drop_data);
+  EXPECT_EQ(start_dragging_count(), 1);
+}
+
+TEST_F(RenderWidgetHostDragTest, NonFileUrlSpecifiesDownloadUrlWithFileUrl) {
+  NavigateAndCommit(GURL("https://example.com"));
+  EXPECT_EQ(start_dragging_count(), 0);
+
+  // This test uses `blink::mojom::DragData` directly; the
+  // `DropDataToDragData()` helper is primarily intended for drags into Blink,
+  // and `download_metadata` is not handled since it is not currently consumed
+  // in Blink.
+  auto drag_data = blink::mojom::DragData::New();
+  blink::mojom::DragItemStringPtr item = blink::mojom::DragItemString::New();
+  item->string_type = ui::kMimeTypeDownloadUrl;
+  item->string_data = u"text/plain:test.txt:file:///test.txt";
+  drag_data->items.push_back(
+      blink::mojom::DragItem::NewString(std::move(item)));
+
+  // A regular HTTP page cannot request file:// URLs so this should be filtered
+  // out.
+  StartDragWithDragData(std::move(drag_data));
+
+  EXPECT_EQ(start_dragging_count(), 1);
+  EXPECT_FALSE(drop_data().download_metadata.has_value());
+}
+
+// TODO(crbug.com/497882858): Add more tests that other fields in
+// `content::DropData` are filtered.
+
+TEST_F(RenderWidgetHostDragTest, FileUrlSpecifiesDownloadUrlWithFileUrl) {
+  NavigateAndCommit(GURL("file:///test.html"));
+  EXPECT_EQ(start_dragging_count(), 0);
+
+  // This test uses `blink::mojom::DragData` directly; the
+  // `DropDataToDragData()` helper is primarily intended for drags into Blink,
+  // and `download_metadata` is not handled since it is not currently consumed
+  // in Blink.
+  auto drag_data = blink::mojom::DragData::New();
+  blink::mojom::DragItemStringPtr item = blink::mojom::DragItemString::New();
+  item->string_type = ui::kMimeTypeDownloadUrl;
+  item->string_data = u"text/plain:test.txt:file:///test.txt";
+  drag_data->items.push_back(
+      blink::mojom::DragItem::NewString(std::move(item)));
+
+  // A file:// page should be able to set a DownloadURL pointing to a file://
+  // though.
+  StartDragWithDragData(std::move(drag_data));
+
+  EXPECT_EQ(start_dragging_count(), 1);
+  EXPECT_TRUE(drop_data().download_metadata.has_value());
+}
+
+TEST_F(RenderWidgetHostDragTest, SanitizeFilenameExtensionOnDrag) {
+  NavigateAndCommit(GURL("https://example.com"));
+  EXPECT_EQ(start_dragging_count(), 0);
+
+  auto drag_data = blink::mojom::DragData::New();
+  blink::mojom::DragItemBinaryPtr item = blink::mojom::DragItemBinary::New();
+  item->data = mojo_base::BigBuffer(std::vector<uint8_t>{1, 2, 3});
+  item->is_image_accessible = true;
+  item->source_url = GURL("http://example.com/image.png");
+  item->filename_extension =
+      base::FilePath(FILE_PATH_LITERAL("png/../../payload.so"));
+  drag_data->items.push_back(
+      blink::mojom::DragItem::NewBinary(std::move(item)));
+
+  StartDragWithDragData(std::move(drag_data));
+
+  EXPECT_EQ(start_dragging_count(), 1);
+  // BaseName() should strip the path traversal components.
+  EXPECT_EQ(drop_data().file_contents_filename_extension,
+            FILE_PATH_LITERAL("payload.so"));
+}
+
+// A plain <img> drag on macOS populates `file_contents` but supplies neither a
+// source URL nor a Content-Disposition, so it must not surface as a File in the
+// renderer's DataTransfer.files. See crbug.com/522179938.
+TEST_F(RenderWidgetHostDragTest,
+       ImageDragWithoutSourceUrlProducesNoBinaryItem) {
+  DropData drop_data;
+  drop_data.file_contents = {1, 2, 3};
+  drop_data.file_contents_image_accessible = true;
+
+  blink::mojom::DragDataPtr drag_data =
+      DropDataToDragData(drop_data, GetFileSystemAccessManager(),
+                         main_test_rfh()->GetProcess()->GetDeprecatedID(),
+                         GetChromeBlobStorageContext());
+
+  int binary_items = 0;
+  for (const auto& item : drag_data->items) {
+    if (item->is_binary()) {
+      ++binary_items;
+    }
+  }
+  EXPECT_EQ(binary_items, 0);
+}
+
+// A JS-constructed File round-trip carries a source URL, so the binary item
+// must still be emitted and stay image-accessible.
+TEST_F(RenderWidgetHostDragTest, JsFileDragWithSourceUrlProducesBinaryItem) {
+  DropData drop_data;
+  drop_data.file_contents = {1, 2, 3};
+  drop_data.file_contents_image_accessible = true;
+  drop_data.file_contents_source_url = GURL("https://local/image.png");
+
+  blink::mojom::DragDataPtr drag_data =
+      DropDataToDragData(drop_data, GetFileSystemAccessManager(),
+                         main_test_rfh()->GetProcess()->GetDeprecatedID(),
+                         GetChromeBlobStorageContext());
+
+  int binary_items = 0;
+  bool image_accessible = false;
+  for (const auto& item : drag_data->items) {
+    if (item->is_binary()) {
+      ++binary_items;
+      image_accessible = item->get_binary()->is_image_accessible;
+    }
+  }
+  EXPECT_EQ(binary_items, 1);
+  EXPECT_TRUE(image_accessible);
 }
 
 // Hiding the RenderWidgetHostImpl instance via a call to WasHidden should
@@ -2382,8 +2565,6 @@ TEST_F(RenderWidgetHostTest, EventDispatchPostDetach) {
   auto touch_event_consumers = blink::mojom::TouchEventConsumers::New(
       HasTouchEventHandlers(true), HasHitTestableScrollbar(false));
   host_->SetHasTouchEventConsumers(std::move(touch_event_consumers));
-  process_->sink().ClearMessages();
-
   host_->DetachDelegate();
 
   // Tests RIR::ForwardGestureEventWithLatencyInfo().
@@ -2479,7 +2660,7 @@ TEST_F(RenderWidgetHostTest, AddAndRemoveInputEventObserver) {
   // Confirm OnInputEvent is triggered.
   input::NativeWebKeyboardEvent native_event =
       CreateNativeWebKeyboardEvent(WebInputEvent::Type::kChar);
-  EXPECT_CALL(observer, OnInputEvent(_, _)).Times(1);
+  EXPECT_CALL(observer, OnInputEvent(_, _, _)).Times(1);
   std::move(host_->GetRenderInputRouter()->GetDispatchToRendererCallback())
       .Run(native_event, input::DispatchToRendererResult::kNotDispatched);
 
@@ -2487,7 +2668,7 @@ TEST_F(RenderWidgetHostTest, AddAndRemoveInputEventObserver) {
   host_->RemoveInputEventObserver(&observer);
 
   // Confirm InputEventObserver is removed.
-  EXPECT_CALL(observer, OnInputEvent(_, _)).Times(0);
+  EXPECT_CALL(observer, OnInputEvent(_, _, _)).Times(0);
   std::move(host_->GetRenderInputRouter()->GetDispatchToRendererCallback())
       .Run(native_event, input::DispatchToRendererResult::kNotDispatched);
 }
@@ -2506,7 +2687,7 @@ TEST_F(RenderWidgetHostTest, ScopedObservationWithInputEventObserver) {
   // Confirm OnInputEvent is triggered.
   input::NativeWebKeyboardEvent native_event =
       CreateNativeWebKeyboardEvent(WebInputEvent::Type::kChar);
-  EXPECT_CALL(observer, OnInputEvent(_, _)).Times(1);
+  EXPECT_CALL(observer, OnInputEvent(_, _, _)).Times(1);
   std::move(host_->GetRenderInputRouter()->GetDispatchToRendererCallback())
       .Run(native_event, input::DispatchToRendererResult::kNotDispatched);
 
@@ -2514,7 +2695,7 @@ TEST_F(RenderWidgetHostTest, ScopedObservationWithInputEventObserver) {
   scoped_observation.Reset();
 
   // Confirm InputEventObserver is removed.
-  EXPECT_CALL(observer, OnInputEvent(_, _)).Times(0);
+  EXPECT_CALL(observer, OnInputEvent(_, _, _)).Times(0);
   std::move(host_->GetRenderInputRouter()->GetDispatchToRendererCallback())
       .Run(native_event, input::DispatchToRendererResult::kNotDispatched);
 }
@@ -2539,12 +2720,67 @@ TEST_F(RenderWidgetHostTest, AddAndRemoveImeInputEventObserver) {
 }
 #endif
 
+TEST_F(RenderWidgetHostTest, SetAndCommitExternallySourcedComposition) {
+  std::u16string text = u"hello";
+  int length = text.length();
+  GlobalDOMNodeId node_id;
+  node_id.target_element_dom_id = blink::DOMNodeIdType(123);
+
+  ui::ImeTextSpan ime_text_span;
+  ime_text_span.end_offset = length;
+  ime_text_span.underline_style = ui::ImeTextSpan::UnderlineStyle::kDot;
+  host_->SetExternallySourcedComposition(text, {ime_text_span}, node_id);
+
+  {
+    MockWidgetInputHandler::MessageVector dispatched_messages =
+        host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+    ASSERT_EQ(1u, dispatched_messages.size());
+    MockWidgetInputHandler::DispatchedIMEMessage* ime_message =
+        dispatched_messages[0]->ToIME();
+    ASSERT_TRUE(ime_message);
+    EXPECT_EQ("SetComposition", ime_message->name());
+    EXPECT_TRUE(ime_message->Matches(
+        text, {ime_text_span}, gfx::Range::InvalidRange(), length, length,
+        blink::mojom::ImeState::kNone, node_id.target_element_dom_id));
+  }
+
+  host_->CommitExternallySourcedComposition(text, node_id);
+
+  {
+    MockWidgetInputHandler::MessageVector dispatched_messages =
+        host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+    ASSERT_EQ(1u, dispatched_messages.size());
+    MockWidgetInputHandler::DispatchedIMEMessage* ime_message =
+        dispatched_messages[0]->ToIME();
+    ASSERT_TRUE(ime_message);
+    EXPECT_EQ("CommitText", ime_message->name());
+    EXPECT_TRUE(ime_message->Matches(
+        text, std::vector<ui::ImeTextSpan>(), gfx::Range::InvalidRange(), 0, 0,
+        blink::mojom::ImeState::kNone, node_id.target_element_dom_id));
+  }
+}
+
+TEST_F(RenderWidgetHostTest, PasteIntoNode) {
+  std::u16string text = u"hello";
+  GlobalDOMNodeId node_id;
+  node_id.target_element_dom_id = blink::DOMNodeIdType(123);
+
+  host_->PasteIntoNode(text, node_id);
+
+  {
+    MockWidgetInputHandler::MessageVector dispatched_messages =
+        host_->mock_render_input_router()->GetAndResetDispatchedMessages();
+    ASSERT_EQ(1u, dispatched_messages.size());
+    EXPECT_EQ("PasteIntoNode", dispatched_messages[0]->name());
+  }
+}
+
 // Tests that vertical scroll direction changes are propagated to the delegate.
 TEST_F(RenderWidgetHostTest, OnVerticalScrollDirectionChanged) {
   const auto NotifyVerticalScrollDirectionChanged =
       [this](viz::VerticalScrollDirection scroll_direction) {
         static uint32_t frame_token = 1u;
-        host_->frame_token_message_queue_->DidProcessFrame(
+        host_->render_frame_metadata_provider_.DidProcessFrame(
             frame_token, base::TimeTicks::Now());
 
         cc::RenderFrameMetadata metadata;
@@ -2588,6 +2824,149 @@ TEST_F(RenderWidgetHostTest, SetCursorWithBitmap) {
       ui::Cursor::NewCustom(std::move(bitmap), gfx::Point());
   host_->SetCursor(cursor);
   EXPECT_EQ(cursor, view_->last_cursor());
+}
+
+TEST_F(RenderWidgetHostTest, SetHungRendererDelayUpdatesTimeout) {
+  // Default is input::kHungRendererDelay.
+  EXPECT_EQ(host_->GetHungRendererDelayForTesting(), input::kHungRendererDelay);
+
+  // Set custom delay. Make sure it's lower than the default which is 5 seconds
+  // for Android and 15 seconds for others.
+  host_->SetHungRendererDelay(base::Seconds(3));
+  EXPECT_EQ(host_->GetHungRendererDelayForTesting(), base::Seconds(3));
+}
+
+TEST_F(RenderWidgetHostTest, ZoomToFindInPageRectBoundsCheck) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect outside the view's bounds.
+  gfx::Rect out_of_bounds_rect(-10, -10, 5, 5);
+
+  // With the fix, it should return early because of bounds check.
+  // EXPECT_CALL ensures that ZoomToFindInPageRect is NOT called.
+  EXPECT_CALL(mock_owner_delegate_, ZoomToFindInPageRect(_)).Times(0);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->ZoomToFindInPageRectInMainFrame(out_of_bounds_rect);
+}
+
+TEST_F(RenderWidgetHostTest, ZoomToFindInPageRectValidBounds) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect inside the view's bounds.
+  gfx::Rect valid_rect(10, 10, 5, 5);
+
+  // This should proceed past the bounds check and call ZoomToFindInPageRect.
+  // The coordinates are relative to the view. Since this is the root view,
+  // they should not be transformed.
+  EXPECT_CALL(mock_owner_delegate_,
+              ZoomToFindInPageRect(gfx::Rect(10, 10, 5, 5)))
+      .Times(1);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->ZoomToFindInPageRectInMainFrame(valid_rect);
+}
+
+TEST_F(RenderWidgetHostTest, ZoomToFindInPageRectClippedToViewBounds) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect that overlaps the view bounds but extends well beyond them. The
+  // forwarded rect must be clipped so that no part of it (including its
+  // center) lies outside the sender's view.
+  gfx::Rect overlapping_rect(-1800, -10, 3900, 3900);
+
+  EXPECT_CALL(mock_owner_delegate_,
+              ZoomToFindInPageRect(gfx::Rect(0, 0, 200, 200)))
+      .Times(1);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->ZoomToFindInPageRectInMainFrame(overlapping_rect);
+}
+
+TEST_F(RenderWidgetHostTest, ZoomToFindInPageRectPartiallyClipped) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect that partially overlaps the view bounds; the forwarded rect should
+  // be the intersection with the view bounds.
+  gfx::Rect partial_rect(150, 150, 100, 100);
+
+  EXPECT_CALL(mock_owner_delegate_,
+              ZoomToFindInPageRect(gfx::Rect(150, 150, 50, 50)))
+      .Times(1);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->ZoomToFindInPageRectInMainFrame(partial_rect);
+}
+
+TEST_F(RenderWidgetHostTest, ZoomToFindInPageRectEmptyBounds) {
+  view_->SetBounds(gfx::Rect(0, 0, 0, 0));
+
+  gfx::Rect valid_rect(10, 10, 5, 5);
+
+  EXPECT_CALL(mock_owner_delegate_, ZoomToFindInPageRect(_)).Times(0);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->ZoomToFindInPageRectInMainFrame(valid_rect);
+}
+
+TEST_F(RenderWidgetHostTest, AnimateDoubleTapZoomBoundsCheck) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect outside the view's bounds.
+  gfx::Rect out_of_bounds_rect(-10, -10, 5, 5);
+  gfx::Point tap_point(10, 10);
+
+  // With the fix, it should return early because of bounds check.
+  // EXPECT_CALL ensures that AnimateDoubleTapZoom is NOT called.
+  EXPECT_CALL(mock_owner_delegate_, AnimateDoubleTapZoom(_, _)).Times(0);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->AnimateDoubleTapZoomInMainFrame(tap_point, out_of_bounds_rect);
+}
+
+TEST_F(RenderWidgetHostTest, AnimateDoubleTapZoomValidBounds) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect inside the view's bounds.
+  gfx::Rect valid_rect(10, 10, 5, 5);
+  gfx::Point tap_point(12, 12);
+
+  // This should proceed past the bounds check and call AnimateDoubleTapZoom.
+  EXPECT_CALL(mock_owner_delegate_,
+              AnimateDoubleTapZoom(gfx::Point(12, 12), gfx::Rect(10, 10, 5, 5)))
+      .Times(1);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->AnimateDoubleTapZoomInMainFrame(tap_point, valid_rect);
+}
+
+TEST_F(RenderWidgetHostTest, AnimateDoubleTapZoomRectClippedToViewBounds) {
+  view_->SetBounds(gfx::Rect(0, 0, 200, 200));
+
+  // Rect that overlaps the view bounds but extends beyond them. The forwarded
+  // rect must be clipped to the sender's view bounds.
+  gfx::Rect overlapping_rect(150, 150, 100, 100);
+  gfx::Point tap_point(160, 160);
+
+  EXPECT_CALL(
+      mock_owner_delegate_,
+      AnimateDoubleTapZoom(gfx::Point(160, 160), gfx::Rect(150, 150, 50, 50)))
+      .Times(1);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->AnimateDoubleTapZoomInMainFrame(tap_point, overlapping_rect);
+}
+
+TEST_F(RenderWidgetHostTest, AnimateDoubleTapZoomEmptyBounds) {
+  view_->SetBounds(gfx::Rect(0, 0, 0, 0));
+
+  gfx::Rect valid_rect(10, 10, 5, 5);
+  gfx::Point tap_point(12, 12);
+
+  EXPECT_CALL(mock_owner_delegate_, AnimateDoubleTapZoom(_, _)).Times(0);
+
+  static_cast<blink::mojom::FrameWidgetHost*>(host_.get())
+      ->AnimateDoubleTapZoomInMainFrame(tap_point, valid_rect);
 }
 
 }  // namespace content

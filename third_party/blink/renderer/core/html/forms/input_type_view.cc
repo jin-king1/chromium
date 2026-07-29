@@ -49,8 +49,7 @@ void InputTypeView::Trace(Visitor* visitor) const {
   visitor->Trace(element_);
 }
 
-bool InputTypeView::SizeShouldIncludeDecoration(int,
-                                                int& preferred_size) const {
+bool InputTypeView::GetSizeWithDecoration(int, int& preferred_size) const {
   preferred_size = GetElement().size();
   return false;
 }
@@ -77,10 +76,12 @@ void InputTypeView::DispatchSimulatedClickIfActive(KeyboardEvent& event) const {
   event.SetDefaultHandled();
 }
 
-void InputTypeView::AccessKeyAction(SimulatedClickCreationScope) {
+void InputTypeView::AccessKeyAction(
+    SimulatedClickCreationScope creation_scope) {
   GetElement().Focus(FocusParams(
       SelectionBehaviorOnFocus::kReset, mojom::blink::FocusType::kNone, nullptr,
       FocusOptions::Create(), FocusTrigger::kUserGesture));
+  GetElement().DispatchSimulatedClick(nullptr, creation_scope);
 }
 
 bool InputTypeView::ShouldSubmitImplicitly(const Event& event) {
@@ -96,7 +97,7 @@ HTMLFormElement* InputTypeView::FormForSubmission() const {
 LayoutObject* InputTypeView::CreateLayoutObject(
     const ComputedStyle& style) const {
   // Avoid LayoutInline, which can be split to multiple lines.
-  if (style.IsDisplayInlineType() && !style.IsDisplayReplacedType()) {
+  if (style.IsNonAtomicInlineDisplayType()) {
     return MakeGarbageCollected<LayoutBlockFlow>(&GetElement());
   }
   return LayoutObject::CreateObject(&GetElement(), style);
@@ -188,17 +189,18 @@ void InputTypeView::MinOrMaxAttributeChanged() {}
 
 void InputTypeView::StepAttributeChanged() {}
 
-ClickHandlingState* InputTypeView::WillDispatchClick() {
+ClickHandlingState* InputTypeView::LegacyPreActivationBehavior() {
   return nullptr;
 }
 
-void InputTypeView::DidDispatchClick(Event&, const ClickHandlingState&) {}
+void InputTypeView::RunInputActivationBehavior(Event&,
+                                               const ClickHandlingState&) {}
 
 void InputTypeView::UpdateView() {}
 
 void InputTypeView::MultipleAttributeChanged() {}
 
-void InputTypeView::DisabledAttributeChanged() {}
+void InputTypeView::DisabledAttributeChanged(DisabledChangedReason) {}
 
 void InputTypeView::ReadonlyAttributeChanged() {}
 

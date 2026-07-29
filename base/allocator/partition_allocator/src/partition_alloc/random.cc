@@ -16,12 +16,17 @@ class RandomGenerator {
  public:
   constexpr RandomGenerator() {}
 
-  uint32_t RandomValue() {
+  uint32_t RandomValue() PA_LOCKS_EXCLUDED(lock_) {
     ::partition_alloc::internal::ScopedGuard guard(lock_);
     return GetGenerator()->RandUint32();
   }
 
-  void SeedForTesting(uint64_t seed) {
+  void Reinitialize() PA_LOCKS_EXCLUDED(lock_) {
+    ::partition_alloc::internal::ScopedGuard guard(lock_);
+    initialized_ = false;
+  }
+
+  void SeedForTesting(uint64_t seed) PA_LOCKS_EXCLUDED(lock_) {
     ::partition_alloc::internal::ScopedGuard guard(lock_);
     GetGenerator()->ReseedForTesting(seed);
   }
@@ -59,6 +64,10 @@ namespace internal {
 
 uint32_t RandomValue() {
   return g_generator.RandomValue();
+}
+
+void ReinitializeRandomGenerator() {
+  g_generator.Reinitialize();
 }
 
 }  // namespace internal

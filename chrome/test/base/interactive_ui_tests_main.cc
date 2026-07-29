@@ -5,16 +5,22 @@
 #include <memory>
 
 #include "base/command_line.h"
+#include "base/memory/discardable_memory_allocator.h"
 #include "base/test/launcher/test_launcher.h"
+#include "base/test/test_discardable_memory_allocator.h"
+#include "base/test/test_switches.h"
 #include "build/build_config.h"
+#include "build/chromeos_buildflags.h"
 #include "chrome/browser/ssl/https_upgrades_navigation_throttle.h"
 #include "chrome/test/base/chrome_test_launcher.h"
 #include "chrome/test/base/chrome_test_suite.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/interactive_test_utils.h"
+#include "content/public/common/content_switches.h"
 #include "gpu/ipc/service/image_transport_surface.h"
 #include "ui/base/interaction/interactive_test_internal.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/compositor/compositor_switches.h"
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "ash/test/ui_controls_ash.h"
@@ -71,6 +77,9 @@ class InteractiveUITestSuite : public ChromeTestSuite {
     // Force the HTTPS-Upgrades timeout to zero.
     HttpsUpgradesNavigationThrottle::set_timeout_for_testing(base::TimeDelta());
 #endif
+
+    base::DiscardableMemoryAllocator::SetInstance(
+        &discardable_memory_allocator_);
   }
 
   void Shutdown() override {
@@ -83,6 +92,7 @@ class InteractiveUITestSuite : public ChromeTestSuite {
 #if BUILDFLAG(IS_WIN)
   std::unique_ptr<base::win::ScopedCOMInitializer> com_initializer_;
 #endif
+  base::TestDiscardableMemoryAllocator discardable_memory_allocator_;
 };
 
 class InteractiveUITestLauncherDelegate : public ChromeTestLauncherDelegate {
@@ -145,12 +155,12 @@ class InteractiveUITestSuiteRunner : public ChromeTestSuiteRunner {
 
 int main(int argc, char** argv) {
   base::CommandLine::Init(argc, argv);
+  base::CommandLine* command_line = base::CommandLine::ForCurrentProcess();
 
 #if BUILDFLAG(IS_CHROMEOS) && defined(MEMORY_SANITIZER)
   // Force software-gl. This is necessary for mus tests to avoid an msan warning
   // in gl init.
-  base::CommandLine::ForCurrentProcess()->AppendSwitch(
-      switches::kOverrideUseSoftwareGLForTests);
+  command_line->AppendSwitch(switches::kOverrideUseSoftwareGLForTests);
 #endif
 
   // Without this it's possible for the first browser to start up in the
@@ -178,6 +188,21 @@ int main(int argc, char** argv) {
   // Run interactive_ui_tests serially, they do not support running in parallel.
   size_t parallel_jobs = 1;
 #endif
+
+  // Adjust switches for interactive tests where the user is expected to
+  // manually verify results.
+  if (command_line->HasSwitch(switches::kTestLauncherInteractive)) {
+    // Since the test is interactive, the invoker will want to have pixel output
+    // to actually see the result.
+    command_line->AppendSwitch(switches::kEnablePixelOutputInTests);
+#if BUILDFLAG(IS_WIN)
+    // Under Windows, dialogs (but not the browser window) created in the
+    // spawned browser_test process are invisible for some unknown reason.
+    // Pass in --disable-gpu to resolve this for now. See
+    // http://crbug.com/40504416.
+    command_line->AppendSwitch(switches::kDisableGpu);
+#endif  // BUILDFLAG(IS_WIN)
+  }
 
   InteractiveUITestSuiteRunner runner;
   InteractiveUITestLauncherDelegate delegate(&runner);

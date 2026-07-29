@@ -15,6 +15,7 @@
 // Design doc: go/design-doc-v4-full-hash-manager
 
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -28,6 +29,7 @@
 #include "base/timer/timer.h"
 #include "components/safe_browsing/core/browser/db/safebrowsing.pb.h"
 #include "components/safe_browsing/core/browser/db/util.h"
+#include "components/safe_browsing/core/browser/db/v4_protocol_config.h"
 #include "components/safe_browsing/core/browser/db/v4_protocol_manager_util.h"
 #include "components/safe_browsing/core/common/proto/webui.pb.h"
 
@@ -59,14 +61,17 @@ struct FullHashInfo {
   // Any metadata for this full hash for a particular store.
   ThreatMetadata metadata;
 
+  // Set to true if the threat type is API_ABUSE and the metadata contains
+  // "NOTIFICATIONS".
+  bool is_notification_abusive = false;
+
   FullHashInfo(const FullHashStr& full_hash,
                const ListIdentifier& list_id,
                const base::Time& positive_expiry);
   FullHashInfo(const FullHashInfo& other);
   ~FullHashInfo();
 
-  bool operator==(const FullHashInfo& other) const;
-  bool operator!=(const FullHashInfo& other) const;
+  friend bool operator==(const FullHashInfo&, const FullHashInfo&) = default;
 
  private:
   FullHashInfo();
@@ -141,11 +146,10 @@ class V4GetHashProtocolManagerFactory;
 
 class V4GetHashProtocolManager {
  public:
-  // Invoked when GetFullHashesWithApis completes.
+  // Invoked when GetFullHashesForNotificationAbuse completes.
   // Parameters:
-  //   - The API threat metadata for the given URL.
-  using ThreatMetadataForApiCallback =
-      base::OnceCallback<void(const ThreatMetadata& md)>;
+  //   - Whether the URL is abusive for notifications.
+  using NotificationAbuseCallback = base::OnceCallback<void(bool is_abusive)>;
 
   V4GetHashProtocolManager(const V4GetHashProtocolManager&) = delete;
   V4GetHashProtocolManager& operator=(const V4GetHashProtocolManager&) = delete;
@@ -176,14 +180,14 @@ class V4GetHashProtocolManager {
   // Retrieve the full hash and API metadata for the origin of |url|, and invoke
   // the callback argument when the results are retrieved. The callback may be
   // invoked synchronously.
-  virtual void GetFullHashesWithApis(
+  virtual void GetFullHashesForNotificationAbuse(
       const GURL& url,
       const std::vector<std::string>& list_client_states,
-      ThreatMetadataForApiCallback api_callback);
+      NotificationAbuseCallback callback);
 
   // Callback when the request completes
   void OnURLLoaderComplete(network::SimpleURLLoader* url_loader,
-                           std::unique_ptr<std::string> response_body);
+                           std::optional<std::string> response_body);
 
   // Populates the protobuf with the FullHashCache data.
   void CollectFullHashCacheInfo(FullHashCacheInfo* full_hash_cache_info);
@@ -203,8 +207,6 @@ class V4GetHashProtocolManager {
   FRIEND_TEST_ALL_PREFIXES(V4GetHashProtocolManagerTest, TestParseHashResponse);
   FRIEND_TEST_ALL_PREFIXES(V4GetHashProtocolManagerTest,
                            TestParseHashResponseWrongThreatEntryType);
-  FRIEND_TEST_ALL_PREFIXES(V4GetHashProtocolManagerTest,
-                           TestParseHashThreatPatternType);
   FRIEND_TEST_ALL_PREFIXES(V4GetHashProtocolManagerTest,
                            TestParseSubresourceFilterMetadata);
   FRIEND_TEST_ALL_PREFIXES(V4GetHashProtocolManagerTest,
@@ -274,12 +276,13 @@ class V4GetHashProtocolManager {
                     const std::vector<FullHashInfo>& full_hash_infos,
                     std::vector<FullHashInfo>* merged_full_hash_infos);
 
-  // Calls |api_callback| with an object of ThreatMetadata that contains
-  // permission API metadata for full hashes in those |full_hash_infos| that
-  // have a full hash in |full_hashes|.
-  void OnFullHashForApi(ThreatMetadataForApiCallback api_callback,
-                        const std::vector<FullHashStr>& full_hashes,
-                        const std::vector<FullHashInfo>& full_hash_infos);
+  // Calls |callback| with a boolean indicating whether any of the
+  // |full_hash_infos| that have a full hash in |full_hashes| are abusive
+  // for notifications.
+  void OnFullHashForNotificationAbuse(
+      NotificationAbuseCallback callback,
+      const std::vector<FullHashStr>& full_hashes,
+      const std::vector<FullHashInfo>& full_hash_infos);
 
   // Parses a FindFullHashesResponse protocol buffer and fills the results in
   // |full_hash_infos| and |negative_cache_expire|. |response_data| is a
@@ -290,10 +293,12 @@ class V4GetHashProtocolManager {
                          std::vector<FullHashInfo>* full_hash_infos,
                          base::Time* negative_cache_expire);
 
-  // Parses the store specific |metadata| information from |match|. Logs errors
-  // to UMA if the metadata information was not parsed correctly or was
-  // inconsistent with what's expected from that corresponding store.
-  static void ParseMetadata(const ThreatMatch& match, ThreatMetadata* metadata);
+  // Parses the store specific metadata information from |match| and stores it
+  // in |full_hash_info|. Logs errors to UMA if the metadata information was
+  // not parsed correctly or was inconsistent with what's expected from that
+  // corresponding store.
+  static void ParseMetadata(const ThreatMatch& match,
+                            FullHashInfo* full_hash_info);
 
   // Resets the gethash error counter and multiplier.
   void ResetGetHashErrors();

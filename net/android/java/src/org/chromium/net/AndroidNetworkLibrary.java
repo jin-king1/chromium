@@ -24,16 +24,18 @@ import android.os.ParcelFileDescriptor;
 import android.os.Process;
 import android.security.NetworkSecurityPolicy;
 import android.telephony.TelephonyManager;
-import android.util.Log;
 
 import androidx.annotation.RequiresApi;
+import androidx.annotation.VisibleForTesting;
 
 import org.jni_zero.CalledByNative;
 import org.jni_zero.CalledByNativeForTesting;
 import org.jni_zero.CalledByNativeUnchecked;
+import org.jni_zero.JniType;
 
 import org.chromium.base.ApiCompatibilityUtils;
 import org.chromium.base.ContextUtils;
+import org.chromium.base.Log;
 import org.chromium.base.ResettersForTesting;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -97,7 +99,6 @@ class AndroidNetworkLibrary {
             try {
                 if (netIf.isUp() && !netIf.isLoopback()) return false;
             } catch (SocketException e) {
-                continue;
             }
         }
         return true;
@@ -125,11 +126,10 @@ class AndroidNetworkLibrary {
         try {
             return X509Util.verifyServerCertificates(
                     certChain, authType, host, ocspResponse, sctList);
-        } catch (KeyStoreException e) {
-            return new AndroidCertVerifyResult(CertVerifyStatusAndroid.FAILED);
-        } catch (NoSuchAlgorithmException e) {
-            return new AndroidCertVerifyResult(CertVerifyStatusAndroid.FAILED);
-        } catch (IllegalArgumentException e) {
+        } catch (KeyStoreException
+                | CertificateException
+                | NoSuchAlgorithmException
+                | IllegalArgumentException e) {
             return new AndroidCertVerifyResult(CertVerifyStatusAndroid.FAILED);
         }
     }
@@ -394,6 +394,32 @@ class AndroidNetworkLibrary {
                 return true;
             }
             return NetworkSecurityPolicy.getInstance().isCleartextTrafficPermitted();
+        }
+
+        @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+        public int getDomainEncryptionMode(String host) {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.CINNAMON_BUN) {
+                return NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_UNKNOWN;
+            }
+            return NetworkSecurityPolicy.getInstance().getDomainEncryptionMode(host);
+        }
+    }
+
+    /** Returns the ECH mode for |host|. */
+    @VisibleForTesting(otherwise = VisibleForTesting.PRIVATE)
+    @CalledByNative
+    @RequiresApi(Build.VERSION_CODES.CINNAMON_BUN)
+    static int getEchMode(@JniType("std::string") String host) {
+        int encryptionMode = NetworkSecurityPolicyProxy.getInstance().getDomainEncryptionMode(host);
+        switch (encryptionMode) {
+            case NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_DISABLED:
+                return EchMode.DISABLED;
+            case NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_OPPORTUNISTIC:
+            case NetworkSecurityPolicy.DOMAIN_ENCRYPTION_MODE_ENABLED:
+                return EchMode.OPPORTUNISTIC;
+            default:
+                // Default to OPPORTUNISTIC to maintain Chromium's preference for ECH.
+                return EchMode.OPPORTUNISTIC;
         }
     }
 
@@ -709,5 +735,23 @@ class AndroidNetworkLibrary {
         if (uid != TrafficStatsUid.UNSET_UID) {
             ThreadStatsUid.clear();
         }
+    }
+
+    @CalledByNative
+    public static void registerQuicConnectionClosePayload(final int socket, final byte[] payload) {
+        final ConnectivityManager cm =
+                (ConnectivityManager)
+                        ContextUtils.getApplicationContext()
+                                .getSystemService(Context.CONNECTIVITY_SERVICE);
+        ConnectivityManagerShim.registerQuicConnectionClosePayload(cm, socket, payload);
+    }
+
+    @CalledByNative
+    public static void unregisterQuicConnectionClosePayload(final int socket) {
+        final ConnectivityManager cm =
+                (ConnectivityManager)
+                        ContextUtils.getApplicationContext()
+                                .getSystemService(Context.CONNECTIVITY_SERVICE);
+        ConnectivityManagerShim.unregisterQuicConnectionClosePayload(cm, socket);
     }
 }

@@ -40,9 +40,6 @@ bool hasName(const TagDecl* decl,
 // any namespace qualifiers. This is similar to desugaring, except that for
 // ElaboratedTypes, desugar will unwrap too much.
 const Type* UnwrapType(const Type* type) {
-  if (const ElaboratedType* elaborated = dyn_cast<ElaboratedType>(type)) {
-    return UnwrapType(elaborated->getNamedType().getTypePtr());
-  }
   if (const TypedefType* typedefed = dyn_cast<TypedefType>(type)) {
     return UnwrapType(typedefed->desugar().getTypePtr());
   }
@@ -141,6 +138,28 @@ std::string GetAutoReplacementTypeAsString(QualType original_type,
   }
   return result;
 }
+
+// Wrapper visitor to traverse template instantiations for the
+// std::ranges::views::operator| check. This is needed because the default
+// RecursiveASTVisitor does not visit template instantiations, and enabling
+// shouldVisitTemplateInstantiations() on the main visitor would enable it for
+// all checks, which is not desired.
+class StdRangesPipeOperatorVisitor
+    : public RecursiveASTVisitor<StdRangesPipeOperatorVisitor> {
+ public:
+  explicit StdRangesPipeOperatorVisitor(FindBadConstructsConsumer& consumer)
+      : consumer_(consumer) {}
+
+  bool shouldVisitTemplateInstantiations() const { return true; }
+
+  bool VisitCallExpr(CallExpr* call_expr) {
+    consumer_.CheckStdRangesPipeOperator(call_expr);
+    return true;
+  }
+
+ private:
+  FindBadConstructsConsumer& consumer_;
+};
 
 }  // namespace
 
@@ -262,6 +281,9 @@ FindBadConstructsConsumer::FindBadConstructsConsumer(CompilerInstance& instance,
       "  * base::span_with_nul_from_cstring() to make a span with the NUL "
       "terminator\n"
       "  * a string view type instead of a string literal");
+  diag_std_ranges_pipe_operator_ = diagnostic().getCustomDiagID(
+      getErrorLevel(),
+      "[chromium-style] Use of operator| with range adaptors is banned.");
 }
 
 void FindBadConstructsConsumer::Traverse(ASTContext& context) {
@@ -275,6 +297,13 @@ void FindBadConstructsConsumer::Traverse(ASTContext& context) {
         "VisitLayoutObjectMethods in "
         "FindBadConstructsConsumer::Traverse");
     layout_visitor_->VisitLayoutObjectMethods(context);
+  }
+
+  {
+    llvm::TimeTraceScope TimeScope(
+        "CheckStdRangesPipeOperator in FindBadConstructsConsumer::Traverse");
+    StdRangesPipeOperatorVisitor visitor(*this);
+    visitor.TraverseDecl(context.getTranslationUnitDecl());
   }
 
   {
@@ -459,6 +488,12 @@ void FindBadConstructsConsumer::CheckCtorDtorWeight(
     return;
   }
 
+  // Aggregate types are exempt from the complex ctor/dtor checks despite the
+  // potential for binary bloat to allow the use of designated initializers.
+  if (IsRecursivelyAggregate(record)) {
+    return;
+  }
+
   // Skip records that derive from ignored base classes.
   if (HasIgnoredBases(record)) {
     return;
@@ -589,6 +624,21 @@ void FindBadConstructsConsumer::CheckCtorDtorWeight(
       }
     }
   }
+}
+
+bool FindBadConstructsConsumer::IsRecursivelyAggregate(CXXRecordDecl* record) {
+  if (!record->isAggregate()) {
+    return false;
+  }
+  // Also make sure all base classes are aggregates, which `isAggregate()` does
+  // not currently enforce.
+  for (const auto& base : record->bases()) {
+    CXXRecordDecl* base_record = base.getType()->getAsCXXRecordDecl();
+    if (base_record && !IsRecursivelyAggregate(base_record)) {
+      return false;
+    }
+  }
+  return true;
 }
 
 SuppressibleDiagnosticBuilder
@@ -901,17 +951,7 @@ FindBadConstructsConsumer::ClassifyType(const Type* type) {
                                          .getTypePtr();
       return ClassifyType(subst_type);
     }
-    case Type::Elaborated: {
-      // Quote from the LLVM documentation:
-      // "Represents a type that was referred to using an elaborated type
-      // keyword, e.g., struct S, or via a qualified name, e.g., N::M::type, or
-      // both. This type is used to keep track of a type name as written in the
-      // source code, including tag keywords and any nested-name-specifiers. The
-      // type itself is always "sugar", used to express what was written in the
-      // source code but containing no additional semantic information."
-      return ClassifyType(
-          dyn_cast<ElaboratedType>(type)->getNamedType().getTypePtr());
-    }
+
     case Type::Typedef: {
       // A "typedef type" is the representation of a type named through a
       // typedef (or a C++11 type alias). In this case, we don't care about the
@@ -1169,7 +1209,10 @@ void FindBadConstructsConsumer::CheckWeakPtrFactoryMembers(
           const TemplateArgument& arg =
               template_spec_type->template_arguments()[0];
           if (arg.getAsType().getTypePtr()->getAsCXXRecordDecl() ==
-              record->getTypeForDecl()->getAsCXXRecordDecl()) {
+              instance()
+                  .getASTContext()
+                  .getCanonicalTagType(record)
+                  ->getAsCXXRecordDecl()) {
             if (!weak_ptr_factory_location.isValid()) {
               // Save the first matching WeakPtrFactory member for the
               // diagnostic.
@@ -1271,18 +1314,7 @@ void FindBadConstructsConsumer::CheckDeducedAutoPointer(
   if (deduced_type.getCanonicalType()->isFunctionPointerType()) {
     return;
   }
-  // Elaborated types wrap the type that we're interested in, so we need to
-  // step through them. Inside, there may be a template param type, a pointer
-  // type, etc. For example, this function returns an ElaboratedType, which
-  // has a pointer inside. But has additional sugar around the pointer that
-  // we want to examine first.
-  // ```
-  // template <class T>
-  // AliasOfT<T> auto_function_return_elaborated_alias_with_ptr() { ... }
-  // ```
-  if (auto* elaborated = deduced_type->getAs<clang::ElaboratedType>()) {
-    deduced_type = elaborated->getNamedType();
-  }
+
   // If the `auto` resolves to a type that comes from a template parameter, the
   // input type may have been a type alias and we can't tell how the type was
   // actually spelt, so just allow it. This handles the return type of
@@ -1388,10 +1420,60 @@ void FindBadConstructsConsumer::CheckConstructingSpanFromStringLiteral(
   }
 
   value_expr = value_expr->IgnoreParens();
-  if (auto* lit_expr = clang::dyn_cast<clang::StringLiteral>(value_expr)) {
+  if (clang::isa<clang::StringLiteral>(value_expr)) {
     ReportIfSpellingLocNotIgnored(loc, diag_span_from_string_literal_);
     ReportIfSpellingLocNotIgnored(loc, diag_note_span_from_string_literal1_);
   }
+}
+
+void FindBadConstructsConsumer::CheckStdRangesPipeOperator(
+    CallExpr* call_expr) {
+  // We only care about operator| calls.
+  const auto* op_call = dyn_cast<CXXOperatorCallExpr>(call_expr);
+  if (!op_call || op_call->getOperator() != OO_Pipe) {
+    return;
+  }
+
+  const FunctionDecl* callee = op_call->getDirectCallee();
+  if (!callee) {
+    return;
+  }
+
+  // Check if the operator is defined in std::ranges.
+  // We manually walk the DeclContext to handle inline namespaces (like
+  // std::__1) correctly and robustly.
+  const DeclContext* dc = callee->getDeclContext();
+
+  // Unwrap inline namespaces (e.g. ranges::v1 -> ranges)
+  while (dc && dc->isInlineNamespace()) {
+    dc = dc->getParent();
+  }
+
+  // Check for "ranges" namespace
+  if (!dc || !dc->isNamespace() ||
+      cast<NamespaceDecl>(dc)->getName() != "ranges") {
+    return;
+  }
+
+  // Go up to the parent namespace
+  dc = dc->getParent();
+
+  // Unwrap inline namespaces again (e.g. std::__1 -> std)
+  while (dc && dc->isInlineNamespace()) {
+    dc = dc->getParent();
+  }
+
+  // Check for "std" namespace
+  const NamespaceDecl* std_namespace = instance().getSema().getStdNamespace();
+  if (!std_namespace || !dc || !dc->isNamespace() ||
+      cast<NamespaceDecl>(dc)->getCanonicalDecl() !=
+          std_namespace->getCanonicalDecl()) {
+    return;
+  }
+
+  // It is std::ranges::operator|. Report the error.
+  ReportIfSpellingLocNotIgnored(op_call->getOperatorLoc(),
+                                diag_std_ranges_pipe_operator_);
 }
 
 }  // namespace chrome_checker

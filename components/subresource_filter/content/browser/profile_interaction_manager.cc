@@ -6,7 +6,7 @@
 
 #include "base/check.h"
 #include "base/logging.h"
-#include "base/not_fatal_until.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "components/content_settings/browser/page_specific_content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -14,7 +14,7 @@
 #include "components/subresource_filter/content/browser/content_subresource_filter_throttle_manager.h"
 #include "components/subresource_filter/content/browser/subresource_filter_content_settings_manager.h"
 #include "components/subresource_filter/content/browser/subresource_filter_profile_context.h"
-#include "components/subresource_filter/content/shared/browser/utils.h"
+#include "components/subresource_filter/content/browser/utils.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page.h"
@@ -36,18 +36,16 @@ ProfileInteractionManager::~ProfileInteractionManager() = default;
 void ProfileInteractionManager::DidCreatePage(content::Page& page) {
   // A new ProfileInteractionManager is created for each page so we should only
   // call this, at most, once.
-  CHECK(!page_, base::NotFatalUntil::M129);
+  CHECK(!page_);
   page_ = &page;
 }
 
 void ProfileInteractionManager::OnReloadRequested() {
   // A reload request comes from browser so it will always be associated with
   // the primary page.
-  CHECK(page_, base::NotFatalUntil::M129);
-  CHECK(page_->IsPrimary(), base::NotFatalUntil::M129);
+  CHECK(page_);
+  CHECK(page_->IsPrimary());
 
-  ContentSubresourceFilterThrottleManager::LogAction(
-      SubresourceFilterAction::kAllowlistedSite);
   profile_context_->settings_manager()->AllowlistSite(
       page_->GetMainDocument().GetLastCommittedURL());
 
@@ -66,8 +64,9 @@ void ProfileInteractionManager::OnAdsViolationTriggered(
   // for the intervention duration, however, a page that began a navigation
   // before the intervention duration and was still alive after the duration
   // could re-trigger an ads intervention.
-  if (ads_violation_triggered_for_last_committed_navigation_)
+  if (ads_violation_triggered_for_last_committed_navigation_) {
     return;
+  }
 
   // If the feature is disabled, simulate ads interventions as if we were
   // enforcing on ads: do not record new interventions if we would be enforcing
@@ -98,8 +97,9 @@ mojom::ActivationLevel ProfileInteractionManager::OnPageActivationComputed(
     content::NavigationHandle* navigation_handle,
     mojom::ActivationLevel initial_activation_level,
     ActivationDecision* decision) {
-  CHECK(IsInSubresourceFilterRoot(navigation_handle),
-        base::NotFatalUntil::M129);
+  TRACE_EVENT0(TRACE_DISABLED_BY_DEFAULT("loading"),
+               "ProfileInteractionManager::OnPageActivationComputed");
+  CHECK(IsInSubresourceFilterRoot(navigation_handle));
 
   mojom::ActivationLevel effective_activation_level = initial_activation_level;
 
@@ -131,8 +131,8 @@ mojom::ActivationLevel ProfileInteractionManager::OnPageActivationComputed(
 void ProfileInteractionManager::MaybeShowNotification() {
   // The caller should make sure this is only called from pages that are
   // currently primary.
-  CHECK(page_, base::NotFatalUntil::M129);
-  CHECK(page_->IsPrimary(), base::NotFatalUntil::M129);
+  CHECK(page_);
+  CHECK(page_->IsPrimary());
 
   const GURL& top_level_url = page_->GetMainDocument().GetLastCommittedURL();
   if (profile_context_->settings_manager()->ShouldShowUIForSite(
@@ -172,9 +172,15 @@ ProfileInteractionManager::GetCookieSettings() {
   return profile_context_->cookie_settings();
 }
 
+base::WeakPtr<safe_browsing::V5GetHashProtocolManager>
+ProfileInteractionManager::GetV5GetHashProtocolManager() {
+  return profile_context_ ? profile_context_->GetV5GetHashProtocolManager()
+                          : nullptr;
+}
+
 content::WebContents* ProfileInteractionManager::GetWebContents() {
-  CHECK(page_, base::NotFatalUntil::M129);
-  CHECK(page_->IsPrimary(), base::NotFatalUntil::M129);
+  CHECK(page_);
+  CHECK(page_->IsPrimary());
   return content::WebContents::FromRenderFrameHost(&page_->GetMainDocument());
 }
 

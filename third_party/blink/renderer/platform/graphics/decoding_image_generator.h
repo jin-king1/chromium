@@ -54,11 +54,12 @@ class PLATFORM_EXPORT DecodingImageGenerator final
   // (exported via WebImageGenerator and set via
   // SkGraphics::SetImageGeneratorFromEncodedDataFactory)
   static std::unique_ptr<SkImageGenerator> CreateAsSkImageGenerator(
-      sk_sp<SkData>);
+      sk_sp<const SkData>);
 
   static sk_sp<DecodingImageGenerator> Create(
       scoped_refptr<ImageFrameGenerator>,
       const SkImageInfo&,
+      const gfx::HDRMetadata&,
       scoped_refptr<SegmentReader>,
       std::vector<FrameMetadata>,
       PaintImage::ContentId,
@@ -71,7 +72,7 @@ class PLATFORM_EXPORT DecodingImageGenerator final
   ~DecodingImageGenerator() override;
 
   // PaintImageGenerator implementation.
-  sk_sp<SkData> GetEncodedData() const override;
+  sk_sp<const SkData> GetEncodedData() const override;
   bool GetPixels(SkPixmap,
                  size_t frame_index,
                  PaintImage::GeneratorClientId client_id,
@@ -94,6 +95,7 @@ class PLATFORM_EXPORT DecodingImageGenerator final
  private:
   DecodingImageGenerator(scoped_refptr<ImageFrameGenerator>,
                          const SkImageInfo&,
+                         const gfx::HDRMetadata&,
                          scoped_refptr<SegmentReader>,
                          std::vector<FrameMetadata>,
                          PaintImage::ContentId,

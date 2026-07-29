@@ -7,6 +7,8 @@
 #include <memory>
 
 #include "base/functional/bind.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/utf_string_conversions.h"
 #include "chrome/app/vector_icons/vector_icons.h"
 #include "chrome/browser/data_sharing/data_sharing_service_factory.h"
 #include "chrome/browser/image_fetcher/image_fetcher_service_factory.h"
@@ -19,12 +21,14 @@
 #include "components/signin/public/base/avatar_icon_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/compositor/compositor.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/image/image.h"
 #include "ui/gfx/paint_vector_icon.h"
 #include "ui/views/layout/box_layout.h"
 #include "ui/views/style/typography.h"
+#include "ui/views/style/typography_provider.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget.h"
 
@@ -50,10 +54,10 @@ void DrawClippedCircle(gfx::Canvas& canvas,
                        SkColor circle_color,
                        bool clip_right_of_circle) {
   if (clip_right_of_circle) {
-    SkPath right_clip_circle;
-    right_clip_circle.addCircle(diameter + (diameter / 3.0f), diameter / 2.0f,
-                                diameter / 2.0f);
-    right_clip_circle.setFillType(SkPathFillType::kInverseWinding);
+    const SkPath right_clip_circle =
+        SkPath::Circle(diameter + (diameter / 3.0f), diameter / 2.0f,
+                       diameter / 2.0f)
+            .makeFillType(SkPathFillType::kInverseWinding);
     canvas.ClipPath(right_clip_circle, /*do_anti_alias=*/true);
   }
 
@@ -68,7 +72,11 @@ void DrawFallbackIcon(gfx::Canvas& canvas, int diameter, SkColor icon_color) {
   int icon_offset = (diameter - kIconSize) / 2;
   canvas.Save();
   canvas.Translate({icon_offset, icon_offset});
-  gfx::PaintVectorIcon(&canvas, kTabGroupSharingIcon, kIconSize, icon_color);
+  gfx::PaintVectorIcon(&canvas,
+                       features::IsRoundedIconsEnabled()
+                           ? kGroupCustomIcon
+                           : kTabGroupSharingOldIcon,
+                       kIconSize, icon_color);
   canvas.Restore();
 }
 
@@ -77,8 +85,9 @@ void DrawNumberText(gfx::Canvas& canvas,
                     int number,
                     SkColor text_color,
                     int font_size) {
-  gfx::FontList font_list({"Google Sans", "Roboto"}, gfx::Font::NORMAL,
-                          font_size, gfx::Font::Weight::NORMAL);
+  const auto& font_list = views::TypographyProvider::Get().GetFont(
+      views::style::TextContext::CONTEXT_DIALOG_BODY_TEXT,
+      views::style::TextStyle::STYLE_CAPTION_MEDIUM);
   gfx::Rect text_bounds(0, 0, diameter, diameter);
   canvas.DrawStringRectWithFlags(
       base::UTF8ToUTF16("+" + base::NumberToString(number)), font_list,
@@ -150,8 +159,8 @@ std::unique_ptr<AvatarImageView> CreateCircleAvatarImageView(
                      /*is_opaque=*/false);
   canvas.Save();
 
-  SkPath circle_path;
-  circle_path.addCircle(diameter / 2.0f, diameter / 2.0f, diameter / 2.0f);
+  const SkPath circle_path =
+      SkPath::Circle(diameter / 2.0f, diameter / 2.0f, diameter / 2.0f);
   canvas.ClipPath(circle_path, /*do_anti_alias=*/true);
 
   const int img_width = image_skia.width();
@@ -194,7 +203,7 @@ void ManageSharingAvatarContainer::UpdateMemberGfxImage(
 
 ManageSharingAvatarContainer::ManageSharingAvatarContainer(
     Profile* profile,
-    const tab_groups::CollaborationId& collaboration_id)
+    const syncer::CollaborationId& collaboration_id)
     : data_sharing_service_(
           data_sharing::DataSharingServiceFactory::GetForProfile(profile)),
       profile_(profile),
@@ -205,6 +214,15 @@ ManageSharingAvatarContainer::ManageSharingAvatarContainer(
 }
 
 ManageSharingAvatarContainer::~ManageSharingAvatarContainer() = default;
+
+void ManageSharingAvatarContainer::OnDeviceScaleFactorChanged(
+    float old_device_scale_factor,
+    float new_device_scale_factor) {
+  views::View::OnDeviceScaleFactorChanged(old_device_scale_factor,
+                                          new_device_scale_factor);
+  RequeryMemberInfo();
+  RebuildChildren();
+}
 
 void ManageSharingAvatarContainer::RequeryMemberInfo() {
   // This action cant be performed if there is no DataSharingService.
@@ -222,17 +240,25 @@ void ManageSharingAvatarContainer::RequeryMemberInfo() {
       image_fetcher_service->GetImageFetcher(
           image_fetcher::ImageFetcherConfig::kDiskCacheOnly);
 
+  // Attempt to get the exact scaled avatar image, default to a overscaled by 2
+  // to support HiDPI displays.
+  auto image_size = kCircleSize * 2;
+  if (GetWidget() && GetWidget()->GetCompositor()) {
+    image_size =
+        GetWidget()->GetCompositor()->device_scale_factor() * kCircleSize;
+  }
+
   // If we have up to three members, initiate fetch for each.
   if (members_for_display_.size() > 0) {
     data_sharing_service_->GetAvatarImageForURL(
-        members_for_display_[0].avatar_url, signin::kAccountInfoImageSize,
+        members_for_display_[0].avatar_url, image_size,
         base::BindOnce(&ManageSharingAvatarContainer::UpdateMemberGfxImage,
                        weak_ptr_factory_.GetWeakPtr(), 0),
         image_fetcher);
   }
   if (members_for_display_.size() > 1) {
     data_sharing_service_->GetAvatarImageForURL(
-        members_for_display_[1].avatar_url, signin::kAccountInfoImageSize,
+        members_for_display_[1].avatar_url, image_size,
         base::BindOnce(&ManageSharingAvatarContainer::UpdateMemberGfxImage,
                        weak_ptr_factory_.GetWeakPtr(), 1),
         image_fetcher);
@@ -241,7 +267,7 @@ void ManageSharingAvatarContainer::RequeryMemberInfo() {
   // we show the overflow.
   if (members_for_display_.size() == 3) {
     data_sharing_service_->GetAvatarImageForURL(
-        members_for_display_[2].avatar_url, signin::kAccountInfoImageSize,
+        members_for_display_[2].avatar_url, image_size,
         base::BindOnce(&ManageSharingAvatarContainer::UpdateMemberGfxImage,
                        weak_ptr_factory_.GetWeakPtr(), 2),
         image_fetcher);

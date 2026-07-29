@@ -95,6 +95,11 @@ CONSOLE MESSAGE:     method start
 CONSOLE MESSAGE:     setter onclose
 CONSOLE MESSAGE:     setter onmessage
 CONSOLE MESSAGE:     setter onmessageerror
+CONSOLE MESSAGE: interface QuotaExceededError : DOMException
+CONSOLE MESSAGE:     attribute @@toStringTag
+CONSOLE MESSAGE:     getter quota
+CONSOLE MESSAGE:     getter requested
+CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE: interface ReadableByteStreamController
 CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     getter byobRequest
@@ -188,6 +193,17 @@ CONSOLE MESSAGE:     method constructor
 CONSOLE MESSAGE:     method releaseLock
 CONSOLE MESSAGE:     method write
 CONSOLE MESSAGE: [NAMESPACES]
+CONSOLE MESSAGE: namespace Temporal
+CONSOLE MESSAGE:     attribute @@toStringTag
+CONSOLE MESSAGE:     attribute Now
+CONSOLE MESSAGE:     method Duration
+CONSOLE MESSAGE:     method Instant
+CONSOLE MESSAGE:     method PlainDate
+CONSOLE MESSAGE:     method PlainDateTime
+CONSOLE MESSAGE:     method PlainMonthDay
+CONSOLE MESSAGE:     method PlainTime
+CONSOLE MESSAGE:     method PlainYearMonth
+CONSOLE MESSAGE:     method ZonedDateTime
 CONSOLE MESSAGE: namespace console
 CONSOLE MESSAGE:     attribute @@toStringTag
 CONSOLE MESSAGE:     method assert
@@ -218,6 +234,7 @@ CONSOLE MESSAGE: [GLOBAL OBJECT]
 CONSOLE MESSAGE:     attribute globalThis
 CONSOLE MESSAGE:     getter currentFrame
 CONSOLE MESSAGE:     getter currentTime
+CONSOLE MESSAGE:     getter renderQuantumSize
 CONSOLE MESSAGE:     getter sampleRate
 CONSOLE MESSAGE:     method gc
 CONSOLE MESSAGE:     method registerProcessor

@@ -5,10 +5,10 @@
 #include "chromeos/ash/experiences/arc/overlay/arc_overlay_controller_impl.h"
 
 #include "ash/test/ash_test_base.h"
-#include "ash/test/test_widget_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/aura/window.h"
 #include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/test/test_widget_builder.h"
 
 namespace ash {
 namespace {
@@ -16,14 +16,16 @@ namespace {
 using ArcOverlayControllerImplTest = AshTestBase;
 
 TEST_F(ArcOverlayControllerImplTest, OverlayComesOnTop) {
-  auto* host_widget = TestWidgetBuilder().BuildOwnedByNativeWidget();
+  auto* host_widget =
+      views::test::TestWidgetBuilder().BuildOwnedByNativeWidget();
   auto* host_window = host_widget->GetNativeWindow();
 
   aura::Window child_window(nullptr);
   child_window.Init(ui::LAYER_NOT_DRAWN);
   host_window->AddChild(&child_window);
 
-  auto* overlay_widget = TestWidgetBuilder().BuildOwnedByNativeWidget();
+  auto* overlay_widget =
+      views::test::TestWidgetBuilder().BuildOwnedByNativeWidget();
 
   // This sets the host_window as `ArcOverlayControllerImpl::host_window_`,
   // which the arc overlay should be hosted by.
@@ -32,16 +34,15 @@ TEST_F(ArcOverlayControllerImplTest, OverlayComesOnTop) {
   controller.AttachOverlay(overlay_widget->GetNativeWindow());
 
   // Make sure that the overlay is at the top of the stack i.e. the last child
-  // of `host_window`. Note that an extra window `NativeViewHostAuraClip` is
-  // added as parent of the overlay so we compare with the parent.
-  EXPECT_EQ(host_window->children().back(),
-            overlay_widget->GetNativeWindow()->parent());
+  // of `host_window`.
+  EXPECT_EQ(host_window->children().back(), overlay_widget->GetNativeWindow());
 }
 
 TEST_F(ArcOverlayControllerImplTest,
        OverlayNativeViewHostAccessibleProperties) {
-  ArcOverlayControllerImpl controller(
-      TestWidgetBuilder().BuildOwnedByNativeWidget()->GetNativeWindow());
+  ArcOverlayControllerImpl controller(views::test::TestWidgetBuilder()
+                                          .BuildOwnedByNativeWidget()
+                                          ->GetNativeWindow());
   ui::AXNodeData data;
 
   controller.overlay_container_for_test()

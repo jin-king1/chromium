@@ -4,13 +4,12 @@
 
 #include "partition_alloc/partition_alloc_base/log_message.h"
 
-// TODO(crbug.com/40158212): After finishing copying //base files to PA library,
-// remove defined(BASE_CHECK_H_) from here.
-#if defined(                                                                                 \
-    BASE_ALLOCATOR_PARTITION_ALLOCATOR_SRC_PARTITION_ALLOC_PARTITION_ALLOC_BASE_CHECK_H_) || \
-    defined(BASE_CHECK_H_) ||                                                                \
-    defined(                                                                                 \
-        BASE_ALLOCATOR_PARTITION_ALLOCATOR_SRC_PARTITION_ALLOC_PARTITION_ALLOC_CHECK_H_)
+#include <array>
+
+#include "partition_alloc/partition_alloc_base/compiler_specific.h"
+
+#if defined(PARTITION_ALLOC_PARTITION_ALLOC_BASE_CHECK_H_) || \
+    defined(PARTITION_ALLOC_PARTITION_ALLOC_CHECK_H_)
 #error "log_message.h should not include check.h"
 #endif
 
@@ -47,13 +46,14 @@ namespace partition_alloc::internal::logging {
 
 namespace {
 
-const char* const log_severity_names[] = {"INFO", "WARNING", "ERROR", "FATAL"};
+constexpr auto log_severity_names =
+    std::to_array<const char*>({"INFO", "WARNING", "ERROR", "FATAL"});
 static_assert(LOGGING_NUM_SEVERITIES == std::size(log_severity_names),
               "Incorrect number of log_severity_names");
 
 const char* log_severity_name(int severity) {
   if (severity >= 0 && severity < LOGGING_NUM_SEVERITIES) {
-    return log_severity_names[severity];
+    return PA_UNSAFE_TODO(log_severity_names[severity]);
   }
   return "UNKNOWN";
 }
@@ -111,7 +111,7 @@ LogMessage::~LogMessage() {
   RawLog(severity_, str_newline);
 
   // TODO(crbug.com/40213558): Enable a stack trace on a fatal on fuchsia.
-#if !defined(OFFICIAL_BUILD) &&                         \
+#if !PA_BUILDFLAG(OFFICIAL) &&                          \
     (PA_BUILDFLAG(IS_POSIX) || PA_BUILDFLAG(IS_WIN)) && \
     !defined(__UCLIBC__) && !PA_BUILDFLAG(IS_AIX)
   // TODO(crbug.com/40213558): Show a stack trace on a fatal, unless a debugger
@@ -133,7 +133,8 @@ LogMessage::~LogMessage() {
 // writes the common header info to the stream
 void LogMessage::Init(const char* file, int line) {
   const char* last_slash_pos = base::strings::FindLastOf(file, "\\/");
-  const char* filename = last_slash_pos ? last_slash_pos + 1 : file;
+  const char* filename =
+      last_slash_pos ? PA_UNSAFE_TODO(last_slash_pos + 1 : file);
 
   {
     // TODO(darin): It might be nice if the columns were fixed width.
@@ -179,7 +180,7 @@ void SystemErrorCodeToStream(base::strings::CStringBuilder& os,
     const char* whitespace_pos = base::strings::FindLastNotOf(msgbuf, "\n\r ");
     if (whitespace_pos) {
       size_t whitespace_index = whitespace_pos - msgbuf + 1;
-      msgbuf[whitespace_index] = '\0';
+      PA_UNSAFE_TODO(msgbuf[whitespace_index]) = '\0';
     }
     base::strings::SafeSPrintf(buffer, "%s (0x%x)", msgbuf, error_code);
     os << buffer;

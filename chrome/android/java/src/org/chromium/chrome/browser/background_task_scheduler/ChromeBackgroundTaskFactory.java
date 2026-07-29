@@ -4,9 +4,12 @@
 
 package org.chromium.chrome.browser.background_task_scheduler;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import org.jni_zero.CalledByNative;
 
 import org.chromium.base.Log;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.browser.auxiliary_search.AuxiliarySearchBackgroundTask;
 import org.chromium.chrome.browser.background_sync.BackgroundSyncBackgroundTask;
 import org.chromium.chrome.browser.background_sync.PeriodicBackgroundSyncChromeWakeUpTask;
@@ -24,11 +27,13 @@ import org.chromium.components.background_task_scheduler.BackgroundTaskScheduler
 import org.chromium.components.background_task_scheduler.NativeBackgroundTask;
 import org.chromium.components.background_task_scheduler.TaskIds;
 import org.chromium.components.component_updater.UpdateTask;
+import org.chromium.components.enterprise.reporting.SignalsReportingBackgroundTask;
 
 /**
- * Implementation of {@link BackgroundTaskFactory} for //chrome.
- * Maps all task ids used in //chrome with their BackgroundTask classes.
+ * Implementation of {@link BackgroundTaskFactory} for //chrome. Maps all task ids used in //chrome
+ * with their BackgroundTask classes.
  */
+@NullMarked
 public class ChromeBackgroundTaskFactory implements BackgroundTaskFactory {
     private static final String TAG = "ChromeBkgrdTaskF";
 
@@ -83,22 +88,30 @@ public class ChromeBackgroundTaskFactory implements BackgroundTaskFactory {
                 return new PeriodicBackgroundSyncChromeWakeUpTask();
             case TaskIds.SAFETY_HUB_JOB_ID:
                 return new SafetyHubFetchTask();
-                // End of Java tasks. All native tasks should be listed here.
-            case TaskIds.QUERY_TILE_JOB_ID:
-            case TaskIds.FEEDV2_REFRESH_JOB_ID:
-            case TaskIds.WEBFEEDS_REFRESH_JOB_ID:
-                return new ProxyNativeTask();
             case TaskIds.AUXILIARY_SEARCH_DONATE_JOB_ID:
                 return new AuxiliarySearchBackgroundTask();
-                // When adding a new job id with a BackgroundTask, remember to add a specific case
-                // for it here.
-                // If the job id corresponds to a native task, use {@link ProxyNativeTask} as the
-                // task here and also update
-                // ChromeBackgroundTaskFactory::GetNativeBackgroundTaskFromTaskId
-                // to link to the real task.
+            case TaskIds.CHROME_SIGNALS_REPORTING_JOB_ID:
+                return new SignalsReportingBackgroundTask();
+            // End of Java tasks. All native tasks should be listed here.
+            case TaskIds.QUERY_TILE_JOB_ID:
+            case TaskIds.FEEDV2_REFRESH_JOB_ID:
+            case TaskIds.UMA_UPLOAD_JOB_ID:
+            case TaskIds.UKM_UPLOAD_JOB_ID:
+            case TaskIds.DWA_UPLOAD_JOB_ID:
+            case TaskIds.PUMA_UPLOAD_JOB_ID:
+            case TaskIds.STRUCTURED_METRICS_UPLOAD_JOB_ID:
+                return new ProxyNativeTask();
+            // When adding a new job id with a BackgroundTask, remember to add a specific case
+            // for it here.
+            // If the job id corresponds to a native task, use {@link ProxyNativeTask} as the
+            // task here and also update
+            // ChromeBackgroundTaskFactory::GetNativeBackgroundTaskFromTaskId
+            // to link to the real task.
             default:
-                Log.w(TAG, "Unable to find BackgroundTask class for task id " + taskId);
-                return null;
+                String errorMessage = "Unable to find BackgroundTask class for task id " + taskId;
+                Log.w(TAG, errorMessage);
+                assert false : errorMessage;
+                return assumeNonNull(null);
         }
     }
 }

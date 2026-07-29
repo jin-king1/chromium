@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "base/containers/id_map.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
 #include "components/guest_view/browser/guest_view.h"
 #include "extensions/browser/guest_view/app_view/app_view_guest_delegate.h"
@@ -33,12 +34,12 @@ class AppViewGuest : public guest_view::GuestView<AppViewGuest> {
       content::RenderFrameHost* owner_rfh);
 
   // Completes the creation of a WebContents associated with the provided
-  // |guest_extension_id| and |guest_instance_id| for the given
-  // |browser_context|.
-  // |guest_render_process_host| is the RenderProcessHost and |url| is the
+  // `guest_extension_id` and `guest_instance_id` for the given
+  // `browser_context`.
+  // `guest_render_process_host` is the RenderProcessHost and `url` is the
   // resource GURL of the extension instance making this request. If there is
-  // any mismatch between the expected |guest_instance_id| and
-  // |guest_extension_id| provided and the recorded copies from when the the
+  // any mismatch between the expected `guest_instance_id` and
+  // `guest_extension_id` provided and the recorded copies from when the the
   // <appview> was created, the RenderProcessHost of the extension instance
   // behind this request will be killed.
   static bool CompletePendingRequest(
@@ -53,15 +54,19 @@ class AppViewGuest : public guest_view::GuestView<AppViewGuest> {
   // Sets the AppDelegate for this guest.
   void SetAppDelegateForTest(AppDelegate* delegate);
 
+  static void AddFakePendingRequestForTesting(
+      const base::UnguessableToken& profile_token,
+      int guest_instance_id);
+
  private:
   explicit AppViewGuest(content::RenderFrameHost* owner_rfh);
 
   // GuestViewBase implementation.
   void CreateInnerPage(std::unique_ptr<GuestViewBase> owned_this,
                        scoped_refptr<content::SiteInstance> site_instance,
-                       const base::Value::Dict& create_params,
+                       const base::DictValue& create_params,
                        GuestPageCreatedCallback callback) final;
-  void DidInitialize(const base::Value::Dict& create_params) final;
+  void DidInitialize(const base::DictValue& create_params) final;
   void DidAttachToEmbedder() final;
   void MaybeRecreateGuestContents(
       content::RenderFrameHost* outer_contents_frame) final;
@@ -76,6 +81,7 @@ class AppViewGuest : public guest_view::GuestView<AppViewGuest> {
   bool HandleContextMenu(content::RenderFrameHost& render_frame_host,
                          const content::ContextMenuParams& params) final;
   bool IsWebContentsCreationOverridden(
+      content::RenderFrameHost* opener,
       content::SiteInstance* source_site_instance,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,
@@ -88,6 +94,8 @@ class AppViewGuest : public guest_view::GuestView<AppViewGuest> {
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
+      WindowOpenDisposition disposition,
+      const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
       content::SessionStorageNamespace* session_storage_namespace) final;
   void RequestMediaAccessPermission(
@@ -105,7 +113,7 @@ class AppViewGuest : public guest_view::GuestView<AppViewGuest> {
 
   void LaunchAppAndFireEvent(
       std::unique_ptr<GuestViewBase> owned_this,
-      base::Value::Dict data,
+      base::DictValue data,
       GuestPageCreatedCallback callback,
       std::unique_ptr<LazyContextTaskQueue::ContextInfo> context_info);
 

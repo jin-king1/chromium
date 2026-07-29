@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "build/build_config.h"
+#include "third_party/skia/include/core/SkPath.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
@@ -276,7 +277,7 @@ NotificationView::NotificationView(
             views::InkDrop::Get(host)->GetVisibleOpacity());
       },
       this));
-  views::InkDrop::Get(this)->SetBaseColorId(
+  views::InkDrop::Get(this)->SetBaseColor(
       ui::kColorNotificationBackgroundActive);
 
   auto header_row = CreateHeaderRowBuilder().Build();
@@ -565,7 +566,11 @@ void NotificationView::ToggleInlineSettings(const ui::Event& event) {
   // Toggling should reset the state.
   dont_block_button_->SetChecked(true);
 
+  auto weak_ptr = weak_ptr_factory_.GetWeakPtr();
   NotificationViewBase::ToggleInlineSettings(event);
+  if (!weak_ptr) {
+    return;
+  }
   PreferredSizeChanged();
 
   if (inline_settings_row()->GetVisible())
@@ -647,11 +652,11 @@ void NotificationView::Layout(PassKey) {
 
     // Use vertically larger clip path, so that actions row's top corners will
     // not be rounded.
-    SkPath path;
     gfx::Rect bounds = actions_row()->GetLocalBounds();
     bounds.set_y(bounds.y() - bounds.height());
     bounds.set_height(bounds.height() * 2);
-    path.addRoundRect(gfx::RectToSkRect(bounds), kCornerRadius, kCornerRadius);
+    const SkPath path =
+        SkPath::RRect(gfx::RectToSkRect(bounds), kCornerRadius, kCornerRadius);
 
     action_buttons_row()->SetClipPath(path);
 

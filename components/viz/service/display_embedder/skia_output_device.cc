@@ -8,9 +8,11 @@
 #include <utility>
 
 #include "base/check_op.h"
-#include "base/notreached.h"
+#include "base/notimplemented.h"
 #include "base/task/common/task_annotator.h"
+#include "gpu/command_buffer/service/graphite_shared_context.h"
 #include "gpu/command_buffer/service/memory_tracking.h"
+#include "gpu/command_buffer/service/shared_context_state.h"
 #include "gpu/command_buffer/service/skia_utils.h"
 #include "services/tracing/public/cpp/perfetto/flow_event_utils.h"
 #include "third_party/skia/include/core/SkSurface.h"
@@ -80,33 +82,36 @@ bool SkiaOutputDevice::ScopedPaint::Draw(
 }
 
 bool SkiaOutputDevice::ScopedPaint::Draw(
+    gpu::GraphiteSharedContext* graphite_shared_context,
     std::unique_ptr<skgpu::graphite::Recording> graphite_recording,
     base::OnceClosure on_finished) {
-  return device_->Draw(sk_surface_, std::move(graphite_recording),
-                       std::move(on_finished));
+  return device_->Draw(graphite_shared_context, sk_surface_,
+                       std::move(graphite_recording), std::move(on_finished));
 }
 
 SkiaOutputDevice::SkiaOutputDevice(
     GrDirectContext* gr_context,
-    skgpu::graphite::Context* graphite_context,
-    gpu::MemoryTracker* memory_tracker,
+    gpu::GraphiteSharedContext* graphite_shared_context,
+    scoped_refptr<gpu::MemoryTracker> memory_tracker,
     DidSwapBufferCompleteCallback did_swap_buffer_complete_callback,
     ReleaseOverlaysCallback release_overlays_callback)
-    : gr_context_(gr_context),
-      graphite_context_(graphite_context),
-      did_swap_buffer_complete_callback_(
+    : did_swap_buffer_complete_callback_(
           std::move(did_swap_buffer_complete_callback)),
       release_overlays_callback_(std::move(release_overlays_callback)),
       memory_type_tracker_(
-          std::make_unique<gpu::MemoryTypeTracker>(memory_tracker)) {
-  if (gr_context_) {
-    CHECK(!graphite_context_);
+          std::make_unique<gpu::MemoryTypeTracker>(std::move(memory_tracker))) {
+  if (gr_context) {
+    CHECK(!graphite_shared_context);
     capabilities_.max_render_target_size = gr_context->maxRenderTargetSize();
     capabilities_.max_texture_size = gr_context->maxTextureSize();
+  } else if (graphite_shared_context) {
+    capabilities_.max_render_target_size =
+        graphite_shared_context->maxTextureSize();
+    capabilities_.max_texture_size = graphite_shared_context->maxTextureSize();
   } else {
-    CHECK(graphite_context_);
-    capabilities_.max_render_target_size = graphite_context->maxTextureSize();
-    capabilities_.max_texture_size = graphite_context->maxTextureSize();
+    // Unit tests may create SkiaOutputDevice without a GPU context.
+    capabilities_.max_render_target_size = 8192;
+    capabilities_.max_texture_size = 8192;
   }
 }
 
@@ -123,15 +128,17 @@ SkiaOutputDevice::BeginScopedPaint() {
       std::move(end_semaphores), this, sk_surface);
 }
 
-void SkiaOutputDevice::SetViewportSize(const gfx::Size& viewport_size) {}
-
-void SkiaOutputDevice::Submit(bool sync_cpu, base::OnceClosure callback) {
-  if (gr_context_) {
-    gr_context_->submit(sync_cpu ? GrSyncCpu::kYes : GrSyncCpu::kNo);
+void SkiaOutputDevice::Submit(
+    scoped_refptr<gpu::SharedContextState> context_state,
+    bool sync_cpu,
+    base::OnceClosure callback) {
+  if (auto* gr_context = context_state->gr_context()) {
+    gr_context->submit(sync_cpu ? GrSyncCpu::kYes : GrSyncCpu::kNo);
   } else {
-    CHECK(graphite_context_);
-    graphite_context_->submit(sync_cpu ? skgpu::graphite::SyncToCpu::kYes
-                                       : skgpu::graphite::SyncToCpu::kNo);
+    auto* graphite_shared_context = context_state->graphite_shared_context();
+    CHECK(graphite_shared_context);
+    graphite_shared_context->submit(sync_cpu ? skgpu::graphite::SyncToCpu::kYes
+                                             : skgpu::graphite::SyncToCpu::kNo);
   }
   std::move(callback).Run();
 }
@@ -154,6 +161,11 @@ void SkiaOutputDevice::SetDependencyTimings(base::TimeTicks task_ready) {
   gpu_task_ready_ = task_ready;
 }
 
+void SkiaOutputDevice::SetOverlayStartTimings(
+    base::TimeTicks gpu_start_overlay) {
+  gpu_started_overlay_ = gpu_start_overlay;
+}
+
 void SkiaOutputDevice::ReadbackForTesting(
     base::OnceCallback<void(SkBitmap)> callback) {
   NOTIMPLEMENTED();
@@ -164,10 +176,12 @@ void SkiaOutputDevice::StartSwapBuffers(BufferPresentedCallback feedback) {
             capabilities_.pending_swap_params.GetMax());
 
   pending_swaps_.emplace(++swap_id_, std::move(feedback), viz_scheduled_draw_,
-                         gpu_started_draw_, gpu_task_ready_);
+                         gpu_started_draw_, gpu_task_ready_,
+                         gpu_started_overlay_);
   viz_scheduled_draw_ = base::TimeTicks();
   gpu_started_draw_ = base::TimeTicks();
   gpu_task_ready_ = base::TimeTicks();
+  gpu_started_overlay_ = base::TimeTicks();
 }
 
 void SkiaOutputDevice::FinishSwapBuffers(
@@ -191,17 +205,17 @@ void SkiaOutputDevice::FinishSwapBuffers(
       });
 
   auto release_fence = std::move(result.release_fence);
-  const gpu::SwapBuffersCompleteParams& params =
-      pending_swaps_.front().Complete(std::move(result), damage_area,
-                                      std::move(released_overlays),
-                                      frame.data.swap_trace_id);
+  gpu::SwapBuffersCompleteParams params = pending_swaps_.front().Complete(
+      std::move(result), damage_area, std::move(released_overlays),
+      frame.data.swap_trace_id);
+  const auto timings = params.swap_response.timings;
 
-  did_swap_buffer_complete_callback_.Run(params, size,
+  did_swap_buffer_complete_callback_.Run(std::move(params), size,
                                          std::move(release_fence));
 
   pending_swaps_.front().CallFeedback();
 
-  ReportLatency(params.swap_response.timings, std::move(frame.latency_info));
+  ReportLatency(timings, std::move(frame.latency_info));
 
   pending_swaps_.pop();
 
@@ -243,13 +257,15 @@ SkiaOutputDevice::SwapInfo::SwapInfo(
     SkiaOutputDevice::BufferPresentedCallback feedback,
     base::TimeTicks viz_scheduled_draw,
     base::TimeTicks gpu_started_draw,
-    base::TimeTicks gpu_task_ready)
+    base::TimeTicks gpu_task_ready,
+    base::TimeTicks gpu_started_overlay)
     : feedback_(std::move(feedback)) {
-  params_.swap_response.swap_id = swap_id;
-  params_.swap_response.timings.swap_start = base::TimeTicks::Now();
-  params_.swap_response.timings.viz_scheduled_draw = viz_scheduled_draw;
-  params_.swap_response.timings.gpu_started_draw = gpu_started_draw;
-  params_.swap_response.timings.gpu_task_ready = gpu_task_ready;
+  swap_response_.swap_id = swap_id;
+  swap_response_.timings.swap_start = base::TimeTicks::Now();
+  swap_response_.timings.viz_scheduled_draw = viz_scheduled_draw;
+  swap_response_.timings.gpu_started_draw = gpu_started_draw;
+  swap_response_.timings.gpu_task_ready = gpu_task_ready;
+  swap_response_.timings.gpu_started_overlay = gpu_started_overlay;
 }
 
 SkiaOutputDevice::SwapInfo::SwapInfo(SwapInfo&& other) = default;
@@ -257,34 +273,35 @@ SkiaOutputDevice::SwapInfo::SwapInfo(SwapInfo&& other) = default;
 SkiaOutputDevice::SwapInfo::~SwapInfo() = default;
 
 uint64_t SkiaOutputDevice::SwapInfo::SwapId() {
-  return params_.swap_response.swap_id;
+  return swap_response_.swap_id;
 }
 
-const gpu::SwapBuffersCompleteParams& SkiaOutputDevice::SwapInfo::Complete(
+gpu::SwapBuffersCompleteParams SkiaOutputDevice::SwapInfo::Complete(
     gfx::SwapCompletionResult result,
     const std::optional<gfx::Rect>& damage_rect,
     std::vector<gpu::Mailbox> released_overlays,
     int64_t swap_trace_id) {
-  params_.swap_response.result = result.swap_result;
-  params_.swap_response.timings.swap_end = base::TimeTicks::Now();
-  params_.frame_buffer_damage_area = damage_rect;
-  if (result.ca_layer_params)
-    params_.ca_layer_params = *result.ca_layer_params;
+  swap_response_.result = result.swap_result;
+  swap_response_.timings.swap_end = base::TimeTicks::Now();
 
-  params_.released_overlays = std::move(released_overlays);
-
-  params_.swap_trace_id = swap_trace_id;
-  return params_;
+  gpu::SwapBuffersCompleteParams params;
+  params.swap_response = swap_response_;
+  params.frame_buffer_damage_area = damage_rect;
+  params.ca_layer_params = std::move(result.ca_layer_params);
+  params.released_overlays = std::move(released_overlays);
+  params.swap_trace_id = swap_trace_id;
+  return params;
 }
 
 void SkiaOutputDevice::SwapInfo::CallFeedback() {
   if (feedback_) {
     uint32_t flags = 0;
-    if (params_.swap_response.result != gfx::SwapResult::SWAP_ACK)
+    if (swap_response_.result != gfx::SwapResult::SWAP_ACK) {
       flags = gfx::PresentationFeedback::Flags::kFailure;
+    }
 
     std::move(feedback_).Run(
-        gfx::PresentationFeedback(params_.swap_response.timings.swap_start,
+        gfx::PresentationFeedback(swap_response_.timings.swap_start,
                                   /*interval=*/base::TimeDelta(), flags));
   }
 }
@@ -348,19 +365,20 @@ bool SkiaOutputDevice::Draw(SkSurface* sk_surface,
 }
 
 bool SkiaOutputDevice::Draw(
+    gpu::GraphiteSharedContext* graphite_shared_context,
     SkSurface* sk_surface,
     std::unique_ptr<skgpu::graphite::Recording> graphite_recording,
     base::OnceClosure on_finished) {
   CHECK(sk_surface);
   CHECK(graphite_recording);
-  CHECK(graphite_context_);
+  CHECK(graphite_shared_context);
   skgpu::graphite::InsertRecordingInfo info;
   info.fRecording = graphite_recording.get();
   info.fTargetSurface = sk_surface;
   if (on_finished) {
     gpu::AddCleanupTaskForGraphiteRecording(std::move(on_finished), &info);
   }
-  return graphite_context_->insertRecording(info);
+  return graphite_shared_context->insertRecording(info);
 }
 
 }  // namespace viz

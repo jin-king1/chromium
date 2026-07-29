@@ -5,7 +5,15 @@
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_mediator.h"
 
 #import "base/memory/raw_ptr.h"
+#import "components/commerce/core/commerce_feature_list.h"
+#import "components/commerce/core/pref_names.h"
+#import "components/commerce/core/shopping_service.h"
+#import "components/ntp_tiles/pref_names.h"
 #import "components/prefs/pref_service.h"
+#import "components/safety_check/safety_check_pref_names.h"
+#import "ios/chrome/browser/content_suggestions/set_up_list/public/set_up_list_utils.h"
+#import "ios/chrome/browser/discover_feed/model/discover_feed_visibility_browser_agent.h"
+#import "ios/chrome/browser/discover_feed/model/feed_constants.h"
 #import "ios/chrome/browser/home_customization/coordinator/home_customization_navigation_delegate.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_discover_consumer.h"
 #import "ios/chrome/browser/home_customization/ui/home_customization_magic_stack_consumer.h"
@@ -13,43 +21,57 @@
 #import "ios/chrome/browser/home_customization/utils/home_customization_constants.h"
 #import "ios/chrome/browser/home_customization/utils/home_customization_helper.h"
 #import "ios/chrome/browser/home_customization/utils/home_customization_metrics_recorder.h"
-#import "ios/chrome/browser/ntp/shared/metrics/feed_metrics_utils.h"
-#import "ios/chrome/browser/parcel_tracking/features.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
-#import "ios/chrome/browser/ui/content_suggestions/set_up_list/utils.h"
 #import "url/gurl.h"
 
 @implementation HomeCustomizationMediator {
   // Pref service to handle preference changes.
   raw_ptr<PrefService> _prefService;
+  // Browser agent to be notified of Discover eligibility.
+  raw_ptr<DiscoverFeedVisibilityBrowserAgent>
+      _discoverFeedVisibilityBrowserAgent;
+  // ShoppingService used to determine ShopCard toggle
+  // eligibility.
+  raw_ptr<commerce::ShoppingService> _shoppingService;
 }
 
-- (instancetype)initWithPrefService:(PrefService*)prefService {
+- (instancetype)initWithPrefService:(PrefService*)prefService
+    discoverFeedVisibilityBrowserAgent:
+        (DiscoverFeedVisibilityBrowserAgent*)discoverFeedVisibilityBrowserAgent
+                       shoppingService:
+                           (commerce::ShoppingService*)shoppingService {
   self = [super init];
   if (self) {
     _prefService = prefService;
+    _discoverFeedVisibilityBrowserAgent = discoverFeedVisibilityBrowserAgent;
+    _shoppingService = shoppingService;
   }
   return self;
+}
+
+- (void)disconnect {
+  _prefService = nullptr;
+  _discoverFeedVisibilityBrowserAgent = nullptr;
+  _shoppingService = nullptr;
 }
 
 #pragma mark - Public
 
 - (void)configureMainPageData {
-  std::map<CustomizationToggleType, BOOL> toggleMap = {};
-  if (!ShouldPutMostVisitedSitesInMagicStack(
-          FeedActivityBucketForPrefs(_prefService))) {
-    toggleMap.insert(
-        {CustomizationToggleType::kMostVisited,
-         [self isModuleEnabledForType:CustomizationToggleType::kMostVisited]});
-  }
-  toggleMap.insert(
+  std::map<CustomizationToggleType, BOOL> toggleMap = {
+      {CustomizationToggleType::kMostVisited,
+       [self isModuleEnabledForType:CustomizationToggleType::kMostVisited]},
       {CustomizationToggleType::kMagicStack,
-       [self isModuleEnabledForType:CustomizationToggleType::kMagicStack]});
-  toggleMap.insert(
-      {CustomizationToggleType::kDiscover,
-       [self isModuleEnabledForType:CustomizationToggleType::kDiscover]});
-
+       [self isModuleEnabledForType:CustomizationToggleType::kMagicStack]},
+  };
+  if (_discoverFeedVisibilityBrowserAgent->GetEligibility() ==
+      DiscoverFeedEligibility::kEligible) {
+    toggleMap.insert(
+        {CustomizationToggleType::kDiscover,
+         [self isModuleEnabledForType:CustomizationToggleType::kDiscover]});
+  }
   [self.mainPageConsumer populateToggles:toggleMap];
 }
 
@@ -64,31 +86,19 @@
 }
 
 - (void)configureMagicStackPageData {
-  std::map<CustomizationToggleType, BOOL> toggleMap = {};
-  toggleMap.insert({CustomizationToggleType::kSetUpList,
-                    [self isMagicStackCardEnabledForType:
-                              CustomizationToggleType::kSetUpList]});
-  toggleMap.insert({CustomizationToggleType::kSafetyCheck,
-                    [self isMagicStackCardEnabledForType:
-                              CustomizationToggleType::kSafetyCheck]});
-  toggleMap.insert({CustomizationToggleType::kTapResumption,
-                    [self isMagicStackCardEnabledForType:
-                              CustomizationToggleType::kTapResumption]});
-  if (IsIOSParcelTrackingEnabled()) {
-    toggleMap.insert({CustomizationToggleType::kParcelTracking,
+  std::map<CustomizationToggleType, BOOL> toggleMap = {
+      {CustomizationToggleType::kSafetyCheck,
+       [self isMagicStackCardEnabledForType:CustomizationToggleType::
+                                                kSafetyCheck]},
+      {CustomizationToggleType::kTapResumption,
+       [self isMagicStackCardEnabledForType:CustomizationToggleType::
+                                                kTapResumption]},
+      {CustomizationToggleType::kTips,
+       [self isMagicStackCardEnabledForType:CustomizationToggleType::kTips]}};
+  if (_shoppingService && _shoppingService->IsShoppingListEligible()) {
+    toggleMap.insert({CustomizationToggleType::kShopCard,
                       [self isMagicStackCardEnabledForType:
-                                CustomizationToggleType::kParcelTracking]});
-  }
-  if (IsTipsMagicStackEnabled()) {
-    toggleMap.insert(
-        {CustomizationToggleType::kTips,
-         [self isMagicStackCardEnabledForType:CustomizationToggleType::kTips]});
-  }
-  if (ShouldPutMostVisitedSitesInMagicStack(
-          FeedActivityBucketForPrefs(_prefService))) {
-    toggleMap.insert({CustomizationToggleType::kMostVisited,
-                      [self isMagicStackCardEnabledForType:
-                                CustomizationToggleType::kMostVisited]});
+                                CustomizationToggleType::kShopCard]});
   }
   [self.magicStackPageConsumer populateToggles:toggleMap];
 }
@@ -99,15 +109,13 @@
 - (BOOL)isModuleEnabledForType:(CustomizationToggleType)type {
   switch (type) {
     case CustomizationToggleType::kMostVisited:
-      CHECK(!ShouldPutMostVisitedSitesInMagicStack(
-          FeedActivityBucketForPrefs(_prefService)));
       return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMostVisitedEnabled);
+          ntp_tiles::prefs::kMostVisitedHomeModuleEnabled);
     case CustomizationToggleType::kMagicStack:
       return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMagicStackEnabled);
+          ntp_tiles::prefs::kMagicStackHomeModuleEnabled);
     case CustomizationToggleType::kDiscover:
-      return _prefService->GetBoolean(prefs::kArticlesForYouEnabled);
+      return _discoverFeedVisibilityBrowserAgent->IsEnabled();
     default:
       NOTREACHED();
   }
@@ -117,28 +125,18 @@
 // preferences.
 - (BOOL)isMagicStackCardEnabledForType:(CustomizationToggleType)type {
   switch (type) {
-    case CustomizationToggleType::kSetUpList:
-      return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMagicStackSetUpListEnabled);
     case CustomizationToggleType::kSafetyCheck:
       return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMagicStackSafetyCheckEnabled);
+          safety_check::prefs::kSafetyCheckHomeModuleEnabled);
     case CustomizationToggleType::kTapResumption:
       return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMagicStackTabResumptionEnabled);
-    case CustomizationToggleType::kParcelTracking:
-      return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMagicStackParcelTrackingEnabled);
+          ntp_tiles::prefs::kTabResumptionHomeModuleEnabled);
     case CustomizationToggleType::kTips: {
-      CHECK(IsTipsMagicStackEnabled());
-      return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMagicStackTipsEnabled);
+      return _prefService->GetBoolean(ntp_tiles::prefs::kTipsHomeModuleEnabled);
     }
-    case CustomizationToggleType::kMostVisited:
-      CHECK(ShouldPutMostVisitedSitesInMagicStack(
-          FeedActivityBucketForPrefs(_prefService)));
+    case CustomizationToggleType::kShopCard:
       return _prefService->GetBoolean(
-          prefs::kHomeCustomizationMostVisitedEnabled);
+          commerce::kPriceTrackingHomeModuleEnabled);
     default:
       NOTREACHED();
   }
@@ -152,40 +150,35 @@
   switch (type) {
     // Main page toggles.
     case CustomizationToggleType::kMostVisited:
-      _prefService->SetBoolean(prefs::kHomeCustomizationMostVisitedEnabled,
+      _prefService->SetBoolean(ntp_tiles::prefs::kMostVisitedHomeModuleEnabled,
                                enabled);
       break;
     case CustomizationToggleType::kMagicStack:
-      _prefService->SetBoolean(prefs::kHomeCustomizationMagicStackEnabled,
+      _prefService->SetBoolean(ntp_tiles::prefs::kMagicStackHomeModuleEnabled,
                                enabled);
       break;
     case CustomizationToggleType::kDiscover:
-      _prefService->SetBoolean(prefs::kArticlesForYouEnabled, enabled);
+      _discoverFeedVisibilityBrowserAgent->SetEnabled(enabled);
       break;
 
     // Magic Stack page toggles.
-    case CustomizationToggleType::kSetUpList:
-      _prefService->SetBoolean(
-          prefs::kHomeCustomizationMagicStackSetUpListEnabled, enabled);
-      break;
     case CustomizationToggleType::kSafetyCheck:
       _prefService->SetBoolean(
-          prefs::kHomeCustomizationMagicStackSafetyCheckEnabled, enabled);
+          safety_check::prefs::kSafetyCheckHomeModuleEnabled, enabled);
       break;
     case CustomizationToggleType::kTapResumption:
       _prefService->SetBoolean(
-          prefs::kHomeCustomizationMagicStackTabResumptionEnabled, enabled);
-      break;
-    case CustomizationToggleType::kParcelTracking:
-      _prefService->SetBoolean(
-          prefs::kHomeCustomizationMagicStackParcelTrackingEnabled, enabled);
+          ntp_tiles::prefs::kTabResumptionHomeModuleEnabled, enabled);
       break;
     case CustomizationToggleType::kTips: {
-      CHECK(IsTipsMagicStackEnabled());
-      _prefService->SetBoolean(prefs::kHomeCustomizationMagicStackTipsEnabled,
+      _prefService->SetBoolean(ntp_tiles::prefs::kTipsHomeModuleEnabled,
                                enabled);
       break;
     }
+    case CustomizationToggleType::kShopCard:
+      _prefService->SetBoolean(commerce::kPriceTrackingHomeModuleEnabled,
+                               enabled);
+      break;
   }
 }
 
@@ -209,6 +202,10 @@
       break;
     case CustomizationLinkType::kLearnMore:
       URL = GURL(kDiscoverLearnMoreURL);
+      break;
+    case CustomizationLinkType::kEnterpriseLearnMore:
+      URL = GURL(kManagementLearnMoreURL);
+      break;
   }
   [self.navigationDelegate navigateToURL:URL];
 }

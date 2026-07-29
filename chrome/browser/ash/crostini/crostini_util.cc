@@ -5,8 +5,10 @@
 #include "chrome/browser/ash/crostini/crostini_util.h"
 
 #include <utility>
+#include <variant>
 
 #include "ash/constants/ash_features.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -39,9 +41,7 @@
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_controller.h"
 #include "chrome/browser/ui/ash/shelf/shelf_spinner_item_controller.h"
 #include "chrome/browser/ui/views/crostini/crostini_recovery_view.h"
-#include "chrome/browser/ui/webui/ash/crostini_upgrader/crostini_upgrader_dialog.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/prefs/pref_service.h"
@@ -150,14 +150,14 @@ void LaunchApplication(
   auto paths_or_error = share_path->ConvertArgsToPathsToShare(
       registration, args, crostini::ContainerChromeOSBaseDirectory(),
       /*map_crostini_home=*/true);
-  if (absl::holds_alternative<std::string>(paths_or_error)) {
+  if (std::holds_alternative<std::string>(paths_or_error)) {
     OnLaunchFailed(app_id, std::move(callback),
-                   absl::get<std::string>(paths_or_error),
+                   std::get<std::string>(paths_or_error),
                    CrostiniResult::SHARE_PATHS_FAILED);
     return;
   }
   const auto& paths =
-      absl::get<guest_os::GuestOsSharePath::PathsToShare>(paths_or_error);
+      std::get<guest_os::GuestOsSharePath::PathsToShare>(paths_or_error);
   share_path->SharePaths(
       vm_name, vm_info->seneschal_server_handle(),
       std::move(paths.paths_to_share),
@@ -168,37 +168,15 @@ void LaunchApplication(
 
 }  // namespace
 
-bool IsUninstallable(Profile* profile, const std::string& app_id) {
-  if (!CrostiniFeatures::Get()->IsEnabled(profile)) {
-    return false;
-  }
-  auto* registry_service =
-      guest_os::GuestOsRegistryServiceFactory::GetForProfile(profile);
-  std::optional<guest_os::GuestOsRegistryService::Registration> registration =
-      registry_service->GetRegistration(app_id);
-  if (registration) {
-    return registration->CanUninstall();
-  }
-  return false;
-}
-
 bool IsCrostiniRunning(Profile* profile) {
   auto* manager = crostini::CrostiniManager::GetForProfile(profile);
   return manager && manager->IsVmRunning(kCrostiniDefaultVmName);
 }
 
 bool ShouldConfigureDefaultContainer(Profile* profile) {
-  const base::FilePath ansible_playbook_file_path =
-      profile->GetPrefs()->GetFilePath(prefs::kCrostiniAnsiblePlaybookFilePath);
   bool default_container_configured = profile->GetPrefs()->GetBoolean(
       prefs::kCrostiniDefaultContainerConfigured);
-  return !default_container_configured && !ansible_playbook_file_path.empty();
-}
-
-bool ShouldAllowContainerUpgrade(Profile* profile) {
-  return CrostiniFeatures::Get()->IsContainerUpgradeUIAllowed(profile) &&
-         crostini::CrostiniManager::GetForProfile(profile)
-             ->IsContainerUpgradeable(DefaultContainerId());
+  return !default_container_configured;
 }
 
 void AddSpinner(crostini::CrostiniManager::RestartId restart_id,
@@ -301,15 +279,6 @@ void LaunchCrostiniAppWithIntent(Profile* profile,
         args, std::move(callback));
   }
 
-  if (crostini_manager->GetCrostiniDialogStatus(DialogType::UPGRADER)) {
-    // Reshow the existing dialog.
-    ash::CrostiniUpgraderDialog::Reshow();
-    VLOG(1) << "Reshowing upgrade dialog";
-    std::move(callback).Run(
-        false, "LaunchCrostiniApp called while upgrade dialog showing");
-    return;
-  }
-
   LaunchCrostiniAppImpl(profile, app_id, std::move(*registration), container_id,
                         display_id, args, std::move(callback));
 }
@@ -374,7 +343,7 @@ base::FilePath ContainerChromeOSBaseDirectory() {
 
 void AddNewLxdContainerToPrefs(Profile* profile,
                                const guest_os::GuestId& container_id) {
-  base::Value::Dict properties;
+  base::DictValue properties;
   properties.Set(guest_os::prefs::kContainerOsVersionKey,
                  static_cast<int>(ContainerOsVersion::kUnknown));
   properties.Set(guest_os::prefs::kContainerOsPrettyNameKey, "");

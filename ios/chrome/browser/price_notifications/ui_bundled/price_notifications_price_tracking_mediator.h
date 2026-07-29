@@ -15,7 +15,7 @@
 
 @protocol BookmarksCommands;
 @protocol PriceNotificationsAlertPresenter;
-@protocol PriceNotificationsCommands;
+@protocol PriceTrackedItemsCommands;
 @protocol PriceNotificationsConsumer;
 @protocol PriceInsightsConsumer;
 class PushNotificationService;
@@ -28,6 +28,8 @@ namespace commerce {
 class ShoppingService;
 }  // namespace commerce
 
+class GaiaId;
+
 namespace image_fetcher {
 class ImageDataFetcher;
 }  // namespace image_fetcher
@@ -37,7 +39,7 @@ class WebState;
 }  // namespace web
 
 @interface PriceNotificationsPriceTrackingMediator
-    : NSObject <PriceNotificationsMutator, PriceInsightsMutator>
+    : NSObject <PriceInsightsMutator, PriceNotificationsMutator>
 
 // `WebState`, and `PushNotificationService` must not be nil.
 // The designated initializer. `ShoppingService`, `BookmarkModel`,
@@ -60,12 +62,12 @@ class WebState;
 
 @property(nonatomic, weak) id<PriceInsightsConsumer> priceInsightsConsumer;
 
-@property(nonatomic, weak) id<PriceNotificationsCommands> handler;
+@property(nonatomic, weak) id<PriceTrackedItemsCommands> handler;
 
 @property(nonatomic, weak) id<PriceNotificationsAlertPresenter> presenter;
 
 // The GAIA ID of the user currently signed into Chrome;
-@property(nonatomic, copy) NSString* gaiaID;
+@property(nonatomic, assign) GaiaId gaiaID;
 
 @end
 

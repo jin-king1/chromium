@@ -4,6 +4,8 @@
 
 package org.chromium.chrome.browser.pwm_disabled;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 
 import org.chromium.base.Callback;
@@ -14,6 +16,8 @@ import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
 
+import java.util.ArrayList;
+
 /**
  * Shows a warning to the user explaining why the password manager is not available. For users who
  * can update GMS Core to regain access, it displays an update button. For all other users it only
@@ -22,7 +26,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 @NullMarked
 public class PasswordManagerUnavailableDialogCoordinator {
     private Context mContext;
-    private Callback<Context> mLaunchGmsUpdateCallback;
+    private @Nullable Callback<Context> mLaunchGmsUpdateCallback;
     private ModalDialogManager mModalDialogManager;
     private PasswordManagerUnavailableDialogMediator mMediator;
 
@@ -30,7 +34,7 @@ public class PasswordManagerUnavailableDialogCoordinator {
     public void showDialog(
             Context context,
             ModalDialogManager modalDialogManager,
-            Callback<Context> launchGmsUpdate) {
+            @Nullable Callback<Context> launchGmsUpdate) {
         mContext = context;
         mLaunchGmsUpdateCallback = launchGmsUpdate;
         mModalDialogManager = modalDialogManager;
@@ -44,6 +48,7 @@ public class PasswordManagerUnavailableDialogCoordinator {
     }
 
     private void launchGmsUpdateFlow() {
+        assumeNonNull(mLaunchGmsUpdateCallback);
         mLaunchGmsUpdateCallback.onResult(mContext);
     }
 
@@ -52,11 +57,8 @@ public class PasswordManagerUnavailableDialogCoordinator {
                 .with(ModalDialogProperties.CONTROLLER, mMediator)
                 .with(ModalDialogProperties.TITLE, getTitle(isUpdateDialog))
                 .with(
-                        ModalDialogProperties.MESSAGE_PARAGRAPH_1,
-                        getMessageParagraph1(isUpdateDialog))
-                .with(
-                        ModalDialogProperties.MESSAGE_PARAGRAPH_2,
-                        getMessageParagraph2(isUpdateDialog))
+                        ModalDialogProperties.MESSAGE_PARAGRAPHS,
+                        getMessageParagraphs(isUpdateDialog))
                 .with(
                         ModalDialogProperties.POSITIVE_BUTTON_TEXT,
                         getPositiveButtonText(isUpdateDialog))
@@ -73,16 +75,17 @@ public class PasswordManagerUnavailableDialogCoordinator {
                 : mContext.getString(R.string.pwm_disabled_no_gms_dialog_title);
     }
 
-    private String getMessageParagraph1(boolean isUpdateDialog) {
-        return isUpdateDialog
-                ? mContext.getString(R.string.pwm_disabled_update_dialog_description)
-                : mContext.getString(R.string.pwm_disabled_no_gms_dialog_description_paragraph1);
-    }
-
-    private @Nullable String getMessageParagraph2(boolean isUpdateDialog) {
-        return isUpdateDialog
-                ? null
-                : mContext.getString(R.string.pwm_disabled_no_gms_dialog_description_paragraph2);
+    private ArrayList<CharSequence> getMessageParagraphs(boolean isUpdateDialog) {
+        ArrayList<CharSequence> messages = new ArrayList<>();
+        if (isUpdateDialog) {
+            messages.add(mContext.getString(R.string.pwm_disabled_update_dialog_description));
+        } else {
+            messages.add(
+                    mContext.getString(R.string.pwm_disabled_no_gms_dialog_description_paragraph1));
+            messages.add(
+                    mContext.getString(R.string.pwm_disabled_no_gms_dialog_description_paragraph2));
+        }
+        return messages;
     }
 
     private String getPositiveButtonText(boolean isUpdateDialog) {

@@ -13,13 +13,13 @@
 
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
-#include "base/gtest_prod_util.h"
 #include "base/values.h"
 #include "content/browser/webui/url_data_source_impl.h"
 #include "content/common/content_export.h"
 #include "content/public/browser/url_data_source.h"
 #include "content/public/browser/web_ui_data_source.h"
 #include "content/public/common/buildflags.h"
+#include "ui/base/template_expressions.h"
 #include "url/origin.h"
 
 namespace content {
@@ -29,6 +29,8 @@ namespace content {
 class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
                                            public WebUIDataSource {
  public:
+  static constexpr int kNonExistentResource = -1;
+
   WebUIDataSourceImpl(const WebUIDataSourceImpl&) = delete;
   WebUIDataSourceImpl& operator=(const WebUIDataSourceImpl&) = delete;
 
@@ -38,7 +40,7 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   void AddLocalizedString(std::string_view name, int ids) override;
   void AddLocalizedStrings(
       base::span<const webui::LocalizedString> strings) override;
-  void AddLocalizedStrings(const base::Value::Dict& localized_strings) override;
+  void AddLocalizedStrings(const base::DictValue& localized_strings) override;
   void AddBoolean(std::string_view name, bool value) override;
   void AddInteger(std::string_view name, int32_t value) override;
   void AddDouble(std::string_view name, double value) override;
@@ -46,6 +48,10 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   void AddResourcePath(std::string_view path, int resource_id) override;
   void AddResourcePaths(base::span<const webui::ResourcePath> paths) override;
   void SetDefaultResource(int resource_id) override;
+  void SetResourcePathToResponse(std::string_view path,
+                                 std::string_view content) override;
+  void PopulateWebUIResources(
+      base::flat_map<std::string, std::string>& map) const override;
   void SetRequestFilter(const WebUIDataSource::ShouldHandleRequestCallback&
                             should_handle_request_callback,
                         const WebUIDataSource::HandleRequestCallback&
@@ -62,6 +68,9 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   url::Origin GetOrigin() override;
   void SetSupportedScheme(std::string_view scheme) override;
 
+  // URLDataSourceImpl:
+  const ui::TemplateReplacements* GetReplacements() const override;
+
   // Add the locale to the load time data defaults. May be called repeatedly.
   void EnsureLoadTimeDataDefaultsAdded();
 
@@ -73,6 +82,10 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
     return path_to_idr_map_;
   }
 
+  const std::map<std::string, std::string>& path_to_response_map() const {
+    return path_to_response_map_;
+  }
+
  protected:
   explicit WebUIDataSourceImpl(const std::string& source_name);
   ~WebUIDataSourceImpl() override;
@@ -82,7 +95,7 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
                                   bool from_js_module);
 
   // Protected for testing.
-  virtual const base::Value::Dict* GetLocalizedStrings() const;
+  const base::DictValue& GetLocalizedStringsForTesting() const;
 
   // Protected for testing.
   int URLToIdrOrDefault(const GURL& url) const;
@@ -94,11 +107,11 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   friend class URLDataManagerBackendTest;
   friend class WebUIDataSource;
   friend class WebUIDataSourceTest;
-  friend class WebUIImplTest;
+  friend class WebUIImplTestBase;
 
   // Methods that match URLDataSource which are called by
   // InternalDataSource.
-  std::string GetMimeType(const GURL& url) const;
+  std::string_view GetMimeType(const GURL& url) const;
   void StartDataRequest(const GURL& url,
                         const WebContents::Getter& wc_getter,
                         URLDataSource::GotDataCallback callback);
@@ -114,9 +127,9 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   // E.g., for favicons, this could be "favicon", which results in paths for
   // specific resources like "favicon/34" getting sent to this source.
   std::string source_name_;
-  int default_resource_;
   bool use_strings_js_ = false;
   std::map<std::string, int> path_to_idr_map_;
+  std::map<std::string, std::string> path_to_response_map_;
 #if BUILDFLAG(LOAD_WEBUI_FROM_DISK)
   std::map<int, std::string> idr_to_file_map_;
   bool load_from_disk_ = false;
@@ -129,7 +142,7 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
   // The |replacements_| is intended to replace |localized_strings_|.
   // TODO(dschuyler): phase out |localized_strings_| in Q1 2017. (Or rename
   // to |load_time_flags_| if the usage is reduced to storing flags only).
-  base::Value::Dict localized_strings_;
+  base::DictValue localized_strings_;
   WebUIDataSource::HandleRequestCallback filter_callback_;
   WebUIDataSource::ShouldHandleRequestCallback should_handle_request_callback_;
 
@@ -144,6 +157,8 @@ class CONTENT_EXPORT WebUIDataSourceImpl : public URLDataSourceImpl,
 
   // Supported scheme if not one of the default supported schemes.
   std::optional<std::string> supported_scheme_;
+
+  mutable bool resources_frozen_ = false;
 };
 
 }  // namespace content

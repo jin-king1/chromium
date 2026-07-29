@@ -16,12 +16,13 @@
 #import "components/autofill/core/browser/crowdsourcing/autofill_crowdsourcing_manager.h"
 #import "components/autofill/core/browser/crowdsourcing/votes_uploader.h"
 #import "components/autofill/core/browser/data_manager/personal_data_manager.h"
+#import "components/autofill/core/browser/data_manager/valuables/valuables_data_manager.h"
 #import "components/autofill/core/browser/foundations/autofill_client.h"
+#import "components/autofill/core/browser/integrators/autofill_ai/autofill_ai_manager.h"
 #import "components/autofill/core/browser/integrators/password_form_classification.h"
 #import "components/autofill/core/browser/metrics/form_interactions_ukm_logger.h"
 #import "components/autofill/core/browser/payments/card_unmask_delegate.h"
 #import "components/autofill/core/browser/single_field_fillers/autocomplete/autocomplete_history_manager.h"
-#import "components/autofill/core/browser/strike_databases/strike_database.h"
 #import "components/autofill/core/browser/studies/autofill_ablation_study.h"
 #import "components/autofill/core/browser/ui/payments/card_unmask_prompt_options.h"
 #import "components/autofill/core/browser/webdata/autofill_webdata_service.h"
@@ -29,11 +30,12 @@
 #import "components/autofill/ios/browser/autofill_client_ios.h"
 #import "components/autofill/ios/browser/autofill_client_ios_bridge.h"
 #import "components/infobars/core/infobar_manager.h"
-#import "components/plus_addresses/plus_address_types.h"
 #import "components/prefs/pref_service.h"
+#import "components/strike_database/strike_database.h"
 #import "components/sync/service/sync_service.h"
 #import "ios/chrome/browser/autofill/model/credit_card/autofill_save_card_infobar_delegate_ios.h"
 #import "ios/chrome/browser/autofill/ui_bundled/ios_chrome_payments_autofill_client.h"
+#import "ios/chrome/browser/intelligence/proto_wrappers/page_context_wrapper.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 
 @protocol AutofillCommands;
@@ -45,7 +47,11 @@ class WebState;
 
 namespace autofill {
 
+class AtMemoryQueryService;
+class AutofillAiSaveEntityInfoBarDelegateIOS;
+class AutofillSuggestionDelegate;
 class LogRouter;
+class AutofillAiPersonalContextAccessManager;
 
 enum class SuggestionType;
 
@@ -60,7 +66,6 @@ enum class SuggestionType;
 class ChromeAutofillClientIOS : public AutofillClientIOS {
  public:
   ChromeAutofillClientIOS(
-      FromWebStateImpl from_web_state_impl,
       ProfileIOS* profile,
       web::WebState* web_state,
       infobars::InfoBarManager* infobar_manager,
@@ -89,20 +94,35 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   AutofillCrowdsourcingManager& GetCrowdsourcingManager() override;
   VotesUploader& GetVotesUploader() override;
   PersonalDataManager& GetPersonalDataManager() override;
+  ValuablesDataManager* GetValuablesDataManager() override;
   EntityDataManager* GetEntityDataManager() override;
+  WalletPassAccessManager* GetWalletPassAccessManager() override;
+  FieldClassificationModelHandler*
+  GetAutofillFieldClassificationModelHandler() override;
   FieldClassificationModelHandler*
   GetPasswordManagerFieldClassificationModelHandler() override;
   SingleFieldFillRouter& GetSingleFieldFillRouter() override;
   AutocompleteHistoryManager* GetAutocompleteHistoryManager() override;
+  AtMemoryQueryService* GetAtMemoryQueryService() override;
+  void GetAiPageContent(GetAiPageContentCallback callback) override;
+  AutofillAiManager* GetAutofillAiManager() override;
+  AutofillAiPersonalContextAccessManager*
+  GetAutofillAiPersonalContextAccessManager() override;
+  AutofillAiModelCache* GetAutofillAiModelCache() override;
+  AutofillAiModelExecutor* GetAutofillAiModelExecutor() override;
+  optimization_guide::RemoteModelExecutor* GetRemoteModelExecutor() override;
+  consent_auditor::ConsentAuditor* GetConsentAuditor() final;
   PrefService* GetPrefs() override;
   const PrefService* GetPrefs() const override;
   syncer::SyncService* GetSyncService() override;
   signin::IdentityManager* GetIdentityManager() override;
   const signin::IdentityManager* GetIdentityManager() const override;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
+  const GoogleGroupsManager* GetGoogleGroupsManager() const override;
   FormDataImporter* GetFormDataImporter() override;
   payments::IOSChromePaymentsAutofillClient* GetPaymentsAutofillClient()
       override;
-  StrikeDatabase* GetStrikeDatabase() override;
+  strike_database::StrikeDatabase* GetStrikeDatabase() final;
   ukm::UkmRecorder* GetUkmRecorder() override;
   AddressNormalizer* GetAddressNormalizer() override;
   const GURL& GetLastCommittedPrimaryMainFrameURL() const override;
@@ -115,42 +135,52 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   void ConfirmSaveAddressProfile(
       const AutofillProfile& profile,
       const AutofillProfile* original_profile,
-      bool is_migration_to_account,
+      AutofillClient::SaveAddressBubbleType save_address_bubble_type,
       AddressProfileSavePromptCallback callback) override;
   SuggestionUiSessionId ShowAutofillSuggestions(
       const PopupOpenArgs& open_args,
       base::WeakPtr<AutofillSuggestionDelegate> delegate) override;
-  void ShowPlusAddressEmailOverrideNotification(
-      const std::string& original_email,
-      EmailOverrideUndoCallback email_override_undo_callback) override;
   void UpdateAutofillDataListValues(
-      base::span<const autofill::SelectOption> datalist) override;
-  void HideAutofillSuggestions(SuggestionHidingReason reason) override;
+      base::span<const SelectOption> datalist) override;
+  void HideSuggestions(SuggestionHidingReason reason,
+                       std::optional<FillingProduct> product) override;
   bool IsAutofillEnabled() const override;
   bool IsAutofillProfileEnabled() const override;
-  bool IsAutofillPaymentMethodsEnabled() const override;
+  bool IsAutofillTypeBlockedByPolicy(
+      const GURL& url,
+      AutofillPolicyDataCategory category) const override;
+  bool IsWalletPublicPassStorageEnabled() const override;
   bool IsAutocompleteEnabled() const override;
   bool IsPasswordManagerEnabled() const override;
-  void DidFillForm(AutofillTriggerSource trigger_source,
-                   bool is_refill) override;
+  bool UsesPlatformAutofill() const override;
   bool IsContextSecure() const override;
-  FormInteractionsFlowId GetCurrentFormInteractionsFlowId() override;
   LogManager* GetCurrentLogManager() override;
   autofill_metrics::FormInteractionsUkmLogger& GetFormInteractionsUkmLogger()
       override;
   const AutofillAblationStudy& GetAblationStudy() const override;
   bool IsLastQueriedField(FieldGlobalId field_id) override;
   bool ShouldFormatForLargeKeyboardAccessory() const override;
-  AutofillPlusAddressDelegate* GetPlusAddressDelegate() override;
-  void OfferPlusAddressCreation(const url::Origin& main_frame_origin,
-                                bool is_manual_fallback,
-                                PlusAddressCallback callback) override;
-  std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator()
-      override;
+  // Returns a pointer to a DeviceAuthenticator. Might be nullptr if the given
+  // platform is not supported.
+  std::unique_ptr<device_reauth::DeviceAuthenticator> GetDeviceAuthenticator(
+      std::string histogram) const override;
   PasswordFormClassification ClassifyAsPasswordForm(
       AutofillManager& manager,
       FormGlobalId form_id,
       FieldGlobalId field_id) const override;
+  void ShowEntityImportBubble(
+      EntityInstance new_entity,
+      std::optional<EntityInstance> old_entity,
+      bool save_is_synchronous,
+      EntityImportPromptResultCallback prompt_result_callback) override;
+  void CloseEntityImportBubble() override;
+  void ShowAutofillAiLocalSaveNotification() override;
+  void ShowAutofillAiSaveToWalletFailureNotification() override;
+  void ShowAutofillAiFetchEntityFailureNotification() override;
+  void ShowAutofillAiPreFetchFailureNotification() override;
+  void ShowAutofillAiPrivateInferenceNotice() override;
+  bool ShouldShowPersonalContextAmbientAutofillNotice() const override;
+  void MarkPersonalContextAmbientAutofillNoticeAsAcknowledged() override;
 
   // Searches infobars managed by the infobar_manager_ for infobar of the type
   // AutofillSaveCardInfoBarDelegateIOS and returns it if found else returns a
@@ -161,28 +191,40 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   // Removes the save card infobar if it exists.
   virtual void RemoveAutofillSaveCardInfoBar();
 
+  void ConsiderAsSecureForTesting() { consider_as_secure_for_testing_ = true; }
+
  private:
   // Returns the account email of the signed-in user, or nullopt if there is no
   // signed-in user.
   std::optional<std::u16string> GetUserEmail();
 
-  raw_ptr<PrefService> pref_service_;
-  raw_ptr<syncer::SyncService> sync_service_;
+  // Searches for Autofill AI save entity infobar and returns its delegate.
+  AutofillAiSaveEntityInfoBarDelegateIOS*
+  GetAutofillAiSaveEntityInfoBarDelegateIOS();
+
+  // Shows the detailed save/update UI for Autofill AI entities.
+  void ShowAutofillAiSaveUpdateUI();
+
+  raw_ptr<PrefService, DanglingUntriaged> pref_service_;
+  raw_ptr<syncer::SyncService, DanglingUntriaged> sync_service_;
   std::unique_ptr<AutofillCrowdsourcingManager> crowdsourcing_manager_;
   VotesUploader votes_uploader_{this};
-  raw_ptr<PersonalDataManager> personal_data_manager_;
-  raw_ptr<AutocompleteHistoryManager> autocomplete_history_manager_;
+  raw_ptr<PersonalDataManager, DanglingUntriaged> personal_data_manager_;
+  raw_ptr<AutocompleteHistoryManager, DanglingUntriaged>
+      autocomplete_history_manager_;
   raw_ptr<ProfileIOS> profile_;
   __weak id<AutofillClientIOSBridge> bridge_;
-  raw_ptr<signin::IdentityManager> identity_manager_;
+  raw_ptr<signin::IdentityManager, DanglingUntriaged> identity_manager_;
   std::unique_ptr<FormDataImporter> form_data_importer_;
   scoped_refptr<AutofillWebDataService> autofill_web_data_service_;
-  raw_ptr<infobars::InfoBarManager> infobar_manager_;
+  raw_ptr<infobars::InfoBarManager, DanglingUntriaged> infobar_manager_;
   const raw_ptr<LogRouter> log_router_;
   std::unique_ptr<LogManager> log_manager_;
   autofill_metrics::FormInteractionsUkmLogger form_interactions_ukm_logger_{
       this};
   const AutofillAblationStudy ablation_study_;
+  std::unique_ptr<AutofillAiManager> autofill_ai_manager_;
+  PageContextWrapper* page_context_wrapper_;
 
   // Order matters for this initialization. This initialization must happen
   // after all of the members passed into the constructor of
@@ -197,6 +239,14 @@ class ChromeAutofillClientIOS : public AutofillClientIOS {
   __weak UIViewController* base_view_controller_;
 
   __weak id<AutofillCommands> commands_handler_;
+
+  // Holds a weak reference to the delegate driving the active suggestions
+  // popup.
+  base::WeakPtr<AutofillSuggestionDelegate> active_suggestion_delegate_;
+
+  // If this is true, we consider the form to be secure.
+  // Only use this for testing purposes!
+  bool consider_as_secure_for_testing_ = false;
 
   base::WeakPtrFactory<ChromeAutofillClientIOS> weak_ptr_factory_{this};
 };

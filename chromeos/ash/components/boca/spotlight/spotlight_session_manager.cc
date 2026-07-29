@@ -11,12 +11,24 @@
 #include "base/check_is_test.h"
 #include "base/functional/bind.h"
 #include "base/sequence_checker.h"
+#include "base/strings/string_util.h"
 #include "chromeos/ash/components/boca/boca_app_client.h"
+#include "chromeos/ash/components/boca/boca_metrics_util.h"
 #include "chromeos/ash/components/boca/proto/session.pb.h"
 #include "chromeos/ash/components/boca/session_api/constants.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_crd_manager.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_notification_handler.h"
 #include "chromeos/ash/components/boca/spotlight/spotlight_service.h"
+
+namespace {
+constexpr char kChromeEnterpriseEmailSuffix[] =
+    "@chrome-enterprise-devices.gserviceaccount.com";
+
+bool IsChromeEnterpriseEmail(const std::string& email) {
+  return base::EndsWith(email, kChromeEnterpriseEmailSuffix,
+                        base::CompareCase::INSENSITIVE_ASCII);
+}
+}  // namespace
 
 namespace ash::boca {
 
@@ -42,7 +54,8 @@ void SpotlightSessionManager::OnSessionStarted(
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   in_session_ = true;
-  spotlight_crd_manager_->OnSessionStarted(producer.email());
+  teacher_email_ = producer.email();
+  teacher_name_ = producer.full_name();
 }
 
 void SpotlightSessionManager::OnSessionEnded(const std::string& session_id) {
@@ -51,7 +64,11 @@ void SpotlightSessionManager::OnSessionEnded(const std::string& session_id) {
   in_session_ = false;
   request_in_progress_ = false;
   spotlight_crd_manager_->OnSessionEnded();
+  teacher_email_ = "";
+  teacher_name_ = "";
+  notification_handler_->StopSpotlightCountdown();
 }
+
 void SpotlightSessionManager::OnConsumerActivityUpdated(
     const std::map<std::string, ::boca::StudentStatus>& activities) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -74,37 +91,60 @@ void SpotlightSessionManager::OnConsumerActivityUpdated(
   }
 
   if (device->second.has_view_screen_config()) {
-    if (device->second.view_screen_config().view_screen_state() ==
-            ::boca::ViewScreenConfig::REQUESTED &&
-        !request_in_progress_) {
-      request_in_progress_ = true;
-      spotlight_crd_manager_->InitiateSpotlightSession(
-          base::BindOnce(&SpotlightSessionManager::OnConnectionCodeReceived,
-                         weak_ptr_factory_.GetWeakPtr()));
-    } else if (device->second.view_screen_config().view_screen_state() ==
-                   ::boca::ViewScreenConfig::INACTIVE &&
-               request_in_progress_) {
-      notification_handler_->StopSpotlightCountdown();
-      request_in_progress_ = false;
+    switch (device->second.view_screen_config().view_screen_state()) {
+      case ::boca::ViewScreenConfig::REQUESTED: {
+        if (request_in_progress_) {
+          return;
+        }
+        request_in_progress_ = true;
+        std::string requester_email = teacher_email_;
+        bool is_student_to_receiver = false;
+        // ignore the experiment, the correct experiment is not a part of this
+        // chain
+        if (ash::features::IsBocaSpotlightRobotRequesterEnabled() &&
+            device->second.view_screen_config().has_view_screen_requester()) {
+          requester_email = device->second.view_screen_config()
+                                .view_screen_requester()
+                                .service_account()
+                                .email();
+        }
+        // If this is a student -> receiver screen-share, we should inform CRD
+        // so it can stream audio appropriately.
+        std::string requester_user_email = device->second.view_screen_config()
+                                               .view_screen_requester()
+                                               .user()
+                                               .email();
+        if (requester_user_email.length() > 0 &&
+            // TODO: crbug.com/458711843 - Use a server-specified proto field to
+            // determine if the requesting entity is a kiosk receiver
+            IsChromeEnterpriseEmail(requester_user_email)) {
+          is_student_to_receiver = true;
+        }
+        spotlight_crd_manager_->InitiateSpotlightSession(
+            base::BindOnce(&SpotlightSessionManager::OnConnectionCodeReceived,
+                           weak_ptr_factory_.GetWeakPtr()),
+            is_student_to_receiver, requester_email);
+        break;
+      }
+      case ::boca::ViewScreenConfig::INACTIVE:
+        request_in_progress_ = false;
+        notification_handler_->StopSpotlightCountdown();
+        spotlight_crd_manager_->HidePersistentNotification();
+        spotlight_crd_manager_->OnSessionEnded();
+        break;
+      default:
+        break;
     }
   }
 }
 
 void SpotlightSessionManager::OnConnectionCodeReceived(
-    std::optional<std::string> connection_code) {
-  if (!connection_code.has_value()) {
-    LOG(WARNING) << "[Boca]Failed to generate Spotlight connection code.";
-    return;
-  }
-
-  notification_handler_->StartSpotlightCountdownNotification(
-      base::BindOnce(&SpotlightSessionManager::RegisterStudentScreen,
-                     weak_ptr_factory_.GetWeakPtr(), connection_code.value()));
-}
-
-void SpotlightSessionManager::RegisterStudentScreen(
     const std::string& connection_code) {
   CHECK(spotlight_service_);
+  notification_handler_->StartSpotlightCountdownNotification(
+      base::BindOnce(&SpotlightSessionManager::OnCountdownEnded,
+                     weak_ptr_factory_.GetWeakPtr()));
+
   spotlight_service_->RegisterScreen(
       connection_code, BocaAppClient::Get()->GetSchoolToolsServerBaseUrl(),
       base::BindOnce(&SpotlightSessionManager::OnRegisterScreenRequestSent,
@@ -115,8 +155,10 @@ void SpotlightSessionManager::OnRegisterScreenRequestSent(
     base::expected<bool, google_apis::ApiErrorCode> result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!result.has_value()) {
-    // TODO: crbug.com/366316261 - Add metrics for Spotlight failure.
-    LOG(WARNING) << "[Boca]Failed to send Spotlight connection code.";
+    boca::RecordOnRegisterScreenRequestSentErrorCode(result.error());
+    LOG(WARNING)
+        << "[Boca]Failed to send Spotlight connection code with error code: "
+        << result.error();
   }
   request_in_progress_ = false;
 
@@ -124,6 +166,10 @@ void SpotlightSessionManager::OnRegisterScreenRequestSent(
   // immediately updated locally.
   BocaAppClient::Get()->GetSessionManager()->LoadCurrentSession(
       /*from_polling=*/false);
+}
+
+void SpotlightSessionManager::OnCountdownEnded() {
+  spotlight_crd_manager_->ShowPersistentNotification(teacher_name_);
 }
 
 }  // namespace ash::boca

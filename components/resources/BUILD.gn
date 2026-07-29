@@ -2,6 +2,7 @@
 # Use of this source code is governed by a BSD-style license that can be
 # found in the LICENSE file.
 
+import("//build/buildflag_header.gni")
 import("//build/config/android/config.gni")
 import("//build/config/features.gni")
 import("//components/safe_browsing/buildflags.gni")
@@ -16,6 +17,11 @@ declare_args() {
   # Generating the credits page requires a filesystem traversal for licenses
   # that is slow in some environments.
   generate_about_credits = is_official_build
+}
+
+buildflag_header("generate_about_credits_header") {
+  header = "generate_about_credits.h"
+  flags = [ "GENERATE_ABOUT_CREDITS=$generate_about_credits" ]
 }
 
 if (is_android) {
@@ -33,18 +39,20 @@ group("resources") {
     ":components_resources",
     ":components_scaled_resources",
     ":dev_ui_components_resources",
+    "../autofill/core/browser:autofill_address_rewriter_resources",
+    "../autofill/core/browser:autofill_alternative_state_name_map_resources",
     "../autofill/core/browser/autofill_and_password_manager_internals:resources",
-    "../crash/core/browser/resources:resources",
-    "../gcm_driver/resources:resources",
+    "../crash/core/browser/resources",
+    "../gcm_driver/resources",
+    "../metrics:server_urls_grd",
     "../net_log/resources",
-    "../safe_browsing/content/browser/web_ui/resources",
     "../signin/core/browser/resources",
     "../translate/translate_internals:resources",
     "../webui:resources",
   ]
 
   if (is_ios) {
-    public_deps += [ "../management/resources:resources" ]
+    public_deps += [ "../management/resources" ]
   }
 }
 
@@ -70,8 +78,10 @@ grit("components_resources") {
     "enable_pdf=$enable_pdf",
     "enable_printing=$enable_printing",
     "enable_print_preview=$enable_print_preview",
+    "enable_private_insights=true",
     "enable_supervised_users=$enable_supervised_users",
     "safe_browsing_mode=$safe_browsing_mode",
+    "safe_browsing_use_internal_notifications_global_cache_origins=$safe_browsing_use_internal_notifications_global_cache_origins",
     "is_fuchsia=$is_fuchsia",
     "optimize_webui=$optimize_webui",
     "use_blink=$use_blink",
@@ -80,6 +90,8 @@ grit("components_resources") {
 
   deps = [
     ":about_credits",
+    "//components/dom_distiller/core:dom_distiller_viewer_js",
+    "//components/metrics/private_metrics/private_insights/endorsement_options:contextual_cues_endorsement_options_binpb",
     "//components/neterror/resources:bundle_js",
     "//components/security_interstitials/content/resources:build_ts",
     "//components/security_interstitials/core/browser/resources:bundle_js",
@@ -102,6 +114,19 @@ grit("components_resources") {
   if (is_android && safe_browsing_mode == 2) {
     deps += [ "//components/safe_browsing/content/resources/real_time_url_checks_allowlist:make_real_time_url_allowlist_protobuf" ]
   }
+}
+
+source_set("unit_tests") {
+  sources = [ "about_ui_credits_unittests.cc" ]
+  testonly = true
+  deps = [
+    ":components_resources",
+    ":generate_about_credits_header",
+    "//base",
+    "//testing/gmock",
+    "//testing/gtest",
+    "//ui/base",
+  ]
 }
 
 grit("dev_ui_components_resources") {
@@ -139,15 +164,16 @@ if (generate_about_credits) {
       "../webui/about/resources/about_credits.tmpl",
       "../webui/about/resources/about_credits_entry.tmpl",
       "../webui/about/resources/about_credits_reciprocal.tmpl",
+      "//tools/licenses/spdx_writer.py",
     ]
 
     outputs = [ about_credits_file ]
 
     args = [
+      "credits",
       "--target-os=$target_os",
       "--depfile",
       rebase_path(depfile, root_build_dir),
-      "credits",
       rebase_path(about_credits_file, root_build_dir),
     ]
 

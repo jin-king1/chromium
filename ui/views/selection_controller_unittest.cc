@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/strings/utf_string_conversions.h"
@@ -61,7 +62,10 @@ class TestSelectionControllerDelegate : public SelectionControllerDelegate {
   void OnBeforePointerAction() override {}
   void OnAfterPointerAction(bool text_changed,
                             bool selection_changed) override {}
-  bool PasteSelectionClipboard() override { return false; }
+  void PasteSelectionClipboard(
+      base::OnceCallback<void(bool)> callback) override {
+    std::move(callback).Run(false);
+  }
   void UpdateSelectionClipboard() override {}
 
  private:
@@ -128,7 +132,7 @@ class SelectionControllerTest : public ::testing::Test {
     mouse_location_ = location;
     // Ensure that mouse presses are spaced apart by at least the double-click
     // interval to avoid triggering a double-click.
-    last_event_time_ += base::Milliseconds(views::GetDoubleClickInterval() + 1);
+    last_event_time_ += views::GetDoubleClickInterval() + base::Milliseconds(1);
     controller_->OnMousePressed(
         ui::MouseEvent(ui::EventType::kMousePressed, location, location,
                        last_event_time_, mouse_flags_, button),

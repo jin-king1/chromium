@@ -4,12 +4,15 @@
 
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_table_view_controller.h"
 
+#import <array>
+
 #import "base/apple/foundation_util.h"
 #import "base/check_op.h"
 #import "base/ios/ios_util.h"
 #import "base/metrics/histogram_macros.h"
 #import "base/metrics/user_metrics.h"
 #import "base/metrics/user_metrics_action.h"
+#import "components/send_tab_to_self/features.h"
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/app/tests_hook.h"
 #import "ios/chrome/browser/authentication/ui_bundled/cells/signin_promo_view_configurator.h"
@@ -17,7 +20,7 @@
 #import "ios/chrome/browser/authentication/ui_bundled/cells/table_view_signin_promo_item.h"
 #import "ios/chrome/browser/drag_and_drop/model/drag_item_util.h"
 #import "ios/chrome/browser/drag_and_drop/model/table_view_url_drag_drop_handler.h"
-#import "ios/chrome/browser/intents/intents_donation_helper.h"
+#import "ios/chrome/browser/intents/model/intents_donation_helper.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_constants.h"
 #import "ios/chrome/browser/reading_list/ui_bundled/reading_list_data_sink.h"
@@ -36,10 +39,10 @@
 #import "ios/chrome/browser/shared/ui/list_model/list_item+Controller.h"
 #import "ios/chrome/browser/shared/ui/list_model/list_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_link_header_footer_item.h"
-#import "ios/chrome/browser/shared/ui/table_view/cells/table_view_switch_cell.h"
 #import "ios/chrome/browser/shared/ui/table_view/cells/table_view_text_header_footer_item.h"
 #import "ios/chrome/browser/shared/ui/table_view/table_view_utils.h"
 #import "ios/chrome/browser/shared/ui/util/uikit_ui_util.h"
+#import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ui/base/l10n/l10n_util_mac.h"
 #import "ui/strings/grit/ui_strings.h"
@@ -79,6 +82,13 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     return ReadingListSelectionState::ONLY_UNREAD_ITEMS;
   }
   return ReadingListSelectionState::NONE;
+}
+
+// Returns YES if all items are selected
+BOOL IsAllSelected(NSUInteger selected_unread_count,
+                   NSUInteger selected_read_count,
+                   NSUInteger all_items_count) {
+  return all_items_count == selected_read_count + selected_unread_count;
 }
 
 }  // namespace
@@ -124,6 +134,9 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     _toolbarManager = [[ReadingListToolbarButtonManager alloc] init];
     _toolbarManager.commandHandler = self;
   }
+  [self.navigationItem
+      setRightBarButtonItem:[self.toolbarManager buttonTopRight]
+                   animated:YES];
   return self;
 }
 
@@ -161,19 +174,21 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     self.editingWithToolbarButtons = NO;
     [self removeEmptySections];
   }
-  [self updateToolbarItems];
+  [self updateBarItems];
 
   // Force update a11y actions based on edit mode.
-  for (int section = 0; section < self.tableViewModel.numberOfSections;
-       section++) {
-    if (![self.tableViewModel numberOfItemsInSection:section]) {
-      continue;
+  if (self.editingWithToolbarButtons || !editing) {
+    for (int section = 0; section < self.tableViewModel.numberOfSections;
+         section++) {
+      if (![self.tableViewModel numberOfItemsInSection:section]) {
+        continue;
+      }
+      NSInteger sectionIdentifier =
+          [self.tableViewModel sectionIdentifierForSectionIndex:section];
+      [self reconfigureCellsForItems:
+                [self.tableViewModel
+                    itemsInSectionWithIdentifier:sectionIdentifier]];
     }
-    NSInteger sectionIdentifier =
-        [self.tableViewModel sectionIdentifierForSectionIndex:section];
-    [self reconfigureCellsForItems:
-              [self.tableViewModel
-                  itemsInSectionWithIdentifier:sectionIdentifier]];
   }
 }
 
@@ -182,9 +197,14 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     return;
   }
   BOOL hadSelectedUnreadItems = _selectedUnreadItemCount > 0;
+  BOOL wasAllSelected =
+      IsAllSelected(_selectedUnreadItemCount, _selectedReadItemCount,
+                    self.dataSource.numberOfElements);
   _selectedUnreadItemCount = selectedUnreadItemCount;
-  if ((_selectedUnreadItemCount > 0) != hadSelectedUnreadItems) {
-    [self updateToolbarItems];
+  if ((_selectedUnreadItemCount > 0) != hadSelectedUnreadItems ||
+      IsAllSelected(_selectedUnreadItemCount, _selectedReadItemCount,
+                    self.dataSource.numberOfElements) != wasAllSelected) {
+    [self updateBarItems];
   }
 }
 
@@ -193,9 +213,14 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     return;
   }
   BOOL hadSelectedReadItems = _selectedReadItemCount > 0;
+  BOOL wasAllSelected =
+      IsAllSelected(_selectedUnreadItemCount, _selectedReadItemCount,
+                    self.dataSource.numberOfElements);
   _selectedReadItemCount = selectedReadItemCount;
-  if ((_selectedReadItemCount > 0) != hadSelectedReadItems) {
-    [self updateToolbarItems];
+  if ((_selectedReadItemCount > 0) != hadSelectedReadItems ||
+      IsAllSelected(_selectedUnreadItemCount, _selectedReadItemCount,
+                    self.dataSource.numberOfElements) != wasAllSelected) {
+    [self updateBarItems];
   }
 }
 
@@ -251,12 +276,8 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   self.tableView.dragInteractionEnabled = true;
   self.tableView.separatorStyle = UITableViewCellSeparatorStyleSingleLine;
 
-  if (@available(iOS 17, *)) {
-    NSArray<UITrait>* traits = TraitCollectionSetForTraits(
-        @[ UITraitPreferredContentSizeCategory.class ]);
-    [self registerForTraitChanges:traits
-                       withAction:@selector(verifyTableIsEmpty)];
-  }
+  [self registerForTraitChanges:@[ UITraitPreferredContentSizeCategory.class ]
+                     withAction:@selector(verifyTableIsEmpty)];
 }
 
 - (void)viewWillAppear:(BOOL)animated {
@@ -277,15 +298,10 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   }
 }
 
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (self.traitCollection.preferredContentSizeCategory !=
-      previousTraitCollection.preferredContentSizeCategory) {
-    [self verifyTableIsEmpty];
-  }
+- (void)viewDidLayoutSubviews {
+  [super viewDidLayoutSubviews];
+  [_toolbarManager updateForReadingListWidth:self.view.bounds.size.width];
 }
-#endif
 
 #pragma mark - UITableViewDataSource
 
@@ -301,6 +317,31 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 }
 
 #pragma mark - UITableViewDelegate
+
+- (UISwipeActionsConfiguration*)tableView:(UITableView*)tableView
+    trailingSwipeActionsConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath {
+  NSMutableArray<UIContextualAction*>* actions = [NSMutableArray array];
+
+  UIContextualAction* deleteAction =
+      [self createDeleteActionForIndexPath:indexPath];
+
+  [actions addObject:deleteAction];
+
+  if (send_tab_to_self::AreIOSTabRemindersEnabled()) {
+    UIContextualAction* remindAction =
+        [self createRemindActionForIndexPath:indexPath];
+
+    [actions addObject:remindAction];
+  }
+
+  UISwipeActionsConfiguration* configuration =
+      [UISwipeActionsConfiguration configurationWithActions:actions];
+
+  // A full swipe automatically performs the first action (Delete).
+  configuration.performsFirstActionWithFullSwipe = YES;
+
+  return configuration;
+}
 
 - (void)tableView:(UITableView*)tableView
     didSelectRowAtIndexPath:(NSIndexPath*)indexPath {
@@ -360,6 +401,12 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 - (UIContextMenuConfiguration*)tableView:(UITableView*)tableView
     contextMenuConfigurationForRowAtIndexPath:(NSIndexPath*)indexPath
                                         point:(CGPoint)point {
+  // TODO(crbug.com/428177163): Remove this workaround when the underlying iOS
+  // issue handling context menu presentation during an active drag/drop session
+  // is resolved.
+  if (tableView.hasActiveDrag || tableView.hasActiveDrop) {
+    return nil;
+  }
   if (self.isEditing) {
     // Don't show the context menu when currently in editing mode.
     return nil;
@@ -405,16 +452,6 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   }
 }
 
-#pragma mark - UIAdaptivePresentationControllerDelegate
-
-- (void)presentationControllerDidDismiss:
-    (UIPresentationController*)presentationController {
-  base::RecordAction(base::UserMetricsAction("IOSReadingListCloseWithSwipe"));
-  // Call the delegate dismissReadingListListViewController to clean up state
-  // and stop the Coordinator.
-  [self.delegate dismissReadingListListViewController:self];
-}
-
 #pragma mark - LegacyChromeTableViewController
 
 - (void)loadModel {
@@ -437,11 +474,16 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 }
 
 - (NSArray*)keyCommands {
-  return @[ UIKeyCommand.cr_close ];
+  if (self.delegate.canDismiss) {
+    return @[ UIKeyCommand.cr_close ];
+  } else {
+    return @[];
+  }
 }
 
 - (void)keyCommand_close {
-  base::RecordAction(base::UserMetricsAction("MobileKeyCommandClose"));
+  CHECK(self.delegate.canDismiss, base::NotFatalUntil::M145);
+  base::RecordAction(base::UserMetricsAction(kMobileKeyCommandClose));
   [self.delegate dismissReadingListListViewController:self];
 }
 
@@ -510,10 +552,6 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
                                      incognito:YES];
 }
 
-- (void)openItemOffline:(id<ReadingListListItem>)item {
-  [self.delegate readingListListViewController:self
-                       openItemOfflineInNewTab:item];
-}
 
 - (void)markItemRead:(id<ReadingListListItem>)item {
   TableViewModel* model = self.tableViewModel;
@@ -549,6 +587,11 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   }
 }
 
+- (void)remindItem:(id<ReadingListListItem>)item {
+  [self.delegate readingListListViewController:self
+                   showSetTabReminderUIForItem:item];
+}
+
 - (void)deleteItem:(id<ReadingListListItem>)item {
   TableViewItem<ReadingListListItem>* tableViewItem =
       base::apple::ObjCCastStrict<TableViewItem<ReadingListListItem>>(item);
@@ -560,6 +603,11 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 }
 
 #pragma mark - ReadingListToolbarButtonCommands
+
+- (void)dismissButtonTapped {
+  base::RecordAction(base::UserMetricsAction("MobileReadingListClose"));
+  [self.delegate dismissReadingListListViewController:self];
+}
 
 - (void)enterReadingListEditMode {
   if (self.editing && !self.editingWithToolbarButtons) {
@@ -578,6 +626,54 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     return;
   }
   [self exitEditingModeAnimated:YES];
+}
+
+- (void)selectAllReadingListItems {
+  for (NSInteger section = 0; section < self.tableViewModel.numberOfSections;
+       ++section) {
+    ReadingListSectionIdentifier sectionID =
+        static_cast<ReadingListSectionIdentifier>(
+            [self.tableViewModel sectionIdentifierForSectionIndex:section]);
+    if (sectionID != kSectionIdentifierRead &&
+        sectionID != kSectionIdentifierUnread) {
+      continue;
+    }
+    for (NSInteger row = 0;
+         row < [self.tableViewModel numberOfItemsInSection:section]; ++row) {
+      NSIndexPath* indexPath = [NSIndexPath indexPathForRow:row
+                                                  inSection:section];
+      [self.tableView selectRowAtIndexPath:indexPath
+                                  animated:NO
+                            scrollPosition:UITableViewScrollPositionNone];
+    }
+  }
+
+  self.selectedUnreadItemCount =
+      [self itemsForSection:kSectionIdentifierUnread].count;
+  self.selectedReadItemCount =
+      [self itemsForSection:kSectionIdentifierRead].count;
+}
+
+- (void)deselectAllReadingListItems {
+  for (NSInteger section = 0; section < self.tableViewModel.numberOfSections;
+       ++section) {
+    ReadingListSectionIdentifier sectionID =
+        static_cast<ReadingListSectionIdentifier>(
+            [self.tableViewModel sectionIdentifierForSectionIndex:section]);
+    if (sectionID != kSectionIdentifierRead &&
+        sectionID != kSectionIdentifierUnread) {
+      continue;
+    }
+    for (NSInteger row = 0;
+         row < [self.tableViewModel numberOfItemsInSection:section]; ++row) {
+      NSIndexPath* indexPath = [NSIndexPath indexPathForRow:row
+                                                  inSection:section];
+      [self.tableView deselectRowAtIndexPath:indexPath animated:NO];
+    }
+  }
+
+  self.selectedUnreadItemCount = 0;
+  self.selectedReadItemCount = 0;
 }
 
 - (void)deleteAllReadReadingListItems {
@@ -719,6 +815,10 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
         promoConfigurator:(SigninPromoViewConfigurator*)promoConfigurator
             promoDelegate:(id<SigninPromoViewDelegate>)promoDelegate
                 promoText:(NSString*)promoText {
+  if (self.editing) {
+    [self exitEditingModeAnimated:NO];
+  }
+
   if (promoEnabled) {
     CHECK(![self.tableViewModel
         hasSectionForSectionIdentifier:kSectionIdentifierSignInPromo]);
@@ -779,7 +879,7 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   [self loadItemsFromArray:unreadArray toSection:kSectionIdentifierUnread];
   [self loadItemsFromArray:readArray toSection:kSectionIdentifierRead];
 
-  [self updateToolbarItems];
+  [self updateBarItems];
 }
 
 // Adds `items` to self.tableViewModel for the section designated by
@@ -839,16 +939,25 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
 
 #pragma mark - Toolbar Helpers
 
-// Updates buttons displayed in the bottom toolbar.
-- (void)updateToolbarItems {
+// Updates buttons displayed in the bottom toolbar and the top navigation bar.
+- (void)updateBarItems {
   self.toolbarManager.editing = self.editingWithToolbarButtons;
+  self.toolbarManager.hasItems = self.dataSource.hasElements;
   self.toolbarManager.hasReadItems =
       self.dataSource.hasElements && self.dataSource.hasReadElements;
   self.toolbarManager.selectionState = GetSelectionStateForSelectedCounts(
       self.selectedUnreadItemCount, self.selectedReadItemCount);
+  self.toolbarManager.allSelected =
+      IsAllSelected(self.selectedUnreadItemCount, self.selectedReadItemCount,
+                    self.dataSource.numberOfElements);
   if (self.toolbarManager.buttonItemsUpdated) {
     [self setToolbarItems:[self.toolbarManager buttonItems] animated:YES];
   }
+  [self.navigationItem
+      setRightBarButtonItem:[self.toolbarManager buttonTopRight]
+                   animated:YES];
+  [self.navigationItem setLeftBarButtonItem:[self.toolbarManager buttonTopLeft]
+                                   animated:YES];
   [self.toolbarManager updateMarkButtonTitle];
 }
 
@@ -931,8 +1040,7 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
     }
 
     [[self.tableViewModel itemAtIndexPath:indexPath]
-        configureCell:[self.tableView cellForRowAtIndexPath:indexPath]
-           withStyler:self.styler];
+        configureCell:[self.tableView cellForRowAtIndexPath:indexPath]];
   }
 
   NSInteger sectionCreatedIndex = [self initializeTableViewSection:toSection];
@@ -1139,11 +1247,10 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   TableViewModel* model = self.tableViewModel;
   __block NSUInteger removedSectionCount = 0;
   void (^updates)(void) = ^{
-    ReadingListSectionIdentifier sections[] = {kSectionIdentifierRead,
-                                               kSectionIdentifierUnread};
-    for (size_t i = 0; i < std::size(sections); ++i) {
-      ReadingListSectionIdentifier section = sections[i];
-
+    static constexpr auto kSections =
+        std::to_array<ReadingListSectionIdentifier>(
+            {kSectionIdentifierRead, kSectionIdentifierUnread});
+    for (ReadingListSectionIdentifier section : kSections) {
       if ([model hasSectionForSectionIdentifier:section] &&
           ![self hasItemInSection:section]) {
         // If `section` has no items, remove it from the model and the table
@@ -1161,7 +1268,7 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   if (!self.dataSource.hasElements) {
     [self tableIsEmpty];
   } else {
-    [self updateToolbarItems];
+    [self updateBarItems];
   }
   return removedSectionCount;
 }
@@ -1172,9 +1279,12 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   [self setEditing:NO animated:animated];
 }
 
-#pragma mark - Accessibility
+#pragma mark - UIAccessibilityAction
 
 - (BOOL)accessibilityPerformEscape {
+  if (!self.delegate.canDismiss) {
+    return NO;
+  }
   base::RecordAction(
       base::UserMetricsAction("MobileReadingListAccessibilityClose"));
   [self.delegate dismissReadingListListViewController:self];
@@ -1199,7 +1309,9 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   // elements may be outdated and the layout triggered by this function will
   // generate access non-existing items.
   [self.tableView reloadData];
-  UIImage* emptyImage = [UIImage imageNamed:@"reading_list_empty"];
+  UIImage* emptyImage = [UIImage imageNamed:IsChromeNextIaEnabled()
+                                                ? @"reading_list_empty"
+                                                : @"reading_list_empty_legacy"];
   NSString* title =
       l10n_util::GetNSString(IDS_IOS_READING_LIST_NO_ENTRIES_TITLE);
   NSString* subtitle =
@@ -1271,6 +1383,72 @@ ReadingListSelectionState GetSelectionStateForSelectedCounts(
   }
 
   [self tableIsEmpty];
+}
+
+// Creates a delete action for the swipe menu with destructive style (and red
+// color).
+- (UIContextualAction*)createDeleteActionForIndexPath:(NSIndexPath*)indexPath {
+  __weak __typeof(self) weakSelf = self;
+
+  return [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleDestructive
+                          title:
+                              l10n_util::GetNSString(
+                                  IDS_IOS_REMINDER_NOTIFICATIONS_SWIPE_ACTION_DELETE)
+                        handler:^(UIContextualAction* action,
+                                  UIView* sourceView,
+                                  void (^completionHandler)(BOOL)) {
+                          [weakSelf
+                              handleDeleteActionForIndexPath:indexPath
+                                           completionHandler:completionHandler];
+                        }];
+}
+
+// Creates a remind action for the swipe menu with normal style (and orange
+// color).
+- (UIContextualAction*)createRemindActionForIndexPath:(NSIndexPath*)indexPath {
+  __weak __typeof(self) weakSelf = self;
+
+  UIContextualAction* remindAction = [UIContextualAction
+      contextualActionWithStyle:UIContextualActionStyleNormal
+                          title:
+                              l10n_util::GetNSString(
+                                  IDS_IOS_REMINDER_NOTIFICATIONS_SWIPE_ACTION_REMIND)
+                        handler:^(UIContextualAction* action,
+                                  UIView* sourceView,
+                                  void (^completionHandler)(BOOL)) {
+                          [weakSelf
+                              handleRemindActionForIndexPath:indexPath
+                                           completionHandler:completionHandler];
+                        }];
+
+  remindAction.backgroundColor = [UIColor colorNamed:kOrange500Color];
+
+  return remindAction;
+}
+
+// Handles the delete action for a cell at the given `indexPath` and calls the
+// `completionHandler` when complete. This is used by swipe actions.
+- (void)handleDeleteActionForIndexPath:(NSIndexPath*)indexPath
+                     completionHandler:(void (^)(BOOL))completionHandler {
+  [self tableView:self.tableView
+      commitEditingStyle:UITableViewCellEditingStyleDelete
+       forRowAtIndexPath:indexPath];
+
+  completionHandler(YES);
+}
+
+// Handles the remind action for a cell at the given `indexPath`, displays the
+// tab reminder UI for the selected item, and calls the `completionHandler` when
+// complete. This is used by swipe actions when Tab Reminders are enabled.
+- (void)handleRemindActionForIndexPath:(NSIndexPath*)indexPath
+                     completionHandler:(void (^)(BOOL))completionHandler {
+  TableViewItem* item = [self.tableViewModel itemAtIndexPath:indexPath];
+
+  [self.delegate readingListListViewController:self
+                   showSetTabReminderUIForItem:(id<ReadingListListItem>)item];
+
+  completionHandler(YES);
 }
 
 @end

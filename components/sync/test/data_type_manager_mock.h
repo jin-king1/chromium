@@ -7,6 +7,7 @@
 
 #include "base/functional/callback.h"
 #include "components/sync/service/data_type_manager.h"
+#include "components/sync/service/data_type_status_table.h"
 #include "components/sync/service/local_data_description.h"
 #include "components/sync/service/sync_error.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -28,7 +29,10 @@ class DataTypeManagerMock : public DataTypeManager {
               (DataTypeSet, const ConfigureContext&),
               (override));
   MOCK_METHOD(void, DataTypePreconditionChanged, (DataType), (override));
-  MOCK_METHOD(void, ResetDataTypeErrors, (), (override));
+  MOCK_METHOD(DataTypeStatusTable::TypeErrorMap,
+              GetDataTypeErrors,
+              (),
+              (const, override));
   MOCK_METHOD(void, PurgeForMigration, (DataTypeSet), (override));
   MOCK_METHOD(void, Stop, (SyncStopMetadataFate), (override));
   MOCK_METHOD(DataTypeSet, GetRegisteredDataTypes, (), (const override));
@@ -52,7 +56,8 @@ class DataTypeManagerMock : public DataTypeManager {
               (const override));
   MOCK_METHOD(void,
               GetTypesWithUnsyncedData,
-              (DataTypeSet, base::OnceCallback<void(DataTypeSet)>),
+              (DataTypeSet,
+               base::OnceCallback<void(absl::flat_hash_map<DataType, size_t>)>),
               (const override));
   MOCK_METHOD(
       void,
@@ -74,7 +79,7 @@ class DataTypeManagerMock : public DataTypeManager {
               (const override));
   MOCK_METHOD(void,
               GetAllNodesForDebugging,
-              (base::OnceCallback<void(base::Value::List)>),
+              (base::OnceCallback<void(base::ListValue)>),
               (const override));
   MOCK_METHOD(void,
               GetEntityCountsForDebugging,

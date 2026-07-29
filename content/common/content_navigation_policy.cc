@@ -6,11 +6,14 @@
 
 #include <bitset>
 
+#include "base/byte_size.h"
 #include "base/command_line.h"
 #include "base/metrics/field_trial_params.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/system/sys_info.h"
 #include "build/build_config.h"
 #include "content/common/features.h"
+#include "content/public/common/content_client.h"
 #include "content/public/common/content_features.h"
 #include "content/public/common/content_switches.h"
 #include "net/base/features.h"
@@ -38,7 +41,8 @@ bool DeviceHasEnoughMemoryForBackForwardCache() {
         features::kBackForwardCacheMemoryControls,
         "memory_threshold_for_back_forward_cache_in_mb",
         default_memory_threshold_mb);
-    return base::SysInfo::AmountOfPhysicalMemoryMB() > memory_threshold_mb;
+    return base::SysInfo::AmountOfTotalPhysicalMemory() >
+           base::MiBU(base::saturated_cast<uint64_t>(memory_threshold_mb));
   }
 
   // If the feature kBackForwardCacheMemoryControls is not enabled, all the
@@ -83,8 +87,6 @@ bool CanCrossSiteNavigationsProactivelySwapBrowsingInstances() {
   return IsBackForwardCacheEnabled();
 }
 
-const char kRenderDocumentLevelParameterName[] = "level";
-
 constexpr base::FeatureParam<RenderDocumentLevel>::Option
     render_document_levels[] = {
         {RenderDocumentLevel::kCrashedFrame, "crashed-frame"},
@@ -93,7 +95,8 @@ constexpr base::FeatureParam<RenderDocumentLevel>::Option
         {RenderDocumentLevel::kAllFrames, "all-frames"}};
 const base::FeatureParam<RenderDocumentLevel> render_document_level{
     &features::kRenderDocument, kRenderDocumentLevelParameterName,
-    RenderDocumentLevel::kSubframe, &render_document_levels};
+    RenderDocumentLevel::kAllFrames,
+    &render_document_levels};
 
 RenderDocumentLevel GetRenderDocumentLevel() {
   if (base::FeatureList::IsEnabled(features::kRenderDocument))
@@ -109,12 +112,18 @@ bool ShouldCreateNewRenderFrameHostOnSameSiteNavigation(
     bool is_main_frame,
     bool is_local_root,
     bool has_committed_any_navigation,
-    bool must_be_replaced) {
+    bool must_be_replaced,
+    bool client_overrides_level) {
   if (must_be_replaced) {
     return true;
   }
   if (!has_committed_any_navigation) {
     return false;
+  }
+  if (client_overrides_level) {
+    // If the client overrides the level, allow swapping regardless of the
+    // level.
+    return true;
   }
   RenderDocumentLevel level = GetRenderDocumentLevel();
   if (is_main_frame) {
@@ -138,47 +147,13 @@ bool ShouldSkipEarlyCommitPendingForCrashedFrame() {
   return skip_early_commit_pending_for_crashed_frame;
 }
 
-static constexpr base::FeatureParam<NavigationQueueingFeatureLevel>::Option
-    kNavigationQueueingFeatureLevels[] = {
-        {NavigationQueueingFeatureLevel::kNone, "none"},
-        {NavigationQueueingFeatureLevel::kAvoidRedundantCancellations,
-         "avoid-redundant"},
-        {NavigationQueueingFeatureLevel::kFull, "full"}};
-const base::FeatureParam<NavigationQueueingFeatureLevel>
-    kNavigationQueueingFeatureLevelParam{
-        &features::kQueueNavigationsWhileWaitingForCommit, "queueing_level",
-        NavigationQueueingFeatureLevel::kFull,
-        &kNavigationQueueingFeatureLevels};
-
-NavigationQueueingFeatureLevel GetNavigationQueueingFeatureLevel() {
-  if (GetRenderDocumentLevel() >= RenderDocumentLevel::kNonLocalRootSubframe) {
-    // When RenderDocument is enabled with a level of "non-local-root-subframe"
-    // or more, navigation queueing needs to be enabled too, to avoid crashes.
-    return NavigationQueueingFeatureLevel::kFull;
-  }
-  if (base::FeatureList::IsEnabled(
-          features::kQueueNavigationsWhileWaitingForCommit)) {
-    return kNavigationQueueingFeatureLevelParam.Get();
-  }
-  return NavigationQueueingFeatureLevel::kNone;
-}
-
-bool ShouldAvoidRedundantNavigationCancellations() {
-  return GetNavigationQueueingFeatureLevel() >=
-         NavigationQueueingFeatureLevel::kAvoidRedundantCancellations;
-}
-
-bool ShouldQueueNavigationsWhenPendingCommitRFHExists() {
-  return GetNavigationQueueingFeatureLevel() ==
-         NavigationQueueingFeatureLevel::kFull;
-}
-
 bool ShouldCreateSiteInstanceForDataUrls() {
   return base::FeatureList::IsEnabled(features::kSiteInstanceGroupsForDataUrls);
 }
 
 bool ShouldUseDefaultSiteInstanceGroup() {
-  return base::FeatureList::IsEnabled(features::kDefaultSiteInstanceGroups);
+  return GetContentClient()->ShouldAllowDefaultSiteInstanceGroup() &&
+         base::FeatureList::IsEnabled(features::kDefaultSiteInstanceGroups);
 }
 
 }  // namespace content

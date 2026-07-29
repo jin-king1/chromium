@@ -5,11 +5,17 @@
 package org.chromium.ui.listmenu;
 
 import android.content.Context;
+import android.os.Build;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.TextUtils;
 import android.util.AttributeSet;
+import android.view.MotionEvent;
 
 import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.R;
+import org.chromium.ui.util.MotionEventUtils;
 import org.chromium.ui.widget.ChromeImageButton;
 
 /**
@@ -22,7 +28,10 @@ import org.chromium.ui.widget.ChromeImageButton;
 @NullMarked
 public class ListMenuButton extends ChromeImageButton {
     private final ListMenuHost mListMenuHost;
-    private boolean mIsAttachedToWindow;
+    private final Handler mHandler;
+    private boolean mIsActive;
+
+    private boolean mIsAttachedToWindowForTesting;
 
     /**
      * Creates a new {@link ListMenuButton}.
@@ -30,9 +39,10 @@ public class ListMenuButton extends ChromeImageButton {
      * @param context The {@link Context} used to build the visuals from.
      * @param attrs The specific {@link AttributeSet} used to build the button.
      */
-    public ListMenuButton(Context context, AttributeSet attrs) {
+    public ListMenuButton(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
-        mListMenuHost = new ListMenuHost(this, attrs);
+        mListMenuHost = new ListMenuHost(this, attrs, this::setIsPressed);
+        mHandler = new Handler(Looper.getMainLooper());
     }
 
     /**
@@ -57,7 +67,7 @@ public class ListMenuButton extends ChromeImageButton {
      *
      * @param delegate The {@link ListMenuDelegate} to use for menu creation and selection handling.
      */
-    public void setDelegate(ListMenuDelegate delegate) {
+    public void setDelegate(@Nullable ListMenuDelegate delegate) {
         setDelegate(delegate, true);
     }
 
@@ -69,8 +79,15 @@ public class ListMenuButton extends ChromeImageButton {
      * @param overrideOnClickListener Whether to override the click listener which can trigger the
      *     popup menu.
      */
-    public void setDelegate(ListMenuDelegate delegate, boolean overrideOnClickListener) {
+    public void setDelegate(@Nullable ListMenuDelegate delegate, boolean overrideOnClickListener) {
         mListMenuHost.setDelegate(delegate, overrideOnClickListener);
+    }
+
+    /**
+     * @returns The {@link ListMenuHost} of the menu.
+     */
+    public ListMenuHost getHost() {
+        return mListMenuHost;
     }
 
     /** Called to dismiss any popup menu that might be showing for this button. */
@@ -80,8 +97,25 @@ public class ListMenuButton extends ChromeImageButton {
 
     /** Shows a popupWindow built by ListMenuButton */
     public void showMenu() {
-        if (!mIsAttachedToWindow) return;
+        if (!isAttachedToWindow()) return;
         mListMenuHost.showMenu();
+    }
+
+    /** Store the active state to set 'pressed' style to the button when the menu is open. */
+    public void setIsPressed(boolean active) {
+        mIsActive = active;
+        mHandler.post(
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        setPressed(active);
+                    }
+                });
+    }
+
+    @Override
+    public void setPressed(boolean pressed) {
+        super.setPressed(mIsActive || pressed);
     }
 
     /**
@@ -135,17 +169,31 @@ public class ListMenuButton extends ChromeImageButton {
     @Override
     protected void onAttachedToWindow() {
         super.onAttachedToWindow();
-        mIsAttachedToWindow = true;
     }
 
     @Override
     protected void onDetachedFromWindow() {
         dismiss();
-        mIsAttachedToWindow = false;
         super.onDetachedFromWindow();
     }
 
+    @Override
+    public boolean isAttachedToWindow() {
+        return mIsAttachedToWindowForTesting || super.isAttachedToWindow();
+    }
+
+    @Override
+    public boolean onGenericMotionEvent(MotionEvent event) {
+        // Treat secondary clicks as long clicks.
+        if (MotionEventUtils.isSecondaryClick(event.getButtonState())
+                && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
+                && hasOnLongClickListeners()) {
+            return performLongClick();
+        }
+        return super.onGenericMotionEvent(event);
+    }
+
     public void setAttachedToWindowForTesting() {
-        mIsAttachedToWindow = true;
+        mIsAttachedToWindowForTesting = true;
     }
 }

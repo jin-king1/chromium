@@ -5,6 +5,9 @@
 #include "third_party/blink/renderer/modules/webtransport/test_utils.h"
 
 #include "base/check.h"
+#include "base/memory/scoped_refptr.h"
+#include "net/http/http_response_headers.h"
+#include "net/http/http_version.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/platform/browser_interface_broker_proxy.h"
 #include "third_party/blink/renderer/bindings/core/v8/iterable.h"
@@ -71,8 +74,8 @@ void TestWebTransportCreator::Init(ScriptState* script_state,
   create_stub_ = std::move(create_stub);
   browser_interface_broker_->SetBinderForTesting(
       mojom::blink::WebTransportConnector::Name_,
-      WTF::BindRepeating(&TestWebTransportCreator::BindConnector,
-                         weak_ptr_factory_.GetWeakPtr()));
+      blink::BindRepeating(&TestWebTransportCreator::BindConnector,
+                           weak_ptr_factory_.GetWeakPtr()));
   web_transport_ = WebTransport::Create(
       script_state, "https://example.com/",
       MakeGarbageCollected<WebTransportOptions>(), ASSERT_NO_EXCEPTION);
@@ -89,6 +92,12 @@ TestWebTransportCreator::~TestWebTransportCreator() {
 void TestWebTransportCreator::Connect(
     const KURL&,
     Vector<network::mojom::blink::WebTransportCertificateFingerprintPtr>,
+    const Vector<String>&,
+    network::mojom::blink::WebTransportCongestionControl,
+    std::optional<uint16_t>
+    /*anticipated_concurrent_incoming_unidirectional_streams*/,
+    std::optional<uint16_t>
+    /*anticipated_concurrent_incoming_bidirectional_streams*/,
     mojo::PendingRemote<network::mojom::blink::WebTransportHandshakeClient>
         pending_handshake_client) {
   mojo::Remote<network::mojom::blink::WebTransportHandshakeClient>
@@ -103,8 +112,9 @@ void TestWebTransportCreator::Connect(
   handshake_client->OnConnectionEstablished(
       std::move(web_transport_to_pass),
       client_remote.InitWithNewPipeAndPassReceiver(),
-      network::mojom::blink::HttpResponseHeaders::New(),
-      network::mojom::blink::WebTransportStats::New());
+      net::HttpResponseHeaders::Builder(net::HttpVersion(1, 1), "200 OK")
+          .Build(),
+      String(), network::mojom::blink::WebTransportStats::New());
   client_remote_.Bind(std::move(client_remote));
 }
 

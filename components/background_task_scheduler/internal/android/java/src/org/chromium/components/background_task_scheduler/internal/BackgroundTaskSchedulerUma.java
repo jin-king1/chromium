@@ -30,8 +30,8 @@ public class BackgroundTaskSchedulerUma extends BackgroundTaskSchedulerExternalU
 
     private static class CachedUmaEntry {
         private static final String SEPARATOR = ":";
-        private String mEvent;
-        private int mValue;
+        private final String mEvent;
+        private final int mValue;
         private int mCount;
 
         /**
@@ -169,17 +169,6 @@ public class BackgroundTaskSchedulerUma extends BackgroundTaskSchedulerExternalU
     /** Reports metrics for rescheduling a task. */
     public void reportTaskRescheduled() {
         cacheEvent("Android.BackgroundTaskScheduler.TaskRescheduled", 0);
-    }
-
-    /** Reports metrics for setting a notification. */
-    public void reportNotificationWasSet(int taskId, long taskDurationMs) {
-        RecordHistogram.recordCustomTimesHistogram(
-                "Android.BackgroundTaskScheduler.SetNotification."
-                        + getHistogramPatternForTaskId(taskId),
-                taskDurationMs,
-                1,
-                DateUtils.DAY_IN_MILLIS,
-                50);
     }
 
     @Override

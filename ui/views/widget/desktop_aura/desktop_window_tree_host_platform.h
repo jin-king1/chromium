@@ -12,6 +12,7 @@
 #include <vector>
 
 #include "base/gtest_prod_util.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "build/build_config.h"
@@ -25,6 +26,7 @@
 #include "ui/views/widget/desktop_aura/window_move_client_platform.h"
 
 namespace ui {
+class ExternalBeginFrameAdapter;
 class PaintContext;
 }  // namespace ui
 
@@ -34,6 +36,9 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
     : public aura::WindowTreeHostPlatform,
       public DesktopWindowTreeHost,
       public ui::WorkspaceExtensionDelegate {
+  // TODO(https://crbug.com/497543810): Remove this macro if the issue is fixed.
+  ADVANCED_MEMORY_SAFETY_CHECKS();
+
  public:
   DesktopWindowTreeHostPlatform(
       internal::NativeWidgetDelegate* native_widget_delegate,
@@ -56,7 +61,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
   // Get all open top-level windows. This includes windows that may not be
   // visible. This list is sorted in their stacking order, i.e. the first window
   // is the topmost window.
-  static std::vector<aura::Window*> GetAllOpenWindows();
+  static aura::Window::Windows GetAllOpenWindows();
 
   // Runs the |func| callback for each content-window, and deallocates the
   // internal list of open windows.
@@ -117,13 +122,14 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
       Widget::MoveLoopEscapeBehavior escape_behavior) override;
   void EndMoveLoop() override;
   void SetVisibilityChangedAnimationsEnabled(bool value) override;
-  std::unique_ptr<NonClientFrameView> CreateNonClientFrameView() override;
+  std::unique_ptr<FrameView> CreateFrameView() override;
   bool ShouldUseNativeFrame() const override;
   bool ShouldWindowContentsBeTransparent() const override;
   void FrameTypeChanged() override;
   void SetFullscreen(bool fullscreen, int64_t display_id) override;
   bool IsFullscreen() const override;
   void SetOpacity(float opacity) override;
+  void SetBackgroundColor(SkColor background_color) override;
   void SetAspectRatio(const gfx::SizeF& aspect_ratio,
                       const gfx::Size& excluded_margin) override;
   void SetWindowIcons(const gfx::ImageSkia& window_icon,
@@ -147,6 +153,9 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
   gfx::Rect CalculateRootWindowBounds() const override;
   gfx::Rect GetBoundsInDIP() const override;
 
+  void OnVideoCaptureLockCreated() override;
+  void OnVideoCaptureLockDestroyed() override;
+
   // CompositorObserver:
   void OnCompositorVisibilityChanging(ui::Compositor* compositor,
                                       bool visible) override;
@@ -165,6 +174,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
   bool OnRotateFocus(ui::PlatformWindowDelegate::RotateDirection direction,
                      bool reset) override;
   void OnActivationChanged(bool active) override;
+  void OnPaintAsActiveChanged(bool paint_as_active) override;
   std::optional<gfx::Size> GetMinimumSizeForWindow() const override;
   std::optional<gfx::Size> GetMaximumSizeForWindow() const override;
   bool CanMaximize() const override;
@@ -174,6 +184,8 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
       override;
   gfx::Rect ConvertRectToPixels(const gfx::Rect& rect_in_dip) const override;
   gfx::Rect ConvertRectToDIP(const gfx::Rect& rect_in_pixels) const override;
+  gfx::Point ConvertPointToPixels(
+      const gfx::Point& point_in_dip) const override;
   gfx::PointF ConvertScreenPointToLocalDIP(
       const gfx::Point& screen_in_pixels) const override;
   gfx::Insets ConvertInsetsToPixels(
@@ -245,6 +257,12 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
 
   bool is_active_ = false;
 
+  // Holds the platform window's paint-as-active hint. Null on platforms that
+  // do not fire OnPaintAsActiveChanged.
+  std::unique_ptr<Widget::PaintAsActiveLock> paint_as_active_lock_;
+
+  bool has_video_capture_ = false;
+
   std::u16string window_title_;
 
   // We can optionally have a parent which can order us to close, or own
@@ -252,6 +270,8 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
   raw_ptr<DesktopWindowTreeHostPlatform> window_parent_ = nullptr;
   std::set<raw_ptr<DesktopWindowTreeHostPlatform, SetExperimental>>
       window_children_;
+
+  std::unique_ptr<ui::ExternalBeginFrameAdapter> begin_frame_adapter_;
 
   // Used for tab dragging in move loop requests.
   WindowMoveClientPlatform window_move_client_;
@@ -263,6 +283,7 @@ class VIEWS_EXPORT DesktopWindowTreeHostPlatform
 
   base::WeakPtrFactory<DesktopWindowTreeHostPlatform> close_widget_factory_{
       this};
+  base::WeakPtrFactory<DesktopWindowTreeHostPlatform> weak_factory_{this};
 };
 
 }  // namespace views

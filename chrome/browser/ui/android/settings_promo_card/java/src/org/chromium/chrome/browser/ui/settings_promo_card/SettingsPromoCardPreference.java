@@ -7,38 +7,42 @@ package org.chromium.chrome.browser.ui.settings_promo_card;
 import android.content.Context;
 import android.util.AttributeSet;
 
-import androidx.annotation.Nullable;
 import androidx.preference.Preference;
 import androidx.preference.PreferenceViewHolder;
 
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.ui.default_browser_promo.DefaultBrowserPromoUtils;
 import org.chromium.components.feature_engagement.Tracker;
 
 /** A preference that displays a settings promo card. */
+@NullMarked
 public class SettingsPromoCardPreference extends Preference {
-    @Nullable private SettingsPromoCardProvider mProvider;
+    private @Nullable SettingsPromoCardProvider mProvider;
 
-    /** Construct and initialize SettingsPromoCardPreference to be shown in main settings. */
-    public SettingsPromoCardPreference(Context context, AttributeSet attrs, Tracker tracker) {
+    /** Constructor for inflating from XML. */
+    public SettingsPromoCardPreference(Context context, @Nullable AttributeSet attrs) {
         super(context, attrs);
         setLayoutResource(R.layout.settings_promo_card);
+    }
 
+    /** Initialize the preference. */
+    public void initialize(Tracker tracker) {
         mProvider =
                 new DefaultBrowserPromoCard(
-                        context,
+                        getContext(),
                         DefaultBrowserPromoUtils.getInstance(),
                         tracker,
                         this::onPromoCardUpdated);
+        setVisible(mProvider.isPromoShowing());
     }
 
     @Override
     public void onBindViewHolder(PreferenceViewHolder holder) {
         super.onBindViewHolder(holder);
-        setVisible(false);
 
         if (mProvider != null && mProvider.isPromoShowing()) {
             mProvider.setUpPromoCardView(holder.findViewById(R.id.promo_card_view));
-            setVisible(true);
         }
     }
 
@@ -49,6 +53,7 @@ public class SettingsPromoCardPreference extends Preference {
     public void updatePreferences() {
         if (mProvider != null) {
             mProvider.updatePromoCard();
+            setVisible(mProvider.isPromoShowing());
         }
     }
 

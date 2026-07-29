@@ -9,7 +9,7 @@ import {PolymerElement} from 'chrome://resources/polymer/v3_0/polymer/polymer_bu
 
 import type {WebApprovalsParams} from '../parent_access_ui.mojom-webui.js';
 import {getParentAccessParams} from '../parent_access_ui_handler.js';
-import {decodeMojoString16, getBase64EncodedSrcForPng} from '../utils.js';
+import {getBase64EncodedSrcForPng} from '../utils.js';
 
 import {getTemplate} from './local_web_approvals_after.html.js';
 
@@ -32,9 +32,9 @@ export class LocalWebApprovalsAfter extends LocalWebApprovalsAfterBase {
     };
   }
 
-  childName: string;
-  url: string;
-  favicon: string;
+  declare childName: string;
+  declare url: string;
+  declare favicon: string;
 
   override ready() {
     super.ready();
@@ -55,8 +55,8 @@ export class LocalWebApprovalsAfter extends LocalWebApprovalsAfterBase {
    * Renders local approvals specific information from the WebApprovalsParams.
    */
   private renderDetails(params: WebApprovalsParams) {
-    this.childName = decodeMojoString16(params.childDisplayName);
-    this.url = params.url.url;
+    this.childName = params.childDisplayName;
+    this.url = params.url;
     this.favicon = getBase64EncodedSrcForPng(params.faviconPngBytes);
   }
 }

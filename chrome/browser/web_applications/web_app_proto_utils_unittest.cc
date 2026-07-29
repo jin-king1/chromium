@@ -8,6 +8,7 @@
 
 #include "base/base64.h"
 #include "chrome/browser/web_applications/proto/web_app.pb.h"
+#include "chrome/browser/web_applications/test/web_app_test_utils.h"
 #include "chrome/browser/web_applications/web_app.h"
 #include "chrome/browser/web_applications/web_app_helpers.h"
 #include "components/sync/protocol/web_app_specifics.pb.h"
@@ -68,10 +69,7 @@ TEST(WebAppProtoUtilsTest, M85SpecificsProtoParse) {
             parsed_icon_infos.value()[0].purpose);
 
   // Check the proto can be stored on a web app struct.
-  WebApp web_app("app_id");
-  web_app.SetStartUrl(GURL(kStartUrl));
-  web_app.SetManifestId(webapps::ManifestId(kStartUrl));
-  web_app.SetSyncProto(sync_proto);
+  std::unique_ptr<WebApp> web_app = test::CreateWebAppFromSyncProto(sync_proto);
 }
 
 // Test that a minimal M85 proto (ie. only fields that would always be set in
@@ -95,10 +93,7 @@ TEST(WebAppProtoUtilsTest, M85SpecificsProtoToWebApp_Minimal) {
   ASSERT_EQ(0u, parsed_icon_infos->size());
 
   // Check the proto can be stored on a web app struct.
-  WebApp web_app("app_id");
-  web_app.SetStartUrl(GURL(kStartUrl));
-  web_app.SetManifestId(webapps::ManifestId(kStartUrl));
-  web_app.SetSyncProto(sync_proto);
+  std::unique_ptr<WebApp> web_app = test::CreateWebAppFromSyncProto(sync_proto);
 }
 
 // Test that a M85 proto with all fields populated is correctly parsed to a
@@ -162,14 +157,13 @@ TEST(WebAppProtoUtilsTest, SpecificsProtoWithNewFieldParses) {
   EXPECT_EQ(kStartUrl, sync_proto.start_url());
 
   // Check the proto can be stored on a web app struct.
-  WebApp web_app("app_id");
-  web_app.SetStartUrl(GURL(kStartUrl));
-  web_app.SetManifestId(webapps::ManifestId(kStartUrl));
-  web_app.SetSyncProto(sync_proto);
+  std::unique_ptr<WebApp> web_app = test::CreateWebAppFromSyncProto(sync_proto);
+  sync_pb::WebAppSpecifics result_proto = web_app->sync_proto();
 
-  // Clear the extra field added due to normalizing the proto in `SetSyncProto`.
-  sync_pb::WebAppSpecifics result_proto = web_app.sync_proto();
+  // Clear any extra fields that are set by the web app system during
+  // construction.
   result_proto.clear_relative_manifest_id();
+  result_proto.clear_scope();
 
   // Check that the sync proto retained its value, including the unknown field.
   EXPECT_EQ(result_proto.SerializeAsString(), serialized_proto);
@@ -205,42 +199,43 @@ TEST(WebAppProtoUtilsTest, SpecificsProtoWithNewEnumValueParses) {
             sync_pb::WebAppSpecifics_UserDisplayMode_UNSPECIFIED);
 
   // Check the proto can be stored on a web app struct.
-  WebApp web_app("app_id");
-  web_app.SetStartUrl(GURL(kStartUrl));
-  web_app.SetManifestId(webapps::ManifestId(kStartUrl));
-  web_app.SetSyncProto(sync_proto);
+  std::unique_ptr<WebApp> web_app = test::CreateWebAppFromSyncProto(sync_proto);
+  sync_pb::WebAppSpecifics result_proto = web_app->sync_proto();
 
-  // Clear the extra field added due to normalizing the proto in `SetSyncProto`.
-  sync_pb::WebAppSpecifics result_proto = web_app.sync_proto();
+  // Clear any extra fields that are set by the web app system during
+  // construction.
   result_proto.clear_relative_manifest_id();
+  result_proto.clear_scope();
 
   // Check that the sync proto retained its value, including the unknown field.
   EXPECT_EQ(result_proto.SerializeAsString(), serialized_proto);
 }
 
 TEST(WebAppProtoUtilsTest, RunOnOsLoginModes) {
-  RunOnOsLoginMode mode = ToRunOnOsLoginMode(WebAppProto::MINIMIZED);
+  RunOnOsLoginMode mode =
+      ToRunOnOsLoginMode(proto::WebApp::RUN_ON_OS_LOGIN_MODE_MINIMIZED);
   EXPECT_EQ(RunOnOsLoginMode::kMinimized, mode);
 
-  mode = ToRunOnOsLoginMode(WebAppProto::WINDOWED);
+  mode = ToRunOnOsLoginMode(proto::WebApp::RUN_ON_OS_LOGIN_MODE_WINDOWED);
   EXPECT_EQ(RunOnOsLoginMode::kWindowed, mode);
 
-  mode = ToRunOnOsLoginMode(WebAppProto::NOT_RUN);
+  mode = ToRunOnOsLoginMode(proto::WebApp::RUN_ON_OS_LOGIN_MODE_NOT_RUN);
   EXPECT_EQ(RunOnOsLoginMode::kNotRun, mode);
 
   // Any other value should return kNotRun.
-  mode = ToRunOnOsLoginMode(static_cast<WebAppProto::RunOnOsLoginMode>(0xCAFE));
+  mode =
+      ToRunOnOsLoginMode(static_cast<proto::WebApp::RunOnOsLoginMode>(0xCAFE));
   EXPECT_EQ(RunOnOsLoginMode::kNotRun, mode);
 
-  WebAppProto::RunOnOsLoginMode proto_mode =
+  proto::WebApp::RunOnOsLoginMode proto_mode =
       ToWebAppProtoRunOnOsLoginMode(RunOnOsLoginMode::kWindowed);
-  EXPECT_EQ(WebAppProto::WINDOWED, proto_mode);
+  EXPECT_EQ(proto::WebApp::RUN_ON_OS_LOGIN_MODE_WINDOWED, proto_mode);
 
   proto_mode = ToWebAppProtoRunOnOsLoginMode(RunOnOsLoginMode::kMinimized);
-  EXPECT_EQ(WebAppProto::MINIMIZED, proto_mode);
+  EXPECT_EQ(proto::WebApp::RUN_ON_OS_LOGIN_MODE_MINIMIZED, proto_mode);
 
   proto_mode = ToWebAppProtoRunOnOsLoginMode(RunOnOsLoginMode::kNotRun);
-  EXPECT_EQ(WebAppProto::NOT_RUN, proto_mode);
+  EXPECT_EQ(proto::WebApp::RUN_ON_OS_LOGIN_MODE_NOT_RUN, proto_mode);
 }
 
 }  // namespace web_app

@@ -35,6 +35,8 @@
 #include "third_party/blink/renderer/core/css/css_property_names.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser.h"
 #include "third_party/blink/renderer/core/css/parser/css_parser_context.h"
+#include "third_party/blink/renderer/core/css/parser/css_parser_token_stream.h"
+#include "third_party/blink/renderer/core/css/properties/css_parsing_utils.h"
 #include "third_party/blink/renderer/core/css/resolver/style_builder_converter.h"
 #include "third_party/blink/renderer/core/css/style_color.h"
 #include "third_party/blink/renderer/core/dom/text_link_colors.h"
@@ -60,21 +62,28 @@ static ColorParseResult ParseColor(Color& parsed_color,
                                    const String& color_string,
                                    mojom::blink::ColorScheme color_scheme,
                                    const ui::ColorProvider* color_provider,
-                                   bool is_in_web_app_scope) {
-  if (EqualIgnoringASCIICase(color_string, "currentcolor"))
+                                   bool can_expose_accent_color) {
+  if (EqualIgnoringAsciiCase(color_string, "currentcolor")) {
     return ColorParseResult::kCurrentColor;
-  const bool kUseStrictParsing = true;
-  if (CSSParser::ParseColor(parsed_color, color_string, kUseStrictParsing))
-    return ColorParseResult::kColor;
-  if (CSSParser::ParseSystemColor(parsed_color, color_string, color_scheme,
-                                  color_provider, is_in_web_app_scope)) {
+  }
+  if (CSSParser::ParseColor(parsed_color, color_string)) {
     return ColorParseResult::kColor;
   }
-  const CSSValue* parsed_value = CSSParser::ParseSingleValue(
-      CSSPropertyID::kColor, color_string,
-      StrictCSSParserContext(SecureContextMode::kInsecureContext));
-  if (parsed_value && (parsed_value->IsColorMixValue() ||
-                       parsed_value->IsRelativeColorValue())) {
+  if (CSSParser::ParseSystemColor(parsed_color, color_string, color_scheme,
+                                  color_provider, can_expose_accent_color)) {
+    return ColorParseResult::kColor;
+  }
+  CSSParserTokenStream stream(color_string);
+  CSSParserLocalContext local_context =
+      CSSParserLocalContext::CreateWithoutPropertyForCanvas();
+  const CSSValue* parsed_value =
+      css_parsing_utils::ConsumeColorWithoutElementAndPropertyContext(
+          stream, *StrictCSSParserContext(SecureContextMode::kInsecureContext),
+          local_context);
+  if (parsed_value &&
+      (parsed_value->IsAlphaColorValue() || parsed_value->IsColorMixValue() ||
+       parsed_value->IsRelativeColorValue() ||
+       parsed_value->IsUnresolvedColorValue())) {
     static const TextLinkColors kDefaultTextLinkColors{};
     // TODO(40946458): Don't use default length resolver here!
     const ResolveColorValueContext context{
@@ -82,7 +91,7 @@ static ColorParseResult ParseColor(Color& parsed_color,
         .text_link_colors = kDefaultTextLinkColors,
         .used_color_scheme = color_scheme,
         .color_provider = color_provider,
-        .is_in_web_app_scope = is_in_web_app_scope};
+        .can_expose_accent_color = can_expose_accent_color};
     const StyleColor style_color = ResolveColorValue(*parsed_value, context);
     parsed_color = style_color.Resolve(Color::kBlack, color_scheme);
     return ColorParseResult::kColorFunction;
@@ -94,16 +103,16 @@ ColorParseResult ParseCanvasColorString(const String& color_string,
                                         mojom::blink::ColorScheme color_scheme,
                                         Color& parsed_color,
                                         const ui::ColorProvider* color_provider,
-                                        bool is_in_web_app_scope) {
+                                        bool can_expose_accent_color) {
   return ParseColor(parsed_color,
                     color_string.StripWhiteSpace(IsHTMLSpace<UChar>),
-                    color_scheme, color_provider, is_in_web_app_scope);
+                    color_scheme, color_provider, can_expose_accent_color);
 }
 
 bool ParseCanvasColorString(const String& color_string, Color& parsed_color) {
   const ColorParseResult parse_result = ParseCanvasColorString(
       color_string, mojom::blink::ColorScheme::kLight, parsed_color,
-      /*color_provider=*/nullptr, /*is_in_web_app_scope=*/false);
+      /*color_provider=*/nullptr, /*can_expose_accent_color=*/false);
   switch (parse_result) {
     case ColorParseResult::kColor:
     case ColorParseResult::kColorFunction:

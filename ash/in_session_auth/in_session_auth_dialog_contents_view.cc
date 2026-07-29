@@ -18,16 +18,15 @@
 #include "ash/strings/grit/ash_strings.h"
 #include "ash/style/ash_color_id.h"
 #include "base/check.h"
-#include "base/functional/callback_forward.h"
 #include "base/notimplemented.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chromeos/ash/components/auth_panel/impl/auth_panel.h"
 #include "chromeos/ash/components/auth_panel/impl/factor_auth_view_factory.h"
 #include "chromeos/ash/components/osauth/public/auth_hub.h"
 #include "components/account_id/account_id.h"
-#include "components/vector_icons/vector_icons.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/gfx/font.h"
 #include "ui/gfx/font_list.h"
@@ -100,7 +99,7 @@ InSessionAuthDialogContentsView::InSessionAuthDialogContentsView(
   auto border = std::make_unique<views::BubbleBorder>(
       views::BubbleBorder::FLOAT, views::BubbleBorder::STANDARD_SHADOW);
   border->SetColor(ui::kColorPrimaryBackground);
-  border->SetCornerRadius(kCornerRadius);
+  border->set_rounded_corners(gfx::RoundedCornersF(kCornerRadius));
   SetBackground(std::make_unique<views::BubbleBackground>(border.get()));
   SetBorder(std::move(border));
 
@@ -154,7 +153,8 @@ void InSessionAuthDialogContentsView::AddCloseButton() {
           base::BindRepeating(
               &InSessionAuthDialogContentsView::OnCloseButtonPressed,
               weak_ptr_factory_.GetWeakPtr()),
-          views::kIcCloseIcon);
+          ::features::IsRoundedIconsEnabled() ? views::kCloseIcon
+                                              : views::kIcCloseOldIcon);
 
   close_button->SetTooltipText(l10n_util::GetStringUTF16(IDS_APP_CLOSE));
   close_button->GetViewAccessibility().SetName(

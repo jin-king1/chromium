@@ -4,84 +4,52 @@
 
 package org.chromium.chrome.test.transit.page;
 
-import android.util.Pair;
+import android.view.View;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.transit.Condition;
 import org.chromium.base.test.transit.ConditionStatus;
-import org.chromium.base.test.transit.ConditionStatusWithResult;
-import org.chromium.base.test.transit.ConditionWithResult;
-import org.chromium.base.test.transit.Elements;
-import org.chromium.base.test.transit.Transition;
-import org.chromium.base.test.transit.UiThreadCondition;
+import org.chromium.base.test.transit.Element;
+import org.chromium.base.test.transit.TripBuilder;
 import org.chromium.base.test.transit.ViewElement;
+import org.chromium.chrome.browser.browser_controls.BrowserControlsStateProvider;
+import org.chromium.chrome.browser.omnibox.UrlBar;
 import org.chromium.chrome.browser.tab.Tab;
-import org.chromium.chrome.test.transit.SoftKeyboardFacility;
-import org.chromium.chrome.test.transit.omnibox.FakeOmniboxSuggestions;
-import org.chromium.chrome.test.transit.omnibox.OmniboxFacility;
 import org.chromium.content_public.browser.WebContents;
-import org.chromium.content_public.browser.test.util.Coordinates;
 import org.chromium.content_public.browser.test.util.JavaScriptUtils;
+import org.chromium.content_public.browser.test.util.TouchCommon;
 
 import java.util.List;
 import java.util.concurrent.TimeoutException;
-import java.util.function.Function;
+import java.util.function.Supplier;
 
 /** The screen that shows a loaded webpage with the omnibox and the toolbar. */
-public class WebPageStation extends PageStation {
-    protected Supplier<WebContents> mWebContentsSupplier;
-    private boolean mIgnoreUrlBar;
+public class WebPageStation extends CtaPageStation {
+    public Element<WebContents> webContentsElement;
+    public ViewElement<UrlBar> urlBarElement;
 
-    protected <T extends WebPageStation> WebPageStation(Builder<T> builder) {
-        super(builder);
-    }
+    protected WebPageStation(Config config) {
+        super(config);
 
-    protected <T extends WebPageStation> WebPageStation(WebStationBuilder<T> builder) {
-        super(builder);
-        mIgnoreUrlBar = builder.mIgnoreUrlBar;
-    }
+        webContentsElement =
+                declareEnterConditionAsElement(new WebContentsPresentCondition(loadedTabElement));
+        declareEnterCondition(new FrameInfoUpdatedCondition(webContentsElement));
 
-    public static class WebStationBuilder<T extends WebPageStation> extends PageStation.Builder<T> {
-        private boolean mIgnoreUrlBar;
-
-        public WebStationBuilder(Function<PageStation.Builder<T>, T> factoryMethod) {
-            super(factoryMethod);
-        }
-
-        /**
-         * Set whether URL is a required element for this webpage station. This is used for pages
-         * that doesn't show the URL bar (e.g. fullscreen page, or pages that scrolled off the
-         * browser controls).
-         */
-        public WebStationBuilder<T> ignoreUrlBar(boolean ignoreUrlBar) {
-            mIgnoreUrlBar = ignoreUrlBar;
-            return this;
-        }
-    }
-
-    public static WebStationBuilder<WebPageStation> newBuilder() {
-        return new WebStationBuilder<>(WebPageStation::new);
-    }
-
-    @Override
-    public void declareElements(Elements.Builder elements) {
-        super.declareElements(elements);
-
-        mWebContentsSupplier =
-                elements.declareEnterCondition(
-                        new WebContentsPresentCondition(mPageLoadedSupplier));
-        elements.declareEnterCondition(new FrameInfoUpdatedCondition(mWebContentsSupplier));
-
-        if (!mIgnoreUrlBar) {
-            // TODO(crbug.com/41497463): This should be shared, not unscoped, but the toolbar exists
-            // in the tab switcher and it is not completely occluded.
-            elements.declareView(URL_BAR, ViewElement.unscopedOption());
-        }
+        // TODO(crbug.com/41497463): This should be shared, not unscoped, but the toolbar exists
+        // in the tab switcher and it is not completely occluded.
+        urlBarElement = declareView(URL_BAR, ViewElement.unscopedOption());
 
         // Make sure that the new tab page is not considered a WebPageStation
         List<String> prohibitedUrls = List.of("chrome://newtab", "chrome-native://newtab");
-        elements.declareEnterCondition(
-                new PageUrlDoesNotMatchCondition(prohibitedUrls, mPageLoadedSupplier));
+        declareEnterCondition(new PageUrlDoesNotMatchCondition(prohibitedUrls, loadedTabElement));
+    }
+
+    @Override
+    protected TripBuilder clickUrlBarOrSearchBarTo() {
+        return urlBarElement.clickTo();
+    }
+
+    public static Builder<WebPageStation> newBuilder() {
+        return new Builder<>(WebPageStation::new);
     }
 
     /** Condition to check the page url does not match any of the prohibited urls. */
@@ -101,7 +69,10 @@ public class WebPageStation extends PageStation {
             String url = mLoadedTabSupplier.get().getUrl().getSpec();
             for (String prohibitedUrl : mProhibitedUrls) {
                 if (url.contains(prohibitedUrl)) {
-                    return notFulfilled("URL: \"%s\"", url);
+                    return notFulfilled(
+                            "URL is \"%s\", which is prohibited. Use the appropriate Station"
+                                    + " subclass instead of WebPageStation.",
+                            url);
                 }
             }
             return fulfilled("URL: \"%s\"", url);
@@ -115,96 +86,100 @@ public class WebPageStation extends PageStation {
 
     /** Opens the web page app menu by pressing the toolbar "..." button */
     public RegularWebPageAppMenuFacility openRegularTabAppMenu() {
-        assert !mIncognito;
-        return enterFacilitySync(new RegularWebPageAppMenuFacility(), MENU_BUTTON::click);
+        assert !mIsIncognito;
+        return menuButtonElement.clickTo().enterFacility(new RegularWebPageAppMenuFacility());
     }
 
     /** Opens the web page app menu by pressing the toolbar "..." button */
     public IncognitoWebPageAppMenuFacility openIncognitoTabAppMenu() {
-        assert mIncognito;
-        return enterFacilitySync(new IncognitoWebPageAppMenuFacility(), MENU_BUTTON::click);
+        assert mIsIncognito;
+        return menuButtonElement.clickTo().enterFacility(new IncognitoWebPageAppMenuFacility());
+    }
+
+    /** Scrolls down the page using a drag gesture to dismiss browser controls. */
+    public TripBuilder scrollPageDownWithGestureTo() {
+        return scrollPageDownWithGestureTo(100000f);
+    }
+
+    /**
+     * Scrolls down the page using a drag gesture to dismiss browser controls, with customized
+     * stride.
+     *
+     * @param stride The distance of the drag. Expecting a positive value.
+     */
+    public TripBuilder scrollPageDownWithGestureTo(float stride) {
+        assert stride > 0;
+        return runTo(
+                () -> {
+                    assertInPhase(Phase.ACTIVE);
+                    View contentView = activityTabElement.value().getView();
+                    float width = contentView.getWidth();
+                    float height = contentView.getHeight();
+                    // Start the scroll with some height to avoid touching the nav bar region.
+                    float fromY = height - height / 10;
+                    float toY = Math.max(0, fromY - stride);
+                    TouchCommon.performDragNoFling(
+                            mActivityElement.value(),
+                            width / 2,
+                            width / 2,
+                            fromY,
+                            toY,
+                            /* stepCount= */ 50,
+                            /* duration= */ 500);
+                });
+    }
+
+    /** Scrolls up the page using a drag gesture to show browser controls. */
+    public TripBuilder scrollPageUpWithGestureTo() {
+        return scrollPageUpWithGestureTo(10000f);
+    }
+
+    /**
+     * Scrolls up the page using a drag gesture to show browser controls. with customized stride.
+     *
+     * @param stride The distance of the drag. Expecting a positive value.
+     */
+    public TripBuilder scrollPageUpWithGestureTo(float stride) {
+        return runTo(
+                () -> {
+                    assertInPhase(Phase.ACTIVE);
+                    View contentView = activityTabElement.value().getView();
+                    float width = contentView.getWidth();
+                    float height = contentView.getHeight();
+
+                    BrowserControlsStateProvider browserControls =
+                            getActivity().getBrowserControlsManager();
+                    // Start the scroll with 100f additional height to avoid touching the toolbar.
+                    float fromY = browserControls.getTopControlsHeight() + 100f;
+                    float toY = Math.min(fromY + stride, height);
+                    TouchCommon.performDragNoFling(
+                            mActivityElement.value(),
+                            width / 2,
+                            width / 2,
+                            fromY,
+                            toY,
+                            /* stepCount= */ 50,
+                            /* duration= */ 500);
+                });
     }
 
     /** Trigger to scroll WebContents to the bottom. */
-    public Transition.Trigger scrollToBottomTrigger() {
-        return () -> {
-            assertSuppliersCanBeUsed();
-            try {
-                JavaScriptUtils.executeJavaScriptAndWaitForResult(
-                        mWebContentsSupplier.get(),
-                        "window.scrollTo(0, document.body.scrollHeight)");
-            } catch (TimeoutException e) {
-                throw new RuntimeException(e);
-            }
-        };
+    public TripBuilder scrollToBottomTo() {
+        return runJsTo("window.scrollTo(0, document.body.scrollHeight)")
+                .waitForAnd(new ScrollToBottomCondition(webContentsElement));
     }
 
-    /** Click the URL bar to enter the Omnibox. */
-    public Pair<OmniboxFacility, SoftKeyboardFacility> openOmnibox(
-            FakeOmniboxSuggestions fakeSuggestions) {
-        OmniboxFacility omniboxFacility =
-                new OmniboxFacility(/* incognito= */ mIncognito, fakeSuggestions);
-        SoftKeyboardFacility softKeyboard = new SoftKeyboardFacility();
-        enterFacilitiesSync(List.of(omniboxFacility, softKeyboard), URL_BAR::click);
-        return Pair.create(omniboxFacility, softKeyboard);
-    }
-
-    private static class WebContentsPresentCondition extends ConditionWithResult<WebContents> {
-        private final Supplier<Tab> mLoadedTabSupplier;
-
-        public WebContentsPresentCondition(Supplier<Tab> loadedTabSupplier) {
-            super(/* isRunOnUiThread= */ false);
-            mLoadedTabSupplier = dependOnSupplier(loadedTabSupplier, "LoadedTab");
-        }
-
-        @Override
-        protected ConditionStatusWithResult<WebContents> resolveWithSuppliers() {
-            return whether(hasValue()).withResult(get());
-        }
-
-        @Override
-        public String buildDescription() {
-            return "WebContents present";
-        }
-
-        @Override
-        public WebContents get() {
-            // Do not return a WebContents that has been destroyed, so always get it from the
-            // Tab instead of letting ConditionWithResult return its |mResult|.
-            Tab loadedTab = mLoadedTabSupplier.get();
-            if (loadedTab == null) {
-                return null;
-            }
-            return loadedTab.getWebContents();
-        }
-
-        @Override
-        public boolean hasValue() {
-            return get() != null;
-        }
-    }
-
-    private static class FrameInfoUpdatedCondition extends UiThreadCondition {
-        Supplier<WebContents> mWebContentsSupplier;
-
-        public FrameInfoUpdatedCondition(Supplier<WebContents> webContentsSupplier) {
-            mWebContentsSupplier = dependOnSupplier(webContentsSupplier, "WebContents");
-        }
-
-        @Override
-        protected ConditionStatus checkWithSuppliers() {
-            Coordinates coordinates = Coordinates.createFor(mWebContentsSupplier.get());
-            return whether(
-                    coordinates.frameInfoUpdated(),
-                    "frameInfoUpdated %b, pageScaleFactor: %.2f",
-                    coordinates.frameInfoUpdated(),
-                    coordinates.getPageScaleFactor());
-        }
-
-        @Override
-        public String buildDescription() {
-            return "WebContents frame info updated";
-        }
+    /** Starts a Transition triggered by running |jsCode| in the WebContents. */
+    public TripBuilder runJsTo(String jsCode) {
+        return runTo(
+                () -> {
+                    try {
+                        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                webContentsElement.value(), jsCode);
+                    } catch (TimeoutException e) {
+                        throw new RuntimeException(e);
+                    }
+                });
     }
 
     // Condition checks whether web page reaches the bottom by checking viewport position and scroll
@@ -240,6 +215,41 @@ public class WebPageStation extends PageStation {
             } catch (TimeoutException e) {
                 throw new RuntimeException(e);
             }
+        }
+    }
+
+    // Condition checks whether web page reaches the top.
+    protected static class ScrollToTopCondition extends Condition {
+        Supplier<WebContents> mWebContentsSupplier;
+
+        public ScrollToTopCondition(Supplier<WebContents> webContentsSupplier) {
+            super(/* isRunOnUiThread= */ false);
+            mWebContentsSupplier = webContentsSupplier;
+        }
+
+        @Override
+        protected ConditionStatus checkWithSuppliers() throws Exception {
+            String code = "window.visualViewport.pageTop";
+            int currentPageTop;
+            try {
+                currentPageTop =
+                        Integer.parseInt(
+                                JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                                        mWebContentsSupplier.get(), code));
+            } catch (TimeoutException e) {
+                throw new RuntimeException(e);
+            }
+
+            if (currentPageTop < 1) {
+                return fulfilled();
+            }
+            return notFulfilled(
+                    "Not scrolled to the top yet. Current page top: %d", currentPageTop);
+        }
+
+        @Override
+        public String buildDescription() {
+            return "Page scrolled to the top.";
         }
     }
 }

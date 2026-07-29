@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_WEBAUTHN_CREDENTIALS_DELEGATE_H_
 #define COMPONENTS_PASSWORD_MANAGER_CORE_BROWSER_WEBAUTHN_CREDENTIALS_DELEGATE_H_
 
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -12,9 +13,10 @@
 #include "base/memory/weak_ptr.h"
 #include "base/types/expected.h"
 #include "build/build_config.h"
-#include "components/password_manager/core/browser/passkey_credential.h"
 
 namespace password_manager {
+
+class PasskeyCredential;
 
 // Delegate facilitating communication between the password manager and
 // WebAuthn. It is associated with a single frame.
@@ -34,6 +36,9 @@ class WebAuthnCredentialsDelegate {
   // security keys to sign-in. On Android this will trigger Google Play
   // Services.
   virtual void LaunchSecurityKeyOrHybridFlow() = 0;
+
+  // Returns the pre-generated CaBLEv2 QR code string if available.
+  virtual std::optional<std::string> GetCableQrString() const = 0;
 
   // Called when the user selects a passkey from the autofill suggestion list
   // The selected credential must be from the list returned by the last call to

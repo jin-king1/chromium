@@ -42,9 +42,9 @@ bool ChromeViewsDelegate::ShouldCloseMenuIfMouseCaptureLost() const {
   return !ChromeCaptureModeDelegate::Get()->is_session_active();
 }
 
-std::unique_ptr<views::NonClientFrameView>
-ChromeViewsDelegate::CreateDefaultNonClientFrameView(views::Widget* widget) {
-  return ash::Shell::Get()->CreateDefaultNonClientFrameView(widget);
+std::unique_ptr<views::FrameView> ChromeViewsDelegate::CreateDefaultFrameView(
+    views::Widget* widget) {
+  return ash::Shell::Get()->CreateDefaultFrameView(widget);
 }
 
 void ChromeViewsDelegate::AdjustSavedWindowPlacementChromeOS(
@@ -53,7 +53,7 @@ void ChromeViewsDelegate::AdjustSavedWindowPlacementChromeOS(
   // On ChromeOS a window won't span across displays.  Adjust the bounds to fit
   // the work area.
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayMatching(*bounds);
+      display::Screen::Get()->GetDisplayMatching(*bounds);
   bounds->AdjustToFit(display.work_area());
 }
 
@@ -62,7 +62,8 @@ views::NativeWidget* ChromeViewsDelegate::CreateNativeWidget(
     views::internal::NativeWidgetDelegate* delegate) {
   // The context should be associated with a root window. If the context has a
   // null root window (e.g. the context window has no parent) it will trigger
-  // the fallback case below. https://crbug.com/828626 https://crrev.com/230793
+  // the fallback case below. https://crbug.com/40569961
+  // https://crrev.com/230793
   if (params->context) {
     params->context = params->context->GetRootWindow();
   }

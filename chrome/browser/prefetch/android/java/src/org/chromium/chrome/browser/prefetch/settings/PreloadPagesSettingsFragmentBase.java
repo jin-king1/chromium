@@ -9,18 +9,24 @@ import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 
 /** The base fragment class for Preload Pages settings fragments. */
+@NullMarked
 public abstract class PreloadPagesSettingsFragmentBase extends ChromeBaseSettingsFragment {
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
 
     @Override
-    public void onCreatePreferences(Bundle bundle, String s) {
+    public void onCreatePreferences(@Nullable Bundle bundle, @Nullable String s) {
         SettingsUtils.addPreferencesFromResource(this, getPreferenceResource());
         mPageTitle.set(getString(R.string.prefs_section_preload_pages_title));
 
@@ -30,7 +36,7 @@ public abstract class PreloadPagesSettingsFragmentBase extends ChromeBaseSetting
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
@@ -38,10 +44,10 @@ public abstract class PreloadPagesSettingsFragmentBase extends ChromeBaseSetting
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         menu.clear();
         MenuItem help =
-                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, R.string.menu_help);
+                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, getHelpMenuStringRes());
         help.setIcon(
                 TraceEventVectorDrawableCompat.create(
-                        getResources(), R.drawable.ic_help_and_feedback, getActivity().getTheme()));
+                        getResources(), R.drawable.ic_help_24dp, getActivity().getTheme()));
     }
 
     @Override
@@ -60,10 +66,11 @@ public abstract class PreloadPagesSettingsFragmentBase extends ChromeBaseSetting
      * this method.
      *
      * @param bundle If the fragment is being re-created from a previous saved state, this is the
-     *         state.
+     *     state.
      * @param s If non-null, this preference should be rooted at the PreferenceScreen with this key.
      */
-    protected void onCreatePreferencesInternal(Bundle bundle, String s) {}
+    @Initializer
+    protected void onCreatePreferencesInternal(@Nullable Bundle bundle, @Nullable String s) {}
 
     /**
      * @return The resource id of the preference.

@@ -13,13 +13,16 @@
 #include "base/functional/callback.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
-#include "base/memory/ref_counted.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/scoped_observation.h"
 #include "build/buildflag.h"
 #include "components/signin/internal/identity_manager/oauth_multilogin_token_request.h"
 #include "components/signin/internal/identity_manager/profile_oauth2_token_service_observer.h"
+#include "components/signin/public/base/binding_key_registration_token_result.h"
 #include "components/signin/public/base/signin_buildflags.h"
 #include "components/signin/public/base/signin_metrics.h"
+#include "components/signin/public/identity_manager/token_binding_info.h"
+#include "crypto/signature_verifier.h"
 #include "google_apis/gaia/core_account_id.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 #include "google_apis/gaia/oauth2_access_token_manager.h"
@@ -204,9 +207,7 @@ class ProfileOAuth2TokenService : public OAuth2AccessTokenManager::Delegate,
   // For a regular profile, the primary account id comes from
   // PrimaryAccountManager.
   // For a supervised user, the id comes from SupervisedUserService.
-  // |is_syncing| whether the primary account has sync consent.
-  void LoadCredentials(const CoreAccountId& primary_account_id,
-                       bool is_syncing);
+  void LoadCredentials(const CoreAccountId& primary_account_id);
 
   // Returns true if LoadCredentials finished with no errors.
   bool HasLoadCredentialsFinishedWithNoErrors();
@@ -217,12 +218,8 @@ class ProfileOAuth2TokenService : public OAuth2AccessTokenManager::Delegate,
       const CoreAccountId& account_id,
       const std::string& refresh_token,
       signin_metrics::SourceForRefreshTokenOperation source =
-          signin_metrics::SourceForRefreshTokenOperation::kUnknown
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-      ,
-      const std::vector<uint8_t>& wrapped_binding_key = std::vector<uint8_t>()
-#endif  // BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
-  );
+          signin_metrics::SourceForRefreshTokenOperation::kUnknown,
+      const signin::TokenBindingInfo& token_binding_info = {});
 
   void RevokeCredentials(
       const CoreAccountId& account_id,
@@ -283,10 +280,6 @@ class ProfileOAuth2TokenService : public OAuth2AccessTokenManager::Delegate,
   bool RefreshTokenIsAvailableOnDevice(const CoreAccountId& account_id) const;
 #endif  // BUILDFLAG(IS_IOS)
 
-  // Returns true if a refresh token exists for |account_id| and it is in a
-  // persistent error state.
-  bool RefreshTokenHasError(const CoreAccountId& account_id) const;
-
   // Returns the auth error associated with |account_id|. Only persistent errors
   // will be returned.
   GoogleServiceAuthError GetAuthError(const CoreAccountId& account_id) const;
@@ -295,14 +288,39 @@ class ProfileOAuth2TokenService : public OAuth2AccessTokenManager::Delegate,
   void UpdateAuthErrorForTesting(const CoreAccountId& account_id,
                                  const GoogleServiceAuthError& error);
 
-#if BUILDFLAG(ENABLE_BOUND_SESSION_CREDENTIALS)
+#if BUILDFLAG(ENABLE_DICE_SUPPORT)
+  // Asynchronously generates a registration token for binding a refresh token
+  // to a shared binding key.
+  // `supported_algorithms` is a list of acceptable signature algorithms. This
+  // parameter may be ignored if an existing binding key is reused instead of
+  // generating a new one.
+  // Returns false if the generation cannot be started. In that case, `callback`
+  // will not be invoked.
+  bool GenerateBindingKeyRegistrationToken(
+      base::span<const crypto::SignatureVerifier::SignatureAlgorithm>
+          supported_algorithms,
+      std::string_view auth_code,
+      base::OnceCallback<void(
+          std::optional<signin::BindingKeyRegistrationTokenResult>)> callback);
+
   // Returns the wrapped binding key of a refresh token associated with
   // `account_id`, if any.
   // Returns a non-empty vector iff (a) a refresh token exists for `account_id`,
   // and (b) the refresh token is bound to a device.
   std::vector<uint8_t> GetWrappedBindingKey(
       const CoreAccountId& account_id) const;
-#endif
+
+  // Returns true if a refresh token exists for `account_id` and it is bound to
+  // an mTLS certificate.
+  bool IsRefreshTokenBoundToMtls(const CoreAccountId& account_id) const;
+
+  // Returns whether all bound refresh tokens share the same binding key.
+  //
+  // Unbound tokens are ignored in this check. Returns `true` if there are zero
+  // or one bound tokens, or if all bound tokens use the same key. Returns
+  // `false` only if there are multiple bound tokens with different keys.
+  bool AllBoundTokensShareSameBindingKey() const;
+#endif  // BUILDFLAG(ENABLE_DICE_SUPPORT)
 
   void set_max_authorization_token_fetch_retries_for_testing(int max_retries);
 

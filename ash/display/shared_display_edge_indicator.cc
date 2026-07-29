@@ -23,8 +23,7 @@ namespace ash {
 namespace {
 
 std::unique_ptr<views::Widget> CreateWidget(const gfx::Rect& bounds) {
-  display::Display display =
-      display::Screen::GetScreen()->GetDisplayMatching(bounds);
+  display::Display display = display::Screen::Get()->GetDisplayMatching(bounds);
   auto widget = std::make_unique<views::Widget>();
   views::Widget::InitParams params(
       views::Widget::InitParams::WIDGET_OWNS_NATIVE_WIDGET,
@@ -73,8 +72,10 @@ void SharedDisplayEdgeIndicator::AnimationProgressed(
     const gfx::Animation* animation) {
   int value = animation->CurrentValueBetween(0, 255);
   SkColor color = SkColorSetARGB(0xFF, value, value, value);
-  src_widget_->GetLayer()->SetColor(color);
-  dst_widget_->GetLayer()->SetColor(color);
+  src_widget_->GetLayer()->AsSolidColor()->SetColor(
+      SkColor4f::FromColor(color));
+  dst_widget_->GetLayer()->AsSolidColor()->SetColor(
+      SkColor4f::FromColor(color));
 }
 
 }  // namespace ash

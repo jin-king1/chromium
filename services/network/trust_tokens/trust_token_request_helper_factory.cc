@@ -17,6 +17,7 @@
 #include "services/network/public/cpp/resource_request.h"
 #include "services/network/public/cpp/trust_token_http_headers.h"
 #include "services/network/public/cpp/trust_token_parameterization.h"
+#include "services/network/public/mojom/network_context_client.mojom.h"
 #include "services/network/public/mojom/trust_tokens.mojom-shared.h"
 #include "services/network/trust_tokens/boringssl_trust_token_issuance_cryptographer.h"
 #include "services/network/trust_tokens/boringssl_trust_token_redemption_cryptographer.h"
@@ -66,7 +67,7 @@ void LogOutcome(const net::NetLogWithSource& log,
       outcome);
   log.EndEvent(
       net::NetLogEventType::TRUST_TOKEN_OPERATION_REQUESTED, [outcome]() {
-        return base::Value::Dict().Set("outcome", OutcomeToString(outcome));
+        return base::DictValue().Set("outcome", OutcomeToString(outcome));
       });
 }
 
@@ -142,7 +143,6 @@ void TrustTokenRequestHelperFactory::ConstructHelperUsingStore(
                  Outcome::kSuccessfullyCreatedAnIssuanceHelper);
       auto helper = std::make_unique<TrustTokenRequestIssuanceHelper>(
           std::move(top_frame_origin), store, key_commitment_getter_,
-          params->custom_key_commitment, params->custom_issuer,
           std::make_unique<BoringsslTrustTokenIssuanceCryptographer>(),
           std::move(net_log));
       std::move(done).Run(TrustTokenStatusOrRequestHelper(
@@ -156,8 +156,7 @@ void TrustTokenRequestHelperFactory::ConstructHelperUsingStore(
                  Outcome::kSuccessfullyCreatedARedemptionHelper);
       auto helper = std::make_unique<TrustTokenRequestRedemptionHelper>(
           std::move(top_frame_origin), params->refresh_policy, store,
-          key_commitment_getter_, params->custom_key_commitment,
-          params->custom_issuer,
+          key_commitment_getter_,
           std::make_unique<BoringsslTrustTokenRedemptionCryptographer>(),
           std::move(net_log));
       std::move(done).Run(TrustTokenStatusOrRequestHelper(

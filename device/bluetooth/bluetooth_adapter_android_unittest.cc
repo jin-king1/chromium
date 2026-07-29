@@ -8,7 +8,6 @@
 
 #include <memory>
 
-#include "base/android/build_info.h"
 #include "base/android/jni_android.h"
 #include "base/android/jni_string.h"
 #include "base/android/scoped_java_ref.h"
@@ -16,17 +15,17 @@
 #include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
-#include "device/base/features.h"
 #include "device/bluetooth/android/wrappers.h"
 #include "device/bluetooth/bluetooth_common.h"
+#include "device/bluetooth/bluetooth_device.h"
 #include "device/bluetooth/bluetooth_discovery_filter.h"
 #include "device/bluetooth/test/bluetooth_scanner_callback.h"
 #include "device/bluetooth/test/bluetooth_test_android.h"
 #include "device/bluetooth/test/test_bluetooth_adapter_observer.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "device/bluetooth_test_jni_headers/ChromeBluetoothLeScannerTestUtil_jni.h"
@@ -344,51 +343,64 @@ TEST_F(BluetoothAdapterAndroidTest, ChromeBluetoothLeScannerFailToResume) {
   EXPECT_EQ(bluetooth_scanner_callback_->GetScanFinishCount(), 1);
 }
 
-TEST_F(BluetoothAdapterAndroidTest, NotifyNewDevicesForPairedDevices) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kBluetoothRfcommAndroid);
-
-  InitWithFakeAdapter();
-
-  TestBluetoothAdapterObserver observer(adapter_);
-
-  adapter_->GetDevices();
-  task_environment_.FastForwardUntilNoTasksRemain();
-
-  SimulatePairedClassicDevice(1);
-  EXPECT_EQ(observer.device_added_count(), 1);
-  EXPECT_EQ(observer.last_device_address(), kTestDeviceAddress1);
-
-  SimulatePairedClassicDevice(2);
-  EXPECT_EQ(observer.device_added_count(), 2);
-  EXPECT_EQ(observer.last_device_address(), kTestDeviceAddress2);
-}
-
 TEST_F(BluetoothAdapterAndroidTest, GetPairedDevices) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kBluetoothRfcommAndroid);
-
   InitWithFakeAdapter();
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
 
   SimulatePairedClassicDevice(1);
   SimulatePairedClassicDevice(2);
-
-  adapter_->GetDevices();
-  task_environment_.FastForwardUntilNoTasksRemain();
 
   BluetoothAdapter::DeviceList list = adapter_->GetDevices();
+  absl::flat_hash_set<std::string> addresses;
+  for (auto* device : list) {
+    addresses.insert(device->GetAddress());
+  }
+  EXPECT_EQ(addresses.size(), 2u);
+  EXPECT_TRUE(addresses.contains(kTestDeviceAddress1));
+  EXPECT_TRUE(addresses.contains(kTestDeviceAddress2));
+
+  // We explicitly omit observer notifications for new paired devices found
+  // during GetDevices.
+  EXPECT_EQ(observer.device_added_count(), 0);
+
   EXPECT_TRUE(adapter_->GetDevice(kTestDeviceAddress1));
   EXPECT_TRUE(adapter_->GetDevice(kTestDeviceAddress2));
 }
 
-TEST_F(BluetoothAdapterAndroidTest, ExposeUuidFromPairedDevices) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kBluetoothRfcommAndroid);
+TEST_F(BluetoothAdapterAndroidTest, NotifyObserversForNewPairedDevices) {
+  InitWithFakeAdapter();
 
+  TestBluetoothAdapterObserver observer(adapter_.get());
+
+  adapter_->GetDevices();
+
+  SimulatePairedClassicDevice(1, /*notify_callback=*/true);
+  ASSERT_EQ(observer.device_added_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+
+  SimulatePairedClassicDevice(2, /*notify_callback=*/true);
+  ASSERT_EQ(observer.device_added_count(), 2);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress2);
+}
+
+TEST_F(BluetoothAdapterAndroidTest, IsConnectedAfterNewDevicePaired) {
+  InitWithFakeAdapter();
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+
+  adapter_->GetDevices();
+
+  SimulatePairedClassicDevice(1, /*notify_callback=*/true);
+  EXPECT_EQ(observer.device_added_count(), 1);
+  EXPECT_EQ(observer.device_changed_count(), 1);
+  EXPECT_TRUE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, ExposeUuidFromPairedDevices) {
   InitWithFakeAdapter();
 
   adapter_->GetDevices();
-  task_environment_.FastForwardUntilNoTasksRemain();
 
   SimulatePairedClassicDevice(1);
   BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
@@ -405,10 +417,210 @@ TEST_F(BluetoothAdapterAndroidTest, ExposeUuidFromPairedDevices) {
             "00001101-0000-1000-8000-00805f9b34fb");
 }
 
-TEST_F(BluetoothAdapterAndroidTest, ScanFailsWithoutLeSupport) {
-  base::test::ScopedFeatureList scoped_feature_list;
-  scoped_feature_list.InitAndEnableFeature(features::kBluetoothRfcommAndroid);
+TEST_F(BluetoothAdapterAndroidTest, RemoveExpiredDevicesOnUnpaired) {
+  InitWithFakeAdapter();
 
+  SimulatePairedClassicDevice(1);
+  SimulatePairedClassicDevice(2);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+
+  UnpairDevice(kTestDeviceAddress1);
+  ASSERT_EQ(observer.device_removed_count(), 1);
+  EXPECT_EQ(observer.last_device_address(), kTestDeviceAddress1);
+
+  EXPECT_FALSE(adapter_->GetDevice(kTestDeviceAddress1));
+  EXPECT_TRUE(adapter_->GetDevice(kTestDeviceAddress2));
+}
+
+TEST_F(BluetoothAdapterAndroidTest, RemoveUnpairedDevicesAfterTimeOut) {
+  InitWithFakeAdapter();
+
+  SimulatePairedClassicDevice(1);
+  SimulatePairedClassicDevice(2);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+
+  // Simulate situations where these devices were found in scanning as well.
+  for (BluetoothDevice* device : adapter_->GetDevices()) {
+    device->UpdateTimestamp();
+  }
+
+  UnpairDevice(kTestDeviceAddress1);
+  EXPECT_EQ(observer.device_removed_count(), 0);
+  EXPECT_TRUE(adapter_->GetDevice(kTestDeviceAddress1));
+
+  // RemoveTimedOutDevices uses base::Time::NowFromSystemTime, so we have to
+  // explicitly set devices to be expired.
+  for (BluetoothDevice* device : adapter_->GetDevices()) {
+    device->SetAsExpiredForTesting();
+  }
+
+  task_environment_.FastForwardBy(BluetoothAdapter::timeoutSec +
+                                  base::Seconds(1));
+
+  ASSERT_EQ(observer.device_removed_count(), 1);
+  EXPECT_EQ(observer.last_device_address(), kTestDeviceAddress1);
+
+  EXPECT_FALSE(adapter_->GetDevice(kTestDeviceAddress1));
+  EXPECT_TRUE(adapter_->GetDevice(kTestDeviceAddress2));
+}
+
+TEST_F(BluetoothAdapterAndroidTest, UnknownDeviceUnpaired) {
+  InitWithFakeAdapter();
+
+  adapter_->GetDevices();
+
+  UnpairDevice(kTestDeviceAddress1);
+}
+
+TEST_F(BluetoothAdapterAndroidTest, AclConnected) {
+  InitWithFakeAdapter();
+
+  SimulatePairedClassicDevice(1);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+  EXPECT_FALSE(device->IsConnected());
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_CLASSIC,
+                                /*connected=*/true);
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+  EXPECT_TRUE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, AclDisconnected) {
+  InitWithFakeAdapter();
+
+  adapter_->GetDevices();
+
+  SimulatePairedClassicDevice(1, /*notify_callback=*/true);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_CLASSIC,
+                                /*connected=*/false);
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+  EXPECT_FALSE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, AclConnectedWithDualTransport) {
+  InitWithFakeAdapter();
+
+  SimulatePairedClassicDevice(1);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_CLASSIC,
+                                /*connected=*/true);
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_LE,
+                                /*connected=*/true);
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+  EXPECT_TRUE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, AclDisconnectedWithDualTransport) {
+  InitWithFakeAdapter();
+
+  SimulatePairedClassicDevice(1);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_CLASSIC,
+                                /*connected=*/true);
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_LE,
+                                /*connected=*/true);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_CLASSIC,
+                                /*connected=*/false);
+  EXPECT_EQ(observer.device_changed_count(), 0);
+  EXPECT_TRUE(device->IsConnected());
+
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_LE,
+                                /*connected=*/false);
+
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+  EXPECT_FALSE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, AclDisconnectedOnAdapterOff) {
+  InitWithFakeAdapter();
+
+  SimulatePairedClassicDevice(1);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+  std::optional<std::string> device_name = device->GetName();
+  int device_type = device->GetType();
+  BluetoothDevice::UUIDSet uuids = device->GetUUIDs();
+  uint32_t bluetooth_class = device->GetBluetoothClass();
+
+  EXPECT_NE(bluetooth_class, 0x1F00u);
+
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_CLASSIC,
+                                /*connected=*/true);
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_LE,
+                                /*connected=*/true);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+
+  adapter_->SetPowered(false, GetCallback(Call::EXPECTED),
+                       GetCallback(Call::NOT_EXPECTED));
+  task_environment_.FastForwardUntilNoTasksRemain();
+
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetName(), device_name);
+  EXPECT_EQ(observer.last_device()->GetType(), device_type);
+  EXPECT_EQ(observer.last_device()->GetUUIDs(), uuids);
+  EXPECT_EQ(observer.last_device()->GetBluetoothClass(), bluetooth_class);
+  EXPECT_TRUE(observer.last_device()->IsPaired());
+}
+
+// The transport extra of ACL connected/disconnected broadcasts was added in API
+// level 33 (Android 13/T). On devices where the extra was not provided, we
+// use BluetoothDevice#TRANSPORT_AUTO (0) as the default value, and later
+// assign an arbitrary non-zero value (BR/EDR) so that the bit-wise flag takes
+// effect. Write unit tests to ensure it works fine.
+TEST_F(BluetoothAdapterAndroidTest, AclConnectedWithoutTransport) {
+  InitWithFakeAdapter();
+
+  SimulatePairedClassicDevice(1);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_INVALID,
+                                /*connected=*/true);
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+  EXPECT_TRUE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, AclDisconnectedWithoutTransport) {
+  InitWithFakeAdapter();
+
+  adapter_->GetDevices();
+
+  SimulatePairedClassicDevice(1, /*notify_callback=*/true);
+
+  BluetoothDevice* device = adapter_->GetDevice(kTestDeviceAddress1);
+
+  TestBluetoothAdapterObserver observer(adapter_.get());
+  SimulateAclConnectStateChange(device, BLUETOOTH_TRANSPORT_INVALID,
+                                /*connected=*/false);
+  ASSERT_EQ(observer.device_changed_count(), 1);
+  EXPECT_EQ(observer.last_device()->GetAddress(), kTestDeviceAddress1);
+  EXPECT_FALSE(observer.last_device()->IsConnected());
+}
+
+TEST_F(BluetoothAdapterAndroidTest, ScanFailsWithoutLeSupport) {
   InitWithFakeAdapter();
 
   SetEnabledDeviceTransport(BLUETOOTH_TRANSPORT_CLASSIC);
@@ -421,3 +633,6 @@ TEST_F(BluetoothAdapterAndroidTest, ScanFailsWithoutLeSupport) {
 }
 
 }  // namespace device
+
+DEFINE_JNI(ChromeBluetoothLeScannerTestUtil)
+DEFINE_JNI(ChromeBluetoothScanFilter)

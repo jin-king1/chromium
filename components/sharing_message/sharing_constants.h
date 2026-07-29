@@ -38,7 +38,6 @@ extern const int kSubMenuLastDeviceCommandId;
 // The feature name prefix used in metrics name.
 enum class SharingFeatureName {
   kUnknown,
-  kClickToCall,
   kSharedClipboard,
   kSmsRemoteFetcher,
   kMaxValue = kSmsRemoteFetcher,
@@ -58,7 +57,6 @@ enum class SharingDevicePlatform {
 
 enum class SharingChannelType {
   kUnknown,
-  kFcmVapid,
   kFcmSenderId,
   kServer,
   kWebRtc,

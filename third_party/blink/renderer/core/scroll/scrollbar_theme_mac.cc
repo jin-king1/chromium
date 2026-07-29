@@ -25,16 +25,20 @@
 
 #include "third_party/blink/renderer/core/scroll/scrollbar_theme_mac.h"
 
+#include <variant>
+
 #include "skia/ext/skia_utils_mac.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "third_party/blink/public/platform/mac/web_scrollbar_theme.h"
 #include "third_party/blink/public/platform/web_theme_engine.h"
 #include "third_party/blink/renderer/core/page/page.h"
+#include "third_party/blink/renderer/core/paint/paint_info.h"
 #include "third_party/blink/renderer/core/scroll/mac_scrollbar_animator.h"
 #include "third_party/blink/renderer/core/scroll/scrollable_area.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context.h"
 #include "third_party/blink/renderer/platform/graphics/graphics_context_state_saver.h"
 #include "third_party/blink/renderer/platform/graphics/paint/drawing_recorder.h"
+#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/theme/web_theme_engine_helper.h"
 #include "third_party/blink/renderer/platform/wtf/hash_set.h"
 #include "third_party/blink/renderer/platform/wtf/std_lib_extras.h"
@@ -49,9 +53,10 @@ static bool s_jump_on_track_click = false;
 typedef HeapHashSet<WeakMember<Scrollbar>> ScrollbarSet;
 
 static ScrollbarSet& GetScrollbarSet() {
-  DEFINE_STATIC_LOCAL(Persistent<ScrollbarSet>, set,
-                      (MakeGarbageCollected<ScrollbarSet>()));
-  return *set;
+  using ScrollbarSetHolder = DisallowNewWrapper<ScrollbarSet>;
+  DEFINE_STATIC_LOCAL(Persistent<ScrollbarSetHolder>, holder,
+                      (MakeGarbageCollected<ScrollbarSetHolder>()));
+  return holder->Value();
 }
 
 // Values returned by NSScrollerImp's methods for querying sizes of various
@@ -102,13 +107,13 @@ ScrollbarTheme& ScrollbarTheme::NativeTheme() {
   return overlay_theme;
 }
 
-void ScrollbarThemeMac::PaintTickmarks(GraphicsContext& context,
+void ScrollbarThemeMac::PaintTickmarks(const PaintInfo& paint_info,
                                        const Scrollbar& scrollbar,
                                        const gfx::Rect& rect) {
   gfx::Rect tickmark_track_rect = rect;
   tickmark_track_rect.set_x(tickmark_track_rect.x() + 1);
   tickmark_track_rect.set_width(tickmark_track_rect.width() - 1);
-  ScrollbarTheme::PaintTickmarks(context, scrollbar, tickmark_track_rect);
+  ScrollbarTheme::PaintTickmarks(paint_info, scrollbar, tickmark_track_rect);
 }
 
 bool ScrollbarThemeMac::ShouldCenterOnThumb(const Scrollbar& scrollbar,
@@ -185,9 +190,10 @@ WebThemeEngine::ExtraParams GetPaintParams(const Scrollbar& scrollbar,
   return WebThemeEngine::ExtraParams(scrollbar_extra);
 }
 
-void ScrollbarThemeMac::PaintTrackBackground(GraphicsContext& context,
+void ScrollbarThemeMac::PaintTrackBackground(const PaintInfo& paint_info,
                                              const Scrollbar& scrollbar,
                                              const gfx::Rect& rect) {
+  GraphicsContext& context = paint_info.context;
   GraphicsContextStateSaver state_saver(context);
   context.Translate(rect.x(), rect.y());
 
@@ -205,7 +211,7 @@ void ScrollbarThemeMac::PaintTrackBackground(GraphicsContext& context,
   WebThemeEngine::ExtraParams params =
       GetPaintParams(scrollbar, UsesOverlayScrollbars());
   const auto& scrollbar_extra =
-      absl::get<WebThemeEngine::ScrollbarExtraParams>(params);
+      std::get<WebThemeEngine::ScrollbarExtraParams>(params);
   gfx::Rect bounds(0, 0, scrollbar.FrameRect().width(),
                    scrollbar.FrameRect().height());
   WebThemeEngine::Part track_part =
@@ -216,21 +222,23 @@ void ScrollbarThemeMac::PaintTrackBackground(GraphicsContext& context,
   mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
       context.Canvas(), track_part, WebThemeEngine::State::kStateNormal, bounds,
-      &params, color_scheme, scrollbar.InForcedColorsMode(),
+      &params, scrollbar.InForcedColorsMode(), color_scheme,
+      scrollbar.GetPreferredContrast(),
       scrollbar.GetColorProvider(color_scheme));
   if (opacity != 1)
     context.EndLayer();
 }
 
-void ScrollbarThemeMac::PaintScrollCorner(GraphicsContext& context,
+void ScrollbarThemeMac::PaintScrollCorner(const PaintInfo& paint_info,
                                           const ScrollableArea& scrollable_area,
                                           const DisplayItemClient& item,
                                           const gfx::Rect& rect) {
   const Scrollbar* vertical_scrollbar = scrollable_area.VerticalScrollbar();
   if (!vertical_scrollbar) {
-    ScrollbarTheme::PaintScrollCorner(context, scrollable_area, item, rect);
+    ScrollbarTheme::PaintScrollCorner(paint_info, scrollable_area, item, rect);
     return;
   }
+  GraphicsContext& context = paint_info.context;
   if (DrawingRecorder::UseCachedDrawingIfPossible(context, item,
                                                   DisplayItem::kScrollCorner)) {
     return;
@@ -246,14 +254,16 @@ void ScrollbarThemeMac::PaintScrollCorner(GraphicsContext& context,
       vertical_scrollbar->UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
       context.Canvas(), WebThemeEngine::Part::kPartScrollbarCorner,
-      WebThemeEngine::State::kStateNormal, bounds, &params, color_scheme,
-      vertical_scrollbar->InForcedColorsMode(),
+      WebThemeEngine::State::kStateNormal, bounds, &params,
+      vertical_scrollbar->InForcedColorsMode(), color_scheme,
+      vertical_scrollbar->GetPreferredContrast(),
       vertical_scrollbar->GetColorProvider(color_scheme));
 }
 
-void ScrollbarThemeMac::PaintThumb(GraphicsContext& context,
+void ScrollbarThemeMac::PaintThumb(const PaintInfo& paint_info,
                                    const Scrollbar& scrollbar,
                                    const gfx::Rect& rect) {
+  GraphicsContext& context = paint_info.context;
   if (DrawingRecorder::UseCachedDrawingIfPossible(
           context, scrollbar, DisplayItem::kScrollbarThumb)) {
     return;
@@ -278,7 +288,7 @@ void ScrollbarThemeMac::PaintThumb(GraphicsContext& context,
   WebThemeEngine::ExtraParams params =
       GetPaintParams(scrollbar, UsesOverlayScrollbars());
   const auto& scrollbar_extra =
-      absl::get<WebThemeEngine::ScrollbarExtraParams>(params);
+      std::get<WebThemeEngine::ScrollbarExtraParams>(params);
 
   // Compute the bounds for the thumb, accounting for lack of engorgement.
   gfx::Rect bounds;
@@ -303,8 +313,9 @@ void ScrollbarThemeMac::PaintThumb(GraphicsContext& context,
           : WebThemeEngine::Part::kPartScrollbarVerticalThumb;
   mojom::blink::ColorScheme color_scheme = scrollbar.UsedColorScheme();
   WebThemeEngineHelper::GetNativeThemeEngine()->Paint(
-      context.Canvas(), thumb_part, WebThemeEngine::State::kStateNormal, bounds,
-      &params, color_scheme, scrollbar.InForcedColorsMode(),
+      context.Canvas(), thumb_part, scrollbar.GetStateForPart(kThumbPart),
+      bounds, &params, scrollbar.InForcedColorsMode(), color_scheme,
+      scrollbar.GetPreferredContrast(),
       scrollbar.GetColorProvider(color_scheme));
 }
 
@@ -349,6 +360,9 @@ gfx::Rect ScrollbarThemeMac::TrackRect(const Scrollbar& scrollbar) const {
 
 int ScrollbarThemeMac::MinimumThumbLength(const Scrollbar& scrollbar) const {
   const auto& painter_values = GetScrollbarPainterValues(scrollbar);
+  if (RuntimeEnabledFeatures::CustomScrollbarApplyMinimumThumbLengthEnabled()) {
+    return painter_values.knob_min_length * scrollbar.ScaleFromDIP();
+  }
   return painter_values.knob_min_length;
 }
 

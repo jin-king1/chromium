@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/mac/install_from_dmg.h"
 
 #import <AppKit/AppKit.h>
@@ -23,6 +18,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <string_view>
 
 #include "base/apple/bridging.h"
 #include "base/apple/bundle_locations.h"
@@ -39,8 +35,8 @@
 #include "base/mac/scoped_authorizationref.h"
 #include "base/mac/scoped_ioobject.h"
 #include "base/memory/scoped_policy.h"
+#include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
-#include "base/strings/stringprintf.h"
 #include "base/strings/sys_string_conversions.h"
 #import "chrome/browser/mac/dock.h"
 #include "chrome/browser/mac/relauncher.h"
@@ -120,172 +116,117 @@ bool MediaResidesOnDiskImage(base::mac::ScopedIOObject<io_service_t> media,
     image_path->clear();
   }
 
-  if (base::mac::MacOSMajorVersion() >= 12) {
-    // Starting with macOS 12 "Monterey", the IOMedia has an ancestor of
-    // type "AppleDiskImageDevice" that has a property "DiskImageURL" of string
-    // type.
-
-    base::mac::ScopedIOObject<io_service_t> di_device =
-        GetDiskImageAncestorForMedia("AppleDiskImageDevice", media);
-    if (di_device) {
-      if (image_path) {
-        base::apple::ScopedCFTypeRef<CFTypeRef> disk_image_url_cftyperef(
-            IORegistryEntryCreateCFProperty(di_device.get(),
-                                            CFSTR("DiskImageURL"),
-                                            /*allocator=*/nullptr,
-                                            /*options=*/0));
-        if (!disk_image_url_cftyperef) {
-          LOG(ERROR)
-              << "IORegistryEntryCreateCFProperty failed for DiskImageURL";
-          return true;
-        }
-
-        CFStringRef disk_image_url_string =
-            base::apple::CFCast<CFStringRef>(disk_image_url_cftyperef.get());
-        if (!disk_image_url_string) {
-          base::apple::ScopedCFTypeRef<CFStringRef> observed_type_cf(
-              CFCopyTypeIDDescription(
-                  CFGetTypeID(disk_image_url_cftyperef.get())));
-          LOG(ERROR) << "DiskImageURL: expected CFString, observed "
-                     << base::SysCFStringRefToUTF8(observed_type_cf.get());
-          return true;
-        }
-
-        base::apple::ScopedCFTypeRef<CFURLRef> disk_image_url(
-            CFURLCreateWithString(
-                /*allocator=*/nullptr, disk_image_url_string,
-                /*baseURL=*/nullptr));
-        if (!disk_image_url) {
-          LOG(ERROR) << "CFURLCreateWithString failed";
-          return true;
-        }
-
-        base::apple::ScopedCFTypeRef<CFStringRef> disk_image_path(
-            CFURLCopyFileSystemPath(disk_image_url.get(),
-                                    kCFURLPOSIXPathStyle));
-        if (!disk_image_path) {
-          LOG(ERROR) << "CFURLCopyFileSystemPath failed";
-          return true;
-        }
-
-        *image_path = base::SysCFStringRefToUTF8(disk_image_path.get());
+  // The IOMedia has an ancestor of type "AppleDiskImageDevice" that has a
+  // property "DiskImageURL" of string type.
+  base::mac::ScopedIOObject<io_service_t> di_device =
+      GetDiskImageAncestorForMedia("AppleDiskImageDevice", media);
+  if (di_device) {
+    if (image_path) {
+      base::apple::ScopedCFTypeRef<CFTypeRef> disk_image_url_cftyperef(
+          IORegistryEntryCreateCFProperty(di_device.get(),
+                                          CFSTR("DiskImageURL"),
+                                          /*allocator=*/nullptr,
+                                          /*options=*/0));
+      if (!disk_image_url_cftyperef) {
+        LOG(ERROR) << "IORegistryEntryCreateCFProperty failed for DiskImageURL";
+        return true;
       }
 
-      return true;
-    }
-  } else {
-    // From the mists of time through macOS 11 "Big Sur", the IOMedia has an
-    // ancestor of type "IOHDIXHDDrive" that has a property "image-path" of data
-    // type.
-
-    base::mac::ScopedIOObject<io_service_t> hdix_drive =
-        GetDiskImageAncestorForMedia("IOHDIXHDDrive", media);
-    if (hdix_drive) {
-      if (image_path) {
-        base::apple::ScopedCFTypeRef<CFTypeRef> image_path_cftyperef(
-            IORegistryEntryCreateCFProperty(hdix_drive.get(),
-                                            CFSTR("image-path"),
-                                            /*allocator=*/nullptr,
-                                            /*options=*/0));
-        if (!image_path_cftyperef) {
-          LOG(ERROR) << "IORegistryEntryCreateCFProperty failed for image-path";
-          return true;
-        }
-
-        CFDataRef image_path_data =
-            base::apple::CFCast<CFDataRef>(image_path_cftyperef.get());
-        if (!image_path_data) {
-          base::apple::ScopedCFTypeRef<CFStringRef> observed_type_cf(
-              CFCopyTypeIDDescription(CFGetTypeID(image_path_cftyperef.get())));
-          LOG(ERROR) << "image-path: expected CFData, observed "
-                     << base::SysCFStringRefToUTF8(observed_type_cf.get());
-          return true;
-        }
-
-        CFIndex length = CFDataGetLength(image_path_data);
-        if (length <= 0) {
-          LOG(ERROR) << "image_path_data is unexpectedly empty";
-          return true;
-        }
-        char* image_path_c = base::WriteInto(image_path, length + 1);
-        CFDataGetBytes(image_path_data, CFRangeMake(0, length),
-                       reinterpret_cast<UInt8*>(image_path_c));
+      CFStringRef disk_image_url_string =
+          base::apple::CFCast<CFStringRef>(disk_image_url_cftyperef.get());
+      if (!disk_image_url_string) {
+        base::apple::ScopedCFTypeRef<CFStringRef> observed_type_cf(
+            CFCopyTypeIDDescription(
+                CFGetTypeID(disk_image_url_cftyperef.get())));
+        LOG(ERROR) << "DiskImageURL: expected CFString, observed "
+                   << base::SysCFStringRefToUTF8(observed_type_cf.get());
+        return true;
       }
 
-      return true;
+      base::apple::ScopedCFTypeRef<CFURLRef> disk_image_url(
+          CFURLCreateWithString(
+              /*allocator=*/nullptr, disk_image_url_string,
+              /*baseURL=*/nullptr));
+      if (!disk_image_url) {
+        LOG(ERROR) << "CFURLCreateWithString failed";
+        return true;
+      }
+
+      base::apple::ScopedCFTypeRef<CFStringRef> disk_image_path(
+          CFURLCopyFileSystemPath(disk_image_url.get(), kCFURLPOSIXPathStyle));
+      if (!disk_image_path) {
+        LOG(ERROR) << "CFURLCopyFileSystemPath failed";
+        return true;
+      }
+
+      *image_path = base::SysCFStringRefToUTF8(disk_image_path.get());
     }
+
+    return true;
   }
 
   return false;
 }
 
-// Returns `DiskImageStatusTrue` if `path` is located on a read-only filesystem
-// of a disk image, `DiskImageStatusFalse` if not, or `DiskImageStatusFailure`
-// in the event of an error. If `out_dmg_bsd_device_name` is non-null, it will
-// be set to the BSD device name for the disk image's device, in "diskNsM" form.
-DiskImageStatus IsPathOnReadOnlyDiskImage(
-    const char path[],
-    std::string* out_dmg_bsd_device_name) {
-  if (out_dmg_bsd_device_name) {
-    out_dmg_bsd_device_name->clear();
-  }
-
+// Returns `kRunningFromDiskImage` if `path` is located on a read-only
+// filesystem of a disk image, `kNotRunningFromDiskImage` if not, or `kFailure`
+// in the event of an error.
+RunningFromDiskImageResult IsPathOnReadOnlyDiskImage(const char path[]) {
   struct statfs statfs_buf;
   if (statfs(path, &statfs_buf) != 0) {
     PLOG(ERROR) << "statfs " << path;
-    return DiskImageStatusFailure;
+    return {.status = DiskImageStatus::kFailure};
   }
 
   if (!(statfs_buf.f_flags & MNT_RDONLY)) {
     // Not on a read-only filesystem.
-    return DiskImageStatusFalse;
+    return {.status = DiskImageStatus::kNotRunningFromDiskImage};
   }
 
-  const char dev_root[] = "/dev/";
-  const int dev_root_length = std::size(dev_root) - 1;
-  if (strncmp(statfs_buf.f_mntfromname, dev_root, dev_root_length) != 0) {
+  std::string_view dev_root("/dev/");
+  std::string dmg_bsd_device_name(statfs_buf.f_mntfromname);
+  if (!dmg_bsd_device_name.starts_with(dev_root)) {
     // Not rooted at dev_root, no BSD name to search on.
-    return DiskImageStatusFalse;
+    return {.status = DiskImageStatus::kNotRunningFromDiskImage};
   }
 
   // BSD names in IOKit don't include dev_root.
-  const char* dmg_bsd_device_name = statfs_buf.f_mntfromname + dev_root_length;
-  if (out_dmg_bsd_device_name) {
-    out_dmg_bsd_device_name->assign(dmg_bsd_device_name);
-  }
+  dmg_bsd_device_name = dmg_bsd_device_name.substr(dev_root.size());
 
   base::apple::ScopedCFTypeRef<CFMutableDictionaryRef> match_dict(
-      IOBSDNameMatching(kIOMasterPortDefault, /*options=*/0,
-                        dmg_bsd_device_name));
+      IOBSDNameMatching(kIOMainPortDefault, /*options=*/0,
+                        dmg_bsd_device_name.c_str()));
   if (!match_dict) {
     LOG(ERROR) << "IOBSDNameMatching " << dmg_bsd_device_name;
-    return DiskImageStatusFailure;
+    return {.status = DiskImageStatus::kFailure};
   }
 
   base::mac::ScopedIOObject<io_iterator_t> iterator;
   kern_return_t kr = IOServiceGetMatchingServices(
-      kIOMasterPortDefault, match_dict.release(), iterator.InitializeInto());
+      kIOMainPortDefault, match_dict.release(), iterator.InitializeInto());
   if (kr != KERN_SUCCESS) {
     MACH_LOG(ERROR, kr) << "IOServiceGetMatchingServices";
-    return DiskImageStatusFailure;
+    return {.status = DiskImageStatus::kFailure};
   }
 
   // There needs to be exactly one matching service.
   base::mac::ScopedIOObject<io_service_t> media(IOIteratorNext(iterator.get()));
   if (!media) {
     LOG(ERROR) << "IOIteratorNext: no service";
-    return DiskImageStatusFailure;
+    return {.status = DiskImageStatus::kFailure};
   }
   base::mac::ScopedIOObject<io_service_t> unexpected_service(
       IOIteratorNext(iterator.get()));
   if (unexpected_service) {
     LOG(ERROR) << "IOIteratorNext: too many services";
-    return DiskImageStatusFailure;
+    return {.status = DiskImageStatus::kFailure};
   }
 
-  return MediaResidesOnDiskImage(media, /*image_path=*/nullptr)
-             ? DiskImageStatusTrue
-             : DiskImageStatusFalse;
+  if (MediaResidesOnDiskImage(media, /*image_path=*/nullptr)) {
+    return {.status = DiskImageStatus::kRunningFromDiskImage,
+            .dmg_bsd_device_name = dmg_bsd_device_name};
+  }
+  return {.status = DiskImageStatus::kNotRunningFromDiskImage};
 }
 
 // Shows a dialog asking the user whether or not to install from the disk
@@ -405,9 +346,8 @@ bool LaunchInstalledApp(NSString* installed_path,
   std::vector<std::string> relauncher_args;
   if (!dmg_bsd_device_name.empty()) {
     std::string dmg_arg =
-        base::StringPrintf("--%s=%s",
-                           switches::kRelauncherProcessDMGDevice,
-                           dmg_bsd_device_name.c_str());
+        base::StrCat({"--", switches::kRelauncherProcessDMGDevice, "=",
+                      dmg_bsd_device_name});
     relauncher_args.push_back(dmg_arg);
   }
 
@@ -416,8 +356,8 @@ bool LaunchInstalledApp(NSString* installed_path,
 }
 
 void ShowErrorDialog() {
-  NSString* title = l10n_util::GetNSStringWithFixup(
-      IDS_INSTALL_FROM_DMG_ERROR_TITLE);
+  NSString* title =
+      l10n_util::GetNSStringWithFixup(IDS_INSTALL_FROM_DMG_ERROR_TITLE);
   NSString* error = l10n_util::GetNSStringFWithFixup(
       IDS_INSTALL_FROM_DMG_ERROR, l10n_util::GetStringUTF16(IDS_PRODUCT_NAME));
   NSString* ok = l10n_util::GetNSStringWithFixup(IDS_OK);
@@ -435,18 +375,15 @@ void ShowErrorDialog() {
 
 }  // namespace
 
-DiskImageStatus IsAppRunningFromReadOnlyDiskImage(
-    std::string* dmg_bsd_device_name) {
+RunningFromDiskImageResult IsAppRunningFromReadOnlyDiskImage() {
   return IsPathOnReadOnlyDiskImage(
-      base::apple::OuterBundle().bundlePath.fileSystemRepresentation,
-      dmg_bsd_device_name);
+      base::apple::OuterBundle().bundlePath.fileSystemRepresentation);
 }
 
 bool MaybeInstallFromDiskImage() {
   @autoreleasepool {
-    std::string dmg_bsd_device_name;
-    if (IsAppRunningFromReadOnlyDiskImage(&dmg_bsd_device_name) !=
-        DiskImageStatusTrue) {
+    RunningFromDiskImageResult result = IsAppRunningFromReadOnlyDiskImage();
+    if (result.status != DiskImageStatus::kRunningFromDiskImage) {
       return false;
     }
 
@@ -507,12 +444,12 @@ bool MaybeInstallFromDiskImage() {
 
     dock::AddIcon(target_path, source_path);
 
-    if (dmg_bsd_device_name.empty()) {
+    if (result.dmg_bsd_device_name.empty()) {
       // Not fatal, just diagnostic.
       LOG(ERROR) << "Could not determine disk image BSD device name";
     }
 
-    if (!LaunchInstalledApp(target_path, dmg_bsd_device_name)) {
+    if (!LaunchInstalledApp(target_path, result.dmg_bsd_device_name)) {
       ShowErrorDialog();
       return false;
     }
@@ -530,9 +467,7 @@ class ScopedDASessionScheduleWithRunLoop {
   ScopedDASessionScheduleWithRunLoop(DASessionRef session,
                                      CFRunLoopRef run_loop,
                                      CFStringRef run_loop_mode)
-      : session_(session),
-        run_loop_(run_loop),
-        run_loop_mode_(run_loop_mode) {
+      : session_(session), run_loop_(run_loop), run_loop_mode_(run_loop_mode) {
     DASessionScheduleWithRunLoop(session_, run_loop_, run_loop_mode_);
   }
 

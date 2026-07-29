@@ -7,7 +7,6 @@
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/user_metrics.h"
 #include "base/notreached.h"
-#include "chrome/browser/ui/supervised_user/parent_permission_dialog.h"
 #include "components/supervised_user/core/browser/supervised_user_preferences.h"
 #include "components/supervised_user/core/common/features.h"
 
@@ -60,6 +59,21 @@ const char SupervisedUserExtensionsMetricsRecorder::
 const char SupervisedUserExtensionsMetricsRecorder::
     kIncorrectParentPasswordProvidedActionName[] =
         "SupervisedUsers_Extensions_IncorrectParentPasswordProvided";
+
+// Ask Parent Dialog.
+const char
+    SupervisedUserExtensionsMetricsRecorder::kAskParentDialogHistogramName[] =
+        "SupervisedUsers.AskParentDialog";
+const char SupervisedUserExtensionsMetricsRecorder::
+    kAskParentDialogOpenedActionName[] =
+        "SupervisedUsers_Extensions_AskParentDialog_Opened";
+const char SupervisedUserExtensionsMetricsRecorder::
+    kAskParentDialogCanceledActionName[] =
+        "SupervisedUsers_Extensions_AskParentDialog_Canceled";
+const char SupervisedUserExtensionsMetricsRecorder::
+    kAskParentDialogApprovedActionName[] =
+        "SupervisedUsers_Extensions_AskParentDialog_Approved";
+
 // Enabling and disabling extensions.
 const char SupervisedUserExtensionsMetricsRecorder::kEnablementHistogramName[] =
     "SupervisedUsers.ExtensionEnablement";
@@ -70,13 +84,6 @@ const char SupervisedUserExtensionsMetricsRecorder::kDisabledActionName[] =
 const char
     SupervisedUserExtensionsMetricsRecorder::kFailedToEnableActionName[] =
         "SupervisedUsers_Extensions_FailedToEnable";
-// Extension approval entry points.
-const char SupervisedUserExtensionsMetricsRecorder::
-    kExtensionParentApprovalEntryPointHistogramName[] =
-        "SupervisedUsers.ExtensionParentApprovalEntryPoint";
-const char SupervisedUserExtensionsMetricsRecorder::
-    kImplicitParentApprovalGrantEntryPointHistogramName[] =
-        "SupervisedUsers.ImplicitParentApprovalGrantEntryPoint";
 
 SupervisedUserExtensionsMetricsRecorder::
     SupervisedUserExtensionsMetricsRecorder() = default;
@@ -174,22 +181,23 @@ void SupervisedUserExtensionsMetricsRecorder::
   }
 }
 
-// static
-void SupervisedUserExtensionsMetricsRecorder::
-    RecordExtensionParentApprovalDialogEntryPointUmaMetrics(
-        SupervisedUserExtensionParentApprovalEntryPoint
-            extension_approval_entry_point) {
-  base::UmaHistogramEnumeration(kExtensionParentApprovalEntryPointHistogramName,
-                                extension_approval_entry_point);
-}
-
-// static
-void SupervisedUserExtensionsMetricsRecorder::
-    RecordImplicitParentApprovalGrantEntryPointEntryPointUmaMetrics(
-        ImplicitExtensionApprovalEntryPoint extension_approval_entry_point) {
-  base::UmaHistogramEnumeration(
-      kImplicitParentApprovalGrantEntryPointHistogramName,
-      extension_approval_entry_point);
+void SupervisedUserExtensionsMetricsRecorder::RecordAskParentDialogUmaMetrics(
+    AskParentDialogState state) {
+  base::UmaHistogramEnumeration(kAskParentDialogHistogramName, state);
+  switch (state) {
+    case AskParentDialogState::kOpened:
+      base::RecordAction(
+          base::UserMetricsAction(kAskParentDialogOpenedActionName));
+      break;
+    case AskParentDialogState::kCanceled:
+      base::RecordAction(
+          base::UserMetricsAction(kAskParentDialogCanceledActionName));
+      break;
+    case AskParentDialogState::kApproved:
+      base::RecordAction(
+          base::UserMetricsAction(kAskParentDialogApprovedActionName));
+      break;
+  }
 }
 
 // static

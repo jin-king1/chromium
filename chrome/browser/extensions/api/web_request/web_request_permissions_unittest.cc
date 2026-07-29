@@ -2,6 +2,8 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "extensions/browser/api/web_request/web_request_permissions.h"
+
 #include <stddef.h>
 
 #include <memory>
@@ -14,13 +16,14 @@
 #include "content/public/test/browser_task_environment.h"
 #include "extensions/browser/api/web_request/permission_helper.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
-#include "extensions/browser/api/web_request/web_request_permissions.h"
 #include "extensions/browser/extension_registry.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/permissions/permissions_data.h"
-#include "ipc/ipc_message.h"
 #include "services/network/public/mojom/fetch_api.mojom-shared.h"
 #include "testing/gtest/include/gtest/gtest.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using extension_test_util::LoadManifestUnchecked;
 using extensions::Extension;
@@ -35,6 +38,7 @@ class ExtensionWebRequestHelpersTestWithThreadsTest
     : public extensions::ExtensionServiceTestBase {
  protected:
   void SetUp() override;
+  void TearDown() override;
 
   raw_ptr<extensions::PermissionHelper> permission_helper_ = nullptr;
   // This extension has Web Request permissions, but no host permission.
@@ -73,15 +77,23 @@ void ExtensionWebRequestHelpersTestWithThreadsTest::SetUp() {
   ExtensionRegistry::Get(browser_context())->AddEnabled(com_policy_extension_);
 }
 
+void ExtensionWebRequestHelpersTestWithThreadsTest::TearDown() {
+  com_policy_extension_.reset();
+  com_extension_.reset();
+  permissionless_extension_.reset();
+  permission_helper_ = nullptr;
+  ExtensionServiceTestBase::TearDown();
+}
+
 // Ensures that requests to extension blocklist urls can't be intercepted by
 // extensions.
 TEST_F(ExtensionWebRequestHelpersTestWithThreadsTest,
        BlocklistUpdateUrlsHidden) {
   auto create_request_params = [](const std::string& url) {
-    const int kRendererProcessId = 2;
+    const content::ChildProcessId kRendererProcessId(2);
     WebRequestInfoInitParams request;
     request.url = GURL(url);
-    request.render_process_id = kRendererProcessId;
+    request.global_id.child_id = kRendererProcessId;
     return request;
   };
 
@@ -97,7 +109,7 @@ TEST_F(ExtensionWebRequestHelpersTestWithThreadsTest,
 }
 
 // Ensure requests made by the local WebUINTP are hidden from extensions.
-// Regression test for crbug.com/931013.
+// Regression test for crbug.com/40094017.
 TEST_F(ExtensionWebRequestHelpersTestWithThreadsTest, LocalWebUINTPRequests) {
   const GURL example_com("http://example.com");
 
@@ -108,14 +120,14 @@ TEST_F(ExtensionWebRequestHelpersTestWithThreadsTest, LocalWebUINTPRequests) {
         WebRequestInfoInitParams info_params;
         info_params.url = example_com;
         info_params.initiator = initiator;
-        info_params.render_process_id = -1;
+        info_params.global_id.child_id = content::ChildProcessId();
         info_params.web_request_type = web_request_type;
         info_params.is_navigation_request = is_navigation_request;
         return info_params;
       };
 
   url::Origin ntp_origin =
-      url::Origin::Create(GURL(chrome::kChromeUINewTabPageURL));
+      url::Origin::Create(chrome::ChromeUINewTabPageURLAsGURL());
 
   // Sub-resource browser initiated requests are hidden from extensions.
   WebRequestInfoInitParams info_params_1 = create_request_params(

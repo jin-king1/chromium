@@ -4,6 +4,7 @@
 
 #include "third_party/blink/renderer/core/css/document_style_environment_variables.h"
 
+#include "third_party/blink/renderer/core/css/font_size_functions.h"
 #include "third_party/blink/renderer/core/css/style_engine.h"
 #include "third_party/blink/renderer/core/dom/document.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
@@ -17,7 +18,7 @@ namespace blink {
 
 CSSVariableData* DocumentStyleEnvironmentVariables::ResolveVariable(
     const AtomicString& name,
-    WTF::Vector<unsigned> indices,
+    Vector<unsigned> indices,
     bool record_metrics) {
   if (record_metrics) {
     RecordVariableUsage(name);
@@ -35,7 +36,7 @@ const FeatureContext* DocumentStyleEnvironmentVariables::GetFeatureContext()
 
 CSSVariableData* DocumentStyleEnvironmentVariables::ResolveVariable(
     const AtomicString& name,
-    WTF::Vector<unsigned> indices) {
+    Vector<unsigned> indices) {
   return ResolveVariable(name, std::move(indices), true /* record_metrics */);
 }
 
@@ -55,12 +56,7 @@ DocumentStyleEnvironmentVariables::DocumentStyleEnvironmentVariables(
     StyleEnvironmentVariables& parent,
     Document& document)
     : StyleEnvironmentVariables(parent), document_(&document) {
-  if (RuntimeEnabledFeatures::CSSPreferredTextScaleEnabled()) {
-    SetVariable(
-        UADefinedVariable::kPreferredTextScale,
-        String::Number(
-            document_->GetSettings()->GetAccessibilityFontScaleFactor()));
-  }
+  UpdatePreferredTextScaleFromDocument();
 }
 
 void DocumentStyleEnvironmentVariables::RecordVariableUsage(
@@ -96,6 +92,44 @@ void DocumentStyleEnvironmentVariables::RecordVariableUsage(
   } else {
     // Do nothing if this is an unknown variable.
   }
+}
+
+void DocumentStyleEnvironmentVariables::UpdatePreferredTextScaleFromDocument() {
+  double scale_factor;
+
+  Settings* settings = document_->GetSettings();
+  if (!settings) {
+    // Non-rendered documents (no Frame) return nullptr for GetSettings().
+    return;
+  }
+
+  if (document_->TextScaleMetaTagPresent()) {
+    // If a page includes meta, they are signaling to us that the page will
+    // handle scaling themselves, so we populate env() to let them use it.
+    // Elsewhere, in response to meta, we have disabled Webview inflating all
+    // text.
+    scale_factor = FontSizeFunctions::SnapToClosestFontScaleBucket(
+                       settings->GetAccessibilityFontScaleFactor()) *
+                   (settings->GetDefaultFontSize() / 16.0);
+#if BUILDFLAG(IS_ANDROID)
+  } else if (!settings->GetScaleAllFontsIfNoMetaTextScaleTag()) {
+    // For compat, we don't expose env(preferred-text-scale)'s true value to
+    // pages in WebView if the page has no meta text-scale tag and the app does
+    // not enable autosizing.
+    //
+    // WebView defaults to inflating ALL text on the page, so if there's a page
+    // that uses env(preferred-text-scale) to inflate *parts* of the page, those
+    // parts will get double-scaled (once along with everything else, then once
+    // again by env()).
+    scale_factor = FontSizeFunctions::SnapToClosestFontScaleBucket(
+        settings->GetAccessibilityFontScaleFactor());
+#endif  // BUILDFLAG(IS_ANDROID)
+  } else {
+    scale_factor = 1.0;
+  }
+
+  SetVariable(UADefinedVariable::kPreferredTextScale,
+              String::Number(scale_factor));
 }
 
 }  // namespace blink

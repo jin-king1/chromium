@@ -15,6 +15,20 @@ import "components/sync/protocol/deletion_origin.proto";
 import "components/sync/protocol/entity_specifics.proto";
 import "components/sync/protocol/unique_position.proto";
 
+// An attachment represents a payload (usually large) that is associated with an
+// entity but is not uploaded or downloaded within the Sync HTTP protocol, but
+// an external side channel.
+message Attachment {
+  // Populated by the client only, when a commit is adding a new attachment to
+  // an entity (either newly-created entity or a pre-existing one). Note that
+  // each entity is associated to at most one attachment, so committing a new
+  // blob ID overrides any previous one.
+  optional string temporary_blob_id = 1;
+
+  // Set to the timestamp the attachment was last updated.
+  optional int64 modification_time_unix_epoch_millis = 2;
+}
+
 message SyncEntity {
   // This item's identifier.  In a commit of a new item, this will be a
   // client-generated ID.  If the commit succeeds, the server will generate
@@ -45,17 +59,24 @@ message SyncEntity {
   reserved "old_parent_id";
 
   // The version of this item -- a monotonically increasing value that is
-  // maintained by for each item.  If zero in a CommitMessage, the server
-  // will interpret this entity as a newly-created item and generate a
-  // new server ID and an initial version number.  If nonzero in a
-  // CommitMessage, this item is treated as an update to an existing item, and
-  // the server will use `id_string` to locate the item.  Then, if the item's
-  // current version on the server does not match `version`, the commit will
-  // fail for that item.  The server will not update it, and will return
-  // a result code of CONFLICT.  In a GetUpdatesResponse, `version` is always
-  // positive and identifies the revision of the item data being sent to the
-  // client.
-  // Present in both GetUpdatesResponse and CommitMessage.
+  // maintained by the server (or more precisely, the storage backend). It is
+  // typically a timestamp, in microseconds since the Unix epoch, of the last
+  // backend write. Present in both CommitMessage (set by the client) and
+  // GetUpdatesResponse (set by the server), and there's also an equivalent
+  // field in CommitResponse.
+  //
+  // In a CommitMessage, `version` is set to zero for newly-created items. For
+  // updates to existing items, it is set by the client to the last version the
+  // client knew about when sending the commit. If this version does not match
+  // the latest version on the server, the commit *may* fail for that item with
+  // a result code of CONFLICT. However, this is not guaranteed, and in
+  // practice is not implemented for most data types.
+  //
+  // In a GetUpdatesResponse, `version` is always positive and identifies the
+  // revision of the item stored in the server backend. If the returned version
+  // is smaller than the version the client already knew, the client will ignore
+  // the response.
+  //
   // WARNING: This field used to be required before M60. Any client before this
   // will fail to deserialize if this field is missing.
   optional int64 version = 4;
@@ -227,9 +248,27 @@ message SyncEntity {
   // types.
   // Introduced in M124.
   message CollaborationMetadata {
+    // Attribution metadata for this whole SyncEntity.
     message Attribution {
       // Obfuscated Gaia ID of the user.
       optional string obfuscated_gaia_id = 1;
+    }
+
+    // Per field attribution metadata (e.g, tab_group_color, tab_group_name.)
+    // Introduced in M141.
+    message PerFieldAttribution {
+      // Name of the attribution that uniquely identifies the changed field
+      // (e.g. tab_group_title). These should have the same values as those
+      // provided through the proto FieldOptions. See
+      // `SharedTabGroupDataSpecifics` for examples.
+      optional string attribution_name = 1;
+
+      // Obfuscated Gaia ID of the user that last modified this.
+      optional string last_update_obfuscated_gaia_id = 2;
+
+      // Last modification time of the specific attribution, in milliseconds
+      // since Unix epoch.
+      optional int64 mtime = 3;
     }
 
     // Collaboration ID which the current entity belongs to.
@@ -240,6 +279,8 @@ message SyncEntity {
 
     // Information about when the specifics was last updated.
     optional Attribution last_update_attribution = 3;
+
+    repeated PerFieldAttribution per_field_attributions = 4;
   }
 
   optional CollaborationMetadata collaboration = 27;
@@ -251,4 +292,8 @@ message SyncEntity {
   // investigating and mitigating user reports or incidents that cause data
   // deletion. Introduced in M126.
   optional DeletionOrigin deletion_origin = 28;
+
+  // References an optional attachment (usually large payload) associated with
+  // this entity.
+  optional Attachment attachment = 29;
 }

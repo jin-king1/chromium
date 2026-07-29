@@ -2,11 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-// Must also be kept in sync with extensions/common/api/automation.idl.
+// Must also be kept in sync with extensions/common/api/automation.webidl.
 module ax.mojom;
 
 // For new entries to the following four enums, also add to
-// extensions/common/api/automation.idl. This is enforced
+// extensions/common/api/automation.webidl. This is enforced
 // by a PRESUBMIT check.
 //
 // Explanation of in-lined comments next to some enum values/attributes:
@@ -48,12 +48,12 @@ enum Event {
   kDocumentSelectionChanged = 10,
   kDocumentTitleChanged = 11,
   kEndOfTest = 12,        // Sentinel value indicating the end of a test
+  [MinVersion=1] kEnabledChanged = 59,   // Native
   kExpandedChanged = 13,  // Web
   kFocus = 14,
   kFocusAfterMenuClose = 15,
 
-  // Contextual focus event that must delay the next focus event.
-  kFocusContext = 16,
+  kFocusContextDeprecated = 16,  // Deprecated: Do not use.
   kHide = 17,          // Remove: http://crbug.com/392502
   kHitTestResult = 18,
   kHover = 19,
@@ -118,8 +118,8 @@ enum Event {
 //
 // LINT.IfChange(Role)
 //
-// Next version: 8
-// Next value: 213
+// Next version: 9
+// Next value: 214
 [Extensible, Stable, Uuid="d258eb73-e0cc-490c-b881-80ee11d3fec2"]
 enum Role {
   [Default]kUnknown = 181, // The role has not been set.
@@ -296,6 +296,7 @@ enum Role {
   kMenuItem = 124,
   kMenuItemCheckBox = 125,
   kMenuItemRadio = 126,
+  [MinVersion=8] kMenuItemSeparator = 213,
   kMenuListOption = 127,
   kMenuListPopup = 128,
   kMeter = 129,
@@ -362,7 +363,7 @@ enum Role {
   kWebView = 183,
   kWindow = 184,
 };
-// LINT.ThenChange(//tools/metrics/histograms/metadata/accessibility/enums.xml:AccessibilitySetValueRole)
+// LINT.ThenChange(//tools/metrics/histograms/metadata/accessibility/enums.xml:AccessibilityRole)
 
 // Bitfield value. Each state can either be true or false.
 //
@@ -393,14 +394,14 @@ enum State {
   kVertical = 17,
   kVisited = 18,
   [MinVersion=1] kHasActions = 19,
-  [MinVersion=2] kHasInterestTarget = 20,
+  [MinVersion=2] kHasInterestFor = 20,
 };
 
 // An action to be taken on an accessibility node.
 // In contrast to |AXDefaultActionVerb|, these describe what happens to the
 // object, e.g. "FOCUS".
-// Next version: 5
-// Next value: 41
+// Next version: 7
+// Next value: 43
 [Extensible, Stable, Uuid="ed8e4466-0522-4f98-ac28-59a523b70232"]
 enum Action {
   [Default]kNone = 0,
@@ -460,10 +461,15 @@ enum Action {
 
   [MinVersion=2] kLongClick = 38,
 
+  // Replace ranges provided via the kTextOperationStart*/kTextOperationEnd*
+  // int list attributes with the corresponding replacements strings provided
+  // in the kTextOperationReplacementStrings string list attribute.
+  [MinVersion=6] kReplaceRanges = 42,
+
   // Delete any selected text in the control's text value and
   // insert |AXActionData::value| in its place, like when typing or pasting.
   kReplaceSelectedText = 17,
-
+  [MinVersion=5] kRequestLayoutBasedAction = 41,
   [MinVersion=1] kResumeMedia = 34,
 
   // Scrolls by approximately one screen in a specific direction. Should be
@@ -520,11 +526,6 @@ enum Action {
   [MinVersion=1] kSuspendMedia = 37,
 };
 
-enum ActionFlags {
-  kNone,
-  kRequestImages,
-  kRequestInlineTextBoxes,
-};
 
 // A list of valid values for the horizontal and vertical scroll alignment
 // arguments in |AXActionData|. These values control where a node is scrolled
@@ -571,6 +572,12 @@ enum DefaultActionVerb {
   // as it bubbles up.
   kClickAncestor,
 
+  // A click on this node will result in event dispatch to this node.
+  kClickInHitTest,
+
+  // A click on this node will not result in event dispatch to this node.
+  kClickNotInHitTest,
+
   kJump,
   kOpen,
   kPress,
@@ -589,8 +596,8 @@ enum Mutation {
   kSubtreeUpdateEnd,
 };
 
-// Next version: 9
-// Next value: 43
+// Next version: 12
+// Next value: 47
 [Extensible, Stable, Uuid="e5a4cd0c-3152-4427-93d5-35ff7d0f1ae8"]
 enum StringAttribute {
   [Default]kNone = 0,
@@ -610,6 +617,7 @@ enum StringAttribute {
   // support multiple contiguous calls to `ariaNotify`.
   [MinVersion=4] kAriaNotificationAnnouncementDeprecated = 36,
   [MinVersion=4] kAriaNotificationIdDeprecated = 37,
+  [MinVersion=10] kCanvasAnnotation = 45,
   kCheckedStateDescription = 5,
   kChildTreeId = 6,
   kChildTreeNodeAppId = 7,
@@ -637,7 +645,9 @@ enum StringAttribute {
   [MinVersion=1] kLongClickLabel = 32, // Only for ARC
   kLiveRelevant = 22,
   kLiveStatus = 23,
+  [MinVersion=9]kMathArg = 43,
   kMathContent = 17,
+  [MinVersion=9]kMathIntent = 44,
   kName = 21,
   // Only if not already exposed in kName (NameFrom::kPlaceholder)
   kPlaceholder = 24,
@@ -650,10 +660,11 @@ enum StringAttribute {
   // TODO(bebeaudr): kAriaVirtualContent is currently a string attribute to
   // facilitate prototyping. Make it an enum when we're done prototyping.
   kVirtualContent = 30,
+  [MinVersion=11] kAriaValueText = 46,
 };
 
-// Next version: 6
-// Next value: 68
+// Next version: 8
+// Next value: 70
 [Extensible, Stable, Uuid="c350e50f-5177-405d-b155-79868449ba7b"]
 enum IntAttribute {
   [Default]kNone = 0,
@@ -810,6 +821,14 @@ enum IntAttribute {
 
   // The maximum length of a textfield.
   [MinVersion=5] kMaxLength = 67,
+
+  // Paint order, indicates when this node is painted relative to
+  // other nodes, larger is later.
+  [MinVersion=6] kPaintOrder = 68,
+
+  // This used for adjusting the text changed event attribute
+  // (e.g. fromIndex, addedCount) when IME committing text.
+  [MinVersion=7] kCommittedTextLength = 69,
 };
 
 // Next version: 2
@@ -848,8 +867,8 @@ enum FloatAttribute {
 //
 // Finally, note that different tree sources can use all three states for a
 // given attribute, while another tree source only uses two.
-// Next value: 23
-// Next Version: 3
+// Next value: 25
+// Next Version: 4
 [Extensible, Stable, Uuid="ed1f1b8c-c89c-483f-9840-ca3b10042e81"]
 enum BoolAttribute {
   [Default]kNone = 0,
@@ -929,6 +948,11 @@ enum BoolAttribute {
   // Android does not provide nodes that are not on screen.
   // We need to distinguish containers that are like this.
   [MinVersion=2] kHasHiddenOffscreenNodes = 22,
+
+  // This used for determining text change types when
+  // sending text changed accessibility events to android.
+  [MinVersion=3] kHasComposition = 23,
+  [MinVersion=3] kTextSuggestionSelectedByIME = 24,
 };
 
 // Next version: 8
@@ -1014,16 +1038,17 @@ enum IntListAttribute {
   [MinVersion=6] kAriaNotificationPriorityProperties = 28,
 };
 
-// Next version: 2
-// Next value: 4
+// Next version: 3
+// Next value: 5
 [Extensible, Stable, Uuid="b3b576a7-9335-4f79-bc8c-595fd9346d81"]
 enum StringListAttribute {
   [Default]kNone = 0,
   [MinVersion=1] kAriaNotificationAnnouncements = 2,
-  [MinVersion=1] kAriaNotificationIds = 3,
+  [MinVersion=1] kAriaNotificationTypes = 3,
   // Descriptions for custom actions. This must be aligned with
   // custom_action_ids.
   kCustomActionDescriptions = 1,
+  [MinVersion=2] kTextOperationReplacementStrings = 4,
 };
 
 enum ListStyle {
@@ -1074,7 +1099,8 @@ enum MoveDirection {
 // "InputEvent" - see the relevant enum in this file.
 // A selection command may be further described by its "TextBoundary" and
 // "MoveDirection" - see the relevant enums in this file.
-// Next value: 11
+// Next version: 2
+// Next value: 13
 [Extensible, Stable, Uuid="f389c8cf-8382-45bc-a447-656ba2ed8fcf"]
 enum Command {
   [Default]kNone = 0,
@@ -1088,6 +1114,8 @@ enum Command {
   kMarker = 8,  // Document markers have been added or removed.
   kMoveSelection = 9,  // The selection moved by a specific granularity.
   kSetSelection = 10,  // A completely new selection has been set.
+  [MinVersion=1] kSpinButtonIncrement = 11,  // Increment in a spin button
+  [MinVersion=1] kSpinButtonDecrement = 12,  // Decrement in a spin button
 };
 
 // Describes an edit command in more detail.
@@ -1352,9 +1380,9 @@ enum NameFrom {
   // contents could be distilled to a plain text string.
   kPopoverTarget,
 
-  // The name comes from an interest target, where the contents could be
+  // The name comes from an interest for, where the contents could be
   // distilled to a plain text string.
-  kInterestTarget,
+  kInterestFor,
 };
 
 // The source of the accessible description. Used by some screen readers
@@ -1412,8 +1440,8 @@ enum DescriptionFrom {
   // |popovertarget| attribute pointing to a `popover=hint`.
   kPopoverTarget,
 
-  // The description comes from an interest target.
-  kInterestTarget,
+  // The description comes from an interest for.
+  kInterestFor,
 };
 
 // The source of the accessible details.
@@ -1431,10 +1459,13 @@ enum DetailsFrom {
 
   // The details comes from a popover that will show when the user shows
   // interest in the current element, e.g. hovers.
-  kInterestTarget,
+  kInterestFor,
 
   // The details comes from a commandFor attribute.
   kCommandfor,
+
+  // The details comes from a scroll marker pseudo-element target.
+  kCssScrollMarkerPseudoElement,
 };
 
 // Next value: 4

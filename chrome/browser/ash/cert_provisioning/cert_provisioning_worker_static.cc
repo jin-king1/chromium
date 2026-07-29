@@ -32,8 +32,8 @@
 #include "chrome/browser/ash/platform_keys/key_permissions/key_permissions_manager.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service.h"
 #include "chrome/browser/ash/platform_keys/platform_keys_service_factory.h"
-#include "chrome/browser/chromeos/platform_keys/platform_keys.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chromeos/ash/components/platform_keys/platform_keys.h"
 #include "components/policy/core/common/cloud/device_management_service.h"
 #include "content/public/browser/browser_context.h"
 #include "net/cert/asn1_util.h"
@@ -272,7 +272,7 @@ CertProvisioningWorkerStatic::GetLastBackendServerError() const {
   return last_backend_server_error_;
 }
 
-std::string CertProvisioningWorkerStatic::GetFailureMessage() const {
+std::string CertProvisioningWorkerStatic::GetFailureMessageWithPii() const {
   return failure_message_ui_.value_or(failure_message_);
 }
 
@@ -418,17 +418,13 @@ void CertProvisioningWorkerStatic::GenerateKeyForVa() {
       /*will_register_key=*/true, ::attestation::KEY_TYPE_RSA,
       GetKeyName(cert_profile_.profile_id), profile_,
       base::BindOnce(&CertProvisioningWorkerStatic::OnGenerateKeyForVaDone,
-                     weak_factory_.GetWeakPtr(), base::TimeTicks::Now()),
+                     weak_factory_.GetWeakPtr()),
       /*signals=*/std::nullopt);
 }
 
 void CertProvisioningWorkerStatic::OnGenerateKeyForVaDone(
-    base::TimeTicks start_time,
     const attestation::TpmChallengeKeyResult& result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  RecordKeypairGenerationTime(cert_profile_.protocol_version, cert_scope_,
-                              base::TimeTicks::Now() - start_time);
 
   if (result.result_code ==
       attestation::TpmChallengeKeyResultCode::kGetCertificateFailedError) {
@@ -466,7 +462,6 @@ void CertProvisioningWorkerStatic::OnStartCsrDone(
     policy::DeviceManagementStatus status,
     std::optional<CertProvisioningResponseErrorType> error,
     std::optional<int64_t> try_later,
-    const std::string& invalidation_topic,
     const std::string& va_challenge,
     enterprise_management::HashingAlgorithm hashing_algorithm,
     std::vector<uint8_t> data_to_sign) {
@@ -492,12 +487,11 @@ void CertProvisioningWorkerStatic::OnStartCsrDone(
   }
 
   csr_ = BytesToStr(data_to_sign);
-  invalidation_topic_ = invalidation_topic;
   va_challenge_ = va_challenge;
   UpdateState(FROM_HERE,
               CertProvisioningWorkerState::kStartCsrResponseReceived);
 
-  RegisterForInvalidationTopic();
+  RegisterForInvalidations();
 
   DoStep();
 }
@@ -519,16 +513,12 @@ void CertProvisioningWorkerStatic::BuildVaChallengeResponse() {
       va_challenge_,
       base::BindOnce(
           &CertProvisioningWorkerStatic::OnBuildVaChallengeResponseDone,
-          weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
+          weak_factory_.GetWeakPtr()));
 }
 
 void CertProvisioningWorkerStatic::OnBuildVaChallengeResponseDone(
-    base::TimeTicks start_time,
     const attestation::TpmChallengeKeyResult& challenge_result) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  RecordVerifiedAccessTime(cert_profile_.protocol_version, cert_scope_,
-                           base::TimeTicks::Now() - start_time);
 
   if (!challenge_result.IsSuccess()) {
     failure_message_ = base::StrCat(
@@ -641,25 +631,20 @@ void CertProvisioningWorkerStatic::SignCsr() {
     platform_keys_service_->SignRSAPKCS1Raw(
         GetPlatformKeysTokenId(cert_scope_), StrToBytes(csr_), public_key_,
         base::BindRepeating(&CertProvisioningWorkerStatic::OnSignCsrDone,
-                            weak_factory_.GetWeakPtr(),
-                            base::TimeTicks::Now()));
+                            weak_factory_.GetWeakPtr()));
     return;
   }
   platform_keys_service_->SignRsaPkcs1(
       GetPlatformKeysTokenId(cert_scope_), StrToBytes(csr_), public_key_,
       hashing_algorithm_.value(),
       base::BindRepeating(&CertProvisioningWorkerStatic::OnSignCsrDone,
-                          weak_factory_.GetWeakPtr(), base::TimeTicks::Now()));
+                          weak_factory_.GetWeakPtr()));
 }
 
 void CertProvisioningWorkerStatic::OnSignCsrDone(
-    base::TimeTicks start_time,
     std::vector<uint8_t> signature,
     chromeos::platform_keys::Status status) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-
-  RecordDataSignTime(cert_profile_.protocol_version, cert_scope_,
-                     base::TimeTicks::Now() - start_time);
 
   if (status != chromeos::platform_keys::Status::kSuccess) {
     failure_message_ = base::StrCat(
@@ -741,7 +726,7 @@ void CertProvisioningWorkerStatic::ImportCert(
   }
 
   std::vector<uint8_t> public_key_from_cert =
-      chromeos::platform_keys::GetSubjectPublicKeyInfoBlob(cert);
+      chromeos::platform_keys::GetSubjectPublicKeyInfo(cert);
   if (public_key_from_cert != public_key_) {
     failure_message_ = base::StrCat(
         {"Downloaded certificate does not match the expected key pair",
@@ -843,7 +828,10 @@ bool CertProvisioningWorkerStatic::ProcessResponseErrors(
     return false;
   }
 
-  request_backoff_.InformOfRequest(true);
+  // Use Reset to explicitly reset a potentially non-zero error count tracked by
+  // BackoffEntry to 0. This assumes that a successful response is a good
+  // indicator that following responses will also be successful.
+  request_backoff_.Reset();
 
   if (error.has_value() &&
       (error.value() == CertProvisioningResponseError::INCONSISTENT_DATA)) {
@@ -936,12 +924,12 @@ void CertProvisioningWorkerStatic::CancelScheduledTasks() {
 // worker is asked to cleanup and shutdown while a key is being generated for
 // it. In that case this cleanup will miss that key and it's important to make
 // sure that there is another mechanism that will eventually clean up the key.
-// VA and PKS keys both are covered and the mechanism is described in seperate
+// VA and PKS keys both are covered and the mechanism is described in separate
 // comments.
 void CertProvisioningWorkerStatic::CleanUpAndRunCallback() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  UnregisterFromInvalidationTopic();
+  UnregisterFromInvalidations();
 
   // Keep conditions mutually exclusive.
   if (state_ == CertProvisioningWorkerState::kSucceeded) {
@@ -1029,23 +1017,18 @@ void CertProvisioningWorkerStatic::HandleSerialization() {
 
   switch (state_) {
     case CertProvisioningWorkerState::kInitState:
-      break;
     case CertProvisioningWorkerState::kKeypairGenerated:
-      CertProvisioningSerializer::SerializeWorkerToPrefs(pref_service_, *this);
-      break;
     case CertProvisioningWorkerState::kStartCsrResponseReceived:
-      // StartCSR response contains VA challenge and data to sign. It is allowed
-      // to build only one VA challenge response and sign only one data with the
-      // same key. To make sure that the key is not used again after
-      // deserialization, the serialized state should be deleted here. Also
-      // lifetime of the VA challenge is very short and most likely it would not
-      // survive long enough anyway.
-      CertProvisioningSerializer::DeleteWorkerFromPrefs(pref_service_, *this);
-      break;
     case CertProvisioningWorkerState::kVaChallengeFinished:
     case CertProvisioningWorkerState::kKeyRegistered:
     case CertProvisioningWorkerState::kKeypairMarked:
     case CertProvisioningWorkerState::kSignCsrFinished:
+      // Do not serialize in the early states, it's easier to retry from the
+      // beginning. Notably, the worker registers for invalidations both after
+      // deserialization and after calling the StartCSR RPC, but it should only
+      // register once. Also StartCSR response contains VA challenge and data to
+      // sign. It is allowed to build only one VA challenge response and sign
+      // only one data with the same key.
       break;
     case CertProvisioningWorkerState::kFinishCsrResponseReceived:
       CertProvisioningSerializer::SerializeWorkerToPrefs(pref_service_, *this);
@@ -1068,7 +1051,7 @@ void CertProvisioningWorkerStatic::HandleSerialization() {
 void CertProvisioningWorkerStatic::InitAfterDeserialization() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  RegisterForInvalidationTopic();
+  RegisterForInvalidations();
 
   tpm_challenge_key_subtle_impl_ =
       attestation::TpmChallengeKeySubtleFactory::CreateForPreparedKey(
@@ -1078,22 +1061,16 @@ void CertProvisioningWorkerStatic::InitAfterDeserialization() {
           profile_);
 }
 
-void CertProvisioningWorkerStatic::RegisterForInvalidationTopic() {
+void CertProvisioningWorkerStatic::RegisterForInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(invalidator_);
-
-  // Can be empty after deserialization if no topic was received yet. Also
-  // protects from errors on the server side.
-  if (invalidation_topic_.empty()) {
-    return;
-  }
 
   // Registering the callback with base::Unretained is OK because this class
   // owns |invalidator_|, and the callback will never be called after
   // |invalidator_| is destroyed.
   invalidator_->Register(
-      invalidation_topic_, MakeInvalidationListenerType(process_id_),
+      MakeInvalidationListenerType(process_id_),
       base::BindRepeating(&CertProvisioningWorkerStatic::OnInvalidationEvent,
                           base::Unretained(this)));
 
@@ -1101,7 +1078,7 @@ void CertProvisioningWorkerStatic::RegisterForInvalidationTopic() {
               CertProvisioningEvent::kRegisteredToInvalidationTopic);
 }
 
-void CertProvisioningWorkerStatic::UnregisterFromInvalidationTopic() {
+void CertProvisioningWorkerStatic::UnregisterFromInvalidations() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   DCHECK(invalidator_);

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/formats/mp4/box_reader.h"
 
 #include <stddef.h>
@@ -15,6 +10,7 @@
 #include <algorithm>
 #include <set>
 
+#include "base/compiler_specific.h"
 #include "base/numerics/byte_conversions.h"
 #include "media/formats/mp4/box_definitions.h"
 
@@ -23,11 +19,7 @@ namespace mp4 {
 
 Box::~Box() = default;
 
-BufferReader::BufferReader(const uint8_t* buf, const size_t buf_size)
-    :  // TODO(crbug.com/40284755): BufferReader should be receiving a span,
-       // the construction of the span here is unsound as there's no way to
-       // tell the size is correct from here.
-      UNSAFE_TODO(buf_(buf, buf_size)) {}
+BufferReader::BufferReader(base::span<const uint8_t> buf) : buf_(buf) {}
 
 BufferReader::~BufferReader() = default;
 
@@ -113,11 +105,10 @@ bool BufferReader::Read4sInto8s(int64_t* v) {
   return true;
 }
 
-BoxReader::BoxReader(const uint8_t* buf,
-                     const size_t buf_size,
+BoxReader::BoxReader(base::span<const uint8_t> buf,
                      MediaLog* media_log,
                      bool is_EOS)
-    : BufferReader(buf, buf_size),
+    : BufferReader(buf),
       media_log_(media_log),
       box_size_(0),
       box_size_known_(false),
@@ -138,13 +129,11 @@ BoxReader::~BoxReader() {
 }
 
 // static
-ParseResult BoxReader::ReadTopLevelBox(const uint8_t* buf,
-                                       const size_t buf_size,
+ParseResult BoxReader::ReadTopLevelBox(base::span<const uint8_t> buf,
                                        MediaLog* media_log,
                                        std::unique_ptr<BoxReader>* out_reader) {
   DCHECK(out_reader);
-  std::unique_ptr<BoxReader> reader(
-      new BoxReader(buf, buf_size, media_log, false));
+  std::unique_ptr<BoxReader> reader(new BoxReader(buf, media_log, false));
   RCHECK_OK_PARSE_RESULT(reader->ReadHeader());
   if (!IsValidTopLevelBox(reader->type(), media_log))
     return ParseResult::kError;
@@ -153,28 +142,26 @@ ParseResult BoxReader::ReadTopLevelBox(const uint8_t* buf,
 }
 
 // static
-ParseResult BoxReader::StartTopLevelBox(const uint8_t* buf,
-                                        const size_t buf_size,
+ParseResult BoxReader::StartTopLevelBox(base::span<const uint8_t> buf,
                                         MediaLog* media_log,
                                         FourCC* out_type,
                                         size_t* out_box_size) {
   std::unique_ptr<BoxReader> reader;
-  RCHECK_OK_PARSE_RESULT(ReadTopLevelBox(buf, buf_size, media_log, &reader));
+  RCHECK_OK_PARSE_RESULT(ReadTopLevelBox(buf, media_log, &reader));
   *out_type = reader->type();
   *out_box_size = reader->box_size();
   return ParseResult::kOk;
 }
 
 // static
-BoxReader* BoxReader::ReadConcatentatedBoxes(const uint8_t* buf,
-                                             const size_t buf_size,
+BoxReader* BoxReader::ReadConcatentatedBoxes(base::span<const uint8_t> buf,
                                              MediaLog* media_log) {
-  BoxReader* reader = new BoxReader(buf, buf_size, media_log, true);
+  BoxReader* reader = new BoxReader(buf, media_log, true);
 
   // Concatenated boxes are passed in without a wrapping parent box. Set
   // |box_size_| to the concatenated buffer length to mimic having already
   // parsed the parent box.
-  reader->box_size_ = buf_size;
+  reader->box_size_ = buf.size();
   reader->box_size_known_ = true;
 
   return reader;
@@ -221,7 +208,7 @@ bool BoxReader::ScanChildren() {
 
   while (pos_ < buf_.size()) {
     auto range = buf_.subspan(pos_);
-    BoxReader child(range.data(), range.size(), media_log_, is_EOS_);
+    BoxReader child(range, media_log_, is_EOS_);
     if (child.ReadHeader() != ParseResult::kOk)
       return false;
     children_.insert(std::pair<FourCC, BoxReader>(child.type(), child));
@@ -231,9 +218,9 @@ bool BoxReader::ScanChildren() {
   return true;
 }
 
-bool BoxReader::ReadDisplayMatrix(DisplayMatrix matrix) {
-  for (int i = 0; i < kDisplayMatrixDimension; i++) {
-    if (!Read4s(&matrix[i])) {
+bool BoxReader::ReadDisplayMatrix(DisplayMatrix& matrix) {
+  for (int32_t& i : matrix) {
+    if (!Read4s(&i)) {
       return false;
     }
   }

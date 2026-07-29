@@ -24,8 +24,10 @@
 #include "chromeos/constants/chromeos_features.h"
 #include "ui/base/class_property.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
+#include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/models/image_model.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/compositor/layer.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/color_palette.h"
@@ -36,6 +38,7 @@
 #include "ui/views/controls/focus_ring.h"
 #include "ui/views/controls/image_view.h"
 #include "ui/views/layout/fill_layout.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/painter.h"
 #include "ui/views/vector_icons.h"
 #include "ui/views/widget/widget.h"
@@ -287,8 +290,8 @@ void HoldingSpaceItemView::StartDrag(const ui::LocatedEvent& event,
 
   gfx::Point widget_location(event.location());
   views::View::ConvertPointToWidget(this, &widget_location);
-  widget->RunShellDrag(this, std::move(data), widget_location, drag_operations,
-                       source);
+  widget->RunDragDropLoop(this, std::move(data), widget_location,
+                          drag_operations, source);
 }
 
 void HoldingSpaceItemView::SetSelected(bool selected) {
@@ -368,7 +371,9 @@ views::Builder<views::View> HoldingSpaceItemView::CreatePrimaryActionBuilder(
               .SetImageModel(
                   views::Button::STATE_NORMAL,
                   ui::ImageModel::FromVectorIcon(
-                      views::kUnpinIcon,
+                      ::features::IsRoundedIconsEnabled()
+                          ? views::kKeepFilledIcon
+                          : views::kUnpinOldIcon,
                       apply_accent_colors
                           ? static_cast<ui::ColorId>(
                                 cros_tokens::kCrosSysSystemOnPrimaryContainer)
@@ -380,9 +385,10 @@ views::Builder<views::View> HoldingSpaceItemView::CreatePrimaryActionBuilder(
                       : nullptr)
               .SetToggledImageModel(
                   views::Button::STATE_NORMAL,
-                  ui::ImageModel::FromVectorIcon(views::kPinIcon,
-                                                 kColorAshButtonIconColor,
-                                                 kHoldingSpaceIconSize))
+                  ui::ImageModel::FromVectorIcon(
+                      ::features::IsRoundedIconsEnabled() ? views::kKeepIcon
+                                                          : views::kPinOldIcon,
+                      kColorAshButtonIconColor, kHoldingSpaceIconSize))
               .SetImageHorizontalAlignment(HorizontalAlignment::ALIGN_CENTER)
               .SetImageVerticalAlignment(VerticalAlignment::ALIGN_MIDDLE)
               .SetPreferredSize(preferred_size)

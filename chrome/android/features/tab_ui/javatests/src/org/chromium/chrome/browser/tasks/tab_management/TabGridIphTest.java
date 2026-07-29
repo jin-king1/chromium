@@ -21,7 +21,6 @@ import static org.hamcrest.Matchers.not;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
-import static org.chromium.base.test.util.Restriction.RESTRICTION_TYPE_NON_LOW_END_DEVICE;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.clickFirstCardFromTabSwitcher;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.closeFirstTabInTabSwitcher;
 import static org.chromium.chrome.browser.tasks.tab_management.TabUiTestHelper.createTabs;
@@ -54,22 +53,22 @@ import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.DoNotBatch;
 import org.chromium.base.test.util.Feature;
-import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
 import org.chromium.base.test.util.Restriction;
+import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ChromeTabbedActivity;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.flags.ChromeSwitches;
 import org.chromium.chrome.browser.multiwindow.MultiWindowUtils;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.R;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.FreshCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.chrome.test.util.ActivityTestUtils;
 import org.chromium.chrome.test.util.ChromeRenderTestRule;
 import org.chromium.chrome.test.util.ChromeTabUtils;
 import org.chromium.components.feature_engagement.FeatureConstants;
 import org.chromium.components.feature_engagement.Tracker;
-import org.chromium.components.omnibox.OmniboxFeatureList;
 import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -79,34 +78,37 @@ import java.io.IOException;
 /** End-to-end tests for TabGridIph component. */
 @RunWith(ChromeJUnit4ClassRunner.class)
 @CommandLineFlags.Add(ChromeSwitches.DISABLE_FIRST_RUN_EXPERIENCE)
-@Restriction({DeviceFormFactor.PHONE, RESTRICTION_TYPE_NON_LOW_END_DEVICE})
+@Restriction(DeviceFormFactor.PHONE)
 @EnableFeatures(
         "IPH_TabGroupsDragAndDrop:availability/any"
             + "/event_trigger/name%3Aiph_tabgroups_drag_and_drop;comparator%3A==0;window%3A30;storage%3A365"
             + "/event_trigger2/name%3Aiph_tabgroups_drag_and_drop;comparator%3A<2;window%3A90;storage%3A365"
             + "/event_used/name%3Atab_drag_and_drop_to_group;comparator%3A==0;window%3A365;storage%3A365"
             + "/session_rate/<1")
-@DisableFeatures({OmniboxFeatureList.ANDROID_HUB_SEARCH})
 @DoNotBatch(reason = "Batching can cause message state to leak between tests.")
 public class TabGridIphTest {
     private ModalDialogManager mModalDialogManager;
     private Tracker mTracker;
 
     @Rule
-    public ChromeTabbedActivityTestRule mActivityTestRule = new ChromeTabbedActivityTestRule();
+    public FreshCtaTransitTestRule mActivityTestRule =
+            ChromeTransitTestRules.freshChromeTabbedActivityRule();
 
     @Rule
     public ChromeRenderTestRule mRenderTestRule =
             ChromeRenderTestRule.Builder.withPublicCorpus()
                     .setBugComponent(
                             ChromeRenderTestRule.Component.UI_BROWSER_MOBILE_TAB_SWITCHER_GRID)
-                    .setRevision(3)
+                    .setRevision(4)
                     .build();
+
+    private WebPageStation mPage;
 
     @Before
     public void setUp() {
+        mActivityTestRule.reenableIph();
         IphMessageService.setSkipIphInTestsForTesting(false);
-        mActivityTestRule.startMainActivityOnBlankPage();
+        mPage = mActivityTestRule.startOnBlankPage();
         TabUiTestHelper.verifyTabSwitcherLayoutType(mActivityTestRule.getActivity());
         CriteriaHelper.pollUiThread(
                 mActivityTestRule.getActivity().getTabModelSelector()::isTabStateInitialized);
@@ -204,7 +206,7 @@ public class TabGridIphTest {
 
         // Restart chrome to verify that IPH message card is still there.
         TabUiTestHelper.finishActivity(mActivityTestRule.getActivity());
-        mActivityTestRule.startMainActivityFromLauncher();
+        mActivityTestRule.restartMainActivityFromLauncher();
         cta = mActivityTestRule.getActivity();
         enterTabSwitcher(cta);
         CriteriaHelper.pollUiThread(TabSwitcherMessageManager::hasAppendedMessagesForTesting);
@@ -217,7 +219,7 @@ public class TabGridIphTest {
 
         // Restart chrome to verify that IPH message card no longer shows.
         TabUiTestHelper.finishActivity(mActivityTestRule.getActivity());
-        mActivityTestRule.startMainActivityFromLauncher();
+        mActivityTestRule.restartMainActivityFromLauncher();
         cta = mActivityTestRule.getActivity();
         enterTabSwitcher(cta);
         onView(withId(R.id.tab_grid_message_item)).check(doesNotExist());
@@ -236,6 +238,22 @@ public class TabGridIphTest {
         ChromeRenderTestRule.sanitize(cta.findViewById(R.id.tab_grid_message_item));
         mRenderTestRule.render(
                 cta.findViewById(R.id.tab_grid_message_item), "iph_entrance_portrait");
+    }
+
+    @Test
+    @MediumTest
+    @Feature({"RenderTest"})
+    public void testRenderIph_Portrait_Incognito() throws IOException {
+        ChromeTabbedActivity cta = mActivityTestRule.getActivity();
+
+        createTabs(cta, /* isIncognito= */ true, 1);
+        enterTabSwitcher(cta);
+        CriteriaHelper.pollUiThread(TabSwitcherMessageManager::hasAppendedMessagesForTesting);
+        onViewWaiting(withId(R.id.tab_grid_message_item)).check(matches(isDisplayed()));
+
+        ChromeRenderTestRule.sanitize(cta.findViewById(R.id.tab_grid_message_item));
+        mRenderTestRule.render(
+                cta.findViewById(R.id.tab_grid_message_item), "iph_entrance_portrait_incognito");
     }
 
     @Test
@@ -373,7 +391,7 @@ public class TabGridIphTest {
         RecyclerView.ViewHolder viewHolder =
                 ((RecyclerView) cta.findViewById(R.id.tab_list_recycler_view))
                         .findViewHolderForAdapterPosition(1);
-        assertEquals(TabProperties.UiType.MESSAGE, viewHolder.getItemViewType());
+        assertEquals(TabProperties.UiType.IPH_MESSAGE, viewHolder.getItemViewType());
 
         onView(
                         allOf(

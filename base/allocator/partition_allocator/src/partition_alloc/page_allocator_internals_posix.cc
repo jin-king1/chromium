@@ -1,11 +1,13 @@
 // Copyright 2021 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
+
 #include <stdint.h>
 #include <sys/mman.h>
 
 #include "partition_alloc/build_config.h"
 #include "partition_alloc/buildflags.h"
+#include "partition_alloc/internal/page_allocator_internal.h"
 #include "partition_alloc/page_allocator.h"
 #include "partition_alloc/partition_alloc_base/notreached.h"
 
@@ -21,6 +23,9 @@
 #include <Availability.h>
 #include <Security/Security.h>
 #include <mach/mach.h>
+#if PA_BUILDFLAG(IS_MAC)
+#include <mach/mach_vm.h>
+#endif
 
 #include "partition_alloc/partition_alloc_base/apple/scoped_cftyperef.h"
 #endif
@@ -79,6 +84,7 @@ int GetAccessFlags(PageAccessibilityConfiguration accessibility,
     case PageAccessibilityConfiguration::kInaccessibleWillJitLater:
       return PROT_NONE;
   }
+  PA_NOTREACHED();
 }
 
 template <bool MteEnabled, bool BtiEnabled>
@@ -203,5 +209,52 @@ bool UseMapJit() {
   return true;
 }
 #endif  // PA_BUILDFLAG(IS_IOS)
+
+namespace {
+
+#if PA_BUILDFLAG(IS_MAC)
+
+size_t GetZeroSegmentSizeFromOS() {
+  mach_vm_address_t address = 0x0;
+  mach_vm_size_t size = 0;
+  vm_region_basic_info_data_64_t info;
+  mach_msg_type_number_t info_count = VM_REGION_BASIC_INFO_COUNT_64;
+  mach_port_t object_name = MACH_PORT_NULL;
+  // `mach_vm_region()` sees that 0x0 is unmapped and automatically updates
+  // `address` to the start of the first valid memory mapping.
+  const kern_return_t kr = mach_vm_region(
+      mach_task_self(), &address, &size, VM_REGION_BASIC_INFO_64,
+      reinterpret_cast<vm_region_info_t>(&info), &info_count, &object_name);
+  if (kr != KERN_SUCCESS) {
+    return 0x100000000;  // 4GB
+  }
+  return static_cast<size_t>(address);
+}
+
+#elif PA_BUILDFLAG(IS_LINUX) || PA_BUILDFLAG(IS_CHROMEOS)
+
+size_t GetZeroSegmentSizeFromOS() {
+  // TODO(40925855): Support larger `mmap_min_addr`.
+  return 0x10000;  // 64KB
+}
+
+#else
+
+size_t GetZeroSegmentSizeFromOS() {
+  return 0;
+}
+
+#endif
+
+}  // namespace
+
+WellKnownReadOnlyRegions GetWellKnownReadOnlyRegions() {
+  return WellKnownReadOnlyRegions{
+      .regions = {{
+          {0, GetZeroSegmentSizeFromOS()},
+      }},
+      .count = 1,
+  };
+}
 
 }  // namespace partition_alloc::internal

@@ -1,20 +1,20 @@
 // Copyright 2024 The Chromium Authors
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
 
 #include "chrome/browser/ui/lens/lens_overlay_image_helper.h"
 
+#include <algorithm>
 #include <numbers>
 
+#include "base/compiler_specific.h"
+#include "base/functional/callback.h"
 #include "base/memory/ref_counted_memory.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/numerics/safe_math.h"
-#include "chrome/browser/ui/lens/ref_counted_lens_overlay_client_logs.h"
+#include "components/lens/lens_bitmap_processing.h"
 #include "components/lens/lens_features.h"
+#include "components/lens/ref_counted_lens_overlay_client_logs.h"
 #include "third_party/lens_server_proto/lens_overlay_image_crop.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_image_data.pb.h"
 #include "third_party/lens_server_proto/lens_overlay_phase_latencies_metadata.pb.h"
@@ -32,84 +32,18 @@
 
 namespace {
 
-bool ShouldDownscaleSize(const gfx::Size& size,
-                         int max_area,
-                         int max_width,
-                         int max_height) {
-  // This returns true if the area is larger than the max area AND one of the
-  // width OR height exceeds the configured max values.
-  return size.GetArea() > max_area &&
-         (size.width() > max_width || size.height() > max_height);
-}
-
 bool ShouldDownscaleSizeWithUiScaling(const gfx::Size& size,
                                       int max_area,
                                       int max_width,
                                       int max_height,
                                       int ui_scale_factor) {
   if (ui_scale_factor <= 0) {
-    return ShouldDownscaleSize(size, max_area, max_width, max_height);
+    return lens::ShouldDownscaleSize(size, max_area, max_width, max_height);
   }
   return ui_scale_factor <
              lens::features::
                  GetLensOverlayImageDownscaleUiScalingFactorThreshold() &&
-         ShouldDownscaleSize(size, max_area, max_width, max_height);
-}
-
-double GetPreferredScale(const gfx::Size& original_size,
-                         int target_width,
-                         int target_height) {
-  return std::min(
-      base::ClampDiv(static_cast<double>(target_width), original_size.width()),
-      base::ClampDiv(static_cast<double>(target_height),
-                     original_size.height()));
-}
-
-gfx::Size GetPreferredSize(const gfx::Size& original_size,
-                           int target_width,
-                           int target_height) {
-  double scale = GetPreferredScale(original_size, target_width, target_height);
-  int width = std::clamp<int>(scale * original_size.width(), 1, target_width);
-  int height =
-      std::clamp<int>(scale * original_size.height(), 1, target_height);
-  return gfx::Size(width, height);
-}
-
-void AddClientLogsForDownscale(
-    scoped_refptr<lens::RefCountedLensOverlayClientLogs> client_logs,
-    const SkBitmap& original_image,
-    const SkBitmap& downscaled_image) {
-  auto* downscale_phase = client_logs->client_logs()
-                              .mutable_phase_latencies_metadata()
-                              ->add_phase();
-  downscale_phase->mutable_image_downscale_data()->set_original_image_size(
-      original_image.width() * original_image.height());
-  downscale_phase->mutable_image_downscale_data()->set_downscaled_image_size(
-      downscaled_image.width() * downscaled_image.height());
-}
-
-void AddClientLogsForEncode(
-    scoped_refptr<lens::RefCountedLensOverlayClientLogs> client_logs,
-    scoped_refptr<base::RefCountedBytes> output_bytes) {
-  auto* encode_phase = client_logs->client_logs()
-                           .mutable_phase_latencies_metadata()
-                           ->add_phase();
-  encode_phase->mutable_image_encode_data()->set_encoded_image_size_bytes(
-      output_bytes->as_vector().size());
-}
-
-SkBitmap DownscaleImage(
-    const SkBitmap& image,
-    int target_width,
-    int target_height,
-    scoped_refptr<lens::RefCountedLensOverlayClientLogs> client_logs) {
-  auto size = gfx::Size(image.width(), image.height());
-  auto preferred_size = GetPreferredSize(size, target_width, target_height);
-  SkBitmap downscaled_image = skia::ImageOperations::Resize(
-      image, skia::ImageOperations::RESIZE_BEST, preferred_size.width(),
-      preferred_size.height());
-  AddClientLogsForDownscale(client_logs, image, downscaled_image);
-  return downscaled_image;
+         lens::ShouldDownscaleSize(size, max_area, max_width, max_height);
 }
 
 SkBitmap DownscaleImageIfNeededWithTieredApproach(
@@ -136,7 +70,7 @@ SkBitmap DownscaleImageIfNeededWithTieredApproach(
         image, lens::features::GetLensOverlayImageMaxWidthTier2(),
         lens::features::GetLensOverlayImageMaxHeightTier2(), client_logs);
     // Tier 1.5 Downscaling.
-  } else if (ShouldDownscaleSize(
+  } else if (lens::ShouldDownscaleSize(
                  size, lens::features::GetLensOverlayImageMaxAreaTier2(),
                  lens::features::GetLensOverlayImageMaxWidthTier2(),
                  lens::features::GetLensOverlayImageMaxHeightTier2())) {
@@ -144,7 +78,7 @@ SkBitmap DownscaleImageIfNeededWithTieredApproach(
                           lens::features::GetLensOverlayImageMaxHeight(),
                           client_logs);
     // Tier 1 Downscaling.
-  } else if (ShouldDownscaleSize(
+  } else if (lens::ShouldDownscaleSize(
                  size, lens::features::GetLensOverlayImageMaxAreaTier1(),
                  lens::features::GetLensOverlayImageMaxWidthTier1(),
                  lens::features::GetLensOverlayImageMaxHeightTier1())) {
@@ -167,9 +101,10 @@ SkBitmap DownscaleImageIfNeeded(
   }
 
   auto size = gfx::Size(image.width(), image.height());
-  if (ShouldDownscaleSize(size, lens::features::GetLensOverlayImageMaxArea(),
-                          lens::features::GetLensOverlayImageMaxWidth(),
-                          lens::features::GetLensOverlayImageMaxHeight())) {
+  if (lens::ShouldDownscaleSize(
+          size, lens::features::GetLensOverlayImageMaxArea(),
+          lens::features::GetLensOverlayImageMaxWidth(),
+          lens::features::GetLensOverlayImageMaxHeight())) {
     return DownscaleImage(image, lens::features::GetLensOverlayImageMaxWidth(),
                           lens::features::GetLensOverlayImageMaxHeight(),
                           client_logs);
@@ -187,12 +122,13 @@ SkBitmap CropAndDownscaleImageIfNeeded(
   auto region_size = gfx::Size(region.width(), region.height());
   auto target_width = lens::features::GetLensOverlayImageMaxWidth();
   auto target_height = lens::features::GetLensOverlayImageMaxHeight();
-  if (ShouldDownscaleSize(region_size,
-                          lens::features::GetLensOverlayImageMaxArea(),
-                          target_width, target_height)) {
-    double scale = GetPreferredScale(region_size, target_width, target_height);
+  if (lens::ShouldDownscaleSize(region_size,
+                                lens::features::GetLensOverlayImageMaxArea(),
+                                target_width, target_height)) {
+    double scale =
+        lens::GetPreferredScale(region_size, target_width, target_height);
     auto downscaled_region_size =
-        GetPreferredSize(region_size, target_width, target_height);
+        lens::GetPreferredSize(region_size, target_width, target_height);
     int scaled_full_image_width =
         std::max<int>(scale * full_image_size.width(), 1);
     int scaled_full_image_height =
@@ -218,7 +154,7 @@ SkBitmap CropAndDownscaleImageIfNeeded(
   // cannot be transparent pixels. This allows encoding logic to choose the
   // correct image format to represent the crop.
   output.setAlphaType(kOpaque_SkAlphaType);
-  AddClientLogsForDownscale(client_logs, image, output);
+  lens::AddClientLogsForDownscale(client_logs, image, output);
   return output;
 }
 
@@ -240,39 +176,6 @@ gfx::Rect GetRectForRegion(const SkBitmap& image,
 }  // namespace
 
 namespace lens {
-
-bool EncodeImage(
-    const SkBitmap& image,
-    int compression_quality,
-    scoped_refptr<base::RefCountedBytes> output,
-    scoped_refptr<lens::RefCountedLensOverlayClientLogs> client_logs) {
-  std::optional<std::vector<uint8_t>> encoded_image =
-      gfx::JPEGCodec::Encode(image, compression_quality);
-  if (encoded_image) {
-    output->as_vector() = std::move(encoded_image.value());
-    AddClientLogsForEncode(client_logs, output);
-    return true;
-  }
-  return false;
-}
-
-bool EncodeImageMaybeWithTransparency(
-    const SkBitmap& image,
-    int compression_quality,
-    scoped_refptr<base::RefCountedBytes> output,
-    scoped_refptr<lens::RefCountedLensOverlayClientLogs> client_logs) {
-  if (image.isOpaque()) {
-    return EncodeImage(image, compression_quality, output, client_logs);
-  }
-  std::optional<std::vector<uint8_t>> encoded_image =
-      gfx::WebpCodec::Encode(image, compression_quality);
-  if (encoded_image) {
-    output->as_vector() = std::move(encoded_image.value());
-    AddClientLogsForEncode(client_logs, output);
-    return true;
-  }
-  return false;
-}
 
 lens::ImageData DownscaleAndEncodeBitmap(
     const SkBitmap& image,
@@ -319,7 +222,7 @@ SkBitmap CropBitmapToRegion(const SkBitmap& image,
       region_rect.height());
 }
 
-std::optional<lens::ImageCrop> DownscaleAndEncodeBitmapRegionIfNeeded(
+std::optional<lens::ImageCropAndBitmap> DownscaleAndEncodeBitmapRegionIfNeeded(
     const SkBitmap& image,
     lens::mojom::CenterRotatedBoxPtr region,
     std::optional<SkBitmap> region_bytes,
@@ -330,22 +233,25 @@ std::optional<lens::ImageCrop> DownscaleAndEncodeBitmapRegionIfNeeded(
 
   gfx::Rect region_rect = GetRectForRegion(image, region);
 
-  lens::ImageCrop image_crop;
-  SkBitmap region_bitmap;
+  lens::ImageCropAndBitmap image_crop_and_bitmap;
   scoped_refptr<base::RefCountedBytes> data =
       base::MakeRefCounted<base::RefCountedBytes>();
-  ;
   if (region_bytes.has_value()) {
-    region_bitmap = DownscaleImageIfNeeded(*region_bytes, /*ui_scale_factor=*/0,
+    image_crop_and_bitmap.region_bitmap = DownscaleImageIfNeeded(*region_bytes, /*ui_scale_factor=*/0,
                                            client_logs);
   } else {
-    region_bitmap =
+    image_crop_and_bitmap.region_bitmap =
         CropAndDownscaleImageIfNeeded(image, region_rect, client_logs);
   }
-  if (EncodeImageMaybeWithTransparency(
-          region_bitmap,
-          lens::features::GetLensOverlayImageCompressionQuality(), data,
-          client_logs)) {
+
+  const auto& region_bitmap = image_crop_and_bitmap.region_bitmap;
+  auto& image_crop = image_crop_and_bitmap.image_crop;
+
+  // Populate the zoomed_crop spatial context independently of byte encoding
+  // success. This ensures region geometry is preserved for the backend even if
+  // compression fails. Valid dimension boundaries are enforced to prevent
+  // division by zero.
+  if (region_rect.width() > 0 && image.width() > 0 && image.height() > 0) {
     auto* mutable_zoomed_crop = image_crop.mutable_zoomed_crop();
     mutable_zoomed_crop->set_parent_height(image.height());
     mutable_zoomed_crop->set_parent_width(image.width());
@@ -366,11 +272,16 @@ std::optional<lens::ImageCrop> DownscaleAndEncodeBitmapRegionIfNeeded(
         static_cast<double>(image.height()));
     mutable_zoomed_crop->mutable_crop()->set_coordinate_type(
         lens::CoordinateType::NORMALIZED);
+  }
 
+  if (EncodeImageMaybeWithTransparency(
+          region_bitmap,
+          lens::features::GetLensOverlayImageCompressionQuality(), data,
+          client_logs)) {
     image_crop.mutable_image()->mutable_image_content()->assign(data->begin(),
                                                                 data->end());
   }
-  return image_crop;
+  return std::move(image_crop_and_bitmap);
 }
 
 lens::mojom::CenterRotatedBoxPtr GetCenterRotatedBoxFromTabViewAndImageBounds(
@@ -396,18 +307,10 @@ lens::mojom::CenterRotatedBoxPtr GetCenterRotatedBoxFromTabViewAndImageBounds(
                  tab_bounds.height();
 
   // Clip to remain inside tab bounds.
-  if (left < 0) {
-    left = 0;
-  }
-  if (right > 1) {
-    right = 1;
-  }
-  if (top < 0) {
-    top = 0;
-  }
-  if (bottom > 1) {
-    bottom = 1;
-  }
+  left = std::max(0.f, left);
+  right = std::min(1.f, right);
+  top = std::max(0.f, top);
+  bottom = std::min(1.f, bottom);
 
   float width = right - left;
   float height = bottom - top;
@@ -421,120 +324,4 @@ lens::mojom::CenterRotatedBoxPtr GetCenterRotatedBoxFromTabViewAndImageBounds(
   return region;
 }
 
-SkColor ExtractVibrantOrDominantColorFromImage(const SkBitmap& image,
-                                               float min_population_pct) {
-  if (image.empty() || image.isNull()) {
-    return SK_ColorTRANSPARENT;
-  }
-
-  min_population_pct = std::clamp(min_population_pct, 0.0f, 1.0f);
-
-  std::vector<color_utils::ColorProfile> profiles;
-  // vibrant color profile
-  profiles.emplace_back(color_utils::LumaRange::ANY,
-                        color_utils::SaturationRange::VIBRANT);
-  // any color profile
-  profiles.emplace_back(color_utils::LumaRange::ANY,
-                        color_utils::SaturationRange::ANY);
-
-  auto vibrantAndDominantColors = color_utils::CalculateProminentColorsOfBitmap(
-      image, profiles, /*region=*/nullptr, color_utils::ColorSwatchFilter());
-
-  for (const auto& swatch : vibrantAndDominantColors) {
-    // Valid color. Extraction failure returns 0 alpha channel.
-    // Population Threshold.
-    if (SkColorGetA(swatch.color) != SK_AlphaTRANSPARENT &&
-        static_cast<float>(swatch.population) >=
-            static_cast<float>(
-                std::min(image.width() * image.height(),
-                         color_utils::kMaxConsideredPixelsForSwatches)) *
-                min_population_pct) {
-      return swatch.color;
-    }
-  }
-  return SK_ColorTRANSPARENT;
-}
-
-std::optional<float> CalculateHueAngle(
-    const std::tuple<float, float, float>& lab_color) {
-  float a = std::get<1>(lab_color);
-  float b = std::get<2>(lab_color);
-  if (a == 0) {
-    return std::nullopt;
-  }
-  return atan2(b, a);
-}
-
-float CalculateChroma(const std::tuple<float, float, float>& lab_color) {
-  return hypotf(std::get<1>(lab_color), std::get<2>(lab_color));
-}
-
-std::optional<float> CalculateHueAngleDistance(
-    const std::tuple<float, float, float>& lab_color1,
-    const std::tuple<float, float, float>& lab_color2) {
-  auto angle1 = CalculateHueAngle(lab_color1);
-  auto angle2 = CalculateHueAngle(lab_color2);
-  if (!angle1.has_value() || !angle2.has_value()) {
-    return std::nullopt;
-  }
-  float distance = std::abs(angle1.value() - angle2.value());
-  return std::min(distance, (float)(std::numbers::pi * 2.0 - distance));
-}
-
-// This conversion goes from legacy int based RGB to sRGB floats to
-// XYZD50 to Lab, leveraging gfx conver_conversion functions.
-std::tuple<float, float, float> ConvertColorToLab(SkColor color) {
-  // Legacy RGB -> float sRGB -> XYZD50 -> LAB.
-  auto [r, g, b] = gfx::SRGBLegacyToSRGB((float)SkColorGetR(color),
-                                         (float)SkColorGetG(color),
-                                         (float)SkColorGetB(color));
-  auto [x, y, z] = gfx::SRGBToXYZD50(r, g, b);
-  return gfx::XYZD50ToLab(x, y, z);
-}
-
-SkColor FindBestMatchedColorOrTransparent(
-    const std::vector<SkColor>& candidate_colors,
-    SkColor seed_color,
-    float min_chroma) {
-  if (SkColorGetA(seed_color) == SK_AlphaTRANSPARENT) {
-    return SK_ColorTRANSPARENT;
-  }
-  if (candidate_colors.empty()) {
-    return SK_ColorTRANSPARENT;
-  }
-
-  const auto& seed_lab = ConvertColorToLab(seed_color);
-  // Check seed has enough chroma, calculated as hypot of a & b channels.
-  if (CalculateChroma(seed_lab) < min_chroma) {
-    return SK_ColorTRANSPARENT;
-  }
-
-  auto closest_color = std::min_element(
-      candidate_colors.begin(), candidate_colors.end(),
-      [&seed_lab](const auto& color1, const auto& color2) -> bool {
-        const auto& theme1_lab = ConvertColorToLab(color1);
-        const auto& theme2_lab = ConvertColorToLab(color2);
-        auto angle1 = CalculateHueAngleDistance(theme1_lab, seed_lab);
-        auto angle2 = CalculateHueAngleDistance(theme2_lab, seed_lab);
-        return angle1.has_value() && angle2.has_value() &&
-               angle1.value() < angle2.value();
-      });
-  if (closest_color == candidate_colors.end()) {
-    return SK_ColorTRANSPARENT;
-  }
-  return *closest_color;
-}
-
-bool AreBitmapsEqual(const SkBitmap& bitmap1, const SkBitmap& bitmap2) {
-  // Verify the dimensions are the same.
-  if (bitmap1.width() != bitmap2.width() ||
-      bitmap1.height() != bitmap2.height()) {
-    return false;
-  }
-
-  // Compare pixel data
-  SkPixmap pixmap1 = bitmap1.pixmap();
-  SkPixmap pixmap2 = bitmap2.pixmap();
-  return memcmp(pixmap1.addr(), pixmap2.addr(), pixmap1.computeByteSize()) == 0;
-}
 }  // namespace lens

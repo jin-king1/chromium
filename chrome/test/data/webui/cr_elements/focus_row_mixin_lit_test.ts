@@ -46,12 +46,6 @@ class TestFocusRowMixinLitElement extends TestElementBase {
     return 'test-focus-row-mixin-lit';
   }
 
-  static override get properties() {
-    return {
-      showExtraControl: {type: Boolean},
-    };
-  }
-
   override render() {
     // clang-format off
     return html`
@@ -74,7 +68,13 @@ class TestFocusRowMixinLitElement extends TestElementBase {
     // clang-format on
   }
 
-  showExtraControl: boolean = false;
+  static override get properties() {
+    return {
+      showExtraControl: {type: Boolean},
+    };
+  }
+
+  accessor showExtraControl: boolean = false;
   focusCallCount: number = 0;
 
   override focus() {
@@ -173,7 +173,7 @@ suite('FocusRowMixinLitTest', function() {
         await whenFocus;
         const button = getDeepActiveElement();
         assertTrue(!!button);
-        assertEquals('fake button three', button.textContent!.trim());
+        assertEquals('fake button three', button.textContent.trim());
       });
 
   test(

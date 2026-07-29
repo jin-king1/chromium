@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/ui/ash/input_method/candidate_window_view.h"
 
 #include <stddef.h>
 
 #include <string>
 
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
@@ -77,11 +73,11 @@ class CandidateWindowViewTest : public views::ViewsTestBase {
   void SetUp() override {
     views::ViewsTestBase::SetUp();
     candidate_window_view_ = new CandidateWindowView(GetContext());
-    candidate_window_view_->InitWidget();
+    widget_ = candidate_window_view_->InitWidget();
   }
 
   void TearDown() override {
-    candidate_window_view_->GetWidget()->CloseNow();
+    widget_.reset();
     views::ViewsTestBase::TearDown();
   }
 
@@ -121,7 +117,8 @@ class CandidateWindowViewTest : public views::ViewsTestBase {
 
  private:
   raw_ptr<CandidateWindowView, DanglingUntriaged>
-      candidate_window_view_;  // Owned by its Widget.
+      candidate_window_view_;  // Owned by widget_.
+  std::unique_ptr<views::Widget> widget_;
 };
 
 TEST_F(CandidateWindowViewTest, UpdateCandidatesTest_CursorVisibility) {
@@ -195,7 +192,7 @@ TEST_F(CandidateWindowViewTest, SelectCandidateAtTest) {
                                           &candidate_window_small);
   candidate_window_small.set_cursor_position(candidate_window_small_size - 1);
   // Make sure the test doesn't crash if the candidate window reduced
-  // its size. (crbug.com/174163)
+  // its size. (crbug.com/40300928)
   candidate_window_view()->UpdateCandidates(candidate_window_small);
   SelectCandidateAt(candidate_window_small_size - 1);
 }
@@ -224,10 +221,10 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     candidate_window.set_orientation(ui::CandidateWindow::VERTICAL);
     for (size_t i = 0; i < kPageSize; ++i) {
       ui::CandidateWindow::Entry entry;
-      entry.value = kSampleCandidate[i];
-      entry.annotation = kSampleAnnotation[i];
-      entry.description_title = kSampleDescriptionTitle[i];
-      entry.description_body = kSampleDescriptionBody[i];
+      entry.value = UNSAFE_TODO(kSampleCandidate[i]);
+      entry.annotation = UNSAFE_TODO(kSampleAnnotation[i]);
+      entry.description_title = UNSAFE_TODO(kSampleDescriptionTitle[i]);
+      entry.description_body = UNSAFE_TODO(kSampleDescriptionBody[i]);
       entry.label = kEmptyLabel;
       candidate_window.mutable_candidates()->push_back(entry);
     }
@@ -236,8 +233,8 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
 
     ASSERT_EQ(kPageSize, GetCandidatesSize());
     for (size_t i = 0; i < kPageSize; ++i) {
-      ExpectLabels(kEmptyLabel, kSampleCandidate[i], kSampleAnnotation[i],
-                   GetCandidateAt(i));
+      ExpectLabels(kEmptyLabel, UNSAFE_TODO(kSampleCandidate[i]),
+                   UNSAFE_TODO(kSampleAnnotation[i]), GetCandidateAt(i));
     }
   }
   {
@@ -250,10 +247,10 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     candidate_window.set_orientation(ui::CandidateWindow::HORIZONTAL);
     for (size_t i = 0; i < kPageSize; ++i) {
       ui::CandidateWindow::Entry entry;
-      entry.value = kSampleCandidate[i];
-      entry.annotation = kSampleAnnotation[i];
-      entry.description_title = kSampleDescriptionTitle[i];
-      entry.description_body = kSampleDescriptionBody[i];
+      entry.value = UNSAFE_TODO(kSampleCandidate[i]);
+      entry.annotation = UNSAFE_TODO(kSampleAnnotation[i]);
+      entry.description_title = UNSAFE_TODO(kSampleDescriptionTitle[i]);
+      entry.description_body = UNSAFE_TODO(kSampleDescriptionBody[i]);
       entry.label = kEmptyLabel;
       candidate_window.mutable_candidates()->push_back(entry);
     }
@@ -263,8 +260,8 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     ASSERT_EQ(kPageSize, GetCandidatesSize());
     // Confirm actual labels not containing ".".
     for (size_t i = 0; i < kPageSize; ++i) {
-      ExpectLabels(kEmptyLabel, kSampleCandidate[i], kSampleAnnotation[i],
-                   GetCandidateAt(i));
+      ExpectLabels(kEmptyLabel, UNSAFE_TODO(kSampleCandidate[i]),
+                   UNSAFE_TODO(kSampleAnnotation[i]), GetCandidateAt(i));
     }
   }
   {
@@ -276,11 +273,11 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     candidate_window.set_orientation(ui::CandidateWindow::VERTICAL);
     for (size_t i = 0; i < kPageSize; ++i) {
       ui::CandidateWindow::Entry entry;
-      entry.value = kSampleCandidate[i];
-      entry.annotation = kSampleAnnotation[i];
-      entry.description_title = kSampleDescriptionTitle[i];
-      entry.description_body = kSampleDescriptionBody[i];
-      entry.label = kCustomizedLabel[i];
+      entry.value = UNSAFE_TODO(kSampleCandidate[i]);
+      entry.annotation = UNSAFE_TODO(kSampleAnnotation[i]);
+      entry.description_title = UNSAFE_TODO(kSampleDescriptionTitle[i]);
+      entry.description_body = UNSAFE_TODO(kSampleDescriptionBody[i]);
+      entry.label = UNSAFE_TODO(kCustomizedLabel[i]);
       candidate_window.mutable_candidates()->push_back(entry);
     }
 
@@ -289,8 +286,9 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     ASSERT_EQ(kPageSize, GetCandidatesSize());
     // Confirm actual labels not containing ".".
     for (size_t i = 0; i < kPageSize; ++i) {
-      ExpectLabels(kCustomizedLabel[i], kSampleCandidate[i],
-                   kSampleAnnotation[i], GetCandidateAt(i));
+      ExpectLabels(UNSAFE_TODO(kCustomizedLabel[i]),
+                   UNSAFE_TODO(kSampleCandidate[i]),
+                   UNSAFE_TODO(kSampleAnnotation[i]), GetCandidateAt(i));
     }
   }
   {
@@ -302,11 +300,11 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     candidate_window.set_orientation(ui::CandidateWindow::HORIZONTAL);
     for (size_t i = 0; i < kPageSize; ++i) {
       ui::CandidateWindow::Entry entry;
-      entry.value = kSampleCandidate[i];
-      entry.annotation = kSampleAnnotation[i];
-      entry.description_title = kSampleDescriptionTitle[i];
-      entry.description_body = kSampleDescriptionBody[i];
-      entry.label = kCustomizedLabel[i];
+      entry.value = UNSAFE_TODO(kSampleCandidate[i]);
+      entry.annotation = UNSAFE_TODO(kSampleAnnotation[i]);
+      entry.description_title = UNSAFE_TODO(kSampleDescriptionTitle[i]);
+      entry.description_body = UNSAFE_TODO(kSampleDescriptionBody[i]);
+      entry.label = UNSAFE_TODO(kCustomizedLabel[i]);
       candidate_window.mutable_candidates()->push_back(entry);
     }
 
@@ -315,8 +313,9 @@ TEST_F(CandidateWindowViewTest, ShortcutSettingTest) {
     ASSERT_EQ(kPageSize, GetCandidatesSize());
     // Confirm actual labels not containing ".".
     for (size_t i = 0; i < kPageSize; ++i) {
-      ExpectLabels(kExpectedHorizontalCustomizedLabel[i], kSampleCandidate[i],
-                   kSampleAnnotation[i], GetCandidateAt(i));
+      ExpectLabels(UNSAFE_TODO(kExpectedHorizontalCustomizedLabel[i]),
+                   UNSAFE_TODO(kSampleCandidate[i]),
+                   UNSAFE_TODO(kSampleAnnotation[i]), GetCandidateAt(i));
     }
   }
 }
@@ -412,6 +411,68 @@ TEST_F(CandidateWindowViewTest, DoNotChangeRowHeightWithLabelSwitchTest) {
   // Checks all entry have same row height.
   for (size_t i = 1; i < GetCandidatesSize(); ++i) {
     EXPECT_EQ(before_height, GetCandidateAt(i)->GetContentsBounds().height());
+  }
+}
+
+TEST_F(CandidateWindowViewTest, CandidateWidthTest) {
+  const size_t kPageSize = 3;
+  ui::CandidateWindow vertical_window;
+  ui::CandidateWindow horizontal_window;
+
+  // Create candidate windows with different length candidates.
+  InitCandidateWindow(kPageSize, &vertical_window);
+  InitCandidateWindow(kPageSize, &horizontal_window);
+
+  vertical_window.set_orientation(ui::CandidateWindow::VERTICAL);
+  horizontal_window.set_orientation(ui::CandidateWindow::HORIZONTAL);
+
+  // Add candidates with varying lengths.
+  ui::CandidateWindow::Entry entry1;
+  entry1.value = u"A";  // Short candidate
+  entry1.label = u"1";
+  vertical_window.mutable_candidates()->push_back(entry1);
+  horizontal_window.mutable_candidates()->push_back(entry1);
+
+  ui::CandidateWindow::Entry entry2;
+  entry2.value = u"Very Long Candidate Text";  // Long candidate
+  entry2.label = u"2";
+  vertical_window.mutable_candidates()->push_back(entry2);
+  horizontal_window.mutable_candidates()->push_back(entry2);
+
+  ui::CandidateWindow::Entry entry3;
+  entry3.value = u"Medium";  // Medium candidate
+  entry3.label = u"3";
+  vertical_window.mutable_candidates()->push_back(entry3);
+  horizontal_window.mutable_candidates()->push_back(entry3);
+
+  // Test vertical orientation - all candidates should have the same width.
+  candidate_window_view()->UpdateCandidates(vertical_window);
+  ASSERT_EQ(kPageSize, GetCandidatesSize());
+
+  // Get the width of the first candidate.
+  int first_shortcut_width = GetCandidateAt(0)->shortcut_width();
+  int first_candidate_width = GetCandidateAt(0)->candidate_width();
+
+  // All candidates should have the same width in vertical mode.
+  for (size_t i = 1; i < GetCandidatesSize(); ++i) {
+    EXPECT_EQ(first_shortcut_width, GetCandidateAt(i)->shortcut_width())
+        << "Shortcut width mismatch at index " << i
+        << " in vertical orientation";
+    EXPECT_EQ(first_candidate_width, GetCandidateAt(i)->candidate_width())
+        << "Candidate width mismatch at index " << i
+        << " in vertical orientation";
+  }
+
+  // Test horizontal orientation - candidates can have different widths.
+  candidate_window_view()->UpdateCandidates(horizontal_window);
+  ASSERT_EQ(kPageSize, GetCandidatesSize());
+
+  // In horizontal mode, widths can vary, but we should still verify they are
+  // set to reasonable values (> 0 for candidates with content).
+  for (size_t i = 0; i < GetCandidatesSize(); ++i) {
+    EXPECT_GT(GetCandidateAt(i)->candidate_width(), 0)
+        << "Candidate width should be positive at index " << i
+        << " in horizontal orientation";
   }
 }
 

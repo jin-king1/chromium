@@ -36,6 +36,10 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
   // retries in case of transient errors. Exposed for testing.
   static constexpr base::TimeDelta kMaxJoinSecurityDomainRetryDuration =
       base::Hours(1);
+  // Specifies how long RotateSharedKeyRequest could be delayed due to
+  // retries in case of transient errors. Exposed for testing.
+  static constexpr base::TimeDelta kMaxKeyRotationRetryDuration =
+      base::Seconds(10);
 
   TrustedVaultConnectionImpl(
       SecurityDomainId security_domain,
@@ -53,7 +57,8 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
       const CoreAccountInfo& account_info,
       const MemberKeysSource& member_keys_source,
       const SecureBoxPublicKey& authentication_factor_public_key,
-      AuthenticationFactorType authentication_factor_type,
+      AuthenticationFactorTypeAndRegistrationParams
+          authentication_factor_type_and_registration_params,
       RegisterAuthenticationFactorCallback callback) override;
 
   std::unique_ptr<Request> RegisterLocalDeviceWithoutKeys(
@@ -71,9 +76,25 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
       const CoreAccountInfo& account_info,
       IsRecoverabilityDegradedCallback callback) override;
 
+  std::unique_ptr<Request> DownloadGaiaPasswordPublicKey(
+      const CoreAccountInfo& account_info,
+      DownloadGaiaPasswordPublicKeyCallback callback) override;
+
+  std::unique_ptr<Request> RotateSharedKey(
+      const CoreAccountInfo& account_info,
+      const trusted_vault_pb::RotateSharedKeyRequest& request,
+      RotateSharedKeyCallback callback) override;
+
   std::unique_ptr<TrustedVaultConnection::Request>
   DownloadAuthenticationFactorsRegistrationState(
       const CoreAccountInfo& account_info,
+      DownloadAuthenticationFactorsRegistrationStateCallback callback,
+      base::RepeatingClosure keep_alive_callback) override;
+
+  std::unique_ptr<Request> DownloadAuthenticationFactorsRegistrationState(
+      const CoreAccountInfo& account_info,
+      std::set<trusted_vault_pb::SecurityDomainMember_MemberType>
+          recovery_factor_filter,
       DownloadAuthenticationFactorsRegistrationStateCallback callback,
       base::RepeatingClosure keep_alive_callback) override;
 
@@ -82,7 +103,8 @@ class TrustedVaultConnectionImpl : public TrustedVaultConnection {
       const CoreAccountInfo& account_info,
       const MemberKeysSource& member_keys_source,
       const SecureBoxPublicKey& authentication_factor_public_key,
-      AuthenticationFactorType authentication_factor_type,
+      AuthenticationFactorTypeAndRegistrationParams
+          authentication_factor_type_and_registration_params,
       JoinSecurityDomainsCallback callback);
 
   const SecurityDomainId security_domain_;

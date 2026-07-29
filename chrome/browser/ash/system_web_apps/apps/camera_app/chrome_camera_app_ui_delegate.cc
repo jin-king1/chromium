@@ -8,11 +8,13 @@
 #include <vector>
 
 #include "ash/constants/ash_features.h"
+#include "ash/constants/chrome_pref_names.h"
 #include "ash/constants/web_app_id_constants.h"
 #include "ash/webui/camera_app_ui/ocr.mojom.h"
 #include "ash/webui/camera_app_ui/pdf_builder.mojom.h"
 #include "ash/webui/camera_app_ui/url_constants.h"
 #include "ash/webui/settings/public/constants/routes.mojom.h"
+#include "base/check_deref.h"
 #include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
@@ -21,6 +23,7 @@
 #include "base/logging.h"
 #include "base/memory/read_only_shared_memory_region.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/strings/string_util.h"
 #include "base/system/sys_info.h"
 #include "base/task/bind_post_task.h"
 #include "base/task/sequenced_task_runner.h"
@@ -44,14 +47,14 @@
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/screen_ai/public/optical_character_recognizer.h"
 #include "chrome/browser/ui/ash/system_web_apps/system_web_app_ui_utils.h"
-#include "chrome/browser/ui/settings_window_manager_chromeos.h"
 #include "chrome/browser/ui/webui/ash/internet/internet_config_dialog.h"
-#include "chrome/browser/web_applications/web_app_launch_queue.h"
 #include "chrome/browser/web_applications/web_app_tab_helper.h"
-#include "chrome/common/pref_names.h"
 #include "chrome/services/pdf/public/mojom/pdf_progressive_searchifier.mojom.h"
 #include "chrome/services/pdf/public/mojom/pdf_service.mojom.h"
 #include "chrome/services/pdf/public/mojom/pdf_thumbnailer.mojom.h"
+#include "chromeos/ash/components/browser_context_helper/browser_context_helper.h"
+#include "chromeos/ash/experiences/camera/camera_save_handler.h"
+#include "chromeos/ash/experiences/settings_ui/settings_app_manager.h"
 #include "chromeos/constants/chromeos_features.h"
 #include "chromeos/constants/devicetype.h"
 #include "chromeos/ui/base/window_properties.h"
@@ -74,7 +77,8 @@
 #include "ui/chromeos/styles/cros_styles.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/image/image.h"
+#include "ui/gfx/native_ui_types.h"
 #include "url/gurl.h"
 
 namespace {
@@ -101,6 +105,9 @@ const int64_t kStorageCriticallyLowThreshold = 32 * 1024 * 1024;  // 32MB
 
 // PDFs saved from CCA are always 72 dpi.
 constexpr int kPdfDpi = 72;
+
+constexpr char kCloudDestinationGoogleDrive[] = "google_drive";
+constexpr char kCloudDestinationOnedrive[] = "microsoft_onedrive";
 
 }  // namespace
 
@@ -307,7 +314,7 @@ void ChromeCameraAppUIDelegate::PdfServiceManager::GetThumbnail(
     std::move(callback).Run({});
     return;
   }
-  memcpy(pdf_region.mapping.memory(), pdf.data(), pdf.size());
+  pdf_region.mapping.GetMemoryAsSpan<uint8_t>().copy_prefix_from(pdf);
 
   mojo::Remote<pdf::mojom::PdfService> pdf_service = LaunchPdfService();
   mojo::PendingRemote<pdf::mojom::PdfThumbnailer> pdf_thumbnailer;
@@ -508,13 +515,30 @@ void ChromeCameraAppUIDelegate::PopulateLoadTimeData(
   source->AddBoolean("super_res", base::FeatureList::IsEnabled(
                                       ash::features::kCameraSuperResSupported));
 
-  const PrefService* prefs = Profile::FromWebUI(web_ui_)->GetPrefs();
+  Profile* profile = Profile::FromWebUI(web_ui_);
+  const PrefService* prefs = profile->GetPrefs();
   GURL cca_url = GURL(ash::kChromeUICameraAppURL);
   bool url_allowed = policy::IsOriginInAllowlist(
-      cca_url, prefs, prefs::kVideoCaptureAllowedUrls);
+      cca_url, prefs, ash::chrome_prefs::kVideoCaptureAllowedUrls);
   source->AddBoolean(
       "cca_disallowed",
-      !prefs->GetBoolean(prefs::kVideoCaptureAllowed) && !url_allowed);
+      !prefs->GetBoolean(ash::chrome_prefs::kVideoCaptureAllowed) &&
+          !url_allowed);
+  const auto& camera_save_handler =
+      CHECK_DEREF(CameraSaveHandler::Get(*profile));
+  source->AddString(
+      "path_relative_to_root",
+      camera_save_handler.GetWritablePathRelativeToRoot().value());
+  auto camera_destination = camera_save_handler.GetDestination();
+  std::string cloud_destination;
+  if (camera_destination ==
+      CameraSaveHandler::FileSaveDestination::kGoogleDrive) {
+    cloud_destination = kCloudDestinationGoogleDrive;
+  } else if (camera_destination ==
+             CameraSaveHandler::FileSaveDestination::kOneDrive) {
+    cloud_destination = kCloudDestinationOnedrive;
+  }
+  source->AddString("cloud_destination", cloud_destination);
 
   const char kChromeOSReleaseTrack[] = "CHROMEOS_RELEASE_TRACK";
   const char kTestImageRelease[] = "testimage-channel";
@@ -583,7 +607,10 @@ std::string ChromeCameraAppUIDelegate::GetFilePathInArcByName(
       !arc_url_out.is_valid()) {
     return std::string();
   }
-  if (requires_sharing) {
+  if (requires_sharing &&
+      CHECK_DEREF(CameraSaveHandler::Get(*Profile::FromWebUI(web_ui_)))
+              .GetDestination() ==
+          CameraSaveHandler::FileSaveDestination::kLocal) {
     NOTREACHED()
         << "File path should be in MyFiles and not require any sharing";
   }
@@ -619,6 +646,14 @@ void ChromeCameraAppUIDelegate::MonitorFileDeletion(
           &ChromeCameraAppUIDelegate::MonitorFileDeletionOnFileThread,
           weak_factory_.GetWeakPtr(), file_monitor_.get(), std::move(file_path),
           std::move(callback_on_current_thread)));
+}
+
+void ChromeCameraAppUIDelegate::UploadFile(
+    const std::string& name,
+    const gfx::Image& thumbnail,
+    base::OnceCallback<void(bool)> callback) {
+  CHECK_DEREF(CameraSaveHandler::Get(*Profile::FromWebUI(web_ui_)))
+      .UploadFile(name, thumbnail, std::move(callback));
 }
 
 void ChromeCameraAppUIDelegate::MaybeTriggerSurvey() {
@@ -658,9 +693,15 @@ void ChromeCameraAppUIDelegate::StopStorageMonitor() {
 }
 
 void ChromeCameraAppUIDelegate::OpenStorageManagement() {
-  chrome::SettingsWindowManager::GetInstance()->ShowOSSettings(
-      Profile::FromWebUI(web_ui_),
-      chromeos::settings::mojom::kStorageSubpagePath);
+  auto* user = ash::BrowserContextHelper::Get()->GetUserByBrowserContext(
+      Profile::FromWebUI(web_ui_));
+  if (!user) {
+    // TODO(crbug.com/447287122): Revisit here to see if we always have the
+    // user.
+    return;
+  }
+  ash::SettingsAppManager::Get()->Open(
+      *user, {.sub_page = chromeos::settings::mojom::kStorageSubpagePath});
 }
 
 base::FilePath ChromeCameraAppUIDelegate::GetMyFilesFolder() {
@@ -676,7 +717,11 @@ base::FilePath ChromeCameraAppUIDelegate::GetFilePathByName(
     return base::FilePath();
   }
 
-  return GetMyFilesFolder().Append("Camera").Append(name_component);
+  base::FilePath camera_save_path =
+      CHECK_DEREF(CameraSaveHandler::Get(*Profile::FromWebUI(web_ui_)))
+          .GetFinalPath();
+  return camera_save_path.empty() ? camera_save_path
+                                  : camera_save_path.Append(name_component);
 }
 
 void ChromeCameraAppUIDelegate::OnFileMonitorInitialized(

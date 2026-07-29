@@ -7,6 +7,8 @@
 
 #import <Foundation/Foundation.h>
 
+#import "base/ios/block_types.h"
+#import "ios/chrome/browser/shared/public/commands/tab_grid_commands.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_paging.h"
 
 class TabGroup;
@@ -24,15 +26,39 @@ class TabGroup;
 // Shows a non-incognito web page searching for `text`.
 - (void)showWebSearchForText:(NSString*)text;
 
-// Shows the recent tabs panel searching for `text`.
-- (void)showRecentTabsForText:(NSString*)text;
-
 // Shows the tab grid according to `page`.
 - (void)showPage:(TabGridPage)page animated:(BOOL)animated;
+
+// Prepares the TabGrid to exit.
+- (void)prepareToExitTabGrid;
 
 // Exits the tab grid, opening the selected tab of the current page (if
 // relevant).
 - (void)exitTabGrid;
+
+// Displays the Guided Tour step that highlights the active tab. `completion`
+// will be executed after the step dismisses.
+- (void)showGuidedTourLongPressStepWithDismissalCompletion:
+    (ProceduralBlock)completion;
+
+// Hides the Guided Tour on the tab grid.
+- (void)hideTabGridGuidedTour;
+
+// Presents an IPH bubble to highlight pinning the active tab in the Tab Grid.
+- (void)presentPinTabBubble;
+
+// Presents the page action menu from the tab grid, registering the source.
+- (void)showPageActionMenuFromTabGrid;
+
+// Activates the grid container's NSLayoutConstraints. To prevent a misalignment
+// of the tab grid in iOS 27+, invoke this function after any tab grid
+// animations are complete.
+- (void)activateGridContainerConstraints;
+
+// Deactivates the grid container's NSLayoutConstraints. To prevent a
+// misalignment of the tab grid in iOS 27+, invoke this function during all tab
+// grid animations.
+- (void)deactivateGridContainerConstraints;
 
 @end
 

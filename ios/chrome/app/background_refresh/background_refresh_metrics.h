@@ -5,6 +5,10 @@
 #ifndef IOS_CHROME_APP_BACKGROUND_REFRESH_BACKGROUND_REFRESH_METRICS_H_
 #define IOS_CHROME_APP_BACKGROUND_REFRESH_BACKGROUND_REFRESH_METRICS_H_
 
+#import <Foundation/Foundation.h>
+
+#include "base/time/time.h"
+
 // Histogram name for appState init stage when handleRefreshWithCompletion: is
 // run in background.
 extern const char kInitStageDuringBackgroundRefreshHistogram[];
@@ -39,7 +43,8 @@ enum class BGTaskSchedulerErrorActions {
   kErrorCodeUnavailable = 2,
   kErrorCodeNotPermitted = 3,
   kErrorCodeTooManyPendingTaskRequests = 4,
-  kMaxValue = kErrorCodeTooManyPendingTaskRequests,
+  kErrorCodeImmediateRunIneligible = 5,
+  kMaxValue = kErrorCodeImmediateRunIneligible,
 };
 
 // Histogram name for application launch status when background tasks are
@@ -55,5 +60,46 @@ enum class LaunchTypeForBackgroundRefreshActions {
   kLaunchTypePreBrowserObjects = 3,
   kMaxValue = kLaunchTypePreBrowserObjects,
 };
+
+// Histogram for the duration of the background refresh task.
+extern const char kExecutionDurationHistogram[];
+
+// Histogram for the duration of the background refresh task when it times out.
+extern const char kExecutionDurationTimeoutHistogram[];
+
+// Histogram for the duration of the background refresh task when no providers
+// were due.
+extern const char kExecutionDurationNoOpHistogram[];
+
+// Histogram for the overall duration of the background refresh task (from
+// trigger to completion).
+extern const char kTaskDurationHistogram[];
+
+// Histogram for the overall duration of the background refresh task when it
+// times out.
+extern const char kTaskDurationTimeoutHistogram[];
+
+// Histogram for the number of active providers when the background refresh task
+// times out.
+extern const char kActiveProviderCountAtTimeoutHistogram[];
+
+// Histogram for the total number of  providers for the background refresh task
+// which timed out.
+extern const char kTotalProviderCountAtTimeoutHistogram[];
+
+// Histogram for the wait time for the app to reach the required init stage.
+extern const char kStartupWaitDurationCompletedHistogram[];
+
+// Histogram for the wait time for the app to reach the required init stage,
+// recorded when the task times out.
+extern const char kStartupWaitDurationTimeoutHistogram[];
+
+// Histogram for the wait time for the app to reach the required init stage,
+// recorded when the task times out without any providers having started.
+extern const char kStartupWaitDurationNeverStartedHistogram[];
+
+// Records the duration of a refresh for a specific provider.
+void RecordProviderExecutionDuration(NSString* provider_identifier,
+                                     base::TimeDelta duration);
 
 #endif  // IOS_CHROME_APP_BACKGROUND_REFRESH_BACKGROUND_REFRESH_METRICS_H_

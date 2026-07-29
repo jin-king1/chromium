@@ -263,6 +263,8 @@ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
                 : SetAlpha({kColorRefPrimary70}, 0x52)};
   mixer[kColorSysStateFocusRing] = {dark_mode ? kColorRefPrimary80
                                               : kColorRefPrimary40};
+  mixer[kColorSysStateFocusRingInverse] = {dark_mode ? kColorRefPrimary40
+                                                     : kColorRefPrimary80};
   mixer[kColorSysStateTextHighlight] = {dark_mode ? kColorRefPrimary80
                                                   : kColorRefPrimary40};
   mixer[kColorSysStateOnTextHighlight] = {dark_mode ? kColorRefNeutral0
@@ -300,6 +302,59 @@ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
   mixer[kColorSysGradientTertiary] = {dark_mode ? kColorRefTertiary30
                                                 : kColorRefTertiary95};
 
+  // Illustration.
+  mixer[kColorSysIlloPrimaryMin] = {dark_mode ? kColorRefPrimary30
+                                              : kColorRefPrimary90};
+  mixer[kColorSysIlloPrimaryLow] = {dark_mode ? kColorRefPrimary40
+                                              : kColorRefPrimary80};
+  mixer[kColorSysIlloPrimaryMid] = {dark_mode ? kColorRefPrimary50
+                                              : kColorRefPrimary70};
+  mixer[kColorSysIlloPrimaryHigh] = {dark_mode ? kColorRefPrimary70
+                                               : kColorRefPrimary60};
+  mixer[kColorSysIlloPrimaryMax] = {dark_mode ? kColorRefPrimary80
+                                              : kColorRefPrimary40};
+  mixer[kColorSysIlloSecondaryMin] = {dark_mode ? kColorRefSecondary30
+                                                : kColorRefSecondary90};
+  mixer[kColorSysIlloSecondaryLow] = {dark_mode ? kColorRefSecondary40
+                                                : kColorRefSecondary80};
+  mixer[kColorSysIlloSecondaryMid] = {dark_mode ? kColorRefSecondary50
+                                                : kColorRefSecondary70};
+  mixer[kColorSysIlloSecondaryHigh] = {dark_mode ? kColorRefSecondary70
+                                                 : kColorRefSecondary60};
+  mixer[kColorSysIlloSecondaryMax] = {dark_mode ? kColorRefSecondary80
+                                                : kColorRefSecondary40};
+  mixer[kColorSysIlloTertiaryMin] = {dark_mode ? kColorRefTertiary30
+                                               : kColorRefTertiary90};
+  mixer[kColorSysIlloTertiaryLow] = {dark_mode ? kColorRefTertiary40
+                                               : kColorRefTertiary80};
+  mixer[kColorSysIlloTertiaryMid] = {dark_mode ? kColorRefTertiary50
+                                               : kColorRefTertiary70};
+  mixer[kColorSysIlloTertiaryHigh] = {dark_mode ? kColorRefTertiary70
+                                                : kColorRefTertiary60};
+  mixer[kColorSysIlloTertiaryMax] = {dark_mode ? kColorRefTertiary80
+                                               : kColorRefTertiary40};
+  mixer[kColorSysIlloNeutralMin] = {dark_mode ? kColorRefNeutral0
+                                              : kColorRefNeutral100};
+  mixer[kColorSysIlloNeutralLow] = {dark_mode ? kColorRefNeutral25
+                                              : kColorRefNeutral90};
+  mixer[kColorSysIlloNeutralMid] = {dark_mode ? kColorRefNeutral40
+                                              : kColorRefNeutral80};
+  mixer[kColorSysIlloNeutralHigh] = {dark_mode ? kColorRefNeutral60
+                                               : kColorRefNeutral50};
+  mixer[kColorSysIlloNeutralMax] = {dark_mode ? kColorRefNeutral100
+                                              : kColorRefNeutral0};
+
+  // ActorUi
+  mixer[kColorSysActorUiBorder] = {ui::kColorRefPrimary50};
+  mixer[kColorSysActorUiGradientStart] = {ui::kColorRefPrimary70};
+  mixer[kColorSysActorUiGradientMiddle] = {ui::kColorRefPrimary40};
+  mixer[kColorSysActorUiGradientEnd] = {ui::kColorRefPrimary60};
+
+  // Glic
+  mixer[kColorGlicTabUnderline1] = {ui::kColorRefPrimary50};
+  mixer[kColorGlicTabUnderline2] = {ui::kColorRefPrimary60};
+  mixer[kColorGlicTabUnderline3] = {ui::kColorRefPrimary70};
+
   // AI.
   mixer[kColorSysAiIllustrationShapeSurface1] = {
       dark_mode ? ui::kColorRefPrimary40 : ui::kColorRefPrimary70};
@@ -313,6 +368,15 @@ void AddSysColorMixer(ColorProvider* provider, const ColorProviderKey& key) {
   // Experimentation.
   mixer[kColorSysOmniboxContainer] = {dark_mode ? kColorRefNeutral15
                                                 : kColorSysSurface4};
+
+  // TODO(crbug.com/517162116): Reconcile color token dark-mode swapping
+  // These tokens are temporarily added to solve a missing need. They need
+  // further work with UX to work these cases into the design system.
+  // Please DO NOT add additional usages of these tokens.
+  mixer[kColorSysSurfaceSection] = {dark_mode ? kColorSysSurface1
+                                              : kColorSysSurface};
+  mixer[kColorSysBaseContainerOnSurface] = {dark_mode ? kColorRefSecondary25
+                                                      : kColorSysSurface4};
 
   // Deprecated.
   // TODO(crbug.com/350783235): Remove remaining uses of these deprecated sys

@@ -7,7 +7,10 @@
 
 #include <optional>
 
+#include "base/types/optional_ref.h"
 #include "components/autofill/core/browser/logging/stub_log_manager.h"
+#include "components/device_reauth/device_authenticator.h"
+#include "components/metrics/profile_metrics_service.h"
 #include "components/password_manager/core/browser/mock_password_feature_manager.h"
 #include "components/password_manager/core/browser/password_manager_client.h"
 #include "components/password_manager/core/browser/password_manager_metrics_recorder.h"
@@ -30,6 +33,15 @@ class StubPasswordManagerClient : public PasswordManagerClient {
   ~StubPasswordManagerClient() override;
 
   // PasswordManagerClient:
+  using PasswordManagerClient::IsFillingEnabled;
+  using PasswordManagerClient::IsSavingAndFillingEnabled;
+  bool IsSavingAndFillingEnabled(
+      const url::Origin& origin,
+      base::optional_ref<const GURL> url) const override;
+  bool IsFillingEnabled(const url::Origin& origin,
+                        base::optional_ref<const GURL> url) const override;
+  bool IsFieldFilledWithOtp(autofill::FormGlobalId form_id,
+                            autofill::FieldGlobalId field_id) override;
   bool PromptUserToSaveOrUpdatePassword(
       std::unique_ptr<PasswordFormManagerForUI> form_to_save,
       bool update_password) override;
@@ -48,6 +60,8 @@ class StubPasswordManagerClient : public PasswordManagerClient {
       std::vector<std::unique_ptr<PasswordForm>> local_forms,
       const url::Origin& origin,
       CredentialsCallback callback) override;
+  bool IsReauthBeforeFillingRequired(
+      device_reauth::DeviceAuthenticator* authenticator) override;
   void NotifyUserAutoSignin(
       std::vector<std::unique_ptr<PasswordForm>> local_forms,
       const url::Origin& origin) override;
@@ -61,6 +75,7 @@ class StubPasswordManagerClient : public PasswordManagerClient {
       std::unique_ptr<PasswordFormManagerForUI> saved_manager,
       bool is_update_confirmation) override;
   PrefService* GetPrefs() const override;
+  metrics::ProfileMetricsService* GetProfileMetricsService() override;
   PrefService* GetLocalStatePrefs() const override;
   const syncer::SyncService* GetSyncService() const override;
   affiliations::AffiliationService* GetAffiliationService() override;
@@ -80,6 +95,7 @@ class StubPasswordManagerClient : public PasswordManagerClient {
     BUILDFLAG(IS_CHROMEOS)
   void OpenPasswordDetailsBubble(
       const password_manager::PasswordForm& form) override;
+  void MaybeShowSavePasswordPrimingPromo(const url::Origin& origin) override;
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC) ||
         // BUILDFLAG(IS_CHROMEOS)
 #if !BUILDFLAG(IS_IOS)
@@ -112,10 +128,13 @@ class StubPasswordManagerClient : public PasswordManagerClient {
   void PotentialSaveFormSubmitted() override;
 #endif
   signin::IdentityManager* GetIdentityManager() override;
+  const signin::IdentityManager* GetIdentityManager() const override;
   scoped_refptr<network::SharedURLLoaderFactory> GetURLLoaderFactory() override;
   network::mojom::NetworkContext* GetNetworkContext() const override;
   bool IsIsolationForPasswordSitesEnabled() const override;
   bool IsNewTabPage() const override;
+  password_manager::UndoPasswordChangeController*
+  GetUndoPasswordChangeController() override;
 
  private:
   const StubCredentialsFilter credentials_filter_;
@@ -123,6 +142,8 @@ class StubPasswordManagerClient : public PasswordManagerClient {
   autofill::StubLogManager log_manager_;
   ukm::SourceId ukm_source_id_;
   std::optional<PasswordManagerMetricsRecorder> metrics_recorder_;
+  UndoPasswordChangeController undo_password_change_controller_;
+  metrics::ProfileMetricsService profile_metrics_service_;
 };
 
 }  // namespace password_manager

@@ -2,20 +2,16 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "components/payments/core/journey_logger.h"
 
 #include <algorithm>
 #include <vector>
 
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/notreached.h"
+#include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
+#include "components/payments/core/features.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
 #include "services/metrics/public/cpp/ukm_recorder.h"
 #include "third_party/re2/src/re2/re2.h"
@@ -85,14 +81,7 @@ JourneyLogger::JourneyLogger(ukm::SourceId payment_request_source_id)
     : events2_(static_cast<int>(Event2::kInitiated)),
       payment_request_source_id_(payment_request_source_id) {}
 
-JourneyLogger::~JourneyLogger() {
-  // has_recorded_ is false in cases that the page gets closed. To see more
-  // details about this case please check sample crash link from
-  // dumpWithoutCrash:
-  // https://crash.corp.google.com/browse?q=reportid=%27c1268a7104b25de2%27
-  UMA_HISTOGRAM_BOOLEAN("PaymentRequest.JourneyLoggerHasRecorded",
-                        has_recorded_);
-}
+JourneyLogger::~JourneyLogger() = default;
 
 void JourneyLogger::SetNumberOfSuggestionsShown(Section section,
                                                 int number,
@@ -219,23 +208,12 @@ void JourneyLogger::SetNotShown() {
   RecordJourneyStatsHistograms(COMPLETION_STATUS_COULD_NOT_SHOW);
 }
 
-void JourneyLogger::SetNoMatchingCredentialsShown() {
-  SetShown();
-  SetEvent2Occurred(Event2::kNoMatchingCredentials);
-}
-
 void JourneyLogger::RecordCheckoutStep(CheckoutFunnelStep step) {
   base::UmaHistogramEnumeration("PaymentRequest.CheckoutFunnel", step);
 }
 
 void JourneyLogger::RecordJourneyStatsHistograms(
     CompletionStatus completion_status) {
-  if (has_recorded_) {
-    UMA_HISTOGRAM_BOOLEAN(
-        "PaymentRequest.JourneyLoggerHasRecordedMultipleTimes", true);
-  }
-  has_recorded_ = true;
-
   RecordEventsMetric(completion_status);
 
   // Depending on the completion status record kPaymentRequestTriggered and/or
@@ -312,10 +290,21 @@ void JourneyLogger::RecordEventsMetric(CompletionStatus completion_status) {
     return;
 
   // Record the events in UKM.
-  ukm::builders::PaymentRequest_CheckoutEvents(payment_request_source_id_)
-      .SetCompletionStatus(completion_status)
-      .SetEvents2(events2_)
-      .Record(ukm::UkmRecorder::Get());
+  ukm::builders::PaymentRequest_CheckoutEvents ukm_builder(
+      payment_request_source_id_);
+  ukm_builder.SetCompletionStatus(completion_status).SetEvents2(events2_);
+
+  if (base::FeatureList::IsEnabled(
+          features::kPaymentRequestRejectTooSmallWindows)) {
+    base::UmaHistogramEnumeration(
+        "PaymentRequest.WindowSizeCheckRejectionReason",
+        window_size_check_rejection_reason_);
+
+    ukm_builder.SetWindowSizeCheckRejectionReason(
+        base::checked_cast<int64_t>(window_size_check_rejection_reason_));
+  }
+
+  ukm_builder.Record(ukm::UkmRecorder::Get());
 
   if (payment_app_source_id_ == ukm::kInvalidSourceId)
     return;
@@ -405,6 +394,11 @@ bool JourneyLogger::WasPaymentRequestTriggered() {
 void JourneyLogger::SetPaymentAppUkmSourceId(
     ukm::SourceId payment_app_source_id) {
   payment_app_source_id_ = payment_app_source_id;
+}
+
+void JourneyLogger::SetWindowSizeCheckRejectionReason(
+    WindowSizeCheckRejectionReason reason) {
+  window_size_check_rejection_reason_ = reason;
 }
 
 base::WeakPtr<JourneyLogger> JourneyLogger::GetWeakPtr() {

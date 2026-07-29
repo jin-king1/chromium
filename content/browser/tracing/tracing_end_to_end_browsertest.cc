@@ -7,25 +7,28 @@
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/statistics_recorder.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/common/task_annotator.h"
-#include "base/test/test_trace_processor.h"
-#include "base/test/trace_test_utils.h"
+#include "base/test/tracing/test_trace_processor.h"
+#include "base/test/tracing/trace_test_utils.h"
 #include "build/build_config.h"
 #include "components/variations/active_field_trials.h"
+#include "content/public/browser/browser_child_process_host_iterator.h"
+#include "content/public/browser/child_process_data.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_utils.h"
 #include "services/resource_coordinator/public/cpp/memory_instrumentation/tracing_observer_proto.h"
 #include "services/tracing/public/cpp/perfetto/metadata_data_source.h"
+#include "services/tracing/public/cpp/perfetto/perfetto_data_source_names.h"
+#include "services/tracing/public/cpp/perfetto/track_name_recorder.h"
 #include "services/tracing/public/cpp/stack_sampling/tracing_sampler_profiler.h"
-#include "services/tracing/public/mojom/perfetto_service.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "third_party/perfetto/protos/perfetto/config/chrome/chrome_config.gen.h"
 #include "third_party/perfetto/protos/perfetto/config/chrome/histogram_samples.gen.h"
+#include "third_party/perfetto/protos/perfetto/trace/track_event/chrome_user_event.pbzero.h"
 
 #if BUILDFLAG(IS_POSIX)
 #include "base/test/bind.h"
@@ -67,7 +70,7 @@ perfetto::protos::gen::TraceConfig TraceConfigWithHistograms(
 
   auto* histogram_data_source = perfetto_config.add_data_sources();
   auto* histogram_source_config = histogram_data_source->mutable_config();
-  histogram_source_config->set_name(tracing::mojom::kHistogramSampleSourceName);
+  histogram_source_config->set_name(tracing::kHistogramSampleSourceName);
   histogram_source_config->set_target_buffer(0);
 
   if (!histograms.empty()) {
@@ -116,7 +119,7 @@ perfetto::protos::gen::TraceConfig TraceConfigWithMetadata(
 
   auto* data_source = perfetto_config.add_data_sources();
   auto* source_config = data_source->mutable_config();
-  source_config->set_name("org.chromium.trace_metadata");
+  source_config->set_name("org.chromium.trace_metadata2");
 
   return perfetto_config;
 }
@@ -194,7 +197,7 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, Metadata) {
 
   result = ttp.RunQuery(
       "SELECT int_value > 0 AS has_num_cpus "
-      "FROM metadata WHERE name = 'cr-num-cpus'");
+      "FROM metadata WHERE name = 'cr-cpu-num-cores'");
   ASSERT_TRUE(result.has_value()) << result.error();
   EXPECT_THAT(result.value(),
               ::testing::ElementsAre(std::vector<std::string>{"has_num_cpus"},
@@ -274,7 +277,13 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, TaskExecutionEvent) {
                              std::vector<std::string>{"my_file", "my_func"}));
 }
 
-IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, ThreadAndProcessName) {
+// TODO(crbug.com/519488198): Flaky on Fuchsia.
+#if BUILDFLAG(IS_FUCHSIA)
+#define MAYBE_ThreadAndProcessName DISABLED_ThreadAndProcessName
+#else
+#define MAYBE_ThreadAndProcessName ThreadAndProcessName
+#endif
+IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, MAYBE_ThreadAndProcessName) {
   base::test::TestTraceProcessor ttp;
   ttp.StartTrace("foo");
 
@@ -476,7 +485,7 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest,
 #if BUILDFLAG(IS_ANDROID)
 IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest,
                        PackageNameRecordedTraceLogSet) {
-  base::trace_event::TraceLog::GetInstance()->SetRecordHostAppPackageName(true);
+  tracing::TrackNameRecorder::SetRecordHostAppPackageName(true);
   base::test::TestTraceProcessor ttp;
   ttp.StartTrace(base::test::DefaultTraceConfig("foo", false),
                  perfetto::kCustomBackend);
@@ -508,8 +517,7 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest,
                        PackageNameNotRecordedTraceLogNotSet) {
-  base::trace_event::TraceLog::GetInstance()->SetRecordHostAppPackageName(
-      false);
+  tracing::TrackNameRecorder::SetRecordHostAppPackageName(false);
   base::test::TestTraceProcessor ttp;
   ttp.StartTrace(base::test::DefaultTraceConfig("foo", false),
                  perfetto::kCustomBackend);
@@ -815,6 +823,104 @@ IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, TwoSessionsMetadata) {
 #endif
 }
 
+IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest, AddTraceEventWithProcessId) {
+  base::test::TestTraceProcessor ttp;
+  ttp.StartTrace(base::test::DefaultTraceConfig("memory", false));
+
+  const base::ProcessId browser_pid = base::GetCurrentProcId();
+
+  std::vector<base::ProcessId> child_pids;
+  content::BrowserChildProcessHostIterator iterator;
+  while (!iterator.Done()) {
+    const content::ChildProcessData& data = iterator.GetData();
+    if (data.GetProcess().IsValid()) {
+      child_pids.push_back(data.GetProcess().Pid());
+    }
+    ++iterator;
+  }
+
+  const unsigned char* category_group_enabled =
+      TRACE_EVENT_API_GET_CATEGORY_GROUP_ENABLED("memory");
+
+  TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_PROCESS_ID(
+      TRACE_EVENT_PHASE_INSTANT, category_group_enabled, "foo_memory_event", 0,
+      browser_pid, nullptr, TRACE_EVENT_FLAG_HAS_ID);
+
+  for (base::ProcessId child_pid : child_pids) {
+    TRACE_EVENT_API_ADD_TRACE_EVENT_WITH_PROCESS_ID(
+        TRACE_EVENT_PHASE_INSTANT, category_group_enabled, "foo_memory_event",
+        0, child_pid, nullptr, TRACE_EVENT_FLAG_HAS_ID);
+  }
+
+  absl::Status status = ttp.StopAndParseTrace();
+  ASSERT_TRUE(status.ok()) << status.message();
+
+  std::string query = R"(
+    SELECT
+      slice.name AS event_name,
+      process.pid AS pid
+    FROM slice
+    JOIN thread_track ON slice.track_id = thread_track.id
+    JOIN thread ON thread_track.utid = thread.utid
+    JOIN process ON thread.upid = process.upid
+    WHERE slice.name = 'foo_memory_event'
+    )";
+  auto result = ttp.RunQuery(query);
+  ASSERT_TRUE(result.has_value()) << result.error();
+
+  size_t expected_row_count = 2 + child_pids.size();
+  const auto& rows = result.value();
+  EXPECT_EQ(rows.size(), expected_row_count);
+
+  EXPECT_THAT(rows[0], ::testing::ElementsAre("event_name", "pid"));
+  EXPECT_THAT(rows[1],
+              ::testing::ElementsAre("foo_memory_event",
+                                     base::NumberToString(browser_pid)));
+
+  for (size_t i = 0; i < child_pids.size(); ++i) {
+    EXPECT_THAT(rows[i + 2],
+                ::testing::ElementsAre("foo_memory_event",
+                                       base::NumberToString(child_pids[i])));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(TracingEndToEndBrowserTest,
+                       ConvertLegacyJsonWithPrivacyFilter) {
+  auto session = perfetto::Tracing::NewTrace(perfetto::kCustomBackend);
+  session->Setup(base::test::DefaultTraceConfig(
+      TRACE_DISABLED_BY_DEFAULT("user_action_samples"), true, true));
+
+  {
+    // The test runs tracing service on the main thread and StartBlocking()
+    // can deadlock so use a RunLoop instead.
+    base::RunLoop run_loop;
+    session->SetOnStartCallback([&run_loop] { run_loop.QuitWhenIdle(); });
+    session->Start();
+    run_loop.Run();
+  }
+
+  {
+    // A trace event with chrome_user_event proto.
+    TRACE_EVENT_INSTANT(
+        TRACE_DISABLED_BY_DEFAULT("user_action_samples"), "UserAction",
+        [&](perfetto::EventContext ctx) {
+          perfetto::protos::pbzero::ChromeUserEvent* new_sample =
+              ctx.event()->set_chrome_user_event();
+          new_sample->set_action(
+              "TestAction");  // This should not survive privacy filter.
+          new_sample->set_action_hash(42);
+        });
+  }
+
+  base::TrackEvent::Flush();
+  session->StopBlocking();
+  std::vector<char> buffer = session->ReadTraceBlocking();
+  std::string buffer_string(buffer.begin(), buffer.end());
+
+  EXPECT_TRUE(buffer_string.contains("\"action_hash\":42"));
+  EXPECT_FALSE(buffer_string.contains("\"action\":"));
+}
+
 #if BUILDFLAG(IS_POSIX)
 class SystemTracingEndToEndBrowserTest : public ContentBrowserTest {
  public:
@@ -963,7 +1069,7 @@ IN_PROC_BROWSER_TEST_F(SystemTracingEndToEndBrowserTest,
   // sure that at least one of them is there.
   std::vector<char> trace;
   size_t i = 0;
-  for (; i < 300; i++) {
+  for (; i < 1000; i++) {
     EXPECT_TRUE(ExecJs(tab, "performance.mark('mark1');"));
 
     base::RunLoop flush;
@@ -979,7 +1085,7 @@ IN_PROC_BROWSER_TEST_F(SystemTracingEndToEndBrowserTest,
       break;
     }
   }
-  ASSERT_LT(i, 300U);
+  ASSERT_LT(i, 1000U);
 
   base::test::TestTraceProcessorImpl ttp;
   absl::Status status = ttp.ParseTrace(trace);

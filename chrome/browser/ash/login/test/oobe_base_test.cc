@@ -19,7 +19,6 @@
 #include "chrome/browser/ash/login/test/oobe_screen_waiter.h"
 #include "chrome/browser/ash/login/test/oobe_screens_utils.h"
 #include "chrome/browser/ash/login/test/test_condition_waiter.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
 #include "chrome/browser/ui/ash/login/login_display_host_webui.h"
 #include "chrome/browser/ui/ash/login/webui_login_view.h"
@@ -150,7 +149,9 @@ void OobeBaseTest::WaitForGaiaPageBackButtonUpdate() {
 
 std::unique_ptr<test::TestConditionWaiter>
 OobeBaseTest::CreateGaiaPageEventWaiter(const std::string& event) {
-  return std::make_unique<GaiaPageEventWaiter>(authenticator_id_, event);
+  return std::make_unique<GaiaPageEventWaiter>(
+      LoginDisplayHost::default_host()->GetOobeWebContents(), authenticator_id_,
+      event);
 }
 
 void OobeBaseTest::WaitForSigninScreen() {

@@ -39,6 +39,11 @@ source_set("qt_interface") {
   # target instead.
   public = [ "qt_interface.h" ]
   sources = [ "qt_interface.cc" ]
+
+  deps = [ "//base:compiler_specific" ]
+
+  # Don't use libc++ modules as this depends on libstdc++.
+  use_libcxx_modules = false
 }
 
 template("qt_shim") {
@@ -70,15 +75,19 @@ template("qt_shim") {
       "//chrome/installer/linux:*",
     ]
 
-    # Since qt_shim is a shared library even in non-component builds, it shouldn't
-    # depend on any other targets since that would duplicate code between binaries
-    # leading to increased size and potential issues from duplicated global state.
+    # Since qt_shim is a shared library even in non-component builds, it
+    # shouldn't depend on any other targets since that would duplicate code
+    # between binaries leading to increased size and potential issues from
+    # duplicated global state.
     no_default_deps = true
     assert_no_deps = [
       "//base",
       "//buildtools/third_party/libc++",
     ]
-    deps = [ ":qt_interface" ]
+    deps = [
+      ":qt_interface",
+      "//base:compiler_specific",
+    ]
 
     configs -= [ "//build/config/compiler:runtime_library" ]
     configs += [
@@ -99,6 +108,11 @@ template("qt_shim") {
       sources += get_target_outputs(":generate_moc" + invoker.qt_version)
       deps += [ ":generate_moc" + invoker.qt_version ]
     }
+
+    # Don't depend on libcxx modules. This binary doesn't depend on the standard
+    # library in libcxx. Instead it depends on the libcxx in the sysroot, so
+    # using libcxx will just confuse it with duplicate definitions.
+    use_libcxx_modules = false
   }
 }
 if (use_qt5) {
@@ -134,6 +148,7 @@ component("qt") {
   deps = [
     ":qt_interface",
     "//base",
+    "//cc/paint",
     "//printing/buildflags",
     "//ui/base/ime/linux",
     "//ui/color",
@@ -150,6 +165,10 @@ component("qt") {
   }
 
   sources = [
+    "native_theme_qt.cc",
+    "native_theme_qt.h",
+    "os_settings_provider_qt.cc",
+    "os_settings_provider_qt.h",
     "qt_ui.cc",
     "qt_ui.h",
   ]

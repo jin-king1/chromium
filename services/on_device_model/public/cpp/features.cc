@@ -6,8 +6,28 @@
 
 namespace on_device_model::features {
 
-BASE_FEATURE(kUseFakeChromeML,
-             "UseFakeChromeML",
+BASE_FEATURE(kUseFakeChromeML, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelForceCpuBackend, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelCpuBackend, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelLitertLmBackend, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelConversationBackend,
              base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelGpuProgramCache, base::FEATURE_ENABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelGpuWeightCache, base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelSpeculativeDecoding,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+BASE_FEATURE(kOnDeviceModelAsrDecoderPrefill,
+             base::FEATURE_DISABLED_BY_DEFAULT);
+
+const base::FeatureParam<int> kOnDeviceModelAsrDecoderPrefillBackoff{
+    &kOnDeviceModelAsrDecoderPrefill, "decoder_prefill_backoff", -1};
 
 }  // namespace on_device_model::features

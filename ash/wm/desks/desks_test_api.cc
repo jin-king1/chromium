@@ -23,10 +23,11 @@
 #include "ash/wm/overview/overview_test_util.h"
 #include "ash/wm/overview/overview_utils.h"
 #include "base/run_loop.h"
+#include "base/test/run_until.h"
 #include "ui/base/mojom/menu_source_type.mojom.h"
 #include "ui/compositor/layer.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
 #include "ui/events/test/event_generator.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/views/background.h"
 #include "ui/views/controls/menu/menu_item_view.h"
 #include "ui/views/controls/menu/menu_model_adapter.h"
@@ -128,12 +129,6 @@ bool DesksTestApi::IsDeskShortcutViewVisible(DeskMiniView* mini_view) {
 }
 
 // static
-DeskProfilesButton* DesksTestApi::GetDeskProfileButton(
-    DeskMiniView* mini_view) {
-  return mini_view->desk_profile_button_;
-}
-
-// static
 bool DesksTestApi::DesksControllerHasDesk(Desk* desk) {
   return DesksController::Get()->HasDesk(desk);
 }
@@ -181,12 +176,6 @@ void DesksTestApi::WaitForDeskBarUiUpdate(DeskBarViewBase* desk_bar_view) {
   base::RunLoop run_loop;
   desk_bar_view->on_update_ui_closure_for_testing_ = run_loop.QuitClosure();
   run_loop.Run();
-}
-
-// static
-void DesksTestApi::SetDeskBarUiUpdateCallback(DeskBarViewBase* desk_bar_view,
-                                              base::OnceClosure done) {
-  desk_bar_view->on_update_ui_closure_for_testing_ = std::move(done);
 }
 
 // static
@@ -248,7 +237,7 @@ views::MenuItemView* DesksTestApi::OpenDeskContextMenuAndGetMenuItem(
     click_on_view(default_button);
 
     // Wait for the desk bar to finish animating to the expanded state.
-    if (!ui::ScopedAnimationDurationScaleMode::is_zero()) {
+    if (!gfx::ScopedAnimationDurationScaleMode::is_zero()) {
       DesksTestApi::WaitForDeskBarUiUpdate(bar_view);
     }
 
@@ -296,7 +285,8 @@ void DesksTestApi::MaybeCloseContextMenuForGrid(OverviewGrid* overview_grid) {
 
     // Closing the menu is asynchronous, so we want to wait until it has
     // actually closed.
-    base::RunLoop().RunUntilIdle();
+    CHECK(base::test::RunUntil(
+        [mini_view]() { return !mini_view->context_menu(); }));
   }
 }
 

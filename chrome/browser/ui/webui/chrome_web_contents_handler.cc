@@ -9,10 +9,11 @@
 #include "chrome/browser/file_select_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/browser/ui/browser_navigator.h"
-#include "chrome/browser/ui/browser_navigator_params.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/web_contents.h"
@@ -29,8 +30,7 @@ ChromeWebContentsHandler::~ChromeWebContentsHandler() = default;
 // Opens a new URL inside |source|. |context| is the browser context that the
 // browser should be owned by. |params| contains the URL to open and various
 // attributes such as disposition. Returns the WebContents opened by the browser
-// on success. Otherwise, returns nullptr. In ChromeOS Ash, the URL might be
-// opened in Lacros. In that case, this function returns nullptr.
+// on success. Otherwise, returns nullptr.
 WebContents* ChromeWebContentsHandler::OpenURLFromTab(
     content::BrowserContext* context,
     WebContents* source,
@@ -43,7 +43,8 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
 
   Profile* profile = Profile::FromBrowserContext(context);
 
-  Browser* browser = chrome::FindTabbedBrowser(profile, false);
+  BrowserWindowInterface* browser =
+      ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser();
   const bool browser_created = !browser;
   if (!browser) {
     if (Browser::GetCreationStatusForProfile(profile) !=
@@ -65,7 +66,7 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
   } else {
     nav_params.disposition = params.disposition;
   }
-  nav_params.window_action = NavigateParams::SHOW_WINDOW;
+  nav_params.window_action = NavigateParams::WindowAction::kShowWindow;
   base::WeakPtr<content::NavigationHandle> navigation_handle =
       Navigate(&nav_params);
   if (navigation_handle_callback && navigation_handle) {
@@ -74,7 +75,7 @@ WebContents* ChromeWebContentsHandler::OpenURLFromTab(
 
   // Close the browser if chrome::Navigate created a new one.
   if (browser_created && (browser != nav_params.browser)) {
-    browser->window()->Close();
+    browser->GetWindow()->Close();
   }
 
   return nav_params.navigated_or_inserted_contents;
@@ -100,11 +101,12 @@ void ChromeWebContentsHandler::AddNewContents(
 
   Profile* profile = Profile::FromBrowserContext(context);
 
-  Browser* browser = chrome::FindTabbedBrowser(profile, false);
+  BrowserWindowInterface* browser =
+      ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser();
   const bool browser_created = !browser;
   if (!browser) {
     // The request can be triggered by Captive portal when browser is not ready
-    // (https://crbug.com/1141608).
+    // (https://crbug.com/40154317).
     if (Browser::GetCreationStatusForProfile(profile) !=
         Browser::CreationStatus::kOk) {
       return;
@@ -116,13 +118,13 @@ void ChromeWebContentsHandler::AddNewContents(
   params.source_contents = source;
   params.disposition = disposition;
   params.window_features = window_features;
-  params.window_action = NavigateParams::SHOW_WINDOW;
+  params.window_action = NavigateParams::WindowAction::kShowWindow;
   params.user_gesture = user_gesture;
   Navigate(&params);
 
   // Close the browser if chrome::Navigate created a new one.
   if (browser_created && (browser != params.browser)) {
-    browser->window()->Close();
+    browser->GetWindow()->Close();
   }
 }
 

@@ -8,7 +8,7 @@
 #include <vector>
 
 #include "base/command_line.h"
-#include "base/containers/contains.h"
+#include "base/containers/span.h"
 #include "base/feature_list.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
@@ -20,6 +20,8 @@
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
+#include "base/time/time.h"
+#include "base/time/time_override.h"
 #include "build/build_config.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -29,6 +31,7 @@
 #include "components/autofill/content/browser/content_autofill_driver.h"
 #include "components/autofill/content/browser/content_autofill_driver_factory.h"
 #include "components/autofill/content/browser/test_autofill_manager_injector.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 #include "components/autofill/core/browser/foundations/browser_autofill_manager.h"
 #include "components/autofill/core/browser/foundations/test_autofill_manager_waiter.h"
 #include "components/autofill/core/browser/heuristic_source.h"
@@ -82,6 +85,7 @@ const base::FilePath& GetTestDataDir() {
   return *dir;
 }
 
+#if !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
 const base::FilePath GetInputDir() {
   static base::FilePath input_dir = GetTestDataDir()
                                         .Append(kFeatureName)
@@ -90,30 +94,35 @@ const base::FilePath GetInputDir() {
   return input_dir;
 }
 
-std::vector<base::FilePath> GetTestFiles() {
-  base::FileEnumerator input_files(GetInputDir(), false,
-                                   base::FileEnumerator::FILES);
-  std::vector<base::FilePath> files;
-  for (base::FilePath input_file = input_files.Next(); !input_file.empty();
-       input_file = input_files.Next()) {
-    files.push_back(input_file);
-  }
-  std::sort(files.begin(), files.end());
+const std::vector<base::FilePath>& GetTestFiles() {
+  static const base::NoDestructor<std::vector<base::FilePath>> files([] {
+    base::ScopedAllowBlockingForTesting allow_blocking;
+    base::FileEnumerator input_files(GetInputDir(), false,
+                                     base::FileEnumerator::FILES);
+    std::vector<base::FilePath> files;
+    for (base::FilePath input_file = input_files.Next(); !input_file.empty();
+         input_file = input_files.Next()) {
+      files.push_back(input_file);
+    }
+    std::sort(files.begin(), files.end());
 
 #if BUILDFLAG(IS_MAC)
-  base::apple::ClearAmIBundledCache();
+    base::apple::ClearAmIBundledCache();
 #endif  // BUILDFLAG(IS_MAC)
 
-  return files;
+    return files;
+  }());
+  return *files;
 }
+#endif  // !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
 
 std::string FormStructuresToString(
-    const std::map<FormGlobalId, std::unique_ptr<FormStructure>>& forms) {
+    base::span<const FormStructure* const> forms) {
   std::vector<std::string> string_forms;
   string_forms.reserve(forms.size());
   // The forms are sorted by their global ID, which should make the order
   // deterministic.
-  for (const auto& [form_id, form_structure] : forms) {
+  for (const FormStructure* form_structure : forms) {
     std::string string_form;
     std::map<std::string, int> section_to_index;
     for (const auto& field : *form_structure) {
@@ -137,9 +146,9 @@ std::string FormStructuresToString(
         }
       }
       string_form += base::JoinString(
-          {field->Type().ToStringView(), base::UTF16ToUTF8(field->name()),
-           base::UTF16ToUTF8(field->label()),
-           base::UTF16ToUTF8(field->value(ValueSemantics::kCurrent)), section},
+          {field->Type().ToString(), base::UTF16ToUTF8(field->name()),
+           base::UTF16ToUTF8(field->label()), base::UTF16ToUTF8(field->value()),
+           section},
           " | ");
       string_form.push_back('\n');
     }
@@ -149,13 +158,26 @@ std::string FormStructuresToString(
   return base::JoinString(string_forms, "\n");
 }
 
+#if !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
+constexpr int kMaxFilesInShard = 20;
+
+int GetNumShards() {
+  const size_t num_files = GetTestFiles().size();
+  return std::max(1, static_cast<int>((num_files + kMaxFilesInShard - 1) /
+                                      kMaxFilesInShard));
+}
+#else   // !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
+int GetNumShards() {
+  return 1;
+}
+#endif  // !BUILDFLAG(USE_INTERNAL_AUTOFILL_PATTERNS)
+
 // A data-driven test for verifying Autofill heuristics. Each input is an HTML
 // file that contains one or more forms. The corresponding output file lists the
 // heuristically detected type for each field.
-class FormStructureBrowserTest
-    : public InProcessBrowserTest,
-      public testing::DataDrivenTest,
-      public testing::WithParamInterface<base::FilePath> {
+class FormStructureBrowserTest : public InProcessBrowserTest,
+                                 public testing::DataDrivenTest,
+                                 public testing::WithParamInterface<int> {
  public:
   FormStructureBrowserTest(const FormStructureBrowserTest&) = delete;
   FormStructureBrowserTest& operator=(const FormStructureBrowserTest&) = delete;
@@ -192,12 +214,16 @@ class FormStructureBrowserTest
 
   std::unique_ptr<HttpResponse> HandleRequest(const HttpRequest& request);
 
+  static base::Time GetTestTime() { return test_time_; }
+
   // The response content to be returned by the embedded test server. Note that
   // this is populated in the main thread as a part of the setup in the
   // GenerateResults method but it is consumed later in the IO thread by the
   // embedded test server to generate the response.
   std::string html_content_;
 
+  static inline base::Time test_time_;
+  std::unique_ptr<base::subtle::ScopedTimeClockOverrides> time_override_;
   test::AutofillBrowserTestEnvironment autofill_test_environment_;
   TestAutofillManagerInjector<TestAutofillManager> autofill_manager_injector_;
   base::test::ScopedFeatureList feature_list_;
@@ -205,28 +231,41 @@ class FormStructureBrowserTest
 
 FormStructureBrowserTest::FormStructureBrowserTest()
     : ::testing::DataDrivenTest(GetTestDataDir(), kFeatureName, kTestName) {
+  std::ignore = base::Time::FromString("Sat, 01 Feb 2025 09:00:00 +0000",
+                                       &FormStructureBrowserTest::test_time_);
+  time_override_ = std::make_unique<base::subtle::ScopedTimeClockOverrides>(
+      &FormStructureBrowserTest::GetTestTime, nullptr, nullptr);
   feature_list_.InitWithFeatures(
       // Enabled
       {
-          features::kAutofillPageLanguageDetection,
-          features::kAutofillFixValueSemantics,
-          // TODO(crbug.com/40741721): Remove once shared labels are launched.
-          features::kAutofillEnableSupportForParsingWithSharedLabels,
           // TODO(crbug.com/40266396): Remove once launched.
           features::kAutofillEnableExpirationDateImprovements,
-          features::kAutofillUseITAddressModel,
-          // TODO(crbug.com/320965828): Remove once launched.
-          features::kAutofillInferLabelFromDefaultSelectText,
+          features::kAutofillIgnoreCheckableElements,
+          // TODO(crbug.com/369503318): Remove once launched.
+          features::kAutofillSupportSplitZipCode,
+          features::kAutofillSupportStandaloneZipCodeGlobally,
+          features::kAutofillEnableOneTimeCodeHeuristics,
       },
       // Disabled
-      {// TODO(crbug.com/320965828): This feature is not supported on the iOS
-       // renderer side and disabled to avoid too many differences between
-       // the expectations.
-       features::kAutofillBetterLocalHeuristicPlaceholderSupport,
-       // TODO(crbug.com/40285735): Remove when launched.
-       features::kAutofillEnableEmailHeuristicOutsideForms,
-       // TODO(crbug.com/395831853): Remove once launched.
-       features::kAutofillEnableLoyaltyCardsFilling});
+      {
+          // TODO(crbug.com/320965828): This feature is not supported on the iOS
+          // renderer side and disabled to avoid too many differences between
+          // the expectations.
+          features::kAutofillBetterLocalHeuristicPlaceholderSupport,
+          // TODO(crbug.com/360322019): kAutofillPageLanguageDetection needs to
+          // be disabled because the page language detection is an asynchronous
+          // process in the renderer. If the form parsing in the browser
+          // completes before the language detection triggers a second run with
+          // a known language, the results are different from results without
+          // such a second run: Form parsing with a known language applies fewer
+          // regular expressions than formparsing without a known language. It
+          // would be ideal if the browser could just wait until the page
+          // language detection is complete but at the moment the browser is
+          // only informed if a non-null language could be determined. See
+          // crbug.com/409067352. We disable page language detection to get a
+          // deterministic result until this is fixed.
+          features::kAutofillPageLanguageDetection,
+      });
 }
 
 FormStructureBrowserTest::~FormStructureBrowserTest() = default;
@@ -238,11 +277,6 @@ void FormStructureBrowserTest::SetUpCommandLine(
   command_line->AppendSwitchASCII(switches::kLoggingLevel, "2");
   command_line->AppendSwitchASCII(
       variations::switches::kVariationsOverrideCountry, "us");
-  // SelectParserRelaxation affects the results from the test data because the
-  // test data has unclosed <select> tags. Since SelectParserRelaxation is not
-  // enabled by default, we are disabling it for this test.
-  command_line->AppendSwitchASCII("disable-blink-features",
-                                  "SelectParserRelaxation");
 }
 
 void FormStructureBrowserTest::SetUpOnMainThread() {
@@ -261,11 +295,11 @@ void FormStructureBrowserTest::GenerateResults(const std::string& input,
   for (const char c : input) {
     // Strip `\n`, `\t`, `\r` from `html` to match old `data:` URL behavior.
     // TODO(crbug.com/40317270): the tests expect weird concatenation behavior
-    // based
-    //   legacy data URL behavior. Fix this so the the tests better represent
-    //   the parsing being done in the wild.
-    if (c != '\r' && c != '\n' && c != '\t')
+    // based on legacy data URL behavior. Fix this so the the tests better
+    // represent the parsing being done in the wild.
+    if (c != '\r' && c != '\n' && c != '\t') {
       html_content_.push_back(c);
+    }
   }
 
   ASSERT_NO_FATAL_FAILURE(ASSERT_TRUE(ui_test_utils::NavigateToURL(
@@ -275,7 +309,8 @@ void FormStructureBrowserTest::GenerateResults(const std::string& input,
   TestAutofillManager* autofill_manager =
       autofill_manager_injector_[web_contents()];
   ASSERT_TRUE(autofill_manager->waiter().Wait(1));
-  *output = FormStructuresToString(autofill_manager->form_structures());
+  *output =
+      FormStructuresToString(test_api(*autofill_manager).form_structures());
 }
 
 std::unique_ptr<HttpResponse> FormStructureBrowserTest::HandleRequest(
@@ -292,17 +327,22 @@ IN_PROC_BROWSER_TEST_P(FormStructureBrowserTest, DataDrivenHeuristics) {
   GTEST_SKIP() << "DataDrivenHeuristics tests are only supported with legacy "
                   "parsing patterns";
 #else
-  // Prints the path of the test to be executed.
-  LOG(INFO) << GetParam().MaybeAsASCII();
-  bool is_expected_to_pass =
-      !base::Contains(GetFailingTestNames(), GetParam().BaseName().value());
-  RunOneDataDrivenTest(GetParam(), GetOutputDirectory(), is_expected_to_pass);
+  const int shard = GetParam();
+  const int num_shards = GetNumShards();
+  const std::vector<base::FilePath>& files = GetTestFiles();
+  for (size_t i = shard; i < files.size(); i += num_shards) {
+    const base::FilePath& file = files[i];
+    SCOPED_TRACE("Running " + file.MaybeAsASCII());
+    const bool is_expected_to_pass =
+        !GetFailingTestNames().contains(file.BaseName().value());
+    RunOneDataDrivenTest(file, GetOutputDirectory(), is_expected_to_pass);
+  }
 #endif
 }
 
 INSTANTIATE_TEST_SUITE_P(AllForms,
                          FormStructureBrowserTest,
-                         testing::ValuesIn(GetTestFiles()));
+                         testing::Range(0, GetNumShards()));
 
 }  // namespace
 }  // namespace autofill

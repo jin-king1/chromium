@@ -4,37 +4,34 @@
 
 #include "chrome/browser/ui/views/hats/hats_next_web_dialog.h"
 
-#include "base/base64url.h"
 #include "base/feature_list.h"
 #include "base/json/json_writer.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/notreached.h"
+#include "base/strings/string_number_conversions.h"
+#include "base/strings/string_util.h"
 #include "base/strings/to_string.h"
+#include "base/time/time.h"
 #include "base/values.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_destroyer.h"
-#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/hats/hats_service.h"
 #include "chrome/browser/ui/hats/hats_service_desktop.h"
 #include "chrome/browser/ui/hats/hats_service_factory.h"
 #include "chrome/browser/ui/hats/survey_config.h"
-#include "chrome/browser/ui/ui_features.h"
-#include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/frame/top_container_view.h"
-#include "chrome/browser/ui/webui/chrome_web_contents_handler.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
 #include "chrome/common/chrome_features.h"
-#include "chrome/common/chrome_isolated_world_ids.h"
-#include "chrome/common/pref_names.h"
-#include "chrome/common/webui_url_constants.h"
 #include "components/constrained_window/constrained_window_views.h"
-#include "components/version_info/version_info.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/host_zoom_map.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_ui.h"
@@ -46,9 +43,7 @@
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/base/mojom/dialog_button.mojom.h"
-#include "ui/base/ui_base_types.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
-#include "ui/views/bubble/bubble_frame_view.h"
 #include "ui/views/controls/webview/web_dialog_view.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/layout/fill_layout.h"
@@ -77,13 +72,24 @@ void LogUmaHistogramSparse(
                                static_cast<int>(enumeration));
 }
 
+views::BubbleAnchor GetBubbleAnchor(BrowserWindowInterface* browser) {
+  if (browser->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
+    return views::BubbleAnchor(
+        BrowserView::GetBrowserViewForBrowser(browser)->top_container());
+  }
+  auto* control = BrowserView::GetBrowserViewForBrowser(browser)
+                      ->toolbar_button_provider()
+                      ->GetAppMenuControl();
+  return control ? control->GetAnchor() : views::BubbleAnchor();
+}
+
 // WebView which contains the WebContents displaying the HaTS Next survey.
 class HatsNextWebDialog::HatsWebView : public views::WebView {
   METADATA_HEADER(HatsWebView, views::WebView)
 
  public:
   HatsWebView(content::BrowserContext* browser_context,
-              Browser* browser,
+              BrowserWindowInterface* browser,
               HatsNextWebDialog* dialog)
       : views::WebView(browser_context), dialog_(dialog), browser_(browser) {}
 
@@ -96,6 +102,7 @@ class HatsNextWebDialog::HatsWebView : public views::WebView {
     return true;
   }
   bool IsWebContentsCreationOverridden(
+      content::RenderFrameHost* opener,
       content::SiteInstance* source_site_instance,
       content::mojom::WindowContainerType window_container_type,
       const GURL& opener_url,
@@ -110,6 +117,8 @@ class HatsNextWebDialog::HatsWebView : public views::WebView {
       const GURL& opener_url,
       const std::string& frame_name,
       const GURL& target_url,
+      WindowOpenDisposition disposition,
+      const blink::mojom::WindowFeatures& window_features,
       const content::StoragePartitionConfig& partition_config,
       content::SessionStorageNamespace* session_storage_namespace) override {
     // The HaTS Next WebDialog runs with a non-primary OTR profile. This profile
@@ -122,7 +131,7 @@ class HatsNextWebDialog::HatsWebView : public views::WebView {
 
     // For the case where we are showing a survey in an undocked DevTools
     // window, we open the URL in the browser of the inspected page.
-    if (browser_->is_type_devtools()) {
+    if (browser_->GetType() == BrowserWindowInterface::Type::TYPE_DEVTOOLS) {
       DevToolsWindow* devtools_window =
           DevToolsWindow::AsDevToolsWindow(browser_);
       DCHECK(devtools_window);
@@ -140,20 +149,21 @@ class HatsNextWebDialog::HatsWebView : public views::WebView {
       content::NavigationHandle* navigation_handle) override {
     if (navigation_handle->IsSameDocument() &&
         navigation_handle->IsRendererInitiated()) {
-      dialog_->OnSurveyStateUpdateReceived(navigation_handle->GetURL().ref());
+      dialog_->OnSurveyStateUpdateReceived(
+          navigation_handle->GetURL().GetRef());
     }
   }
 
  private:
   raw_ptr<HatsNextWebDialog> dialog_;
-  raw_ptr<Browser> browser_;
+  raw_ptr<BrowserWindowInterface> browser_;
 };
 
 BEGIN_METADATA(HatsNextWebDialog, HatsWebView)
 END_METADATA
 
 HatsNextWebDialog::HatsNextWebDialog(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const std::string& trigger_id,
     const std::optional<std::string>& hats_histogram_name,
     const std::optional<uint64_t> hats_survey_ukm_id,
@@ -199,7 +209,8 @@ void HatsNextWebDialog::OnSurveyLoaded() {
   }
   loading_timer_.Stop();
   // Record that the survey was shown, and display the widget.
-  auto* service = HatsServiceFactory::GetForProfile(browser_->profile(), false);
+  auto* service =
+      HatsServiceFactory::GetForProfile(browser_->GetProfile(), false);
   DCHECK(service);
   service->RecordSurveyAsShown(trigger_id_);
   received_survey_loaded_ = true;
@@ -340,7 +351,7 @@ uint64_t HatsNextWebDialog::EncodeUkmQuestionAnswers(
 }
 
 HatsNextWebDialog::HatsNextWebDialog(
-    Browser* browser,
+    BrowserWindowInterface* browser,
     const std::string& trigger_id,
     const std::optional<std::string>& hats_histogram_name,
     const std::optional<uint64_t> hats_survey_ukm_id,
@@ -350,21 +361,17 @@ HatsNextWebDialog::HatsNextWebDialog(
     base::OnceClosure failure_callback,
     const SurveyBitsData& product_specific_bits_data,
     const SurveyStringData& product_specific_string_data)
-    : BubbleDialogDelegateView(
-          browser->is_type_devtools()
-              ? static_cast<views::View*>(
-                    BrowserView::GetBrowserViewForBrowser(browser)
-                        ->top_container())
-              : BrowserView::GetBrowserViewForBrowser(browser)
-                    ->toolbar_button_provider()
-                    ->GetAppMenuButton(),
-          views::BubbleBorder::TOP_RIGHT,
-          views::BubbleBorder::DIALOG_SHADOW,
-          /*autosize=*/true),
-      otr_profile_(browser->profile()->GetOffTheRecordProfile(
+    : BubbleDialogDelegateView(GetBubbleAnchor(browser),
+                               views::BubbleBorder::TOP_RIGHT,
+                               views::BubbleBorder::DIALOG_SHADOW,
+                               /*autosize=*/true),
+      otr_profile_(browser->GetProfile()->GetOffTheRecordProfile(
           Profile::OTRProfileID::CreateUnique("HaTSNext:WebDialog"),
           /*create_if_needed=*/true)),
       browser_(browser),
+      browser_close_subscription_(browser->RegisterBrowserDidClose(
+          base::BindRepeating(&HatsNextWebDialog::BrowserDidClose,
+                              base::Unretained(this)))),
       trigger_id_(trigger_id),
       hats_histogram_name_(
           hats::SurveyConfig::ValidateHatsHistogramName(hats_histogram_name)),
@@ -376,7 +383,7 @@ HatsNextWebDialog::HatsNextWebDialog(
       failure_callback_(std::move(failure_callback)),
       product_specific_bits_data_(product_specific_bits_data),
       product_specific_string_data_(product_specific_string_data),
-      ukm_hats_builder_(browser->tab_strip_model()
+      ukm_hats_builder_(browser->GetTabStripModel()
                             ->GetActiveWebContents()
                             ->GetPrimaryMainFrame()
                             ->GetPageUkmSourceId()) {
@@ -387,7 +394,7 @@ HatsNextWebDialog::HatsNextWebDialog(
   // Override the default zoom level for ths HaTS dialog. Its size should align
   // with native UI elements, rather than web content.
   content::HostZoomMap::GetDefaultForBrowserContext(otr_profile_)
-      ->SetZoomLevelForHost(hats_survey_url_.host(),
+      ->SetZoomLevelForHost(hats_survey_url_.GetHost(),
                             blink::ZoomFactorToZoomLevel(1.0f));
 
   SetButtons(static_cast<int>(ui::mojom::DialogButton::kNone));
@@ -424,7 +431,7 @@ HatsNextWebDialog::~HatsNextWebDialog() {
     ProfileDestroyer::DestroyOTRProfileWhenAppropriate(otr_profile_);
   }
   HatsServiceDesktop* service = static_cast<HatsServiceDesktop*>(
-      HatsServiceFactory::GetForProfile(browser_->profile(), false));
+      HatsServiceFactory::GetForProfile(browser_->GetProfile(), false));
   DCHECK(service);
   service->HatsNextDialogClosed();
 
@@ -441,7 +448,7 @@ GURL HatsNextWebDialog::GetParameterizedHatsURL() const {
 
   // Append any Product Specific Data to the query. This will be interpreted
   // by the wrapper website and provided to the HaTS backend service.
-  base::Value::Dict dict;
+  base::DictValue dict;
   for (const auto& field_value : product_specific_bits_data_) {
     dict.Set(field_value.first, base::ToString(field_value.second));
   }
@@ -449,8 +456,7 @@ GURL HatsNextWebDialog::GetParameterizedHatsURL() const {
     dict.Set(field_value.first, field_value.second);
   }
 
-  std::string product_specific_data_json;
-  base::JSONWriter::Write(dict, &product_specific_data_json);
+  std::string product_specific_data_json = base::WriteJson(dict).value_or("");
 
   param_url = net::AppendQueryParameter(param_url, "product_specific_data",
                                         product_specific_data_json);
@@ -458,11 +464,10 @@ GURL HatsNextWebDialog::GetParameterizedHatsURL() const {
   // The HaTS backend service accepts a list of preferred languages, although
   // only the application locale is provided here to ensure that the survey
   // matches the native UI language.
-  base::Value::List language_list;
+  base::ListValue language_list;
   language_list.Append(g_browser_process->GetApplicationLocale());
 
-  std::string language_list_json;
-  base::JSONWriter::Write(language_list, &language_list_json);
+  std::string language_list_json = base::WriteJson(language_list).value_or("");
   param_url =
       net::AppendQueryParameter(param_url, "languages", language_list_json);
 
@@ -475,6 +480,7 @@ GURL HatsNextWebDialog::GetParameterizedHatsURL() const {
 }
 
 void HatsNextWebDialog::LoadTimedOut() {
+  load_timed_out_ = true;
   base::UmaHistogramEnumeration(
       kHatsShouldShowSurveyReasonHistogram,
       HatsServiceDesktop::ShouldShowSurveyReasons::kNoSurveyUnreachable);
@@ -485,6 +491,11 @@ void HatsNextWebDialog::LoadTimedOut() {
 // TODO(crbug.com/40285934): Remove this whole function after HaTSWebUI is
 // launched.
 void HatsNextWebDialog::OnSurveyStateUpdateReceived(std::string state) {
+  if (load_timed_out_) {
+    // Ignore state update, since we already consider the survey load to be
+    // timed out, and treated it accordingly.
+    return;
+  }
   loading_timer_.Stop();
 
   if (state == "loaded") {
@@ -531,6 +542,10 @@ int HatsNextWebDialog::GetHistogramBucket(int question, int answer) {
   // HappinessTrackingSurvey, which is defined in the file
   // tools/metrics/histograms/metadata/others/enums.xml.
   return question * 100 + answer;
+}
+
+void HatsNextWebDialog::BrowserDidClose(BrowserWindowInterface* browser) {
+  widget_->CloseNow();
 }
 
 BEGIN_METADATA(HatsNextWebDialog)

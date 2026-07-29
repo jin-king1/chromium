@@ -5,6 +5,8 @@
 #ifndef IOS_WEB_PUBLIC_WEB_CLIENT_H_
 #define IOS_WEB_PUBLIC_WEB_CLIENT_H_
 
+#import <Foundation/Foundation.h>
+
 #include <map>
 #include <memory>
 #include <optional>
@@ -30,6 +32,8 @@ class GURL;
 @class NSData;
 @protocol UIMenuBuilder;
 @class UIView;
+@class WKFrameInfo;
+@class WKOpenPanelParameters;
 
 namespace net {
 class SSLInfo;
@@ -39,10 +43,23 @@ namespace web {
 
 class BrowserState;
 class BrowserURLRewriter;
+class CobaltController;
 class JavaScriptFeature;
 class WebClient;
 class WebMainParts;
 class WebState;
+
+// Enum type specifying the JavaScript Error logging level.
+enum class JSErrorReportLoggingLevel : short {
+  // No logging.
+  NONE = 0,
+
+  // A report without the webpage URL.
+  REPORT_WITHOUT_URL,
+
+  // A full report may be sent, including webpage URL.
+  FULL
+};
 
 // Setter and getter for the client.  The client should be set early, before any
 // web code is called.
@@ -93,6 +110,11 @@ class WebClient {
 
   // Returns the user agent string for the specified type.
   virtual std::string GetUserAgent(UserAgentType type) const;
+
+  // Returns the name of the main thread. If the returned string is empty,
+  // the main thread name will not be set. The default implementation returns
+  // an empty string and does not rename the main thread.
+  virtual std::string GetMainThreadName() const;
 
   // Returns a string resource given its id.
   virtual std::u16string GetLocalizedString(int message_id) const;
@@ -194,6 +216,32 @@ class WebClient {
       web::BrowserState* browser_state) const;
 
   virtual void BuildEditMenu(web::WebState* web_state, id<UIMenuBuilder>) const;
+
+  // Whether the embedder implements `RunOpenPanel()` for `web_state`.
+  // If this returns `false`, then the native open panel will run instead.
+  // The value returned for a `web_state` cannot change during its lifetime.
+  virtual bool CanRunOpenPanel(web::WebState* web_state) const
+      API_AVAILABLE(ios(18.4));
+  // Displays a file upload panel and calls `completion` with file URLs selected
+  // by the user. `parameters` describe the file upload control which initiated
+  // the call from `frame`. This is not called if `CanRunOpenPanel()` returns
+  // false for `web_state`.
+  virtual void RunOpenPanel(
+      web::WebState* web_state,
+      WKOpenPanelParameters* parameters,
+      WKFrameInfo* frame,
+      base::OnceCallback<void(NSArray<NSURL*>*)> completion) const
+      API_AVAILABLE(ios(18.4));
+
+  virtual JSErrorReportLoggingLevel GetJSErrorReportLoggingLevel(
+      BrowserState* browser_state) const;
+
+  // Returns the Cobalt controller for the given `browser_state`.
+  virtual CobaltController* GetCobaltController(
+      BrowserState* browser_state) const;
+
+  // Returns whether smooth scrolling is supported.
+  virtual bool IsSmoothScrollingSupported() const;
 };
 
 }  // namespace web

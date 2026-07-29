@@ -9,8 +9,6 @@ import android.content.res.Resources;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.RotateDrawable;
-import android.os.Build;
-import android.os.Build.VERSION;
 import android.util.AttributeSet;
 import android.view.MotionEvent;
 import android.view.TouchDelegate;
@@ -24,14 +22,18 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import androidx.annotation.ColorInt;
-import androidx.annotation.DrawableRes;
+import androidx.annotation.DimenRes;
 import androidx.annotation.IntDef;
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.annotation.StringRes;
-import androidx.appcompat.content.res.AppCompatResources;
 import androidx.appcompat.widget.TooltipCompat;
 
+import org.chromium.base.TimeUtils;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.EnsuresNonNull;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.browser_controls.BrowserStateBrowserControlsVisibilityDelegate;
 import org.chromium.chrome.browser.omnibox.R;
 import org.chromium.components.browser_ui.widget.ChromeTransitionDrawable;
@@ -47,6 +49,7 @@ import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 
 /** StatusView is a location bar's view displaying status (icons and/or text). */
+@NullMarked
 public class StatusView extends LinearLayout {
     @IntDef({IconTransitionType.CROSSFADE, IconTransitionType.ROTATE})
     @Retention(RetentionPolicy.SOURCE)
@@ -65,13 +68,13 @@ public class StatusView extends LinearLayout {
     private int mTouchDelegateEndOffset;
 
     private ImageView mIconView;
-    private View mIconBackground;
     private StatusIconView mStatusIconView;
     private TextView mVerboseStatusTextView;
     private View mSeparatorView;
     private View mStatusExtraSpace;
 
     private boolean mAnimationsEnabled;
+    private long mAnimationStartTimeMs;
     private boolean mAnimatingStatusIconShow;
     private boolean mAnimatingStatusIconHide;
     private boolean mIsAnimatingStatusIconChange;
@@ -79,17 +82,23 @@ public class StatusView extends LinearLayout {
     private @StringRes int mAccessibilityToast;
     private @StringRes int mAccessibilityDoubleTapDescription;
 
-    private Drawable mStatusIconDrawable;
+    private @Nullable Drawable mStatusIconDrawable;
 
-    private TouchDelegate mTouchDelegate;
-    private CompositeTouchDelegate mCompositeTouchDelegate;
+    private @Nullable TouchDelegate mTouchDelegate;
+    private @Nullable CompositeTouchDelegate mCompositeTouchDelegate;
 
     private boolean mLastTouchDelegateRtlness;
-    private Rect mLastTouchDelegateRect;
+    private @Nullable Rect mLastTouchDelegateRect;
 
-    private BrowserStateBrowserControlsVisibilityDelegate mBrowserControlsVisibilityDelegate;
+    private @Nullable BrowserStateBrowserControlsVisibilityDelegate
+            mBrowserControlsVisibilityDelegate;
     private int mShowBrowserControlsToken = TokenHolder.INVALID_TOKEN;
-    private Integer mIconAnimationDurationForTests;
+    private int mStatusIconSize;
+    private @Nullable Integer mIconAnimationDurationForTests;
+    private final SettableMonotonicObservableSupplier<Boolean> mIsVisibleSupplier =
+            ObservableSuppliers.createMonotonic(null);
+    private final RoundedCornerOutlineProvider mIconCornerRadiusProvider =
+            new RoundedCornerOutlineProvider(/* radius= */ 0);
 
     public StatusView(Context context, AttributeSet attributes) {
         super(context, attributes);
@@ -100,7 +109,6 @@ public class StatusView extends LinearLayout {
         super.onFinishInflate();
 
         mIconView = findViewById(R.id.location_bar_status_icon);
-        mIconBackground = findViewById(R.id.location_bar_status_icon_bg);
         mStatusIconView = findViewById(R.id.location_bar_status_icon_view);
         mVerboseStatusTextView = findViewById(R.id.location_bar_verbose_status);
         mSeparatorView = findViewById(R.id.location_bar_verbose_status_separator);
@@ -133,16 +141,26 @@ public class StatusView extends LinearLayout {
                     }
                 });
 
-        // Configure icon rounding.
-        mIconView.setOutlineProvider(
-                new RoundedCornerOutlineProvider(
-                        getResources()
-                                        .getDimensionPixelSize(
-                                                R.dimen.omnibox_search_engine_logo_composed_size)
-                                / 2));
+        mStatusIconSize =
+                getResources()
+                        .getDimensionPixelSize(R.dimen.omnibox_search_engine_logo_composed_size);
+        setCornerRadiusRes(R.dimen.omnibox_search_engine_logo_composed_half_size);
         mIconView.setClipToOutline(true);
 
         configureAccessibilityDescriptions();
+    }
+
+    @Override
+    protected void onVisibilityChanged(View changedView, int visibility) {
+        super.onVisibilityChanged(changedView, visibility);
+        if (changedView == this) {
+            mIsVisibleSupplier.set(visibility == VISIBLE);
+        }
+    }
+
+    /** Returns a supplier that is updated whenever the visibility of this view changes. */
+    public MonotonicObservableSupplier<Boolean> getIsVisibleSupplier() {
+        return mIsVisibleSupplier;
     }
 
     /**
@@ -159,13 +177,13 @@ public class StatusView extends LinearLayout {
     }
 
     /**
-     * Set hover highlight resource id.
+     * Set the background to be used, for eg. on hover or on focus.
      *
-     * @param hoverHighlightResId background hover highlight resource id.
+     * @param background The background {@link Drawable}.
      */
-    public void setHoverHighlight(@DrawableRes int hoverHighlightResId) {
-        if (hoverHighlightResId != Resources.ID_NULL && isSearchEngineStatusIconVisible()) {
-            setBackground(AppCompatResources.getDrawable(getContext(), hoverHighlightResId));
+    public void maybeSetBackground(Drawable background) {
+        if (background != null && isSearchEngineStatusIconVisible()) {
+            setBackground(background);
         } else {
             setBackground(null);
         }
@@ -181,11 +199,16 @@ public class StatusView extends LinearLayout {
      *
      * @param compositeTouchDelegate The parent's CompositeTouchDelegate to be used.
      */
-    public void setCompositeTouchDelegate(CompositeTouchDelegate compositeTouchDelegate) {
+    public void setCompositeTouchDelegate(@Nullable CompositeTouchDelegate compositeTouchDelegate) {
         mCompositeTouchDelegate = compositeTouchDelegate;
         mIconView.addOnLayoutChangeListener(
                 (v, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) ->
                         updateTouchDelegate());
+    }
+
+    /** Returns the start time (ms) of the current or most recent status icon animation. */
+    public long getAnimationStartTimeMs() {
+        return mAnimationStartTimeMs;
     }
 
     /**
@@ -224,6 +247,7 @@ public class StatusView extends LinearLayout {
         if (!wantIconHidden && (isIconHidden || mAnimatingStatusIconHide)) {
             // Action 1: animate showing, if icon was either hidden or hiding.
             if (mAnimatingStatusIconHide) mIconView.animate().cancel();
+            updateAnimationStartTime();
             mAnimatingStatusIconHide = false;
             mAnimatingStatusIconShow = true;
             keepControlsShownForAnimation();
@@ -247,6 +271,7 @@ public class StatusView extends LinearLayout {
         } else if (wantIconHidden && (!isIconHidden || mAnimatingStatusIconShow)) {
             // Action 2: animate hiding, if icon was either shown or showing.
             if (mAnimatingStatusIconShow) mIconView.animate().cancel();
+            updateAnimationStartTime();
             mAnimatingStatusIconShow = false;
             mAnimatingStatusIconHide = true;
             keepControlsShownForAnimation();
@@ -254,7 +279,7 @@ public class StatusView extends LinearLayout {
             // While this looks nice in some cases (navigating to insecure sites),
             // it has a side-effect of briefly showing padlock (phase-out) when navigating
             // back and forth between secure and insecure sites, which seems like a glitch.
-            // See bug: crbug.com/919449
+            // See bug: crbug.com/41434187
             mIconView
                     .animate()
                     .setDuration(mAnimationsEnabled ? getIconAnimationDuration() : 0)
@@ -295,9 +320,13 @@ public class StatusView extends LinearLayout {
                                 transitionType == IconTransitionType.ROTATE
                                         ? getRotatedIcon(targetIcon)
                                         : targetIcon);
+                newImage.setLayerSize(0, mStatusIconSize, mStatusIconSize);
+                newImage.setLayerSize(1, mStatusIconSize, mStatusIconSize);
+
                 mIconView.setImageDrawable(newImage);
 
                 if (transitionType == IconTransitionType.CROSSFADE) {
+                    updateAnimationStartTime();
                     mIsAnimatingStatusIconChange = true;
                     long duration = mAnimationsEnabled ? getIconAnimationDuration() : 0;
                     if (duration > 0) {
@@ -308,8 +337,10 @@ public class StatusView extends LinearLayout {
                             .setDuration(duration)
                             .withEndAction(this::resetAnimationStatus);
                 } else {
+                    updateAnimationStartTime();
                     mIsAnimatingStatusIconChange = true;
                     keepControlsShownForAnimation();
+                    mIconView.setAccessibilityLiveRegion(ACCESSIBILITY_LIVE_REGION_POLITE);
                     mIconView
                             .animate()
                             .setDuration(ICON_ROTATION_DURATION_MS)
@@ -326,6 +357,8 @@ public class StatusView extends LinearLayout {
                                         mIsAnimatingStatusIconChange = false;
                                         allowBrowserControlsHide();
                                         mIconView.setRotation(0);
+                                        mIconView.setAccessibilityLiveRegion(
+                                                ACCESSIBILITY_LIVE_REGION_NONE);
                                         // Only update status icon if it is still the current icon.
                                         if (mStatusIconDrawable == targetIcon) {
                                             mIconView.setImageDrawable(targetIcon);
@@ -346,12 +379,18 @@ public class StatusView extends LinearLayout {
         }
     }
 
+    private void updateAnimationStartTime() {
+        if (!isStatusIconAnimating()) {
+            mAnimationStartTimeMs = TimeUtils.elapsedRealtimeMillis();
+        }
+    }
+
     private void setStatusIconVisibility(int visibility) {
         mStatusIconView.setVisibility(visibility);
     }
 
     /** Returns a rotated version of the icon passed in. */
-    private Drawable getRotatedIcon(@NonNull Drawable icon) {
+    private Drawable getRotatedIcon(Drawable icon) {
         RotateDrawable rotated = new RotateDrawable();
         rotated.setDrawable(icon);
         rotated.setToDegrees(ICON_ROTATION_DEGREES);
@@ -401,6 +440,11 @@ public class StatusView extends LinearLayout {
                 });
     }
 
+    /** Specify the corner radius of the icon outline provider. */
+    void setCornerRadiusRes(@DimenRes int radiusRes) {
+        mIconCornerRadiusProvider.setRadius(getResources().getDimensionPixelSize(radiusRes));
+    }
+
     /** Toggle use of animations. */
     void setAnimationsEnabled(boolean enabled) {
         mAnimationsEnabled = enabled;
@@ -422,16 +466,6 @@ public class StatusView extends LinearLayout {
         animateStatusIcon(transitionType, animationFinishedCallback);
     }
 
-    /** Specify the status icon alpha. */
-    void setStatusIconAlpha(float alpha) {
-        if (mIconView == null) return;
-        mIconView.setAlpha(alpha);
-
-        if (mIconBackground != null && mIconBackground.getVisibility() == VISIBLE) {
-            mIconBackground.setAlpha(alpha);
-        }
-    }
-
     /** Specify the status icon visibility. */
     public void setStatusIconShown(boolean showIcon) {
         if (mStatusIconView == null) return;
@@ -450,7 +484,7 @@ public class StatusView extends LinearLayout {
 
         // If the icon's visibility changes while layout is pending, we can end up in a bad state
         // due to a stale measurement cache. Post a task to request layout to force this visibility
-        // change (crbug.com/1345552).
+        // change (crbug.com/40853631).
         if (wasLayoutPreviouslyRequested && getHandler() != null) {
             getHandler()
                     .post(
@@ -458,13 +492,6 @@ public class StatusView extends LinearLayout {
                                     ViewUtils.requestLayout(
                                             this, "StatusView.setStatusIconShown Runnable"));
         }
-    }
-
-    /** Specify the status icon background visibility. */
-    void setStatusIconBackgroundVisibility(boolean showIconBackground) {
-        if (mIconView == null || mIconBackground == null) return;
-
-        mIconBackground.setVisibility(showIconBackground ? VISIBLE : INVISIBLE);
     }
 
     /** Specify accessibility string presented to user upon long click. */
@@ -487,6 +514,9 @@ public class StatusView extends LinearLayout {
         }
         mIconView.setContentDescription(description);
         setImportantForAccessibility(importantForAccessibility);
+        setFocusable(descriptionRes != 0);
+        setClickable(descriptionRes != 0);
+        setLongClickable(descriptionRes != 0);
     }
 
     /** Select color of Separator view. */
@@ -530,10 +560,12 @@ public class StatusView extends LinearLayout {
     }
 
     void setBrowserControlsVisibilityDelegate(
-            BrowserStateBrowserControlsVisibilityDelegate browserControlsVisibilityDelegate) {
+            @Nullable BrowserStateBrowserControlsVisibilityDelegate
+                    browserControlsVisibilityDelegate) {
         mBrowserControlsVisibilityDelegate = browserControlsVisibilityDelegate;
     }
 
+    @EnsuresNonNull("mIncognitoBadge")
     private void initializeIncognitoBadge() {
         ViewStub viewStub = findViewById(R.id.location_bar_incognito_badge_stub);
         mIncognitoBadge = viewStub.inflate();
@@ -541,8 +573,8 @@ public class StatusView extends LinearLayout {
 
     /**
      * Create a touch delegate to expand the clickable area for the padlock icon (see
-     * crbug.com/970031 for motivation/info). This method will be called when the icon is animating
-     * in and when layout changes. It's called on these intervals because
+     * crbug.com/40630473 for motivation/info). This method will be called when the icon is
+     * animating in and when layout changes. It's called on these intervals because
      *
      * <ul>
      *   <li>the layout could change and
@@ -577,7 +609,7 @@ public class StatusView extends LinearLayout {
         touchDelegateBounds.left -= isRtl ? mTouchDelegateEndOffset : mTouchDelegateStartOffset;
         touchDelegateBounds.right += isRtl ? mTouchDelegateStartOffset : mTouchDelegateEndOffset;
         // Increase the delegate area height for tablets to satisfy minimum size requirements.
-        // Ideally, we want to address crbug.com/1320384 to satisfy minimum size requirements.
+        // Ideally, we want to address crbug.com/40836741 to satisfy minimum size requirements.
         if (DeviceFormFactor.isNonMultiDisplayContextOnTablet(getContext())) {
             touchDelegateBounds.top -=
                     getResources()
@@ -637,11 +669,9 @@ public class StatusView extends LinearLayout {
                 && mIconView.getAlpha() != 0;
     }
 
-    /** Set tooltip text on StatusView for API >= 26. */
-    private void setTooltipText(String tooltip) {
-        if (VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            TooltipCompat.setTooltipText((View) this, tooltip);
-        }
+    /** Set tooltip text on StatusView. */
+    private void setTooltipText(@Nullable String tooltip) {
+        TooltipCompat.setTooltipText((View) this, tooltip);
     }
 
     private void keepControlsShownForAnimation() {
@@ -673,7 +703,7 @@ public class StatusView extends LinearLayout {
                 : mIconAnimationDurationForTests;
     }
 
-    TouchDelegate getTouchDelegateForTesting() {
+    @Nullable TouchDelegate getTouchDelegateForTesting() {
         return mTouchDelegate;
     }
 

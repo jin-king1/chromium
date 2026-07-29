@@ -2,35 +2,47 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "chrome/browser/navigation_predictor/anchor_element_preloader.h"
+
+#include <optional>
+#include <string>
+#include <vector>
+
 #include "base/metrics/field_trial_params.h"
 #include "base/run_loop.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/task_environment.h"
-#include "chrome/browser/navigation_predictor/anchor_element_preloader.h"
 #include "chrome/browser/predictors/loading_predictor.h"
 #include "chrome/browser/predictors/loading_predictor_factory.h"
-#include "chrome/browser/predictors/preconnect_manager.h"
 #include "chrome/browser/preloading/chrome_preloading.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
+#include "chrome/browser/preloading/scoped_prewarm_feature_list.h"
 #include "chrome/browser/subresource_filter/subresource_filter_browser_test_harness.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/ukm/test_ukm_recorder.h"
+#include "content/public/browser/preconnect_manager.h"
 #include "content/public/browser/preloading.h"
+#include "content/public/browser/render_widget_host_view.h"
 #include "content/public/common/content_features.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/preloading_test_util.h"
 #include "net/base/features.h"
+#include "net/base/isolation_info.h"
+#include "net/base/network_anonymization_key.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/network/public/cpp/features.h"
 #include "third_party/blink/public/common/features.h"
+#include "third_party/blink/public/common/features_generated.h"
 #include "third_party/blink/public/common/input/web_mouse_event.h"
 #include "ui/gfx/geometry/point_conversions.h"
+#include "url/gurl.h"
 
 namespace {
 
@@ -39,7 +51,7 @@ using ukm::builders::Preloading_Attempt;
 
 class AnchorElementPreloaderBrowserTest
     : public subresource_filter::SubresourceFilterBrowserTest,
-      public predictors::PreconnectManager::Observer {
+      public content::PreconnectManager::Observer {
  public:
   static constexpr char kOrigin1[] = "https://www.origin1.com/";
   static constexpr char kOrigin2[] = "https://www.origin2.com/";
@@ -48,11 +60,14 @@ class AnchorElementPreloaderBrowserTest
     return {};
   }
 
+  virtual std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures() {
+    return {{blink::features::kNavigationPredictor,
+             GetNavigationPredictorFieldTrialParams()}};
+  }
+
   void SetUp() override {
-    feature_list_.InitWithFeaturesAndParameters(
-        {{blink::features::kNavigationPredictor,
-          GetNavigationPredictorFieldTrialParams()}},
-        {});
+    feature_list_.InitWithFeaturesAndParameters(GetEnabledFeatures(),
+                                                /*disabled_features=*/{});
     https_server_ = std::make_unique<net::EmbeddedTestServer>(
         net::EmbeddedTestServer::TYPE_HTTPS);
     https_server_->ServeFilesFromSourceDirectory("chrome/test/data/preload");
@@ -64,14 +79,15 @@ class AnchorElementPreloaderBrowserTest
   void SetUpCommandLine(base::CommandLine* command_line) override {
     // Without this flag, mouse events are suppressed in these tests.
     command_line->AppendSwitch("allow-pre-commit-input");
+    command_line->AppendSwitch("ignore-certificate-errors");
   }
 
   void SetUpOnMainThread() override {
     subresource_filter::SubresourceFilterBrowserTest::SetUpOnMainThread();
-    host_resolver()->ClearRules();
+    host_resolver()->AddRule("*", "127.0.0.1");
     auto* loading_predictor =
         predictors::LoadingPredictorFactory::GetForProfile(
-            browser()->profile());
+            browser()->GetProfile());
     histogram_tester_ = std::make_unique<base::HistogramTester>();
     test_ukm_recorder_ = std::make_unique<ukm::TestAutoSetUkmRecorder>();
     ukm_entry_builder_ =
@@ -111,14 +127,18 @@ class AnchorElementPreloaderBrowserTest
     run_loop.Run();
   }
 
-  // predictors::PreconnectManager::Observer
+  // content::PreconnectManager::Observer
   // We observe DNS preresolution instead of preconnect, because test
   // servers all resolve to localhost and Chrome won't preconnect
   // given it already has a warm connection.
   void OnPreresolveFinished(
       const GURL& url,
       const net::NetworkAnonymizationKey& network_anonymization_key,
+      mojo::PendingRemote<network::mojom::ConnectionChangeObserverClient>&
+          observer,
       bool success) override {
+    last_network_anonymization_key_ = network_anonymization_key;
+    last_preresolve_success_ = success;
     if (url != GURL(kOrigin1) && url != GURL(kOrigin2)) {
       return;
     }
@@ -147,13 +167,19 @@ class AnchorElementPreloaderBrowserTest
 
  protected:
   int preresolve_count_;
-  base::test::ScopedFeatureList feature_list_;
+  net::NetworkAnonymizationKey last_network_anonymization_key_;
+  std::optional<bool> last_preresolve_success_;
   // Disable sampling of UKM preloading logs.
   content::test::PreloadingConfigOverride preloading_config_override_;
+  std::unique_ptr<net::EmbeddedTestServer> https_server_;
 
  private:
+  // TODO(https://crbug.com/423465927): Explore a better approach to make the
+  // existing tests run with the prewarm feature enabled.
+  test::ScopedPrewarmFeatureList prewarm_feature_list_{
+      test::ScopedPrewarmFeatureList::PrewarmState::kDisabled};
+  base::test::ScopedFeatureList feature_list_;
   base::ScopedMockElapsedTimersForTest test_timer_;
-  std::unique_ptr<net::EmbeddedTestServer> https_server_;
   std::unique_ptr<base::RunLoop> run_loop_;
   std::unique_ptr<ukm::TestAutoSetUkmRecorder> test_ukm_recorder_;
   std::unique_ptr<base::HistogramTester> histogram_tester_;
@@ -309,7 +335,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest, DISABLED_IframeTest) {
 
 IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
                        UserSettingDisabledTest) {
-  prefetch::SetPreloadPagesState(browser()->profile()->GetPrefs(),
+  prefetch::SetPreloadPagesState(browser()->GetProfile()->GetPrefs(),
                                  prefetch::PreloadPagesState::kNoPreloading);
   const GURL& url = GetTestURL("/one_anchor.html");
   EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
@@ -401,6 +427,7 @@ IN_PROC_BROWSER_TEST_F(AnchorElementSetIsNavigationInDomainBrowserTest,
     let a = document.createElement("a");
     a.id = "link";
     a.href = "https://www.example.com";
+    a.draggable = false;
     a.innerHTML = '<div style="width:100vw;height:100vh;">Example<div>';
     document.body.appendChild(a);
     )"));
@@ -426,6 +453,107 @@ IN_PROC_BROWSER_TEST_F(AnchorElementSetIsNavigationInDomainBrowserTest,
   histogram_tester.ExpectBucketCount(
       "Preloading.Predictor.PointerDownOnAnchor.Recall",
       /*content::PredictorConfusionMatrix::kFalseNegative*/ 3, 1);
+}
+
+IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
+                       PreconnectNetworkAnonymizationKey) {
+  const GURL& url = GetTestURL("/one_anchor.html");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+  SimulateMouseDownElementWithId("anchor1");
+
+  WaitForPreresolveCountForURL(1);
+  EXPECT_EQ(1, preresolve_count_);
+
+  // The NAK should be the one from the primary main frame's isolation info for
+  // subresources.
+  EXPECT_EQ(last_network_anonymization_key_,
+            GetPrimaryMainFrame()
+                ->GetIsolationInfoForSubresources()
+                .network_anonymization_key());
+}
+
+// TODO(crbug.com/503036437): Re-enable this test once flakiness has been resolved.
+IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderBrowserTest,
+                       DISABLED_PreconnectNetworkAnonymizationKeyCrossOrigin) {
+  const GURL& url = GetTestURL("/iframe_anchor.html");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+
+  // Navigate the iframe to a cross-origin site.
+  GURL cross_origin_url = https_server_->GetURL("b.com", "/iframe.html");
+  content::RenderFrameHost* main_frame = GetPrimaryMainFrame();
+  content::RenderFrameHost* iframe = content::ChildFrameAt(main_frame, 0);
+  ASSERT_TRUE(iframe);
+
+  EXPECT_TRUE(content::NavigateIframeToURL(
+      browser()->tab_strip_model()->GetActiveWebContents(), "iframe1",
+      cross_origin_url));
+  // Re-get the iframe RFH after navigation.
+  iframe = content::ChildFrameAt(main_frame, 0);
+  ASSERT_TRUE(iframe);
+  EXPECT_EQ(iframe->GetLastCommittedURL(), cross_origin_url);
+
+  // Trigger mousedown in the iframe.
+  content::WebContents* web_contents =
+      browser()->tab_strip_model()->GetActiveWebContents();
+  gfx::Point point =
+      gfx::ToFlooredPoint(iframe->GetView()->TransformPointToRootCoordSpaceF(
+          content::GetCenterCoordinatesOfElementWithId(iframe,
+                                                       "iframe_anchor")));
+
+  content::SimulateMouseEvent(web_contents,
+                              blink::WebMouseEvent::Type::kMouseDown,
+                              blink::WebMouseEvent::Button::kLeft, point);
+
+  WaitForPreresolveCountForURL(1);
+  EXPECT_EQ(1, preresolve_count_);
+
+  // The NAK should be the one from the iframe's isolation info for
+  // subresources.
+  EXPECT_EQ(
+      last_network_anonymization_key_,
+      iframe->GetIsolationInfoForSubresources().network_anonymization_key());
+
+  // Also verify it's different from the main frame's NAK to be sure we are
+  // testing something interesting.
+  EXPECT_NE(last_network_anonymization_key_,
+            main_frame->GetIsolationInfoForSubresources()
+                .network_anonymization_key());
+}
+
+class AnchorElementPreloaderConnectionAllowlistBrowserTest
+    : public AnchorElementPreloaderBrowserTest {
+ public:
+  AnchorElementPreloaderConnectionAllowlistBrowserTest() = default;
+  ~AnchorElementPreloaderConnectionAllowlistBrowserTest() override = default;
+
+  std::vector<base::test::FeatureRefAndParams> GetEnabledFeatures() override {
+    std::vector<base::test::FeatureRefAndParams> enabled =
+        AnchorElementPreloaderBrowserTest::GetEnabledFeatures();
+    enabled.push_back({network::features::kConnectionAllowlists, {}});
+    return enabled;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderConnectionAllowlistBrowserTest,
+                       PreconnectAllowedByConnectionAllowlist) {
+  const GURL& url = GetTestURL("/connection_allowlist_allowed.html");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+  SimulateMouseDownElementWithId("anchor1");
+
+  WaitForPreresolveCountForURL(1);
+  EXPECT_EQ(1, preresolve_count_);
+  EXPECT_EQ(last_preresolve_success_, true);
+}
+
+IN_PROC_BROWSER_TEST_F(AnchorElementPreloaderConnectionAllowlistBrowserTest,
+                       PreconnectBlockedByConnectionAllowlist) {
+  const GURL& url = GetTestURL("/connection_allowlist_blocked.html");
+  EXPECT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+  SimulateMouseDownElementWithId("anchor1");
+
+  WaitForPreresolveCountForURL(1);
+  EXPECT_EQ(1, preresolve_count_);
+  EXPECT_EQ(last_preresolve_success_, false);
 }
 
 }  // namespace

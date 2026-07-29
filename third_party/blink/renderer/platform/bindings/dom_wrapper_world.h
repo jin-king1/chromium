@@ -39,16 +39,13 @@
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/platform_export.h"
 #include "third_party/blink/renderer/platform/wtf/allocator/allocator.h"
+#include "third_party/blink/renderer/platform/wtf/forward.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 #include "v8/include/v8.h"
 
 namespace base {
 class UnguessableToken;
 }  // namespace base
-
-namespace WTF {
-class String;
-}  // namespace WTF
 
 namespace blink {
 
@@ -129,6 +126,11 @@ class PLATFORM_EXPORT DOMWrapperWorld final
   // Ensures an IsolatedWorld for |worldId|.
   static DOMWrapperWorld* EnsureIsolatedWorld(v8::Isolate*, int32_t world_id);
 
+  // Ensures a kInspectorIsolated world for |name|.
+  static DOMWrapperWorld* EnsureInspectorIsolatedWorldWithName(
+      v8::Isolate*,
+      const String& name);
+
   DOMWrapperWorld(PassKey,
                   v8::Isolate*,
                   WorldType,
@@ -161,12 +163,11 @@ class PLATFORM_EXPORT DOMWrapperWorld final
 
   static DOMWrapperWorld& MainWorld(v8::Isolate* isolate);
 
-  static void SetNonMainWorldStableId(int32_t world_id, const WTF::String&);
-  WTF::String NonMainWorldStableId() const;
+  static void SetNonMainWorldStableId(int32_t world_id, const String&);
+  String NonMainWorldStableId() const;
 
-  static void SetNonMainWorldHumanReadableName(int32_t world_id,
-                                               const WTF::String&);
-  WTF::String NonMainWorldHumanReadableName() const;
+  static void SetNonMainWorldHumanReadableName(int32_t world_id, const String&);
+  String NonMainWorldHumanReadableName() const;
 
   // Associates an isolated world (see above for description) with a security
   // origin. XMLHttpRequest instances used in that world will be considered

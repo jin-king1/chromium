@@ -16,13 +16,13 @@
 #include "base/memory/weak_ptr.h"
 #include "base/run_loop.h"
 #include "base/values.h"
+#include "chrome/browser/ash/certificate_provider/test_certificate_provider_extension.h"
 #include "chrome/browser/ash/login/saml/test_client_cert_saml_idp_mixin.h"
 #include "chrome/browser/ash/login/test/js_checker.h"
 #include "chrome/browser/ash/login/test/oobe_base_test.h"
 #include "chrome/browser/ash/login/users/test_users.h"
 #include "chrome/browser/ash/net/delay_network_call.h"
 #include "chrome/browser/ash/profiles/profile_helper.h"
-#include "chrome/browser/certificate_provider/test_certificate_provider_extension.h"
 #include "chrome/browser/policy/extension_force_install_mixin.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/login/login_display_host.h"
@@ -188,7 +188,7 @@ void SecurityTokenSamlTest::SetClientCertAutoSelectPolicy() {
         .Append(policy_item_value);
   } else {
     // Set the new policy value.
-    base::Value::List policy_value;
+    base::ListValue policy_value;
     policy_value.Append(policy_item_value);
     policy_map.Set(policy::key::kAutoSelectCertificateForUrls,
                    policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_MACHINE,
@@ -218,7 +218,7 @@ void SecurityTokenSamlTest::StartObservingLoginUiMessages() {
 }
 
 // Called when the Login Screen UI notifies that the PIN dialog is shown.
-void SecurityTokenSamlTest::OnPinDialogShownMessage(const base::Value::List&) {
+void SecurityTokenSamlTest::OnPinDialogShownMessage(const base::ListValue&) {
   ++pin_dialog_shown_count_;
   if (pin_dialog_shown_run_loop_)
     pin_dialog_shown_run_loop_->Quit();

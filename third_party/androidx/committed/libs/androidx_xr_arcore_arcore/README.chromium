@@ -1,7 +1,8 @@
 Name: ARCore
 Short Name: arcore
-URL: https://developer.android.com/jetpack/androidx/releases/xr-arcore#1.0.0-alpha02
-Version: 1.0.0-alpha02
+URL: https://dl.google.com/dl/android/maven2/androidx/xr/arcore/arcore/1.0.0-alpha12/arcore-1.0.0-alpha12.aar
+Version: 1.0.0-alpha12
+Update Mechanism: Autoroll
 License: Apache-2.0
 License File: LICENSE
 CPEPrefix: unknown
@@ -11,6 +12,9 @@ License Android Compatible: yes
 
 Description:
 Provides augmented reality (AR) functionality.
+
+See also: https://developer.android.com/jetpack/androidx/releases/xr-arcore#1.0.0-alpha12
+
 
 Local Modifications:
 No modifications.

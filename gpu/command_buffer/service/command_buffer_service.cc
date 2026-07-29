@@ -10,8 +10,10 @@
 #include <limits>
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/memory/page_size.h"
+#include "base/task/single_thread_task_runner.h"
 #include "base/trace_event/memory_dump_manager.h"
 #include "base/trace_event/memory_dump_provider.h"
 #include "base/trace_event/memory_dump_request_args.h"
@@ -19,6 +21,7 @@
 #include "build/build_config.h"
 #include "gpu/command_buffer/common/cmd_buffer_common.h"
 #include "gpu/command_buffer/common/command_buffer_shared.h"
+#include "gpu/command_buffer/service/memory_tracking.h"
 #include "gpu/command_buffer/service/transfer_buffer_manager.h"
 #include "gpu/config/gpu_finch_features.h"
 
@@ -30,6 +33,9 @@
 #include "base/no_destructor.h"
 #include "base/process/process_metrics.h"
 #include "base/trace_event/process_memory_dump.h"
+#include "ui/gl/gl_display.h"
+#include "ui/gl/gl_implementation.h"
+#include "ui/gl/gl_utils.h"
 #endif
 
 namespace gpu {
@@ -187,6 +193,15 @@ bool AppleGpuMemoryDumpProvider::OnMemoryDump(
   dump->AddScalar("nonpurgeable_size", "bytes", accelerator_nonpurgeable_size);
   dump->AddScalar("purgeable_size", "bytes", accelerator_purgeable_size);
 
+  if (gl::GetANGLEImplementation() == gl::ANGLEImplementation::kMetal) {
+    gl::GLDisplayEGL* display_egl = gl::GetDefaultDisplayEGL();
+    if (display_egl) {
+      dump = pmd->CreateAllocatorDump("gpu/angle/metal");
+      dump->AddScalar("size", "bytes",
+                      display_egl->GetMetalDeviceAllocatedMemory());
+    }
+  }
+
   return true;
 }
 }  // namespace
@@ -203,11 +218,12 @@ int GetCommandBufferSliceSize() {
   return slice_size;
 }
 
-CommandBufferService::CommandBufferService(CommandBufferServiceClient* client,
-                                           MemoryTracker* memory_tracker)
+CommandBufferService::CommandBufferService(
+    CommandBufferServiceClient* client,
+    scoped_refptr<MemoryTracker> memory_tracker)
     : client_(client),
       transfer_buffer_manager_(
-          std::make_unique<TransferBufferManager>(memory_tracker)) {
+          std::make_unique<TransferBufferManager>(std::move(memory_tracker))) {
   DCHECK(client_);
   state_.token = 0;
 #if BUILDFLAG(IS_MAC)
@@ -231,8 +247,8 @@ void CommandBufferService::Flush(int32_t put_offset,
     return;
   }
 
-  TRACE_EVENT1("gpu", "CommandBufferService:PutChanged", "handler",
-               std::string(handler->GetLogPrefix()));
+  TRACE_EVENT2("gpu", "CommandBufferService:PutChanged", "handler",
+               std::string(handler->GetLogPrefix()), "put_offset", put_offset);
 
   put_offset_ = put_offset;
 
@@ -260,9 +276,9 @@ void CommandBufferService::Flush(int32_t put_offset,
   while (put_offset_ != state_.get_offset) {
     int num_entries = end - state_.get_offset;
     int entries_processed = 0;
-    error::Error error = handler->DoCommands(GetCommandBufferSliceSize(),
-                                             buffer_ + state_.get_offset,
-                                             num_entries, &entries_processed);
+    error::Error error = handler->DoCommands(
+        GetCommandBufferSliceSize(), UNSAFE_TODO(buffer_ + state_.get_offset),
+        num_entries, &entries_processed);
 
     state_.get_offset += entries_processed;
     DCHECK_LE(state_.get_offset, num_entries_);
@@ -395,11 +411,6 @@ void CommandBufferService::SetParseError(error::Error error) {
 void CommandBufferService::SetContextLostReason(
     error::ContextLostReason reason) {
   state_.context_lost_reason = reason;
-}
-
-bool CommandBufferService::ShouldYield() {
-  return client_->OnCommandBatchProcessed() ==
-         CommandBufferServiceClient::kPauseExecution;
 }
 
 void CommandBufferService::SetScheduled(bool scheduled) {

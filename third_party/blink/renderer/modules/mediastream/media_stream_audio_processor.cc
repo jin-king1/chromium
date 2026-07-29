@@ -52,12 +52,13 @@ MediaStreamAudioProcessor::MediaStreamAudioProcessor(
     : audio_processor_(media::AudioProcessor::Create(
           std::move(deliver_processed_audio_callback),
           /*log_callback=*/
-          WTF::BindRepeating(&WebRtcLogStringPiece),
+          BindRepeating(&WebRtcLogStringPiece),
           settings,
           capture_data_source_params,
           media::AudioProcessor::GetDefaultOutputFormat(
               capture_data_source_params,
-              settings))),
+              settings),
+          /*neural_residual_echo_estimator_model=*/nullptr)),
       main_thread_runner_(base::SingleThreadTaskRunner::GetCurrentDefault()),
       aec_dump_agent_impl_(AecDumpAgentImpl::Create(this)),
       stopped_(false) {
@@ -111,33 +112,6 @@ void MediaStreamAudioProcessor::OnStartDump(base::File dump_file) {
 void MediaStreamAudioProcessor::OnStopDump() {
   DCHECK(main_thread_runner_->BelongsToCurrentThread());
   audio_processor_->OnStopDump();
-}
-
-// static
-// TODO(https://crbug.com/1269364): This logic should be moved to
-// ProcessedLocalAudioSource and verified/fixed; The decision should be
-// "hardware effects are required or software audio mofidications are needed
-// (AudioProcessingSettings.NeedAudioModification())".
-bool MediaStreamAudioProcessor::WouldModifyAudio(
-    const AudioProcessingProperties& properties) {
-  if (properties
-          .ToAudioProcessingSettings(
-              /*multi_channel_capture_processing - does not matter here*/ false)
-          .NeedAudioModification()) {
-    return true;
-  }
-
-#if !BUILDFLAG(IS_IOS)
-  if (properties.auto_gain_control) {
-    return true;
-  }
-#endif
-
-  if (properties.noise_suppression) {
-    return true;
-  }
-
-  return false;
 }
 
 void MediaStreamAudioProcessor::OnPlayoutData(media::AudioBus* audio_bus,

@@ -20,7 +20,7 @@
 #include "base/task/sequenced_task_runner.h"
 #include "base/thread_annotations.h"
 #include "mojo/public/c/system/types.h"
-#include "mojo/public/cpp/bindings/connection_group.h"
+#include "mojo/public/cpp/bindings/connection_group_ref.h"
 #include "mojo/public/cpp/bindings/message.h"
 #include "mojo/public/cpp/bindings/message_header_validator.h"
 #include "mojo/public/cpp/system/handle_signal_tracker.h"
@@ -34,6 +34,10 @@ class Lock;
 namespace mojo {
 
 class SyncHandleWatcher;
+
+namespace test {
+class RaceConditionScheduler;
+}  // namespace test
 
 // The Connector class is responsible for performing read/write operations on a
 // MessagePipe. It writes messages it receives through the MessageReceiver
@@ -189,7 +193,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) Connector : public MessageReceiver {
   // Adds this object to a ConnectionGroup identified by |ref|. All receiving
   // pipe endpoints decoded from inbound messages on this MultiplexRouter will
   // be added to the same group.
-  void SetConnectionGroup(ConnectionGroup::Ref ref);
+  void SetConnectionGroup(ConnectionGroupRef ref);
 
   // Waits for the next message on the pipe, blocking until one arrives or an
   // error happens. Returns |true| if a message has been delivered, |false|
@@ -236,7 +240,13 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) Connector : public MessageReceiver {
   // Used for testing and fuzzing.
   bool SimulateReadMessage(ScopedMessageHandle message);
 
+  // For testing purposes only.
+  base::WeakPtr<Connector> GetWeakPtrForTesting() {
+    return weak_factory_.GetWeakPtr();
+  }
+
  private:
+  friend class test::RaceConditionScheduler;
   class ActiveDispatchTracker;
   class RunLoopNestingObserver;
 
@@ -249,12 +259,14 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) Connector : public MessageReceiver {
   // bugs which destroy bindings endpoints from the wrong thread, as this can
   // result in Connector destruction racing with execution of a WeakPtr-bound
   // OnWatcherHandleReady task.
-  void OnWatcherHandleReady(const char* interface_name, MojoResult result);
+  void OnWatcherHandleReady(const char* interface_name, MojoResult result)
+      VALID_CONTEXT_REQUIRED(sequence_checker_);
 
   // Callback of SyncHandleWatcher. See notes on OnWatcherHandleReady()
   // regarding the `interface_name` argument.
   void OnSyncHandleWatcherHandleReady(const char* interface_name,
-                                      MojoResult result);
+                                      MojoResult result)
+      VALID_CONTEXT_REQUIRED(sequence_checker_);
 
   void OnHandleReadyInternal(MojoResult result);
 
@@ -326,7 +338,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) Connector : public MessageReceiver {
   bool paused_ = false;
 
   // See |set_force_immediate_dispatch()|.
-  bool force_immediate_dispatch_;
+  bool force_immediate_dispatch_ = false;
 
   OutgoingSerializationMode outgoing_serialization_mode_;
   IncomingSerializationMode incoming_serialization_mode_;
@@ -373,7 +385,7 @@ class COMPONENT_EXPORT(MOJO_CPP_BINDINGS) Connector : public MessageReceiver {
 #endif
 
   // A reference to the ConnectionGroup to which this Connector belongs, if any.
-  ConnectionGroup::Ref connection_group_;
+  ConnectionGroupRef connection_group_;
 
   // Create a single weak ptr and use it everywhere, to avoid the malloc/free
   // cost of creating a new weak ptr whenever it is needed.

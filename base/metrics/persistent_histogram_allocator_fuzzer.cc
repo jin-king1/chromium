@@ -2,27 +2,27 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/metrics/persistent_histogram_allocator.h"
 
+#include <memory>
+#include <vector>
+
+#include "base/containers/span.h"
 #include "base/logging.h"
 #include "base/metrics/histogram.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/metrics/persistent_memory_allocator.h"
+#include "testing/libfuzzer/libfuzzer_base_wrappers.h"
 
 struct Environment {
   Environment() { logging::SetMinLogLevel(logging::LOGGING_FATAL); }
 };
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+DEFINE_LLVM_FUZZER_TEST_ONE_INPUT_SPAN(base::span<const uint8_t> data) {
   static Environment env;
 
   // Copy data into a non-const vector.
-  std::vector<uint8_t> data_copy(data, data + size);
+  std::vector<uint8_t> data_copy(std::from_range, data);
 
   // PersistentMemoryAllocator segments must be aligned and an acceptable size.
   if (!base::PersistentMemoryAllocator::IsMemoryAcceptable(
@@ -49,8 +49,9 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
     if (!histogram) {
       break;
     }
+    // TODO(crbug.com/489919375): Fuzz the name_override parameter.
     histogram_allocator->MergeHistogramDeltaToStatisticsRecorder(
-        histogram.get());
+        histogram.get(), /*name_override=*/"");
   }
 
   return 0;

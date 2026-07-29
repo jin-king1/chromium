@@ -5,11 +5,10 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_ASH_CURTAIN_UI_REMOTE_MAINTENANCE_CURTAIN_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_ASH_CURTAIN_UI_REMOTE_MAINTENANCE_CURTAIN_UI_H_
 
+#include "ash/constants/webui_url_constants.h"
 #include "ash/webui/common/chrome_os_webui_config.h"
-#include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/web_ui_controller.h"
 #include "content/public/common/url_constants.h"
-#include "ui/webui/color_change_listener/color_change_handler.h"
 #include "ui/webui/mojo_web_ui_controller.h"
 
 namespace ash {
@@ -21,7 +20,7 @@ class RemoteMaintenanceCurtainUIConfig
  public:
   RemoteMaintenanceCurtainUIConfig()
       : ChromeOSWebUIConfig(content::kChromeUIScheme,
-                            chrome::kChromeUIRemoteManagementCurtainHost) {}
+                            ash::kChromeUIRemoteManagementCurtainHost) {}
 };
 
 class RemoteMaintenanceCurtainUI : public ui::MojoWebUIController {
@@ -34,15 +33,9 @@ class RemoteMaintenanceCurtainUI : public ui::MojoWebUIController {
 
   ~RemoteMaintenanceCurtainUI() override;
 
-  // Binds to the Jelly dynamic color Mojo
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
  private:
   WEB_UI_CONTROLLER_TYPE_DECL();
 
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
 };
 
 }  // namespace ash

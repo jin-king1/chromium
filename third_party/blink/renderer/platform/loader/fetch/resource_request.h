@@ -38,7 +38,7 @@
 #include "net/filter/source_stream_type.h"
 #include "net/storage_access_api/status.h"
 #include "services/metrics/public/cpp/ukm_source_id.h"
-#include "services/network/public/mojom/attribution.mojom-blink.h"
+#include "services/network/public/cpp/fetch_retry_options.h"
 #include "services/network/public/mojom/chunked_data_pipe_getter.mojom-blink-forward.h"
 #include "services/network/public/mojom/cors.mojom-blink-forward.h"
 #include "services/network/public/mojom/fetch_api.mojom-blink.h"
@@ -49,6 +49,7 @@
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/platform/resource_request_blocked_reason.h"
 #include "third_party/blink/public/platform/web_url_request_extra_data.h"
+#include "third_party/blink/renderer/platform/loader/fetch/ad_tagging_utils.h"
 #include "third_party/blink/renderer/platform/loader/fetch/render_blocking_behavior.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_load_priority.h"
 #include "third_party/blink/renderer/platform/network/http_header_map.h"
@@ -58,14 +59,11 @@
 #include "third_party/blink/renderer/platform/weborigin/security_origin.h"
 #include "third_party/blink/renderer/platform/wtf/ref_counted.h"
 
-namespace network {
-class PermissionsPolicy;
-}  // namespace network
-
 namespace blink {
 
 class FeatureContext;
 class EncodedFormData;
+struct IntegrityMetadataSet;
 
 // ResourceRequestHead represents request without request body.
 // See ResourceRequest below to see what request is.
@@ -167,10 +165,10 @@ class PLATFORM_EXPORT ResourceRequestHead {
 
   // The chain of URLs seen during navigation redirects.  This should only
   // contain values if the mode is `RedirectMode::kNavigate`.
-  const WTF::Vector<KURL>& NavigationRedirectChain() const {
+  const Vector<KURL>& NavigationRedirectChain() const {
     return navigation_redirect_chain_;
   }
-  void SetNavigationRedirectChain(const WTF::Vector<KURL>& value) {
+  void SetNavigationRedirectChain(const Vector<KURL>& value) {
     navigation_redirect_chain_ = value;
   }
 
@@ -222,8 +220,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
   }
   void SetHTTPOrigin(const SecurityOrigin*);
   void ClearHTTPOrigin();
-  void SetHttpOriginIfNeeded(const SecurityOrigin*);
-  void SetHTTPOriginToMatchReferrerIfNeeded();
 
   void SetHTTPUserAgent(const AtomicString& http_user_agent) {
     SetHttpHeaderField(http_names::kUserAgent, http_user_agent);
@@ -291,40 +287,17 @@ class PLATFORM_EXPORT ResourceRequestHead {
                    : std::nullopt;
   }
 
-  // True if the request should be considered for computing and attaching the
-  // topics headers.
-  bool GetBrowsingTopics() const { return browsing_topics_; }
-  void SetBrowsingTopics(bool browsing_topics) {
-    browsing_topics_ = browsing_topics;
+  bool HasFetchRetryOptions() const { return fetch_retry_options_.has_value(); }
+  const std::optional<network::FetchRetryOptions>& FetchRetryOptions() const {
+    return fetch_retry_options_;
   }
 
-  // True if this is an ad auction request eligible for attaching the
-  // `Sec-Ad-Auction-Fetch` request header and processing the
-  // `X-Ad-Auction-Result` response header.
-  bool GetAdAuctionHeaders() const { return ad_auction_headers_; }
-  void SetAdAuctionHeaders(bool ad_auction_headers) {
-    ad_auction_headers_ = ad_auction_headers;
+  void SetFetchRetryOptions(
+      const network::FetchRetryOptions& fetch_retry_options) {
+    fetch_retry_options_ = fetch_retry_options;
   }
 
-  // True if the original request included the required attribute for the
-  // response to be eligible to write to shared storage, pending a
-  // `PermissionsPolicy` check.
-  bool GetSharedStorageWritableOptedIn() const {
-    return shared_storage_writable_opted_in_;
-  }
-  void SetSharedStorageWritableOptedIn(bool shared_storage_writable_opted_in) {
-    shared_storage_writable_opted_in_ = shared_storage_writable_opted_in;
-  }
 
-  // True if the current request should have the
-  // `http_names::kSecSharedStorageWritable` header attached and is eligible to
-  // write to shared storage from response headers.
-  bool GetSharedStorageWritableEligible() const {
-    return shared_storage_writable_eligible_;
-  }
-  void SetSharedStorageWritableEligible(bool shared_storage_writable_eligible) {
-    shared_storage_writable_eligible_ = shared_storage_writable_eligible;
-  }
 
   // True if service workers should not get events for the request.
   bool GetSkipServiceWorker() const { return skip_service_worker_; }
@@ -406,10 +379,10 @@ class PLATFORM_EXPORT ResourceRequestHead {
   const String& GetFetchIntegrity() const { return fetch_integrity_; }
   void SetFetchIntegrity(const String& integrity, const FeatureContext*);
 
-  // The list of expected signatures is set as a side-effect of
-  // `SetFetchIntegrity()`.
-  const WTF::Vector<String>& GetExpectedSignatures() const {
-    return expected_signatures_;
+  // This is also called as a side-effect of `SetFetchIntegrity()`.
+  void SetExpectedPublicKeys(const IntegrityMetadataSet&);
+  const Vector<Vector<uint8_t>>& GetExpectedPublicKeys() const {
+    return expected_public_keys_;
   }
 
   bool CacheControlContainsNoCache() const;
@@ -434,8 +407,20 @@ class PLATFORM_EXPORT ResourceRequestHead {
     return suggested_filename_;
   }
 
-  void SetIsAdResource() { is_ad_resource_ = true; }
-  bool IsAdResource() const { return is_ad_resource_; }
+  void SetIsAdResource(AdProvenance ad_provenance = NoProvenance{}) {
+    // Only update `ad_provenance_` if it wasn't set.
+    // TODO(crbug.com/490396399): Ideally, we should ensure `SetIsAdResource` is
+    // only called once.
+    if (!ad_provenance_.has_value()) {
+      ad_provenance_ = std::move(ad_provenance);
+    }
+  }
+
+  bool IsAdResource() const { return ad_provenance_.has_value(); }
+
+  const std::optional<AdProvenance>& GetAdProvenance() const {
+    return ad_provenance_;
+  }
 
   void SetUpgradeIfInsecure(bool upgrade_if_insecure) {
     upgrade_if_insecure_ = upgrade_if_insecure;
@@ -452,12 +437,13 @@ class PLATFORM_EXPORT ResourceRequestHead {
   void SetAllowStaleResponse(bool value) { allow_stale_response_ = value; }
   bool AllowsStaleResponse() const { return allow_stale_response_; }
 
-  const std::optional<base::UnguessableToken>& GetDevToolsToken() const {
-    return devtools_token_;
+  const std::optional<base::UnguessableToken>& GetDevToolsThrottlingToken()
+      const {
+    return devtools_throttling_token_;
   }
-  void SetDevToolsToken(
+  void SetDevToolsThrottlingToken(
       const std::optional<base::UnguessableToken>& devtools_token) {
-    devtools_token_ = devtools_token;
+    devtools_throttling_token_ = devtools_token;
   }
 
   const scoped_refptr<
@@ -484,8 +470,12 @@ class PLATFORM_EXPORT ResourceRequestHead {
   void SetClientDataHeader(const String& value) { client_data_header_ = value; }
   const String& GetClientDataHeader() const { return client_data_header_; }
 
-  void SetPurposeHeader(const String& value) { purpose_header_ = value; }
-  const String& GetPurposeHeader() const { return purpose_header_; }
+  void SetEventSourceLastEventId(const String& value) {
+    event_source_last_event_id_ = value;
+  }
+  const String& GetEventSourceLastEventId() const {
+    return event_source_last_event_id_;
+  }
 
   // A V8 stack id string describing where the request was initiated. DevTools
   // can use this to display the initiator call stack when debugging a process
@@ -595,34 +585,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
     return storage_access_api_status_;
   }
 
-  network::mojom::AttributionSupport GetAttributionReportingSupport() const {
-    return attribution_reporting_support_;
-  }
-
-  void SetAttributionReportingSupport(
-      network::mojom::AttributionSupport attribution_support) {
-    attribution_reporting_support_ = attribution_support;
-  }
-
-  network::mojom::AttributionReportingEligibility
-  GetAttributionReportingEligibility() const {
-    return attribution_reporting_eligibility_;
-  }
-
-  void SetAttributionReportingEligibility(
-      network::mojom::AttributionReportingEligibility eligibility) {
-    attribution_reporting_eligibility_ = eligibility;
-  }
-
-  const std::optional<base::UnguessableToken>& GetAttributionSrcToken() const {
-    return attribution_reporting_src_token_;
-  }
-
-  void SetAttributionReportingSrcToken(
-      std::optional<base::UnguessableToken> src_token) {
-    attribution_reporting_src_token_ = src_token;
-  }
-
   bool SharedDictionaryWriterEnabled() const {
     return shared_dictionary_writer_enabled_;
   }
@@ -694,7 +656,7 @@ class PLATFORM_EXPORT ResourceRequestHead {
   scoped_refptr<const SecurityOrigin> top_frame_origin_;
 
   scoped_refptr<const SecurityOrigin> requestor_origin_;
-  WTF::Vector<KURL> navigation_redirect_chain_;
+  Vector<KURL> navigation_redirect_chain_;
   scoped_refptr<const SecurityOrigin> isolated_world_origin_;
 
   AtomicString http_method_;
@@ -705,17 +667,12 @@ class PLATFORM_EXPORT ResourceRequestHead {
   bool download_to_blob_ : 1;
   bool use_stream_on_response_ : 1;
   bool keepalive_ : 1;
-  bool browsing_topics_ : 1;
-  bool ad_auction_headers_ : 1;
-  bool shared_storage_writable_opted_in_ : 1;
-  bool shared_storage_writable_eligible_ : 1;
   bool allow_stale_response_ : 1;
   bool skip_service_worker_ : 1;
   bool download_to_cache_only_ : 1;
   bool site_for_cookies_set_ : 1;
   bool is_form_submission_ : 1;
   bool priority_incremental_ : 1;
-  bool is_ad_resource_ : 1;
   bool upgrade_if_insecure_ : 1;
   bool is_revalidating_ : 1;
   bool is_automatic_upgrade_ : 1;
@@ -733,8 +690,9 @@ class PLATFORM_EXPORT ResourceRequestHead {
   bool prefetch_maybe_for_top_level_navigation_ : 1;
   // Indicate the state of CompressionDictionaryTransport feature. When it is
   // true, `use-as-dictionary` response HTTP header may be processed.
-  // TODO(crbug.com/1413922): Remove this flag when we launch
-  // CompressionDictionaryTransport feature.
+  // TODO(crbug.com/40255884): Remove this flag when the
+  // CompressionDictionaryTransport feature can no longer be disabled by
+  // feature flag or enterprise policy.
   bool shared_dictionary_writer_enabled_ : 1;
   bool requires_upgrade_for_loader_ : 1;
   mojom::blink::FetchCacheMode cache_mode_;
@@ -750,8 +708,8 @@ class PLATFORM_EXPORT ResourceRequestHead {
   network::mojom::RedirectMode redirect_mode_;
   // Exposed as Request.integrity in Service Workers
   String fetch_integrity_;
-  // Signature expectations extracted from `fetch_integrity_`
-  WTF::Vector<String> expected_signatures_;
+  // Public key expectations extracted from `integrity_`
+  Vector<Vector<uint8_t>> expected_public_keys_;
   String referrer_string_;
   network::mojom::ReferrerPolicy referrer_policy_;
   network::mojom::CorsPreflightPolicy cors_preflight_policy_;
@@ -759,17 +717,19 @@ class PLATFORM_EXPORT ResourceRequestHead {
   std::optional<network::mojom::blink::TrustTokenParams> trust_token_params_;
   network::mojom::IPAddressSpace target_address_space_;
 
+  std::optional<AdProvenance> ad_provenance_;
+
   std::optional<String> suggested_filename_;
 
   mutable CacheControlHeader cache_control_header_cache_;
 
   static const base::TimeDelta default_timeout_interval_;
 
-  std::optional<base::UnguessableToken> devtools_token_;
+  std::optional<base::UnguessableToken> devtools_throttling_token_;
   String devtools_id_;
   String requested_with_header_;
   String client_data_header_;
-  String purpose_header_;
+  String event_source_last_event_id_;
 
   std::optional<String> devtools_stack_id_;
 
@@ -809,15 +769,6 @@ class PLATFORM_EXPORT ResourceRequestHead {
   net::StorageAccessApiStatus storage_access_api_status_ =
       net::StorageAccessApiStatus::kNone;
 
-  network::mojom::AttributionSupport attribution_reporting_support_ =
-      network::mojom::AttributionSupport::kUnset;
-
-  network::mojom::AttributionReportingEligibility
-      attribution_reporting_eligibility_ =
-          network::mojom::AttributionReportingEligibility::kUnset;
-
-  std::optional<base::UnguessableToken> attribution_reporting_src_token_;
-
   // The request is for a known transparent placeholder image, which enables us
   // to bypass as much processing as possible.
   // TODO(crbug.com/41496436): Make all the optimizations referencing the flag
@@ -831,14 +782,16 @@ class PLATFORM_EXPORT ResourceRequestHead {
   // TODO(crbug.com/382527001): Consider merge this field with `keepalive_`.
   std::optional<base::UnguessableToken> keepalive_token_;
 
+  std::optional<network::FetchRetryOptions> fetch_retry_options_;
+
 #if DCHECK_IS_ON()
   bool is_set_url_allowed_ = true;
 #endif
 
-  // Whether this request is allowed to register new device bound
-  // sessions or accept challenges on device bound sessions (e.g. due to
-  // an Origin Trial)
-  bool allows_device_bound_sessions_ = false;
+  // Whether this request is allowed to belong to a device bound session. This
+  // includes registering a new session, accepting challenges, or deferring the
+  // request until a session is refreshed.
+  bool allows_device_bound_sessions_ = true;
 };
 
 class PLATFORM_EXPORT ResourceRequestBody {
@@ -914,15 +867,6 @@ class PLATFORM_EXPORT ResourceRequest final : public ResourceRequestHead {
 
   ResourceRequestBody& MutableBody() { return body_; }
 
-  // `PermissionsPolicy` is in blink/public and hence cannot access
-  // `ResourceRequest`. We implement this method here and make `ResourceRequest`
-  // a forward-declared friend class to `PermissionsPolicy` in order to keep
-  // `PermissionsPolicy::IsFeatureEnabledForSubresourceRequestAssumingOptIn()`
-  // private for safety.
-  bool IsFeatureEnabledForSubresourceRequestAssumingOptIn(
-      const network::PermissionsPolicy* policy,
-      network::mojom::PermissionsPolicyFeature feature,
-      const url::Origin& origin);
 
  private:
   ResourceRequestBody body_;

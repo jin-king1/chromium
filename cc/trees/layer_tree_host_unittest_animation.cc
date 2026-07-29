@@ -2,10 +2,10 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#include "cc/trees/layer_tree_host.h"
-
 #include <stdint.h>
+
 #include <climits>
+#include <memory>
 
 #include "base/functional/bind.h"
 #include "base/metrics/statistics_recorder.h"
@@ -29,6 +29,7 @@
 #include "cc/test/fake_picture_layer.h"
 #include "cc/test/layer_tree_test.h"
 #include "cc/trees/effect_node.h"
+#include "cc/trees/layer_tree_host.h"
 #include "cc/trees/layer_tree_impl.h"
 #include "cc/trees/target_property.h"
 #include "cc/trees/transform_node.h"
@@ -86,12 +87,13 @@ class LayerTreeHostAnimationTest : public LayerTreeTest {
     EXPECT_TRUE(animation_child_impl_);
   }
 
-  void CleanupBeforeDestroy() override {
+  void AfterTest() override {
     // This needs to happen on the main thread (so can't happen in
     // EndTest()), and needs to happen before DestroyLayerTreeHost()
     // (which will trigger assertions if we don't do this), so it can't
     // happen in AfterTest().
     DetachAnimationsFromTimeline();
+    LayerTreeTest::AfterTest();
   }
 
   AnimationHost* GetImplAnimationHost(
@@ -219,7 +221,10 @@ class LayerTreeHostAnimationTestAddKeyframeModel
     EndTest();
   }
 
-  void AfterTest() override { EXPECT_TRUE(update_animation_state_was_called_); }
+  void AfterTest() override {
+    EXPECT_TRUE(update_animation_state_was_called_);
+    LayerTreeHostAnimationTest::AfterTest();
+  }
 
  private:
   bool update_animation_state_was_called_;
@@ -302,7 +307,7 @@ class LayerTreeHostAnimationTestCheckerboardDoesNotStarveDraws
   }
 
   DrawResult PrepareToDrawOnThread(LayerTreeHostImpl* host_impl,
-                                   LayerTreeHostImpl::FrameData* frame,
+                                   FrameData* frame,
                                    DrawResult draw_result) override {
     return DrawResult::kAbortedCheckerboardAnimations;
   }
@@ -476,6 +481,7 @@ class LayerTreeHostAnimationTestSynchronizeAnimationStartTimes
   void AfterTest() override {
     EXPECT_EQ(impl_start_time_, main_start_time_);
     EXPECT_LT(base::TimeTicks(), impl_start_time_);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -554,6 +560,7 @@ class LayerTreeHostAnimationTestDoNotSkipLayersWithAnimatedOpacity
 
     // clear update_check_layer_ so LayerTreeHost dies.
     update_check_layer_ = nullptr;
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -581,7 +588,7 @@ class LayerTreeHostAnimationTestLayerAddedWithAnimation
       animation_->set_animation_delegate(this);
 
       // Any valid AnimationCurve will do here.
-      std::unique_ptr<gfx::AnimationCurve> curve(new FakeFloatAnimationCurve());
+      auto curve = std::make_unique<FakeFloatAnimationCurve>();
       std::unique_ptr<KeyframeModel> keyframe_model(KeyframeModel::Create(
           std::move(curve), 1, 1,
           KeyframeModel::TargetPropertyId(TargetProperty::OPACITY)));
@@ -635,6 +642,7 @@ class LayerTreeHostAnimationTestCancelAnimateCommit
     EXPECT_EQ(2, num_begin_frames_);
     EXPECT_EQ(1, num_commit_calls_);
     EXPECT_EQ(1, num_draw_calls_);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -672,6 +680,7 @@ class LayerTreeHostAnimationTestForceRedraw
     // by the animation was not cancelled.
     EXPECT_EQ(2, num_draw_layers_);
     EXPECT_EQ(2, num_animate_);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -706,6 +715,7 @@ class LayerTreeHostAnimationTestAnimateAfterSetNeedsCommit
     // by the SetNeedsCommit was not cancelled.
     EXPECT_EQ(2, num_draw_layers_);
     EXPECT_GE(num_animate_, 2);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -739,7 +749,7 @@ class LayerTreeHostAnimationTestCheckerboardDoesntStartAnimations
   }
 
   DrawResult PrepareToDrawOnThread(LayerTreeHostImpl* host_impl,
-                                   LayerTreeHostImpl::FrameData* frame_data,
+                                   FrameData* frame_data,
                                    DrawResult draw_result) override {
     // Don't checkerboard when the first animation wants to start.
     if (host_impl->active_tree()->source_frame_number() < 2)
@@ -781,6 +791,7 @@ class LayerTreeHostAnimationTestCheckerboardDoesntStartAnimations
     // The first animation should be started, but the second should not because
     // of checkerboard.
     EXPECT_EQ(1, started_times_);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
   int prevented_draw_;
@@ -1081,9 +1092,8 @@ class LayerTreeHostPresentationDuringAnimation
     EXPECT_GT(received_token_, request_token_);
     EXPECT_GE(received_token_, 5u);
     EXPECT_TRUE(base::StatisticsRecorder::FindHistogram(
-        "CompositorLatency.TotalLatency"));
-    EXPECT_FALSE(base::StatisticsRecorder::FindHistogram(
-        "CompositorLatency.Universal.TotalLatency"));
+        "CompositorLatency2.TotalLatency"));
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -1150,6 +1160,9 @@ class LayerTreeHostAnimationTestScrollOffsetAnimationRemoval
         KeyframeModel* keyframe_model =
             animation_child_->GetKeyframeModel(TargetProperty::SCROLL_OFFSET);
         animation_child_->RemoveKeyframeModel(keyframe_model->id());
+        // This is called by blink::ScrollAnimatorCompositorCoordinator
+        layer_tree_host()->DropActiveScrollDeltaNextCommit(
+            animation_child_->element_id());
         scroll_layer_->SetScrollOffset(final_postion_);
         break;
       }
@@ -1189,6 +1202,7 @@ class LayerTreeHostAnimationTestScrollOffsetAnimationRemoval
 
   void AfterTest() override {
     EXPECT_EQ(final_postion_, scroll_layer_->scroll_offset());
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -1291,9 +1305,10 @@ class LayerTreeHostAnimationTestScrollOffsetAnimationCompletion
     }
     KeyframeModel* keyframe_model =
         animation_child_impl_->GetKeyframeModel(TargetProperty::SCROLL_OFFSET);
-    if (!keyframe_model || keyframe_model->run_state() ==
-                               KeyframeModel::RunState::WAITING_FOR_DELETION)
+    if (!keyframe_model) {
+      impl_animation_cleaned_up_ = true;
       EndTest();
+    }
   }
 
   void DidFinishImplFrameOnThread(LayerTreeHostImpl* host_impl) override {
@@ -1311,15 +1326,17 @@ class LayerTreeHostAnimationTestScrollOffsetAnimationCompletion
     // The animation should have run for some frames.
     EXPECT_TRUE(ran_animation_);
 
-    // The finished KeyframeModel should have been removed from both the
-    // main and impl side animations.
+    // The finished KeyframeModel should have been removed from the
+    // main side animation.
     EXPECT_EQ(nullptr, animation_child_->GetKeyframeModel(
                            TargetProperty::SCROLL_OFFSET));
-    EXPECT_EQ(nullptr, animation_child_impl_->GetKeyframeModel(
-                           TargetProperty::SCROLL_OFFSET));
+
+    // The impl-side animation should have been completely cleaned up.
+    EXPECT_TRUE(impl_animation_cleaned_up_);
 
     // The scroll should have been completed.
     EXPECT_EQ(final_position_, scroll_layer_->scroll_offset());
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -1327,6 +1344,7 @@ class LayerTreeHostAnimationTestScrollOffsetAnimationCompletion
   scoped_refptr<FakePictureLayer> scroll_layer_;
   const gfx::PointF final_position_;
   bool ran_animation_ = false;
+  bool impl_animation_cleaned_up_ = false;
 };
 
 MULTI_THREAD_TEST_F(LayerTreeHostAnimationTestScrollOffsetAnimationCompletion);
@@ -2135,6 +2153,7 @@ class LayerTreeHostAnimationTestNotifyAnimationFinished
   void AfterTest() override {
     EXPECT_TRUE(called_animation_started_);
     EXPECT_TRUE(called_animation_finished_);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
  private:
@@ -2187,7 +2206,7 @@ class LayerTreeHostAnimationTestSetPotentiallyAnimatingOnLacDestruction
   }
 
   DrawResult PrepareToDrawOnThread(LayerTreeHostImpl* host_impl,
-                                   LayerTreeHostImpl::FrameData* frame_data,
+                                   FrameData* frame_data,
                                    DrawResult draw_result) override {
     const bool screen_space_transform_is_animating =
         host_impl->active_tree()
@@ -2220,6 +2239,7 @@ class LayerTreeHostAnimationTestSetPotentiallyAnimatingOnLacDestruction
 
   void AfterTest() override {
     EXPECT_TRUE(screen_space_transform_animation_stopped_);
+    LayerTreeHostAnimationTest::AfterTest();
   }
 
   bool prev_screen_space_transform_is_animating_;
@@ -2360,6 +2380,75 @@ class LayerTreeHostTestPauseRendering : public LayerTreeHostAnimationTest {
 };
 
 MULTI_THREAD_TEST_F(LayerTreeHostTestPauseRendering);
+
+class LayerTreeHostTestPauseRenderingUntilVisibilityChange
+    : public LayerTreeHostAnimationTest {
+ public:
+  void SetupTree() override {
+    if (layer_tree_host()->IsUsingLayerLists()) {
+      skip_test_ = true;
+      EndTest();
+      return;
+    }
+    LayerTreeHostAnimationTest::SetupTree();
+    layer_ = Layer::Create();
+    layer_->SetBounds(gfx::Size(4, 4));
+    layer_tree_host()->root_layer()->AddChild(layer_);
+    layer_tree_host()->SetElementIdsForTesting();
+  }
+
+  void BeginTest() override {
+    if (skip_test_) {
+      return;
+    }
+    AttachAnimationsToTimeline();
+    animation_->AttachElement(layer_->element_id());
+    AddAnimatedTransformToAnimation(animation_.get(), 4, 1, 1);
+    PostSetNeedsCommitToMainThread();
+  }
+
+  void WillCommit(const CommitState& state) override {
+    if (layer_tree_host()->SourceFrameNumber() == 0) {
+      rendering_paused_ = layer_tree_host()->PauseRendering();
+    }
+  }
+
+  void DidCommitAndDrawFrame() override {
+    if (layer_tree_host()->SourceFrameNumber() == 1) {
+      rendering_paused_->SetDelayUntilVisibilityChange();
+      rendering_paused_.reset();
+
+      // Post a delayed task to toggle visibility and unpause!
+      MainThreadTaskRunner()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&LayerTreeHostTestPauseRenderingUntilVisibilityChange::
+                             TriggerVisibilityChange,
+                         base::Unretained(this)),
+          base::Milliseconds(100));
+    } else if (layer_tree_host()->SourceFrameNumber() == 2) {
+      EXPECT_TRUE(visibility_changed_);
+      EndTest();
+    }
+  }
+
+  void TriggerVisibilityChange() {
+    visibility_changed_ = true;
+    layer_tree_host()->SetVisible(false);
+    layer_tree_host()->SetVisible(true);
+
+    // Add damage to force a draw!
+    layer_->SetOpacity(0.5f);
+    PostSetNeedsCommitToMainThread();
+  }
+
+ private:
+  scoped_refptr<Layer> layer_;
+  std::unique_ptr<ScopedPauseRendering> rendering_paused_;
+  bool visibility_changed_ = false;
+  bool skip_test_ = false;
+};
+
+MULTI_THREAD_TEST_F(LayerTreeHostTestPauseRenderingUntilVisibilityChange);
 
 }  // namespace
 }  // namespace cc

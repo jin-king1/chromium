@@ -134,7 +134,7 @@ class DataAndEncodedFileOrBlobBytesConsumer final : public BytesConsumer {
       : form_data_(std::move(form_data)) {
     DCHECK_EQ(ConsumerType::kDataAndEncodedFileOrBlob,
               GetConsumerType(form_data_.get()));
-    CHECK(form_data_->Boundary().data());
+    CHECK(form_data_->Boundary());
     if (consumer_for_testing) {
       blob_bytes_consumer_ = consumer_for_testing;
       return;
@@ -149,13 +149,15 @@ class DataAndEncodedFileOrBlobBytesConsumer final : public BytesConsumer {
         case FormDataElement::kEncodedFile: {
           auto file_length = element.file_length_;
           if (file_length < 0) {
-            if (!GetFileSize(element.filename_, *execution_context,
-                             file_length)) {
+            std::optional<int64_t> file_size =
+                GetFileSize(element.filename_, *execution_context);
+            if (!file_size) {
               form_data_ = nullptr;
               blob_bytes_consumer_ = BytesConsumer::CreateErrored(
                   Error("Cannot determine a file size"));
               return;
             }
+            file_length = *file_size;
           }
           blob_data->AppendBlob(
               BlobDataHandle::CreateForFile(
@@ -179,10 +181,7 @@ class DataAndEncodedFileOrBlobBytesConsumer final : public BytesConsumer {
           break;
       }
     }
-    // Here we handle m_formData->boundary() as a C-style string. See
-    // FormDataEncoder::generateUniqueBoundaryString.
-    blob_data->SetContentType(AtomicString("multipart/form-data; boundary=") +
-                              form_data_->Boundary().data());
+    blob_data->SetContentType(form_data_->FormatContentTypeWithBoundary());
     auto size = blob_data->length();
     blob_bytes_consumer_ = MakeGarbageCollected<BlobBytesConsumer>(
         execution_context, BlobDataHandle::Create(std::move(blob_data), size));
@@ -268,8 +267,8 @@ class DataPipeGetterConsumer : public BytesConsumer {
 
     data_pipe_getter->Read(
         std::move(pipe_producer_handle),
-        WTF::BindOnce(&DataPipeGetterConsumer::DataPipeGetterCallback,
-                      WrapWeakPersistent(consumer)));
+        BindOnce(&DataPipeGetterConsumer::DataPipeGetterCallback,
+                 WrapWeakPersistent(consumer)));
     return consumer;
   }
 
@@ -509,7 +508,7 @@ class UniversalBytesConsumer final : public BytesConsumer {
 
 FormDataBytesConsumer::FormDataBytesConsumer(const String& string)
     : impl_(MakeGarbageCollected<DataOnlyBytesConsumer>(EncodedFormData::Create(
-          UTF8Encoding().Encode(string, WTF::kNoUnencodables)))) {}
+          Utf8Encoding().Encode(string, UnencodableHandling::kNone)))) {}
 
 FormDataBytesConsumer::FormDataBytesConsumer(DOMArrayBuffer* buffer)
     : FormDataBytesConsumer(buffer->ByteSpan()) {}

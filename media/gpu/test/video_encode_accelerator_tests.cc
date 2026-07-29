@@ -8,7 +8,7 @@
 
 #include "base/command_line.h"
 #include "base/files/file_path.h"
-#include "base/files/file_util.h"
+#include "base/logging.h"
 #include "base/strings/string_number_conversions.h"
 #include "build/build_config.h"
 #include "media/base/media_switches.h"
@@ -31,6 +31,9 @@
 #include "media/gpu/test/video_test_environment.h"
 #include "media/gpu/test/video_test_helpers.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "media/gpu/android/ndk_media_codec_wrapper.h"
+#endif
 
 namespace media {
 namespace test {
@@ -109,14 +112,12 @@ The following arguments are supported:
 )""";
 
 // Default video to be used if no test video was specified.
-constexpr base::FilePath::CharType kDefaultTestVideoPath[] =
-    FILE_PATH_LITERAL("bear_320x192_40frames.yuv.webm");
+constexpr char kDefaultTestVideoPath[] = "bear_320x192_40frames.yuv.webm";
 
 // The number of frames to encode for bitrate check test cases.
 // TODO(hiroh): Decrease this values to make the test faster.
 constexpr size_t kNumFramesToEncodeForBitrateCheck = 300;
 // Tolerance factor for how encoded bitrate can differ from requested bitrate.
-constexpr double kBitrateTolerance = 0.15;
 constexpr double kVariableBitrateTolerance = 0.3;
 // The event timeout used in bitrate check tests because encoding 2160p and
 // validating |kNumFramesToEncodeBitrateCheck| frames take much time.
@@ -160,6 +161,16 @@ class VideoEncoderTest : public ::testing::Test {
       ADD_FAILURE();
 
     return video_encoder;
+  }
+
+  void SetUp() override {
+#if BUILDFLAG(IS_ANDROID)
+    if (__builtin_available(android NDK_MEDIA_CODEC_MIN_API, *)) {
+      // Negation results in compiler warning.
+    } else {
+      GTEST_SKIP() << "Not supported Android version";
+    }
+#endif
   }
 
  private:
@@ -444,6 +455,9 @@ TEST_F(VideoEncoderTest, KeyFrameOnFirstFrameOfGOP) {
 #endif  // BUILDFLAG(IS_WIN)
 
 // Test forcing key frame to the first and second frames.
+#if !BUILDFLAG(IS_ANDROID)
+// Forcing keyframe is best-effort on Android and having 2 keyframes in a
+// row is often not possible.
 TEST_F(VideoEncoderTest, ForceTheFirstAndSecondKeyFrames) {
   if (g_env->SpatialLayers().size() > 1) {
     GTEST_SKIP() << "Skip SHMEM input test cases in spatial SVC encoding";
@@ -474,6 +488,7 @@ TEST_F(VideoEncoderTest, ForceTheFirstAndSecondKeyFrames) {
   EXPECT_EQ(encoder->GetFrameReleasedCount(), config.num_frames_to_encode);
   EXPECT_TRUE(encoder->WaitForBitstreamProcessors());
 }
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 // Execute Flush() in the middle of encoding. Supporting this is required for
 // Flush() and ChabgeOptions() in media::VideoEncoder API.
@@ -487,6 +502,9 @@ TEST_F(VideoEncoderTest, FlushIntheMiddle) {
 
   auto encoder = CreateVideoEncoder(g_env->Video(), GetDefaultConfig());
   const size_t middle_frame = config.num_frames_to_encode / 2;
+  if (!encoder->IsFlushSupported()) {
+    GTEST_SKIP() << "Flush is not supported";
+  }
 
   // Encode until the middle of stream and request force_keyframe.
   encoder->EncodeUntil(VideoEncoder::kFrameReleased, middle_frame);
@@ -561,8 +579,7 @@ TEST_F(VideoEncoderTest, BitrateCheck) {
   // on some boards.
   const bool vbr_encoding =
       config.bitrate_allocation.GetMode() == Bitrate::Mode::kVariable;
-  const double tolerance =
-      vbr_encoding ? kVariableBitrateTolerance : kBitrateTolerance;
+
   // Encode twice as many frame as kNumFramesToEncodeForBitrateCheck in VBR
   // encoding. This is a workaround the zork rate controller. See b/361109092.
   // TODO(b/195407733): Remove this workaround if we introduce the rate
@@ -572,6 +589,17 @@ TEST_F(VideoEncoderTest, BitrateCheck) {
                                     : kNumFramesToEncodeForBitrateCheck * 3;
 
   auto encoder = CreateVideoEncoder(g_env->Video(), config);
+
+#if BUILDFLAG(IS_ANDROID)
+  // Software encoders on Android are less accurate at rate control.
+  const double kBitrateTolerance = 0.5;
+#else
+  const double kBitrateTolerance = 0.15;
+#endif  // BUILDFLAG(IS_ANDROID)
+
+  const double tolerance =
+      vbr_encoding ? kVariableBitrateTolerance : kBitrateTolerance;
+
   // Set longer event timeout than the default (30 sec) because encoding 2160p
   // and validating the stream take much time.
   encoder->SetEventWaitTimeout(kBitrateCheckEventTimeout);
@@ -628,6 +656,43 @@ TEST_F(VideoEncoderTest, BitrateCheck) {
   EXPECT_EQ(encoder->GetFrameReleasedCount(), config.num_frames_to_encode);
   EXPECT_TRUE(encoder->WaitForBitstreamProcessors());
 }
+
+#if BUILDFLAG(IS_WIN)
+// Test frame dropping by Bitrate Controller for H.264 video encoding.
+TEST_F(VideoEncoderTest, DropFrameCheck) {
+  if (g_env->SpatialLayers().size() > 1) {
+    GTEST_SKIP() << "Skip SHMEM input test cases in spatial SVC encoding";
+  }
+  const VideoCodec codec = VideoCodecProfileToVideoCodec(g_env->Profile());
+  if (codec != media::VideoCodec::kH264) {
+    GTEST_SKIP()
+        << "VideoEncodeAccelerator on this device doesn't support drop "
+        << "frame with codec=" << GetCodecName(codec);
+  }
+  if (g_env->BitrateAllocation().GetMode() == Bitrate::Mode::kVariable) {
+    GTEST_SKIP() << "Drop frame doesn't support in VBR encoding";
+  }
+
+  auto config = GetDefaultConfig();
+  constexpr uint8_t kDropFrameThreshold = 80;
+  config.drop_frame_thresh = kDropFrameThreshold;
+  config.bitrate_allocation = AllocateDefaultBitrateForTesting(
+      config.num_spatial_layers, config.num_temporal_layers,
+      Bitrate::ConstantBitrate(config.bitrate_allocation.GetSumBps() / 10));
+  auto encoder = CreateVideoEncoder(g_env->Video(), config);
+
+  encoder->Encode();
+  EXPECT_TRUE(encoder->WaitForFlushDone());
+  EXPECT_EQ(encoder->GetFlushDoneCount(), 1u);
+  EXPECT_EQ(encoder->GetFrameReleasedCount(), g_env->Video()->NumFrames());
+  EXPECT_TRUE(encoder->WaitForBitstreamProcessors());
+
+  auto stats = encoder->GetStats();
+  VLOG(1) << "Dropped frames: " << stats.num_dropped_frames << " / "
+          << stats.total_num_encoded_frames;
+  EXPECT_GT(stats.num_dropped_frames, 0u);
+}
+#endif  // BUILDFLAG(IS_WIN)
 
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_LINUX)
 // TODO(https://crbugs.com/350994517): NV12 DMABuf test does not apply to
@@ -912,7 +977,7 @@ TEST_F(VideoEncoderTest, FlushAtEndOfStream_NV12Dmabuf_EnableDropFrame) {
   EXPECT_TRUE(encoder->WaitForBitstreamProcessors());
 
   auto stats = encoder->GetStats();
-  VLOG(0) << "Dropped frames: " << stats.num_dropped_frames << " / "
+  VLOG(1) << "Dropped frames: " << stats.num_dropped_frames << " / "
           << stats.total_num_encoded_frames;
 }
 #endif  // BUILDFLAG(USE_VAAPI)
@@ -937,8 +1002,9 @@ int main(int argc, char** argv) {
   // Check if a video was specified on the command line.
   base::CommandLine::StringVector args = cmd_line->GetArgs();
   base::FilePath video_path =
-      (args.size() >= 1) ? base::FilePath(args[0])
-                         : base::FilePath(media::test::kDefaultTestVideoPath);
+      (args.size() >= 1)
+          ? base::FilePath(args[0])
+          : media::GetTestDataFilePath(media::test::kDefaultTestVideoPath);
   base::FilePath video_metadata_path =
       (args.size() >= 2) ? base::FilePath(args[1]) : base::FilePath();
   std::string codec = "h264";
@@ -1036,9 +1102,9 @@ int main(int argc, char** argv) {
     } else if (it->first == "output_folder") {
       output_folder = base::FilePath(it->second);
     } else {
-      std::cout << "unknown option: --" << it->first << "\n"
-                << media::test::usage_msg;
-      return EXIT_FAILURE;
+      // Unknown option can happen CI bots, let's ignore it.
+      LOG(WARNING) << "Unknown argument: " << it->first;
+      continue;
     }
   }
 

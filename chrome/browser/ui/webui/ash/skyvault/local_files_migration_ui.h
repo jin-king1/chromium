@@ -7,22 +7,17 @@
 
 #include <memory>
 
+#include "ash/constants/webui_url_constants.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
-#include "chrome/browser/ui/webui/ash/skyvault/local_files_migration.mojom-shared.h"
 #include "chrome/browser/ui/webui/ash/skyvault/local_files_migration.mojom.h"
 #include "chrome/browser/ui/webui/ash/skyvault/local_files_migration_page_handler.h"
-#include "chrome/common/webui_url_constants.h"
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/webui_config.h"
+#include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "ui/web_dialogs/web_dialog_ui.h"
 #include "ui/webui/mojo_web_ui_controller.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
-
-namespace ui {
-class ColorChangeHandler;
-}
 
 namespace policy::local_user_files {
 
@@ -34,7 +29,7 @@ class LocalFilesMigrationUIConfig
  public:
   LocalFilesMigrationUIConfig()
       : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUILocalFilesMigrationHost) {}
+                           ash::kChromeUILocalFilesMigrationHost) {}
 
   bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
 };
@@ -51,11 +46,6 @@ class LocalFilesMigrationUI : public ui::MojoWebDialogUI,
   // Binds the Mojo interface for PageHandlerFactory.
   void BindInterface(mojo::PendingReceiver<mojom::PageHandlerFactory> receiver);
 
-  // Binds the color change handler.
-  void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
-          receiver);
-
   // mojom::PageHandlerFactory implementation:
   // Creates a PageHandler to handle communication with the WebUI page.
   void CreatePageHandler(
@@ -63,22 +53,20 @@ class LocalFilesMigrationUI : public ui::MojoWebDialogUI,
       mojo::PendingReceiver<mojom::PageHandler> pending_page_handler) override;
 
   // Sets the initial dialog parameters.
-  void SetInitialDialogInfo(CloudProvider cloud_provider,
+  void SetInitialDialogInfo(MigrationDestination cloud_provider,
                             base::Time migration_start_time);
 
  private:
   // Processes the user's action and closes the dialog accordingly.
   void ProcessResponseAndCloseDialog(DialogAction action);
 
-  CloudProvider cloud_provider_;
+  MigrationDestination destination_;
   base::Time migration_start_time_;
 
   // Page handler for WebUI interaction
   std::unique_ptr<LocalFilesMigrationPageHandler> handler_;
   // Mojo communication
   mojo::Receiver<mojom::PageHandlerFactory> factory_receiver_{this};
-
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
 
   base::WeakPtrFactory<LocalFilesMigrationUI> weak_factory_{this};
 

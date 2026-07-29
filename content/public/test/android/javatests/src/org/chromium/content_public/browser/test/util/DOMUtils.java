@@ -72,7 +72,25 @@ public class DOMUtils {
     }
 
     /**
+     * Seeks the media with given {@code id} to the end.
+     *
+     * @param webContents The WebContents in which the media element lives.
+     * @param id The element's id to be seeked.
+     */
+    public static void seekMediaToEnd(final WebContents webContents, final String id)
+            throws TimeoutException {
+        StringBuilder sb = new StringBuilder();
+        sb.append("(function() {");
+        sb.append("  var media = document.getElementById('" + id + "');");
+        sb.append("  if (media) media.currentTime = media.duration;");
+        sb.append("})();");
+        JavaScriptUtils.executeJavaScriptAndWaitForResult(
+                webContents, sb.toString(), MEDIA_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+    }
+
+    /**
      * Returns whether the media with given {@code id} is paused.
+     *
      * @param webContents The WebContents in which the media element lives.
      * @param id The element's id to check.
      * @return whether the media is paused.
@@ -206,8 +224,8 @@ public class DOMUtils {
         StringBuilder sb = new StringBuilder();
         sb.append("(function() {");
         sb.append(
-                "  return [document.documentElement.clientWidth,"
-                        + " document.documentElement.clientHeight];");
+                "  return [Math.round(window.visualViewport.width),"
+                        + " Math.round(window.visualViewport.height)];");
         sb.append("})();");
 
         String jsonText =
@@ -487,7 +505,21 @@ public class DOMUtils {
     }
 
     /**
+     * Right-click a DOM node by its id.
+     *
+     * @param webContents The WebContents in which the node lives.
+     * @param jsCode js code that returns an element.
+     */
+    public static void rightClickNodeByJs(final WebContents webContents, String jsCode)
+            throws TimeoutException {
+        int[] clickTarget = getClickTargetForNodeByJs(webContents, jsCode);
+        ClickUtils.mouseContextClickView(
+                getContainerView(webContents), clickTarget[0], clickTarget[1]);
+    }
+
+    /**
      * Scrolls the view to ensure that the required DOM node is visible.
+     *
      * @param webContents The WebContents in which the node lives.
      * @param nodeId The id of the node.
      */
@@ -794,8 +826,7 @@ public class DOMUtils {
         TestInputMethodManagerWrapper inputMethodManagerWrapper =
                 TestInputMethodManagerWrapper.create(imeAdapter);
         imeAdapter.setInputMethodManagerWrapper(inputMethodManagerWrapper);
-        // Click the text field node, so that it would get focus.
-        DOMUtils.clickNode(webContents, nodeId);
+        DOMUtils.focusNode(webContents, nodeId);
         CriteriaHelper.pollInstrumentationThread(
                 () -> {
                     try {

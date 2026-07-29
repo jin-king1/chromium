@@ -13,8 +13,47 @@ export function getHtml(this: OnDeviceInternalsModelStatusElement) {
   <h3>Foundational Model</h3>
   <div class="card">
     <div class="cr-row first">
-      <div class="cr-padded-text">Foundational model state:
-      ${this.pageData_.modelState}</div>
+      <div class="cr-padded-text">
+        <div>
+          Foundational model state:
+          <span class="value">${this.pageData_.baseModel.state}</span>
+        </div>
+      ${this.pageData_.baseModel.info ? html`
+        <div>
+          <div>
+            Model Name:
+            <span class="value">${this.pageData_.baseModel.info.name}</span>
+          </div>
+          <div>
+            Version:
+            <span class="value">${this.pageData_.baseModel.info.version}</span>
+          </div>
+          <div>
+            Backend Type: <span class="value"><!-- Comment to prevent space.
+            -->${this.pageData_.baseModel.info.backendType}</span>
+          </div>
+          <div>
+            File path:
+            <span class="value">${this.pageData_.baseModel.info.filePath}<!--
+           Comment to prevent space. --></span>
+          </div>
+          <div>
+            Folder size:
+            <span class="value">
+              ${(Number(this.pageData_.baseModel.info.fileSize) / 1024 / 1024).
+                toLocaleString('en-US', {maximumFractionDigits : 2})} MiB
+            </value>
+          </div>
+        </div>` : html``}
+        <div>
+          <progress value="${this.loadProgress}" max="${this.loadMax}">
+          </progress>
+          <span>${this.readableLoadProgress}</span><span>/</span>
+          <span>${this.readableLoadMax}</span>
+        </div>
+        <cr-button class="cr-button-gap"
+            @click="${this.onUninstallDefaultModelClick_}">Uninstall</cr-button>
+      </div>
     </div>
     <div class="cr-row">
       <div class="cr-padded-text">
@@ -28,9 +67,15 @@ export function getHtml(this: OnDeviceInternalsModelStatusElement) {
         You may need to restart the browser for the changes to take effect.
       </span>
     </div>
+    <div class="cr-row continuation">
+      <div class="cr-padded-text">
+        <a href="chrome://crashes">
+            View global crash reports (chrome://crashes)</a>
+      </div>
+    </div>
   </div>
   <h3>Foundational model criteria</h3>
-  ${(Object.keys(this.pageData_.registrationCriteria).length === 0) ?
+  ${(Object.keys(this.pageData_.baseModel.registrationCriteria).length === 0) ?
     html`
       <div class="card">
         <div class="cr-row first">
@@ -40,24 +85,66 @@ export function getHtml(this: OnDeviceInternalsModelStatusElement) {
           </div>
         </div>
       </div>` :
-     html`
-       <div>
-         <table id="criteria-table">
-           <thead>
-             <tr>
-               <th>Property</th>
-               <th>Value</th>
-             </tr>
-           </thead>
-           <tbody>
-             ${Object.keys(this.pageData_.registrationCriteria).map(key => html`
-               <tr>
-                 <td>${key}</td>
-                 <td>${this.pageData_.registrationCriteria[key]}</td>
-               </tr>`)}
-           </tbody>
-         </table>
-       </div>`}
+    html`
+      <div>
+        <table id="criteria-table">
+          <thead>
+            <tr>
+              <th>Property</th>
+              <th>Value</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${Object.keys(this.pageData_.baseModel.registrationCriteria).map(
+                key => html`
+              <tr>
+                <td>${key}</td>
+                <td>${this.pageData_.baseModel.registrationCriteria[key]}</td>
+              </tr>`)}
+            <tr>
+              <td>Detected VRAM (MiB)</td>
+              <td>${this.pageData_.performanceInfo.vramMb === 0n ?
+                'Not Available' :
+                this.pageData_.performanceInfo.vramMb}</td>
+            </tr>
+            <tr>
+              <td>Minimum VRAM required (MiB)</td>
+              <td>${this.pageData_.minVramMb}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>`}
+  <h3>Feature Adaptations</h3>
+  <div>
+    <table id="feature-adaptations-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Version</th>
+          <th>Recently Used</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${this.pageData_.featureAdaptations.map(adaptation => html`
+          <tr>
+            <td>${adaptation.featureName}</td>
+            <td>${adaptation.version}</td>
+            <td>${adaptation.isRecentlyUsed}</td>
+            <td>
+              <button data-feature="${adaptation.featureKey}"
+                  @click="${this.onSetFeatureUsageTrueClick_}">
+                set to true
+              </button>
+              <button data-feature="${adaptation.featureKey}"
+                  @click="${this.onSetFeatureUsageFalseClick_}">
+                set to false
+              </button>
+            </td>
+          </tr>`)}
+      </tbody>
+    </table>
+  </div>
   <h3>Supplementary Models</h3>
   <div>
     <table id="supp-models-table">

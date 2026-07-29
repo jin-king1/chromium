@@ -9,6 +9,7 @@
 
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "base/containers/flat_map.h"
 #include "base/types/strong_alias.h"
@@ -17,8 +18,8 @@
 
 namespace autofill {
 
-class AutofillField;
-class FormStructure;
+class FormFieldData;
+class FormData;
 
 // The Encoder performs vectorization for on-device field type prediction ML
 // model. It changes the string input for preprocessing by standardizing and
@@ -59,6 +60,10 @@ class FieldClassificationModelEncoder {
 
   FieldClassificationModelEncoder();
   FieldClassificationModelEncoder(const FieldClassificationModelEncoder&);
+  FieldClassificationModelEncoder(FieldClassificationModelEncoder&&);
+  FieldClassificationModelEncoder& operator=(
+      const FieldClassificationModelEncoder&);
+  FieldClassificationModelEncoder& operator=(FieldClassificationModelEncoder&&);
   ~FieldClassificationModelEncoder();
 
   TokenId TokenToId(std::u16string_view token) const;
@@ -66,24 +71,17 @@ class FieldClassificationModelEncoder {
   // Encodes the `form` into the `ModelInput` representation understood by the
   // `FieldClassificationModelExecutor`. This is done by encoding the attributes
   // of the form's fields.
-  ModelInput EncodeForm(const FormStructure& form) const;
+  ModelInput EncodeForm(const FormData& form) const;
 
   // Constructs from `field` the input for Field Classification ML model using
   // field attributes. More specifically, handles the attributes encoding and
   // prepares the final input.
-  std::vector<TokenId> EncodeField(const AutofillField& field) const;
+  std::vector<TokenId> EncodeField(const FormFieldData& field) const;
 
   // Constructs the input for Field Classification ML model using
   // form level attributes.
   std::vector<FieldClassificationModelEncoder::TokenId> EncodeFormFeatures(
-      const FormStructure& form) const;
-
-  // Standardizes a string according to encoding_parameters_:
-  //   - Optionally split on CamelCase.
-  //   - Optionally map to lowercase.
-  //   - Replace specified characters with whitespace.
-  //   - Remove specified characters.
-  std::u16string StandardizeString(std::u16string_view input) const;
+      const FormData& form) const;
 
   // Tokenizes the specific `input` to a vector of size
   // `max_tokens_per_feature`. The token IDs are looked up in token_to_id_
@@ -92,19 +90,31 @@ class FieldClassificationModelEncoder {
   // strings) are appended to generate a vector of the desired size.
   std::vector<TokenId> EncodeAttribute(std::u16string_view input) const;
 
+  // Returns the TokenId for the special CLS ("classification") token, which
+  // is always included at the beginning of the model input.
+  TokenId GetClsToken() const { return TokenId(token_to_id_.size() + 1); }
+
+  // Performs the reverse mapping TokenID -> string, which is only used for
+  // populating chrome://autofill-ml-internals.
+  std::string FindTokenById(TokenId id) const;
+
  private:
+  friend class FieldClassificationModelEncoderTestApi;
+
   // Returns if the model's encoding parameters specify any form level features.
   bool ShouldEncodeFormLevelFeatures() const;
-
-  // Returns a special CLS ("classification") token indicating the beginning of
-  // a field. This is the token where the encoder generates the field
-  // classification in the output.
-  TokenId cls_token() const { return TokenId(token_to_id_.size() + 1); }
 
   // Returns a special CLS ("classification") token indicating the beginning of
   // a placeholder field containing information about the form-level features.
   // Only used when the model is requiring encoding form level features.
   TokenId form_cls_token() const;
+
+  // Standardizes a string according to encoding_parameters_:
+  //   - Optionally split on CamelCase.
+  //   - Optionally map to lowercase.
+  //   - Replace specified characters with whitespace.
+  //   - Remove specified characters.
+  std::u16string StandardizeString(std::u16string_view input) const;
 
   base::flat_map<std::u16string, TokenId> token_to_id_;
   optimization_guide::proto::AutofillFieldClassificationEncodingParameters

@@ -7,13 +7,14 @@
 #include <memory>
 
 #include "base/test/metrics/histogram_tester.h"
+#include "chrome/browser/ui/webid/identity_ui_utils.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chrome/test/views/chrome_views_test_base.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
+#include "content/public/browser/web_contents.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "content/public/test/test_web_contents_factory.h"
 
 namespace webid {
-class FedCmModalDialogView;
 
 namespace {
 
@@ -54,6 +55,7 @@ class TestDelegate : public content::WebContentsDelegate {
     }
 
     opened_++;
+    disposition_ = params.disposition;
     return source;
   }
 
@@ -62,17 +64,28 @@ class TestDelegate : public content::WebContentsDelegate {
     bounds_ = bounds;
   }
 
+  blink::mojom::DisplayMode GetDisplayMode(
+      const content::WebContents* web_contents) override {
+    return is_fullscreen_ ? blink::mojom::DisplayMode::kFullscreen
+                          : blink::mojom::DisplayMode::kBrowser;
+  }
+
   void SetShouldReturnNullPopupWindow(bool should_return_null_popup_window) {
     should_return_null_popup_window_ = should_return_null_popup_window;
   }
 
+  void SetIsFullscreen(bool is_fullscreen) { is_fullscreen_ = is_fullscreen; }
+
   int opened() const { return opened_; }
   gfx::Rect bounds() const { return bounds_; }
+  WindowOpenDisposition disposition() const { return disposition_; }
 
  private:
   int opened_ = 0;
   bool should_return_null_popup_window_{false};
+  bool is_fullscreen_{false};
   gfx::Rect bounds_;
+  WindowOpenDisposition disposition_{WindowOpenDisposition::UNKNOWN};
 };
 
 }  // namespace
@@ -84,17 +97,27 @@ TEST_F(FedCmModalDialogViewTest, ShowPopupWindow) {
   std::unique_ptr<FedCmModalDialogView> popup_window_view =
       std::make_unique<FedCmModalDialogView>(web_contents(),
                                              /*observer=*/nullptr);
-  histogram_tester_->ExpectTotalCount(
-      "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult", 0);
   content::WebContents* web_contents = popup_window_view->ShowPopupWindow(
       GURL(u"https://example.com"), /*user_close_cancels_flow=*/true);
 
   EXPECT_EQ(1, delegate.opened());
   ASSERT_TRUE(web_contents);
-  histogram_tester_->ExpectUniqueSample(
-      "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult",
-      static_cast<int>(FedCmModalDialogView::ShowPopupWindowResult::kSuccess),
-      1);
+}
+
+TEST_F(FedCmModalDialogViewTest, ShowPopupWindowInFullscreen) {
+  // Override the delegate to test that OpenURLFromTab gets called.
+  TestDelegate delegate(web_contents());
+  delegate.SetIsFullscreen(true);
+
+  std::unique_ptr<FedCmModalDialogView> popup_window_view =
+      std::make_unique<FedCmModalDialogView>(web_contents(),
+                                             /*observer=*/nullptr);
+  content::WebContents* web_contents = popup_window_view->ShowPopupWindow(
+      GURL(u"https://example.com"), /*user_close_cancels_flow=*/true);
+
+  EXPECT_EQ(1, delegate.opened());
+  ASSERT_TRUE(web_contents);
+  EXPECT_EQ(WindowOpenDisposition::NEW_FOREGROUND_TAB, delegate.disposition());
 }
 
 TEST_F(FedCmModalDialogViewTest, ShowPopupWindowFailedByInvalidUrl) {
@@ -104,18 +127,11 @@ TEST_F(FedCmModalDialogViewTest, ShowPopupWindowFailedByInvalidUrl) {
   std::unique_ptr<FedCmModalDialogView> popup_window_view =
       std::make_unique<FedCmModalDialogView>(web_contents(),
                                              /*observer=*/nullptr);
-  histogram_tester_->ExpectTotalCount(
-      "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult", 0);
   content::WebContents* web_contents = popup_window_view->ShowPopupWindow(
       GURL(u"invalid"), /*user_close_cancels_flow=*/true);
 
   EXPECT_EQ(0, delegate.opened());
   ASSERT_FALSE(web_contents);
-  histogram_tester_->ExpectUniqueSample(
-      "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult",
-      static_cast<int>(
-          FedCmModalDialogView::ShowPopupWindowResult::kFailedByInvalidUrl),
-      1);
 }
 
 TEST_F(FedCmModalDialogViewTest, ShowPopupWindowFailedForOtherReasons) {
@@ -130,18 +146,11 @@ TEST_F(FedCmModalDialogViewTest, ShowPopupWindowFailedForOtherReasons) {
   std::unique_ptr<FedCmModalDialogView> popup_window_view =
       std::make_unique<FedCmModalDialogView>(web_contents(),
                                              /*observer=*/nullptr);
-  histogram_tester_->ExpectTotalCount(
-      "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult", 0);
   content::WebContents* web_contents = popup_window_view->ShowPopupWindow(
       GURL(u"https://example.com"), /*user_close_cancels_flow=*/true);
 
   EXPECT_EQ(0, delegate.opened());
   ASSERT_FALSE(web_contents);
-  histogram_tester_->ExpectUniqueSample(
-      "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult",
-      static_cast<int>(
-          FedCmModalDialogView::ShowPopupWindowResult::kFailedForOtherReasons),
-      1);
 }
 
 TEST_F(FedCmModalDialogViewTest, IdpInitiatedCloseMetric) {
@@ -225,7 +234,7 @@ TEST_F(FedCmModalDialogViewTest, LoadingStatePopupInteractionMetric) {
   auto OpenLoadingStatePopupWindow([&]() {
     popup_window = std::make_unique<FedCmModalDialogView>(web_contents(),
                                                           /*observer=*/nullptr);
-    popup_window->SetActiveModeSheetType(AccountSelectionView::LOADING);
+    popup_window->SetActiveModeSheetType(webid::SheetType::kLoading);
     popup_window->ShowPopupWindow(GURL(u"https://example.com"),
                                   /*user_close_cancels_flow=*/true);
   });
@@ -280,8 +289,7 @@ TEST_F(FedCmModalDialogViewTest, UseOtherAccountPopupInteractionMetric) {
   auto OpenUseOtherAccountPopupWindow([&]() {
     popup_window = std::make_unique<FedCmModalDialogView>(web_contents(),
                                                           /*observer=*/nullptr);
-    popup_window->SetActiveModeSheetType(
-        AccountSelectionView::ACCOUNT_SELECTION);
+    popup_window->SetActiveModeSheetType(webid::SheetType::kAccountSelection);
     popup_window->ShowPopupWindow(GURL(u"https://example.com"),
                                   /*user_close_cancels_flow=*/true);
   });

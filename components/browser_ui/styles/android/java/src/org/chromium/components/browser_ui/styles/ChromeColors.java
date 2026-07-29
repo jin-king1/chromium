@@ -11,7 +11,6 @@ import androidx.annotation.ColorInt;
 import androidx.annotation.ColorRes;
 import androidx.annotation.DimenRes;
 import androidx.annotation.Px;
-import androidx.appcompat.content.res.AppCompatResources;
 
 import com.google.android.material.color.MaterialColors;
 import com.google.android.material.elevation.ElevationOverlayProvider;
@@ -28,12 +27,12 @@ public class ChromeColors {
      *
      * @param context {@link Context} used to retrieve colors.
      * @param isIncognito Whether the color is used in incognito mode. If true, this method will
-     *                    return a non-dynamic dark theme color.
+     *     return a non-dynamic dark theme color.
      * @return The default theme color.
      */
     public static @ColorInt int getDefaultThemeColor(Context context, boolean isIncognito) {
         return isIncognito
-                ? context.getColor(R.color.toolbar_background_primary_dark)
+                ? context.getColor(R.color.toolbar_background_incognito)
                 : MaterialColors.getColor(context, R.attr.colorSurface, TAG);
     }
 
@@ -56,7 +55,7 @@ public class ChromeColors {
      * Returns the large text primary style based on the given parameter.
      *
      * @param forceLightTextColor When true, returns the light-mode large text primary style;
-     *         otherwise returns adaptive large text primary style.
+     *     otherwise returns adaptive large text primary style.
      * @return The large text primary style.
      */
     public static int getLargeTextPrimaryStyle(boolean forceLightTextColor) {
@@ -96,11 +95,11 @@ public class ChromeColors {
      *
      * @param context The {@link Context} used to retrieve colors.
      * @param isIncognito When true, returns the baseline light tint list; otherwise returns the
-     *         default primary icon tint list that is adaptive and can be dynamic.
+     *     default primary icon tint list that is adaptive and can be dynamic.
      * @return The {@link ColorStateList} for the icon tint.
      */
     public static ColorStateList getPrimaryIconTint(Context context, boolean isIncognito) {
-        return AppCompatResources.getColorStateList(context, getPrimaryIconTintRes(isIncognito));
+        return context.getColorStateList(getPrimaryIconTintRes(isIncognito));
     }
 
     /**
@@ -118,25 +117,57 @@ public class ChromeColors {
     }
 
     /**
-     * Returns the secondary icon tint to use based on the current parameters and whether the app
-     * is in night mode.
+     * Returns the secondary icon tint to use based on the current parameters and whether the app is
+     * in night mode.
      *
      * @param context The {@link Context} used to retrieve colors.
      * @param forceLightIconTint When true, returns the light tint color res; otherwise returns
-     *         adaptive secondary icon tint color res.
+     *     adaptive secondary icon tint color res.
      * @return The {@link ColorStateList} for the icon tint.
      */
     public static ColorStateList getSecondaryIconTint(Context context, boolean forceLightIconTint) {
-        return AppCompatResources.getColorStateList(
-                context, getSecondaryIconTintRes(forceLightIconTint));
+        return context.getColorStateList(getSecondaryIconTintRes(forceLightIconTint));
+    }
+
+    /**
+     * Get the default background color based on the incognito status.
+     *
+     * @param context The {@link Context} used to retrieve colors.
+     * @param isIncognito When true, returns the baseline dark tint color; otherwise returns
+     *     adaptive background color res.
+     * @return The {@link ColorRes} for the background.
+     */
+    public static @ColorInt int getDefaultBgColor(Context context, boolean isIncognito) {
+        if (isIncognito) {
+            return context.getColor(R.color.default_bg_color_dark);
+        }
+        return SemanticColorUtils.getDefaultBgColor(context);
+    }
+
+    /**
+     * Get the inverse background color based on the incognito status.
+     *
+     * @param context The {@link Context} used to retrieve colors.
+     * @param isIncognito When true, returns the baseline light tint color; otherwise returns
+     *     baseline dark background tint color.
+     * @return The {@link ColorRes} for the background.
+     */
+    public static @ColorInt int getInverseBgColor(Context context, boolean isIncognito) {
+        if (isIncognito) {
+            return context.getColor(R.color.default_bg_color_light);
+        }
+        return SemanticColorUtils.getColorSurfaceInverse(context);
     }
 
     /**
      * Calculates the surface color using theme colors.
+     *
      * @param context The {@link Context} used to retrieve attrs, colors, and dimens.
      * @param elevationDimen The dimen to look up the elevation level with.
      * @return the {@link ColorInt} for the background of a surface view.
+     * @deprecated Elevation based surface color is deprecated. See crbug.com/348667900.
      */
+    @Deprecated
     public static @ColorInt int getSurfaceColor(Context context, @DimenRes int elevationDimen) {
         float elevation = context.getResources().getDimension(elevationDimen);
         return getSurfaceColor(context, elevation);
@@ -144,12 +175,22 @@ public class ChromeColors {
 
     /**
      * Calculates the surface color using theme colors.
+     *
      * @param context The {@link Context} used to retrieve attrs and colors.
      * @param elevation The elevation in px.
      * @return the {@link ColorInt} for the background of a surface view.
+     * @deprecated Elevation based surface color is deprecated. See crbug.com/348667900.
      */
-    public static @ColorInt int getSurfaceColor(Context context, @Px float elevation) {
+    @Deprecated
+    private static @ColorInt int getSurfaceColor(Context context, @Px float elevation) {
         ElevationOverlayProvider elevationOverlayProvider = new ElevationOverlayProvider(context);
         return elevationOverlayProvider.compositeOverlayWithThemeSurfaceColorIfNeeded(elevation);
+    }
+
+    /** {@return The {@link ColorInt} keyboard focus ring color} */
+    public static @ColorInt int getKeyboardFocusRingColor(Context context, boolean isIncognito) {
+        return isIncognito
+                ? context.getColor(R.color.baseline_neutral_90)
+                : SemanticColorUtils.getDefaultControlColorActive(context);
     }
 }

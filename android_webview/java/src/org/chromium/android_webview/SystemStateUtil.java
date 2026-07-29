@@ -14,15 +14,19 @@ import android.os.UserManager;
 import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 
-import org.chromium.base.BuildInfo;
+import org.chromium.base.ApkInfo;
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.NullMarked;
 
 import java.lang.reflect.Field;
 import java.util.List;
 import java.util.Set;
 
-/** Utility class to fetch information about system, or system-level information about the bundle. */
+/**
+ * Utility class to fetch information about system, or system-level information about the bundle.
+ */
 @JNINamespace("android_webview")
+@NullMarked
 public class SystemStateUtil {
     /** Returns whether Android has multiple user profiles. */
     @CalledByNative
@@ -48,7 +52,7 @@ public class SystemStateUtil {
     @SuppressWarnings("DiscouragedPrivateApi")
     public static @PrimaryCpuAbiBitness int getPrimaryCpuAbiBitness() {
         ApplicationInfo applicationInfo = null;
-        String packageName = BuildInfo.getInstance().packageName;
+        String packageName = ApkInfo.getPackageName();
         try {
             applicationInfo =
                     ContextUtils.getApplicationContext()
@@ -67,5 +71,10 @@ public class SystemStateUtil {
         } catch (NameNotFoundException | NoSuchFieldException | IllegalAccessException e) {
         }
         return PrimaryCpuAbiBitness.UNKNOWN;
+    }
+
+    @CalledByNative
+    public static String getProcessName() {
+        return ContextUtils.getProcessName();
     }
 }

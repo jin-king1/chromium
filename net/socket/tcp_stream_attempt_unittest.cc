@@ -7,9 +7,9 @@
 #include <optional>
 #include <string_view>
 
-#include "base/functional/callback_forward.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "base/trace_event/trace_event.h"
 #include "net/base/ip_endpoint.h"
 #include "net/base/net_errors.h"
 #include "net/log/net_log_capture_mode.h"
@@ -81,8 +81,13 @@ class TestSocketPerformanceWatcherFactory
 
 class StreamAttemptHelper {
  public:
-  StreamAttemptHelper(StreamAttemptParams* params, IPEndPoint ip_endpoint)
-      : attempt_(std::make_unique<TcpStreamAttempt>(params, ip_endpoint)) {}
+  StreamAttemptHelper(StreamAttemptParams* params,
+                      IPEndPoint ip_endpoint,
+                      handles::NetworkHandle target_network)
+      : attempt_(std::make_unique<TcpStreamAttempt>(params,
+                                                    ip_endpoint,
+                                                    target_network,
+                                                    perfetto::Track())) {}
 
   int Start() {
     return attempt_->Start(base::BindOnce(&StreamAttemptHelper::OnComplete,
@@ -149,7 +154,8 @@ class TcpStreamAttemptTest : public TestWithTaskEnvironment {
 TEST_F(TcpStreamAttemptTest, SuccessSync) {
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kSynchronous);
-  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"));
+  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"),
+                             handles::kInvalidNetworkHandle);
   int rv = helper.Start();
   EXPECT_THAT(rv, IsOk());
 
@@ -164,7 +170,8 @@ TEST_F(TcpStreamAttemptTest, SuccessSync) {
 TEST_F(TcpStreamAttemptTest, SuccessAsync) {
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kPending);
-  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"));
+  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"),
+                             handles::kInvalidNetworkHandle);
   int rv = helper.Start();
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
   ASSERT_EQ(helper.attempt()->GetLoadState(), LOAD_STATE_CONNECTING);
@@ -183,7 +190,8 @@ TEST_F(TcpStreamAttemptTest, SuccessAsync) {
 TEST_F(TcpStreamAttemptTest, FailureSync) {
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kFailing);
-  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"));
+  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"),
+                             handles::kInvalidNetworkHandle);
   int rv = helper.Start();
   EXPECT_THAT(rv, IsError(ERR_CONNECTION_FAILED));
   ASSERT_EQ(helper.attempt()->GetLoadState(), LOAD_STATE_IDLE);
@@ -192,7 +200,8 @@ TEST_F(TcpStreamAttemptTest, FailureSync) {
 TEST_F(TcpStreamAttemptTest, FailureAsync) {
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kPendingFailing);
-  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"));
+  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"),
+                             handles::kInvalidNetworkHandle);
   int rv = helper.Start();
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
 
@@ -204,7 +213,8 @@ TEST_F(TcpStreamAttemptTest, FailureAsync) {
 TEST_F(TcpStreamAttemptTest, Timeout) {
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kStalled);
-  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"));
+  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"),
+                             handles::kInvalidNetworkHandle);
   int rv = helper.Start();
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
 
@@ -219,7 +229,7 @@ TEST_F(TcpStreamAttemptTest, Abort) {
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kPending);
   auto helper = std::make_unique<StreamAttemptHelper>(
-      params(), MakeIPEndPoint("192.0.2.1"));
+      params(), MakeIPEndPoint("192.0.2.1"), handles::kInvalidNetworkHandle);
   int rv = helper->Start();
   EXPECT_THAT(rv, IsError(ERR_IO_PENDING));
 
@@ -239,7 +249,8 @@ TEST_F(TcpStreamAttemptTest, SocketPerformanceWatcher) {
 
   socket_factory().set_default_client_socket_type(
       MockTransportClientSocketFactory::Type::kSynchronous);
-  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"));
+  StreamAttemptHelper helper(params(), MakeIPEndPoint("192.0.2.1"),
+                             handles::kInvalidNetworkHandle);
   int rv = helper.Start();
   EXPECT_THAT(rv, IsOk());
 

@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/css/css_numeric_literal_value.h"
 #include "third_party/blink/renderer/core/css/css_value_list.h"
 #include "third_party/blink/renderer/core/execution_context/security_context.h"
+#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 
 namespace blink {
 
@@ -104,6 +105,52 @@ TEST(CSSParserFastPathsTest, ParseRevertLayer) {
         CSSPropertyID::kDirection, "revert-layer", context);
     ASSERT_TRUE(value);
     EXPECT_TRUE(value->IsRevertLayerValue());
+  }
+}
+
+TEST(CSSParserFastPathsTest, ParseRevertRule) {
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
+  // 'revert-rule' enabled, IsHandledByKeywordFastPath=false
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(true);
+    DCHECK(!CSSParserFastPaths::IsHandledByKeywordFastPath(
+        CSSPropertyID::kMarginTop));
+    CSSValue* value = CSSParserFastPaths::MaybeParseValue(
+        CSSPropertyID::kMarginTop, "revert-rule", context);
+    ASSERT_TRUE(value);
+    EXPECT_TRUE(value->IsRevertRuleValue());
+  }
+
+  // 'revert-rule' enabled, IsHandledByKeywordFastPath=true
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(true);
+    DCHECK(CSSParserFastPaths::IsHandledByKeywordFastPath(
+        CSSPropertyID::kDirection));
+    CSSValue* value = CSSParserFastPaths::MaybeParseValue(
+        CSSPropertyID::kDirection, "revert-rule", context);
+    ASSERT_TRUE(value);
+    EXPECT_TRUE(value->IsRevertRuleValue());
+  }
+
+  // 'revert-rule' enabled, IsHandledByKeywordFastPath=false
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(false);
+    DCHECK(!CSSParserFastPaths::IsHandledByKeywordFastPath(
+        CSSPropertyID::kMarginTop));
+    CSSValue* value = CSSParserFastPaths::MaybeParseValue(
+        CSSPropertyID::kMarginTop, "revert-rule", context);
+    EXPECT_FALSE(value);
+  }
+
+  // 'revert-rule' enabled, IsHandledByKeywordFastPath=true
+  {
+    ScopedCSSRevertRuleForTest scoped_feature(false);
+    DCHECK(CSSParserFastPaths::IsHandledByKeywordFastPath(
+        CSSPropertyID::kDirection));
+    CSSValue* value = CSSParserFastPaths::MaybeParseValue(
+        CSSPropertyID::kDirection, "revert-rule", context);
+    EXPECT_FALSE(value);
   }
 }
 
@@ -500,46 +547,29 @@ TEST(CSSParserFastPathsTest, InternalColorsOnlyAllowedInUaMode) {
                 "-internal-current-search-text-color", kUASheetMode, color));
 }
 
-TEST(CSSParserFastPathsTest, IsSafeAreaInsetBottom) {
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(""));
-  EXPECT_FALSE(
-      CSSParserFastPaths::IsSafeAreaInsetBottom("safe-area-inset-bottom"));
-  EXPECT_FALSE(
-      CSSParserFastPaths::IsSafeAreaInsetBottom("env(safe-area-inset-top)"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-top))"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom) * 2)"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(-env(safe-area-inset-bottom))"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom, \") + 1px\") / 2)"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom) + 50kg)"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom) + 50px bar)"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom) + env(safe-area-max-inset-left))"));
-  EXPECT_FALSE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom) + env(safe-area-inset-bottom))"));
+TEST(CSSParserFastPathsTest, TextDecorationSkipInk_All) {
+  auto* context = MakeGarbageCollected<CSSParserContext>(
+      kHTMLStandardMode, SecureContextMode::kInsecureContext);
 
-  EXPECT_TRUE(
-      CSSParserFastPaths::IsSafeAreaInsetBottom("env(safe-area-inset-bottom)"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "env(  safe-area-inset-bottom, 0px)"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom))"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc( env( safe-area-inset-bottom , 0px) )"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom, 0px)+999px)"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom, 0px)-var(--foo))"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom) + env(safe-area-max-inset-bottom))"));
-  EXPECT_TRUE(CSSParserFastPaths::IsSafeAreaInsetBottom(
-      "calc(env(safe-area-inset-bottom, 0px) - env(safe-area-max-inset-bottom, "
-      "1px))"));
+  CSSValue* value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kTextDecorationSkipInk, "all", context);
+  ASSERT_NE(nullptr, value);
+  CSSIdentifierValue* identifier_value = To<CSSIdentifierValue>(value);
+  EXPECT_EQ(CSSValueID::kAll, identifier_value->GetValueID());
+
+  value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kTextDecorationSkipInk, "auto", context);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(CSSValueID::kAuto, To<CSSIdentifierValue>(value)->GetValueID());
+
+  value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kTextDecorationSkipInk, "none", context);
+  ASSERT_NE(nullptr, value);
+  EXPECT_EQ(CSSValueID::kNone, To<CSSIdentifierValue>(value)->GetValueID());
+
+  value = CSSParserFastPaths::MaybeParseValue(
+      CSSPropertyID::kTextDecorationSkipInk, "invalid", context);
+  EXPECT_EQ(nullptr, value);
 }
 
 }  // namespace blink

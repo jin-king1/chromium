@@ -4,6 +4,7 @@
 
 #include "content/browser/renderer_host/navigation_policy_container_builder.h"
 
+#include "base/strings/stringprintf.h"
 #include "content/browser/renderer_host/frame_tree_node.h"
 #include "content/browser/renderer_host/navigation_entry_impl.h"
 #include "content/browser/renderer_host/navigation_state_keep_alive.h"
@@ -16,6 +17,7 @@
 #include "content/public/test/mock_navigation_handle.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "content/shell/browser/shell.h"
+#include "services/network/public/cpp/network_switches.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -55,6 +57,13 @@ network::mojom::ContentSecurityPolicyPtr MakeTestCSP() {
 // presence of navigation history in particular.
 class NavigationPolicyContainerBuilderBrowserTest : public ContentBrowserTest {
  protected:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    ContentBrowserTest::SetUpCommandLine(command_line);
+    // Clear default from InProcessBrowserTest as test expects 127.0.0.1 in
+    // the local address space
+    command_line->AppendSwitchASCII(network::switches::kIpAddressSpaceOverrides,
+                                    "");
+  }
   explicit NavigationPolicyContainerBuilderBrowserTest() {
     CHECK(embedded_test_server()->Start());
   }
@@ -70,8 +79,8 @@ class NavigationPolicyContainerBuilderBrowserTest : public ContentBrowserTest {
     return root_frame_host()->GetStoragePartition();
   }
 
-  // Returns the URL of a page in the local address space.
-  GURL LocalUrl() const { return embedded_test_server()->GetURL("/echo"); }
+  // Returns the URL of a page in the loopback address space.
+  GURL LoopbackUrl() const { return embedded_test_server()->GetURL("/echo"); }
 
   // Returns the URL of a page in the public address space.
   GURL PublicUrl() const {
@@ -101,9 +110,7 @@ class NavigationPolicyContainerBuilderBrowserTest : public ContentBrowserTest {
 IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        HistoryPoliciesWithoutEntry) {
   EXPECT_THAT(
-      NavigationPolicyContainerBuilder(
-          nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr, nullptr)
-          .HistoryPolicies(),
+      NavigationPolicyContainerBuilder(nullptr, nullptr).HistoryPolicies(),
       IsNull());
 }
 
@@ -112,15 +119,14 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        HistoryPoliciesForNetworkScheme) {
   // Navigate to a document with a network scheme. Its history entry should have
   // its policies initialized from the network response.
-  EXPECT_TRUE(NavigateToURL(shell()->web_contents(), LocalUrl()));
+  EXPECT_TRUE(NavigateToURL(shell()->web_contents(), LoopbackUrl()));
 
   const PolicyContainerPolicies& root_policies = GetPolicies(root_frame_host());
   EXPECT_EQ(root_policies.ip_address_space,
-            network::mojom::IPAddressSpace::kLocal);
+            network::mojom::IPAddressSpace::kLoopback);
 
   NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr,
-      GetLastCommittedFrameNavigationEntry());
+      nullptr, GetLastCommittedFrameNavigationEntry());
 
   EXPECT_THAT(builder.HistoryPolicies(), Pointee(Eq(ByRef(root_policies))));
 }
@@ -129,15 +135,14 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
 // navigation, if any, or resets those policies when given nullptr.
 IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        HistoryPoliciesForBlankUrl) {
-  RenderFrameHostImpl* root = root_frame_host();
-
   // First navigate to a local scheme with non-default policies. To do that, we
   // first navigate to a document with a public address space, then have that
   // document navigate itself to `about:blank`. The final blank document
   // inherits its policies from the first document, and stores them in its
   // frame navigation entry for restoring later.
   EXPECT_TRUE(NavigateToURL(shell()->web_contents(), PublicUrl()));
-  EXPECT_TRUE(NavigateToURLFromRenderer(root, AboutBlankUrl()));
+  EXPECT_TRUE(NavigateToURLFromRenderer(root_frame_host(), AboutBlankUrl()));
+  RenderFrameHostImpl* root = root_frame_host();
 
   const PolicyContainerPolicies& root_policies = GetPolicies(root);
   EXPECT_EQ(root_policies.ip_address_space,
@@ -146,8 +151,7 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   // Now that we have set up a navigation entry with non-default policies, we
   // can run the test itself.
   NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr,
-      GetLastCommittedFrameNavigationEntry());
+      nullptr, GetLastCommittedFrameNavigationEntry());
 
   EXPECT_THAT(builder.HistoryPolicies(), Pointee(Eq(ByRef(root_policies))));
 }
@@ -158,15 +162,14 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        HistoryPoliciesForNonCurentEntry) {
   // Navigate to a document with a network scheme. Its history entry should have
   // its policies initialized from the network response.
-  EXPECT_TRUE(NavigateToURL(shell()->web_contents(), LocalUrl()));
+  EXPECT_TRUE(NavigateToURL(shell()->web_contents(), LoopbackUrl()));
 
   const PolicyContainerPolicies& root_policies = GetPolicies(root_frame_host());
   EXPECT_EQ(root_policies.ip_address_space,
-            network::mojom::IPAddressSpace::kLocal);
+            network::mojom::IPAddressSpace::kLoopback);
 
   FrameNavigationEntry* entry = GetLastCommittedFrameNavigationEntry();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr, entry);
+  NavigationPolicyContainerBuilder builder(nullptr, entry);
 
   // Verify the state is correct before navigating away.
   EXPECT_THAT(builder.HistoryPolicies(), Pointee(Eq(ByRef(root_policies))));
@@ -176,8 +179,7 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   // Now that the FrameNavigationEntry is non-current, verify that it still has
   // the builder.
   EXPECT_NE(entry, GetLastCommittedFrameNavigationEntry());
-  NavigationPolicyContainerBuilder builder2(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr, entry);
+  NavigationPolicyContainerBuilder builder2(nullptr, entry);
   EXPECT_THAT(builder2.HistoryPolicies(), Pointee(Eq(ByRef(root_policies))));
 }
 
@@ -185,14 +187,14 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
 // containing a copy of the builder's final policies.
 IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        CreatePolicyContainerForBlink) {
-  NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr, nullptr);
+  NavigationPolicyContainerBuilder builder(nullptr, nullptr);
   builder.SetIPAddressSpace(network::mojom::IPAddressSpace::kPublic);
 
   MockNavigationHandle navigation_handle(GURL(), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+  builder.ComputePolicies(&navigation_handle, /*initiator_policies=*/nullptr,
+                          false, network::mojom::WebSandboxFlags::kNone,
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
   // This must be called on a task runner, hence the need for this test to be
   // a browser test and not a simple unit test.
@@ -210,7 +212,6 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
 // initiator's policies are ignored in favor of the policies from the entry.
 IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        FinalPoliciesAboutBlankWithInitiatorAndHistory) {
-  RenderFrameHostImpl* root = root_frame_host();
 
   // First navigate to a local scheme with non-default policies. To do that, we
   // first navigate to a document with a public address space, then have that
@@ -218,26 +219,14 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   // inherits its policies from the first document, and stores them in its frame
   // navigation entry for restoring later.
   EXPECT_TRUE(NavigateToURL(shell()->web_contents(), PublicUrl()));
-  EXPECT_TRUE(NavigateToURLFromRenderer(root, AboutBlankUrl()));
+  EXPECT_TRUE(NavigateToURLFromRenderer(root_frame_host(), AboutBlankUrl()));
 
   PolicyContainerPolicies initiator_policies;
-  initiator_policies.ip_address_space = network::mojom::IPAddressSpace::kLocal;
-
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  blink::LocalFrameToken token = root->GetFrameToken();
-  auto initiator_host =
-      base::MakeRefCounted<PolicyContainerHost>(std::move(initiator_policies));
-  root->SetPolicyContainerHost(initiator_host);
-  mojo::PendingRemote<blink::mojom::NavigationStateKeepAliveHandle>
-      keep_alive_receiver;
-  root->IssueKeepAliveHandle(
-      keep_alive_receiver.InitWithNewPipeAndPassReceiver());
+  initiator_policies.ip_address_space =
+      network::mojom::IPAddressSpace::kLoopback;
 
   NavigationPolicyContainerBuilder builder(
-      nullptr, &token, kInvalidChildProcessUniqueId,
-      root->GetStoragePartition(), GetLastCommittedFrameNavigationEntry());
-
-  EXPECT_NE(*builder.HistoryPolicies(), *builder.InitiatorPolicies());
+      nullptr, GetLastCommittedFrameNavigationEntry());
 
   PolicyContainerPolicies history_policies = builder.HistoryPolicies()->Clone();
 
@@ -247,9 +236,10 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   builder.AddContentSecurityPolicy(MakeTestCSP());
 
   MockNavigationHandle navigation_handle(AboutBlankUrl(), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
+  builder.ComputePolicies(&navigation_handle, &initiator_policies, false,
                           network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
   EXPECT_EQ(builder.FinalPolicies(), history_policies);
 }
@@ -277,12 +267,11 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
       document.body.appendChild(iframe);
     })
   )";
-  EXPECT_EQ(true, EvalJs(root, JsReplace(script_template, LocalUrl())));
+  EXPECT_EQ(true, EvalJs(root, JsReplace(script_template, LoopbackUrl())));
 
   RenderFrameHostImpl* parent = root->child_at(0)->current_frame_host();
   NavigationPolicyContainerBuilder builder(
-      parent, nullptr, kInvalidChildProcessUniqueId, nullptr,
-      GetLastCommittedFrameNavigationEntry());
+      parent, GetLastCommittedFrameNavigationEntry());
 
   EXPECT_NE(*builder.HistoryPolicies(), *builder.ParentPolicies());
 
@@ -294,9 +283,10 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   builder.AddContentSecurityPolicy(MakeTestCSP());
 
   MockNavigationHandle navigation_handle(AboutSrcdocUrl(), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+  builder.ComputePolicies(&navigation_handle, /*initiator_policies=*/nullptr,
+                          false, network::mojom::WebSandboxFlags::kNone,
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
   EXPECT_EQ(builder.FinalPolicies(), history_policies);
 }
@@ -313,8 +303,7 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   EXPECT_TRUE(NavigateToURLFromRenderer(root_frame_host(), AboutBlankUrl()));
 
   NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr,
-      GetLastCommittedFrameNavigationEntry());
+      nullptr, GetLastCommittedFrameNavigationEntry());
 
   builder.ComputePoliciesForError();
 
@@ -335,15 +324,15 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   EXPECT_TRUE(NavigateToURLFromRenderer(root_frame_host(), AboutBlankUrl()));
 
   NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr,
-      GetLastCommittedFrameNavigationEntry());
+      nullptr, GetLastCommittedFrameNavigationEntry());
 
   PolicyContainerPolicies history_policies = builder.HistoryPolicies()->Clone();
 
   MockNavigationHandle navigation_handle(AboutBlankUrl(), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+  builder.ComputePolicies(&navigation_handle, /*initiator_policies=*/nullptr,
+                          false, network::mojom::WebSandboxFlags::kNone,
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
   EXPECT_THAT(builder.HistoryPolicies(), Pointee(Eq(ByRef(history_policies))));
 
   builder.ComputePoliciesForError();
@@ -388,29 +377,29 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   EXPECT_EQ(PublicUrl(), tab->GetLastCommittedURL());
 
   // Use replaceState() to change to a same-origin URL with a different policy
-  // (which happens to be no policy for LocalUrl()).
+  // (which happens to be no policy for LoopbackUrl()).
   TestNavigationObserver navigation_observer(shell()->web_contents());
   EXPECT_TRUE(
       ExecJs(root_frame_host(),
              base::StringPrintf("window.history.replaceState('', null, '%s');",
-                                LocalUrl().spec().data())));
+                                LoopbackUrl().spec().data())));
   navigation_observer.WaitForNavigationFinished();
-  EXPECT_EQ(LocalUrl(), tab->GetLastCommittedURL());
+  EXPECT_EQ(LoopbackUrl(), tab->GetLastCommittedURL());
 
   // Because we changed the url via replaceState rather than actually
-  // navigating to LocalUrl(), it shouldn't have modified any policies.
+  // navigating to LoopbackUrl(), it shouldn't have modified any policies.
   EXPECT_FALSE(
       GetPolicies(root_frame_host()).content_security_policies.empty());
   FrameNavigationEntry* entry = GetLastCommittedFrameNavigationEntry();
   EXPECT_FALSE(
       entry->policy_container_policies()->content_security_policies.empty());
 
-  // Navigate away, then back to LocalUrl().
+  // Navigate away, then back to LoopbackUrl().
   EXPECT_TRUE(NavigateToURL(shell()->web_contents(), AboutBlankUrl()));
   EXPECT_TRUE(HistoryGoBack(shell()->web_contents()));
 
-  // This time we actually loaded LocalUrl(). We should use its (non-existent)
-  // content security policies and updated the policies on the
+  // This time we actually loaded LoopbackUrl(). We should use its
+  // (non-existent) content security policies and updated the policies on the
   // FrameNavigationEntry, rather than restoring the previous set from the FNE.
   EXPECT_EQ(entry, GetLastCommittedFrameNavigationEntry());
   EXPECT_TRUE(
@@ -433,15 +422,15 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   EXPECT_TRUE(NavigateToURLFromRenderer(root, AboutBlankUrl()));
 
   NavigationPolicyContainerBuilder builder(
-      nullptr, nullptr, kInvalidChildProcessUniqueId, nullptr,
-      GetLastCommittedFrameNavigationEntry());
+      nullptr, GetLastCommittedFrameNavigationEntry());
 
   PolicyContainerPolicies history_policies = builder.HistoryPolicies()->Clone();
 
   MockNavigationHandle navigation_handle(GURL("http://foo.test"), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+  builder.ComputePolicies(&navigation_handle, /*initiator_policies=*/nullptr,
+                          false, network::mojom::WebSandboxFlags::kNone,
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
   EXPECT_EQ(builder.FinalPolicies(), PolicyContainerPolicies());
 
@@ -449,34 +438,12 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   EXPECT_THAT(builder.HistoryPolicies(), Pointee(Eq(ByRef(history_policies))));
 
   navigation_handle.set_url(AboutBlankUrl());
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+  builder.ComputePolicies(&navigation_handle, /*initiator_policies=*/nullptr,
+                          false, network::mojom::WebSandboxFlags::kNone,
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
   EXPECT_EQ(builder.FinalPolicies(), history_policies);
-}
-
-// It would be nice to verify that when given a wrong token, the builder just
-// ignores it and InitiatorPolicies() returns nullptr. However that path is
-// guarded by a DCHECK() so we cannot test it.
-
-// Verifies that SetInitiator() copies the policies of the policy container host
-// associated to the given frame token, or resets those policies when given
-// nullptr.
-IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
-                       InitiatorPoliciesWithInitiator) {
-  RenderFrameHostImpl* initiator = root_frame_host();
-  PolicyContainerPolicies initiator_policies =
-      initiator->policy_container_host()->policies().Clone();
-
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  const blink::LocalFrameToken& token = initiator->GetFrameToken();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, &token, initiator->GetProcess()->GetDeprecatedID(),
-      root_storage_partition(), nullptr);
-
-  EXPECT_THAT(builder.InitiatorPolicies(),
-              Pointee(Eq(ByRef(initiator_policies))));
 }
 
 // Verifies that when the URL of the document to commit is `about:blank`, the
@@ -484,20 +451,17 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
 IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        FinalPoliciesAboutBlankWithInitiator) {
   RenderFrameHostImpl* initiator = root_frame_host();
-  const PolicyContainerPolicies& initiator_policies =
-      initiator->policy_container_host()->policies();
+  const PolicyContainerPolicies* initiator_policies =
+      initiator->policy_container_host()->policies_ptr();
 
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  const blink::LocalFrameToken& token = initiator->GetFrameToken();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, &token, initiator->GetProcess()->GetDeprecatedID(),
-      root_storage_partition(), nullptr);
+  NavigationPolicyContainerBuilder builder(nullptr, nullptr);
   MockNavigationHandle navigation_handle(AboutBlankUrl(), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
+  builder.ComputePolicies(&navigation_handle, initiator_policies, false,
                           network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
-  EXPECT_EQ(builder.FinalPolicies(), initiator_policies);
+  EXPECT_EQ(builder.FinalPolicies(), *initiator_policies);
 }
 
 // Verifies that when the URL of the document to commit is `blob:.*`, the
@@ -505,23 +469,20 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
 IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
                        FinalPoliciesBlobWithInitiator) {
   RenderFrameHostImpl* initiator = root_frame_host();
-  PolicyContainerPolicies initiator_policies =
-      initiator->policy_container_host()->policies().Clone();
+  const PolicyContainerPolicies* initiator_policies =
+      initiator->policy_container_host()->policies_ptr();
 
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  const blink::LocalFrameToken& token = initiator->GetFrameToken();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, &token, initiator->GetProcess()->GetDeprecatedID(),
-      root_storage_partition(), nullptr);
+  NavigationPolicyContainerBuilder builder(nullptr, nullptr);
 
   MockNavigationHandle navigation_handle(
       GURL("blob:https://example.com/016ece86-b7f9-4b07-88c2-a0e36b7f1dd6"),
       nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
+  builder.ComputePolicies(&navigation_handle, initiator_policies, false,
                           network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
-  EXPECT_EQ(builder.FinalPolicies(), initiator_policies);
+  EXPECT_EQ(builder.FinalPolicies(), *initiator_policies);
 }
 
 // Verifies that when the URL of the document to commit is `about:blank`, the
@@ -533,82 +494,19 @@ IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
   PolicyContainerPolicies initiator_policies =
       initiator->policy_container_host()->policies().Clone();
 
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  const blink::LocalFrameToken& token = initiator->GetFrameToken();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, &token, initiator->GetProcess()->GetDeprecatedID(),
-      root_storage_partition(), nullptr);
+  NavigationPolicyContainerBuilder builder(nullptr, nullptr);
 
   // Add some CSP.
   network::mojom::ContentSecurityPolicyPtr test_csp = MakeTestCSP();
   builder.AddContentSecurityPolicy(test_csp.Clone());
   MockNavigationHandle navigation_handle(AboutBlankUrl(), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
+  builder.ComputePolicies(&navigation_handle, &initiator_policies, false,
                           network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
+                          /*is_credentialless=*/false,
+                          /*is_secure_context_root=*/false);
 
   initiator_policies.content_security_policies.push_back(std::move(test_csp));
   EXPECT_EQ(builder.FinalPolicies(), initiator_policies);
-}
-
-// After ComputePolicies() or ComputePoliciesForError(), the initiator policies
-// are still accessible.
-IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
-                       AccessInitiatorAfterComputingPolicies) {
-  RenderFrameHostImpl* initiator = root_frame_host();
-  const PolicyContainerPolicies& initiator_policies =
-      initiator->policy_container_host()->policies();
-
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  const blink::LocalFrameToken& token = initiator->GetFrameToken();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, &token, initiator->GetProcess()->GetDeprecatedID(),
-      root_storage_partition(), nullptr);
-
-  EXPECT_THAT(builder.InitiatorPolicies(),
-              Pointee(Eq(ByRef(initiator_policies))));
-
-  MockNavigationHandle navigation_handle(GURL("https://foo.test"), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
-  EXPECT_THAT(builder.InitiatorPolicies(),
-              Pointee(Eq(ByRef(initiator_policies))));
-
-  builder.ComputePoliciesForError();
-  EXPECT_THAT(builder.InitiatorPolicies(),
-              Pointee(Eq(ByRef(initiator_policies))));
-}
-
-// Verifies that the initiator policies are preserved on
-// ResetForCrossDocumentRestart.
-IN_PROC_BROWSER_TEST_F(NavigationPolicyContainerBuilderBrowserTest,
-                       ResetForCrossDocumentRestartInitiatorPolicies) {
-  RenderFrameHostImpl* initiator = root_frame_host();
-
-  // Force implicit conversion from LocalFrameToken to UnguessableToken.
-  const blink::LocalFrameToken& token = initiator->GetFrameToken();
-  NavigationPolicyContainerBuilder builder(
-      nullptr, &token, initiator->GetProcess()->GetDeprecatedID(),
-      root_storage_partition(), nullptr);
-
-  MockNavigationHandle navigation_handle(GURL("https://foo.test"), nullptr);
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
-  EXPECT_EQ(builder.FinalPolicies(), PolicyContainerPolicies());
-
-  builder.ResetForCrossDocumentRestart();
-  EXPECT_THAT(
-      builder.InitiatorPolicies(),
-      Pointee(Eq(ByRef(initiator->policy_container_host()->policies()))));
-  navigation_handle.set_url(AboutBlankUrl());
-  builder.ComputePolicies(&navigation_handle, false,
-                          network::mojom::WebSandboxFlags::kNone,
-                          /*is_credentialless=*/false);
-
-  EXPECT_EQ(builder.FinalPolicies(),
-            initiator->policy_container_host()->policies());
 }
 
 }  // namespace content

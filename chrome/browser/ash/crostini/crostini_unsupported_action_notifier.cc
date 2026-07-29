@@ -10,11 +10,11 @@
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/keyboard/keyboard_controller.h"
 #include "ash/public/cpp/system/toast_manager.h"
+#include "ash/strings/grit/ash_strings.h"
 #include "base/check.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/accessibility/magnification_manager.h"
-#include "chrome/grit/generated_resources.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "components/exo/wm_helper.h"
@@ -118,7 +118,7 @@ CrostiniUnsupportedActionNotifier::Delegate::Delegate() = default;
 CrostiniUnsupportedActionNotifier::Delegate::~Delegate() = default;
 
 bool CrostiniUnsupportedActionNotifier::Delegate::IsInTabletMode() {
-  return display::Screen::GetScreen()->InTabletMode();
+  return display::Screen::Get()->InTabletMode();
 }
 
 bool CrostiniUnsupportedActionNotifier::Delegate::IsFocusedWindowCrostini() {
@@ -166,12 +166,12 @@ void CrostiniUnsupportedActionNotifier::Delegate::RemoveFocusObserver(
 
 void CrostiniUnsupportedActionNotifier::Delegate::AddDisplayObserver(
     display::DisplayObserver* observer) {
-  display::Screen::GetScreen()->AddObserver(observer);
+  display::Screen::Get()->AddObserver(observer);
 }
 
 void CrostiniUnsupportedActionNotifier::Delegate::RemoveDisplayObserver(
     display::DisplayObserver* observer) {
-  display::Screen::GetScreen()->RemoveObserver(observer);
+  display::Screen::Get()->RemoveObserver(observer);
 }
 
 void CrostiniUnsupportedActionNotifier::Delegate::AddKeyboardControllerObserver(

@@ -8,6 +8,7 @@
 #include "third_party/blink/renderer/core/core_export.h"
 #include "third_party/blink/renderer/core/editing/markers/highlight_pseudo_marker.h"
 #include "third_party/blink/renderer/platform/wtf/casting.h"
+#include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
 
 namespace blink {
 
@@ -16,8 +17,8 @@ class Highlight;
 // A subclass of HighlightPseudoMarker for CSS custom highlights.
 class CORE_EXPORT CustomHighlightMarker final : public HighlightPseudoMarker {
  public:
-  CustomHighlightMarker(unsigned start_offset,
-                        unsigned end_offset,
+  CustomHighlightMarker(wtf_size_t start_offset,
+                        wtf_size_t end_offset,
                         const String& highlight_name,
                         const Member<Highlight> highlight);
   CustomHighlightMarker(const CustomHighlightMarker&) = delete;

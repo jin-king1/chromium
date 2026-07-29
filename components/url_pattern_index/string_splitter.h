@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #ifndef COMPONENTS_URL_PATTERN_INDEX_STRING_SPLITTER_H_
 #define COMPONENTS_URL_PATTERN_INDEX_STRING_SPLITTER_H_
 
@@ -14,6 +9,7 @@
 #include <string_view>
 
 #include "base/check_op.h"
+#include "base/compiler_specific.h"
 #include "base/memory/raw_ptr.h"
 
 namespace url_pattern_index {
@@ -43,8 +39,6 @@ class StringSplitter {
       return current_.data() == rhs.current_.data();
     }
 
-    bool operator!=(const Iterator& rhs) const { return !operator==(rhs); }
-
     std::string_view operator*() const { return current_; }
     const std::string_view* operator->() const { return &current_; }
 
@@ -63,12 +57,10 @@ class StringSplitter {
     friend class StringSplitter<IsSeparator>;
 
     // Creates an iterator, which points to the leftmost token within
-    // `remaining`, which must be a suffix of `splitter`'s `text`.
-    Iterator(const StringSplitter& splitter, std::string_view remaining)
-        : splitter_(&splitter), remaining_(remaining) {
-      DCHECK_LE(splitter_->text_.data(), remaining_.data());
-      DCHECK_EQ(splitter_->text_.data() + splitter_->text_.size(),
-                remaining_.data() + remaining_.size());
+    // a suffix of `splitter`'s `text` starting at `offset`.
+    Iterator(const StringSplitter& splitter, size_t offset)
+        : splitter_(&splitter), remaining_(splitter_->text_.substr(offset)) {
+      DCHECK_LE(offset, splitter_->text_.size());
       Advance();
     }
 
@@ -101,8 +93,8 @@ class StringSplitter {
                           IsSeparator is_separator = IsSeparator())
       : text_(text), is_separator_(is_separator) {}
 
-  Iterator begin() const { return Iterator(*this, text_); }
-  Iterator end() const { return Iterator(*this, text_.substr(text_.size())); }
+  Iterator begin() const { return Iterator(*this, 0); }
+  Iterator end() const { return Iterator(*this, text_.size()); }
 
  private:
   std::string_view text_;

@@ -8,16 +8,15 @@
 #include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/field_trial_params.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lookalikes/safety_tip_web_contents_observer.h"
+#include "chrome/browser/net/qwac_web_contents_observer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ssl/https_only_mode_tab_helper.h"
 #include "chrome/browser/ssl/known_interception_disclosure_infobar_delegate.h"
-#include "chrome/common/chrome_features.h"
 #include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/common/secure_origin_allowlist.h"
@@ -31,6 +30,7 @@
 #include "components/security_interstitials/core/pref_names.h"
 #include "components/security_state/content/content_utils.h"
 #include "content/public/browser/browser_context.h"
+#include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/render_frame_host.h"
@@ -83,6 +83,14 @@ std::unique_ptr<security_state::VisibleSecurityState>
 ChromeSecurityStateTabHelper::GetVisibleSecurityState() {
   auto state = SecurityStateTabHelper::GetVisibleSecurityState();
 
+  // Get the 2-QWAC state.
+  QwacWebContentsObserver::QwacStatus* qwac_status =
+      QwacWebContentsObserver::QwacStatus::GetForPage(
+          web_contents()->GetPrimaryPage());
+  if (qwac_status && qwac_status->is_finished()) {
+    state->two_qwac = qwac_status->verified_2qwac_cert();
+  }
+
   // Malware status might already be known even if connection security
   // information is still being initialized, thus no need to check for that.
   state->malicious_content_status = GetMaliciousContentStatus();
@@ -126,15 +134,6 @@ void ChromeSecurityStateTabHelper::DidStartNavigation(
   if (!navigation_handle->IsFormSubmission()) {
     return;
   }
-  UMA_HISTOGRAM_ENUMERATION("Security.SecurityLevel.FormSubmission",
-                            GetSecurityLevel(),
-                            security_state::SECURITY_LEVEL_COUNT);
-  if (navigation_handle->IsInMainFrame() &&
-      !security_state::IsSchemeCryptographic(GetVisibleSecurityState()->url)) {
-    UMA_HISTOGRAM_ENUMERATION(
-        "Security.SecurityLevel.InsecureMainFrameFormSubmission",
-        GetSecurityLevel(), security_state::SECURITY_LEVEL_COUNT);
-  }
 
   if (navigation_handle->GetURL().SchemeIs(url::kHttpsScheme)) {
     ukm::UkmRecorder* ukm_recorder = ukm::UkmRecorder::Get();
@@ -149,21 +148,11 @@ void ChromeSecurityStateTabHelper::DidStartNavigation(
 
 void ChromeSecurityStateTabHelper::PrimaryPageChanged(content::Page& page) {
   net::CertStatus cert_status = GetVisibleSecurityState()->cert_status;
-  if (net::IsCertStatusError(cert_status) &&
-      !page.GetMainDocument().IsErrorDocument()) {
-    // Record each time a user visits a site after having clicked through a
-    // certificate warning interstitial. This is used as a baseline for
-    // interstitial.ssl.did_user_revoke_decision2 in order to determine how
-    // many times the re-enable warnings button is clicked, as a fraction of
-    // the number of times it was available.
-    UMA_HISTOGRAM_BOOLEAN("interstitial.ssl.visited_site_after_warning", true);
-  }
-
   MaybeShowKnownInterceptionDisclosureDialog(web_contents(), cert_status);
 }
 
 security_state::MaliciousContentStatus
-ChromeSecurityStateTabHelper::GetMaliciousContentStatus() const {
+ChromeSecurityStateTabHelper::GetMaliciousContentStatus() {
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   using enum safe_browsing::SBThreatType;
 
@@ -246,6 +235,8 @@ ChromeSecurityStateTabHelper::GetMaliciousContentStatus() const {
       case SB_THREAT_TYPE_SUSPICIOUS_SITE:
       case SB_THREAT_TYPE_APK_DOWNLOAD:
       case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
+      case SB_THREAT_TYPE_CSD_DOWNLOAD_ALLOWLIST:
+      case SB_THREAT_TYPE_WARNABLE_SUSPICIOUS_SITE:
         // These threat types are not currently associated with
         // interstitials, and thus resources with these threat types are
         // not ever whitelisted or pending whitelisting.

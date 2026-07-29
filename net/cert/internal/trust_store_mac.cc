@@ -2,15 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/cert/internal/trust_store_mac.h"
 
 #include <Security/Security.h>
 
+#include <algorithm>
+#include <atomic>
 #include <map>
 #include <string_view>
 #include <vector>
@@ -18,9 +15,7 @@
 #include "base/apple/foundation_util.h"
 #include "base/apple/osstatus_logging.h"
 #include "base/apple/scoped_cftyperef.h"
-#include "base/atomicops.h"
 #include "base/callback_list.h"
-#include "base/containers/contains.h"
 #include "base/containers/flat_map.h"
 #include "base/containers/to_vector.h"
 #include "base/functional/bind.h"
@@ -31,7 +26,8 @@
 #include "base/strings/strcat.h"
 #include "base/synchronization/lock.h"
 #include "base/timer/elapsed_timer.h"
-#include "crypto/mac_security_services_lock.h"
+#include "crypto/apple/security_framework_lock.h"
+#include "crypto/hash.h"
 #include "net/base/features.h"
 #include "net/base/hash_value.h"
 #include "net/base/network_notification_thread_mac.h"
@@ -99,7 +95,7 @@ TrustStatus IsTrustDictionaryTrustedForPolicy(
     CFDictionaryRef trust_dict,
     bool is_self_issued,
     const CFStringRef target_policy_oid) {
-  crypto::GetMacSecurityServicesLock().AssertAcquired();
+  crypto::apple::GetSecurityFrameworkLock().AssertAcquired();
 
   // An empty trust dict should be interpreted as
   // kSecTrustSettingsResultTrustRoot. This is handled by falling through all
@@ -217,7 +213,7 @@ TrustStatus IsSecCertificateTrustedForPolicyInDomain(
     const bool is_self_issued,
     const CFStringRef policy_oid,
     SecTrustSettingsDomain trust_domain) {
-  crypto::GetMacSecurityServicesLock().AssertAcquired();
+  crypto::apple::GetSecurityFrameworkLock().AssertAcquired();
 
   base::apple::ScopedCFTypeRef<CFArrayRef> trust_settings;
   OSStatus err = SecTrustSettingsCopyTrustSettings(
@@ -265,7 +261,7 @@ TrustStatus IsCertificateTrustedForPolicyInDomain(
 TrustStatus IsCertificateTrustedForPolicy(const bssl::ParsedCertificate* cert,
                                           SecCertificateRef cert_handle,
                                           const CFStringRef policy_oid) {
-  crypto::GetMacSecurityServicesLock().AssertAcquired();
+  crypto::apple::GetSecurityFrameworkLock().AssertAcquired();
 
   const bool is_self_issued =
       cert->normalized_subject() == cert->normalized_issuer();
@@ -313,10 +309,10 @@ bool IsNotAcceptableIntermediate(const bssl::ParsedCertificate* cert,
   // actually care about.
   if (cert->has_extended_key_usage() &&
       CFEqual(policy_oid, kSecPolicyAppleSSL) &&
-      !base::Contains(cert->extended_key_usage(),
-                      bssl::der::Input(bssl::kAnyEKU)) &&
-      !base::Contains(cert->extended_key_usage(),
-                      bssl::der::Input(bssl::kServerAuth))) {
+      !std::ranges::contains(cert->extended_key_usage(),
+                             bssl::der::Input(bssl::kAnyEKU)) &&
+      !std::ranges::contains(cert->extended_key_usage(),
+                             bssl::der::Input(bssl::kServerAuth))) {
     return true;
   }
 
@@ -351,7 +347,7 @@ class TrustDomainCacheFullCerts {
     base::apple::ScopedCFTypeRef<CFArrayRef> cert_array;
     OSStatus rv;
     {
-      base::AutoLock lock(crypto::GetMacSecurityServicesLock());
+      base::AutoLock lock(crypto::apple::GetSecurityFrameworkLock());
       rv = SecTrustSettingsCopyCertificates(domain_,
                                             cert_array.InitializeInto());
     }
@@ -408,7 +404,7 @@ class TrustDomainCacheFullCerts {
       return cache_iter->second.trust_status;
     }
 
-    base::AutoLock lock(crypto::GetMacSecurityServicesLock());
+    base::AutoLock lock(crypto::apple::GetSecurityFrameworkLock());
 
     // Cert has trust settings but trust has not been calculated yet.
     // Calculate it now, insert into cache, and return.
@@ -453,12 +449,6 @@ class TrustDomainCacheFullCerts {
   base::flat_map<SHA256HashValue, TrustStatusDetails> trust_status_cache_;
   bssl::CertIssuerSourceStatic cert_issuer_source_;
 };
-
-SHA256HashValue CalculateFingerprint256(const bssl::der::Input& buffer) {
-  SHA256HashValue sha256;
-  SHA256(buffer.data(), buffer.size(), sha256.data);
-  return sha256;
-}
 
 // Watches macOS keychain for |event_mask| notifications, and notifies any
 // registered callbacks. This is necessary as the keychain callback API is
@@ -547,7 +537,7 @@ class KeychainObserver {
 
   // Returns the current iteration count, which is incremented every time
   // keychain trust settings change. This may be called from any thread.
-  int64_t Iteration() const { return base::subtle::Acquire_Load(&iteration_); }
+  int64_t Iteration() const { return iteration_.load(std::memory_order_acquire); }
 
  private:
   void RegisterCallbackOnNotificationThread() {
@@ -557,12 +547,12 @@ class KeychainObserver {
             &KeychainObserver::Increment, base::Unretained(this)));
   }
 
-  void Increment() { base::subtle::Barrier_AtomicIncrement(&iteration_, 1); }
+  void Increment() { iteration_.fetch_add(1); }
 
   // Only accessed on the notification thread.
   base::CallbackListSubscription subscription_;
 
-  base::subtle::Atomic64 iteration_ = 0;
+  std::atomic<int64_t> iteration_{0};
 };
 
 using KeychainTrustObserver =
@@ -626,7 +616,7 @@ class TrustStoreMac::TrustImplDomainCacheFullCerts
 
   // Returns the trust status for |cert|.
   TrustStatus IsCertTrusted(const bssl::ParsedCertificate* cert) override {
-    SHA256HashValue cert_hash = CalculateFingerprint256(cert->der_cert());
+    SHA256HashValue cert_hash = crypto::hash::Sha256(cert->der_cert());
 
     base::AutoLock lock(cache_lock_);
     MaybeInitializeCache();
@@ -685,7 +675,7 @@ class TrustStoreMac::TrustImplDomainCacheFullCerts
       all_trusted_certs[cert->der_cert()] = std::move(cert);
     }
     for (const auto& [key, cert] : all_trusted_certs) {
-      SHA256HashValue cert_hash = CalculateFingerprint256(cert->der_cert());
+      SHA256HashValue cert_hash = crypto::hash::Sha256(cert->der_cert());
       results.emplace_back(base::ToVector(cert->der_cert()),
                            TrustStatusToCertificateTrust(
                                IsCertTrustedImpl(cert.get(), cert_hash)));
@@ -754,7 +744,7 @@ class TrustStoreMac::TrustImplDomainCacheFullCerts
     CFDictionarySetValue(query.get(), kSecReturnRef, kCFBooleanTrue);
     CFDictionarySetValue(query.get(), kSecMatchLimit, kSecMatchLimitAll);
 
-    base::AutoLock lock(crypto::GetMacSecurityServicesLock());
+    base::AutoLock lock(crypto::apple::GetSecurityFrameworkLock());
 
     base::apple::ScopedCFTypeRef<CFArrayRef>
         scoped_alternate_keychain_search_list;
@@ -879,7 +869,7 @@ class TrustStoreMac::TrustImplKeychainCacheFullCerts
       const TrustImplKeychainCacheFullCerts&) = delete;
 
   TrustStatus IsCertTrusted(const bssl::ParsedCertificate* cert) override {
-    SHA256HashValue cert_hash = CalculateFingerprint256(cert->der_cert());
+    SHA256HashValue cert_hash = crypto::hash::Sha256(cert->der_cert());
 
     base::AutoLock lock(cache_lock_);
     MaybeInitializeCache();
@@ -915,7 +905,7 @@ class TrustStoreMac::TrustImplKeychainCacheFullCerts
 
     std::vector<net::PlatformTrustStore::CertWithTrust> results;
     for (const auto& cert : cert_issuer_source_.Certs()) {
-      SHA256HashValue cert_hash = CalculateFingerprint256(cert->der_cert());
+      SHA256HashValue cert_hash = crypto::hash::Sha256(cert->der_cert());
       results.emplace_back(
           base::ToVector(cert->der_cert()),
           TrustStatusToCertificateTrust(IsCertTrustedImpl(cert_hash)));
@@ -948,7 +938,7 @@ class TrustStoreMac::TrustImplKeychainCacheFullCerts
     CFDictionarySetValue(query.get(), kSecReturnRef, kCFBooleanTrue);
     CFDictionarySetValue(query.get(), kSecMatchLimit, kSecMatchLimitAll);
 
-    base::AutoLock lock(crypto::GetMacSecurityServicesLock());
+    base::AutoLock lock(crypto::apple::GetSecurityFrameworkLock());
 
     base::apple::ScopedCFTypeRef<CFArrayRef>
         scoped_alternate_keychain_search_list;
@@ -1083,6 +1073,11 @@ void TrustStoreMac::SyncGetIssuersOf(const bssl::ParsedCertificate* cert,
 bssl::CertificateTrust TrustStoreMac::GetTrust(
     const bssl::ParsedCertificate* cert) {
   return TrustStatusToCertificateTrust(trust_cache_->IsCertTrusted(cert));
+}
+
+std::shared_ptr<const bssl::MTCAnchor> TrustStoreMac::GetTrustedMTCIssuerOf(
+    const bssl::ParsedCertificate* cert) {
+  return nullptr;
 }
 
 std::vector<PlatformTrustStore::CertWithTrust>

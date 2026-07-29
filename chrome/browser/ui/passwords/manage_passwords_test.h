@@ -10,7 +10,6 @@
 
 #include "base/metrics/histogram_samples.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "chrome/browser/optimization_guide/mock_optimization_guide_keyed_service.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/affiliations/core/browser/mock_affiliation_service.h"
 #include "components/autofill/core/common/form_data.h"
@@ -23,6 +22,9 @@
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
+namespace password_manager {
+class TestPasswordStore;
+}
 class ManagePasswordsUIController;
 
 enum class SyncConfiguration {
@@ -59,9 +61,6 @@ class ManagePasswordsTest : public InteractiveBrowserTest {
   // override it.
   void SetupManagingPasswords(const GURL& password_form_url = GURL());
 
-  // Put the controller, icon, and bubble into password_change state.
-  void SetupPasswordChange();
-
   // Put the controller, icon, and bubble into the confirmation state.
   void SetupAutomaticPassword();
 
@@ -96,6 +95,8 @@ class ManagePasswordsTest : public InteractiveBrowserTest {
   // Get the UI controller for the current WebContents.
   ManagePasswordsUIController* GetController();
 
+  password_manager::TestPasswordStore* GetAccountPasswordStore();
+
  protected:
   // Creates a form manager using the given password password stores.
   // If |profile_store| is nullptr, password_manager::StubFormSaver is used for
@@ -105,6 +106,14 @@ class ManagePasswordsTest : public InteractiveBrowserTest {
       password_manager::PasswordStoreInterface* profile_store = nullptr,
       password_manager::PasswordStoreInterface* account_store = nullptr);
 
+  auto CheckHistogramUniqueSample(const std::string& name,
+                                  int sample,
+                                  int expected_count) {
+    return Do([=, this]() {
+      histogram_tester_.ExpectUniqueSample(name, sample, expected_count);
+    });
+  }
+
  private:
   password_manager::PasswordForm password_form_;
   password_manager::PasswordForm insecure_credential_;
@@ -112,10 +121,9 @@ class ManagePasswordsTest : public InteractiveBrowserTest {
   password_manager::StubPasswordManagerClient client_;
   password_manager::StubPasswordManagerDriver driver_;
   password_manager::FakeFormFetcher fetcher_;
-  std::unique_ptr<testing::NiceMock<MockOptimizationGuideKeyedService>>
-      mock_optimization_service_;
 
   base::CallbackListSubscription create_services_subscription_;
+  std::vector<password_manager::StoredCredential> best_matches_;
 };
 
 #endif  // CHROME_BROWSER_UI_PASSWORDS_MANAGE_PASSWORDS_TEST_H_

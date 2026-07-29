@@ -10,13 +10,15 @@
 #include <string_view>
 #include <vector>
 
+#include "base/containers/flat_map.h"
 #include "base/feature_list.h"
+#include "base/memory/raw_ptr.h"
+#include "base/memory/raw_ref.h"
 #include "base/scoped_observation.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
 #include "base/time/time.h"
 #include "base/timer/timer.h"
-#include "chrome/browser/ash/policy/reporting/metrics_reporting/apps/app_usage_observer.h"
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/cros_healthd_sampler_handlers/cros_healthd_sampler_handler.h"
 #include "chrome/browser/ash/policy/reporting/metrics_reporting/cros_reporting_settings.h"
 #include "chrome/browser/ash/policy/status_collector/managed_session_service.h"
@@ -24,15 +26,20 @@
 #include "chrome/browser/chromeos/reporting/local_state_reporting_settings.h"
 #include "chrome/browser/chromeos/reporting/metric_reporting_manager_delegate_base.h"
 #include "chrome/browser/chromeos/reporting/user_reporting_settings.h"
-#include "chrome/browser/chromeos/reporting/websites/website_usage_observer.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chromeos/ash/services/cros_healthd/public/mojom/cros_healthd_probe.mojom.h"
 #include "components/reporting/metrics/event_driven_telemetry_collector_pool.h"
 #include "components/reporting/metrics/periodic_event_collector.h"
-#include "components/reporting/proto/synced/record_constants.pb.h"
+#include "components/reporting/proto/synced/metric_data.pb.h"
+
+namespace network {
+class NetworkQualityTracker;
+}  // namespace network
 
 namespace reporting {
 
+class AppUsageObserver;
+class WebsiteUsageObserver;
 class MetricEventObserver;
 class MetricEventObserverManager;
 class MetricReportQueue;
@@ -43,7 +50,6 @@ class ChromeFatalCrashEventsObserver;
 
 BASE_DECLARE_FEATURE(kEnableFatalCrashEventsObserver);
 BASE_DECLARE_FEATURE(kEnableChromeFatalCrashEventsObserver);
-BASE_DECLARE_FEATURE(kEnableKioskVisionTelemetry);
 
 // Class to initialize and start info, event, and telemetry collection and
 // reporting.
@@ -75,7 +81,10 @@ class MetricReportingManager : public policy::ManagedSessionService::Observer,
     virtual bool IsAppServiceAvailableForProfile(Profile* profile) const;
   };
 
+  // `network_quality_tracker` must be non-null and must outlive the returned
+  // object.
   static std::unique_ptr<MetricReportingManager> Create(
+      ::network::NetworkQualityTracker* network_quality_tracker,
       policy::ManagedSessionService* managed_session_service);
 
   ~MetricReportingManager() override;
@@ -97,8 +106,10 @@ class MetricReportingManager : public policy::ManagedSessionService::Observer,
   Delegate* delegate() const;
 
  protected:
-  // Constructor is overridden for testing.
-  explicit MetricReportingManager(std::unique_ptr<Delegate> delegate);
+  // `network_quality_tracker` must be non-null and must outlive `this`.
+  MetricReportingManager(
+      ::network::NetworkQualityTracker* network_quality_tracker,
+      std::unique_ptr<Delegate> delegate);
 
   // Init collectors that need to start on startup after a delay, should
   // only be scheduled once on construction.
@@ -305,14 +316,12 @@ class MetricReportingManager : public policy::ManagedSessionService::Observer,
   // Initializes a periodic collector that sends out heartbeat signals.
   void InitKioskHeartbeatTelemetryCollector();
 
-  // Initializes a periodic collector that sends the audience telemetry data
-  // from the Kiosk vision framework.
-  void InitKioskVisionTelemetryCollector();
-
   base::TimeDelta GetUploadDelay() const;
 
   std::vector<raw_ptr<CollectorBase, VectorExperimental>>
   GetTelemetryCollectorsFromSetting(std::string_view setting_name);
+
+  const raw_ref<::network::NetworkQualityTracker> network_quality_tracker_;
 
   CrosReportingSettings reporting_settings_;
   LocalStateReportingSettings local_state_reporting_settings_;
@@ -354,13 +363,8 @@ class MetricReportingManager : public policy::ManagedSessionService::Observer,
       event_observer_managers_ GUARDED_BY_CONTEXT(sequence_checker_);
   // Fatal crash event observer. Life time of this object is owned by
   // `event_observer_managers_`.
-  raw_ptr<FatalCrashEventsObserver> fatal_crash_events_observer_
-      GUARDED_BY_CONTEXT(sequence_checker_);
-
-  // Chrome fatal crash event observer. Life time of this object is owned by
-  // `event_observer_managers_`.
-  raw_ptr<ChromeFatalCrashEventsObserver> chrome_fatal_crash_events_observer_
-      GUARDED_BY_CONTEXT(sequence_checker_);
+  raw_ptr<FatalCrashEventsObserver, DisableDanglingPtrDetection>
+      fatal_crash_events_observer_ GUARDED_BY_CONTEXT(sequence_checker_);
 
   // App usage observer used to observe and collect app usage reports from the
   // `AppPlatformMetrics` component.

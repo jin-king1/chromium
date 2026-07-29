@@ -13,7 +13,6 @@
 #include "third_party/blink/renderer/core/scroll/scrollbar.h"
 #include "third_party/blink/renderer/core/scroll/scrollbar_test_suite.h"
 #include "third_party/blink/renderer/core/testing/scoped_mock_overlay_scrollbars.h"
-#include "third_party/blink/renderer/platform/testing/runtime_enabled_features_test_helpers.h"
 #include "third_party/blink/renderer/platform/testing/task_environment.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/native_theme/features/native_theme_features.h"
@@ -61,13 +60,12 @@ class ScrollbarThemeFluentMock : public ScrollbarThemeFluent {
 class ScrollbarThemeFluentTest : public ::testing::TestWithParam<float> {
  protected:
   void SetUp() override {
-    feature_list_.InitAndEnableFeature(::features::kFluentScrollbar);
     ScrollbarThemeSettings::SetFluentScrollbarsEnabled(true);
     mock_scrollable_area_ = MakeGarbageCollected<MockScrollableArea>(
         /*maximum_scroll_offset=*/ScrollOffset(0, 1000));
     mock_scrollable_area_->SetScaleFromDIP(GetParam());
-    // ScrollbarThemeFluent Needs to be instantiated after feature flag and
-    // scrollbar settings have been set.
+    // ScrollbarThemeFluent Needs to be instantiated after scrollbar settings
+    // have been set.
     theme_ = std::make_unique<ScrollbarThemeFluentMock>();
   }
 
@@ -97,7 +95,6 @@ class ScrollbarThemeFluentTest : public ::testing::TestWithParam<float> {
   std::unique_ptr<ScrollbarThemeFluentMock> theme_;
 
  private:
-  base::test::ScopedFeatureList feature_list_;
   Persistent<MockScrollableArea> mock_scrollable_area_;
 };
 
@@ -105,7 +102,7 @@ class OverlayScrollbarThemeFluentTest : public ScrollbarThemeFluentTest {
  protected:
   void SetUp() override {
     ScrollbarThemeFluentTest::SetUp();
-    feature_list_.InitAndEnableFeature(::features::kFluentOverlayScrollbar);
+    feature_list_.InitAndEnableFeature(::features::kOverlayScrollbar);
     // Re-instantiate ScrollbarThemeFluent with the overlay scrollbar flag on.
     theme_ = std::make_unique<ScrollbarThemeFluentMock>();
   }
@@ -197,20 +194,23 @@ TEST_P(ScrollbarThemeFluentTest, ScrollbarBackgroundInvalidationTest) {
 
   // Verifies that when the thumb position changes from min offset, the
   // background invalidation is not triggered.
-  mock_scrollable_area()->SetScrollOffset(
-      ScrollOffset(0, 10), mojom::blink::ScrollType::kCompositor);
+  mock_scrollable_area()->SetScrollOffset(ScrollOffset(0, 10),
+                                          mojom::blink::ScrollType::kCompositor,
+                                          cc::ScrollSourceType::kNone);
   EXPECT_FALSE(scrollbar->TrackAndButtonsNeedRepaint());
 
   // Verifies that when the thumb position changes from a non-zero offset,
   // the background invalidation is not triggered.
-  mock_scrollable_area()->SetScrollOffset(
-      ScrollOffset(0, 20), mojom::blink::ScrollType::kCompositor);
+  mock_scrollable_area()->SetScrollOffset(ScrollOffset(0, 20),
+                                          mojom::blink::ScrollType::kCompositor,
+                                          cc::ScrollSourceType::kNone);
   EXPECT_FALSE(scrollbar->TrackAndButtonsNeedRepaint());
 
   // Verifies that when the thumb position changes back to 0 (min) offset,
   // the background invalidation is not triggered.
-  mock_scrollable_area()->SetScrollOffset(
-      ScrollOffset(0, 0), mojom::blink::ScrollType::kCompositor);
+  mock_scrollable_area()->SetScrollOffset(ScrollOffset(0, 0),
+                                          mojom::blink::ScrollType::kCompositor,
+                                          cc::ScrollSourceType::kNone);
   EXPECT_FALSE(scrollbar->TrackAndButtonsNeedRepaint());
 }
 
@@ -220,7 +220,6 @@ TEST_P(OverlayScrollbarThemeFluentTest, OverlaySetsCorrectTrackAndInsetSize) {
   // Some OSes keep fluent scrollbars disabled even if the feature flag is set
   // to enable them.
   if (!ui::IsFluentScrollbarEnabled()) {
-    EXPECT_FALSE(theme_->UsesOverlayScrollbars());
     return;
   }
 

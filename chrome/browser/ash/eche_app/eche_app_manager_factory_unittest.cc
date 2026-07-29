@@ -66,6 +66,12 @@ class EcheAppManagerFactoryTest : public ChromeAshTestBase {
     eche_app_manager_factory_ = EcheAppManagerFactory::GetInstance();
   }
 
+  void TearDown() override {
+    phone_hub_tray_ = nullptr;
+    eche_tray_ = nullptr;
+    ChromeAshTestBase::TearDown();
+  }
+
   void ShowAndCloseConnectionOrLaunchErrorNotifications() {
     std::u16string title = u"title";
     std::u16string message = u"message";
@@ -122,8 +128,8 @@ class EcheAppManagerFactoryTest : public ChromeAshTestBase {
   raw_ptr<TestingProfile> profile_;
   std::unique_ptr<EcheConnectionStatusHandler> connection_handler_;
   std::unique_ptr<AppsLaunchInfoProvider> apps_launch_info_provider_;
-  raw_ptr<EcheTray, DanglingUntriaged> eche_tray_ = nullptr;
-  raw_ptr<PhoneHubTray, DanglingUntriaged> phone_hub_tray_ = nullptr;
+  raw_ptr<EcheTray> eche_tray_ = nullptr;
+  raw_ptr<PhoneHubTray> phone_hub_tray_ = nullptr;
   raw_ptr<EcheAppManagerFactory> eche_app_manager_factory_ = nullptr;
   // Calling the factory constructor is enough to set it up.
   std::unique_ptr<TestAshWebViewFactory> test_web_view_factory_ =
@@ -149,7 +155,7 @@ class EcheAppManagerFactoryWithBackgroundTest : public ChromeAshTestBase {
   EcheAppManagerFactoryWithBackgroundTest& operator=(
       const EcheAppManagerFactoryWithBackgroundTest&) = delete;
 
-  // AshTestBase::Test:
+  // ChromeAshTestBase:
   void SetUp() override {
     DCHECK(profile_);
     DCHECK(test_web_view_factory_.get());
@@ -160,6 +166,11 @@ class EcheAppManagerFactoryWithBackgroundTest : public ChromeAshTestBase {
     apps_launch_info_provider_->SetAppLaunchInfo(
         mojom::AppStreamLaunchEntryPoint::APPS_LIST);
     eche_tray_ = StatusAreaWidgetTestHelper::GetStatusAreaWidget()->eche_tray();
+  }
+
+  void TearDown() override {
+    eche_tray_ = nullptr;
+    ChromeAshTestBase::TearDown();
   }
 
   TestingProfile* GetProfile() { return profile_; }
@@ -175,7 +186,7 @@ class EcheAppManagerFactoryWithBackgroundTest : public ChromeAshTestBase {
   raw_ptr<TestingProfile> profile_;
   std::unique_ptr<EcheConnectionStatusHandler> connection_handler_;
   std::unique_ptr<AppsLaunchInfoProvider> apps_launch_info_provider_;
-  raw_ptr<EcheTray, DanglingUntriaged> eche_tray_ = nullptr;
+  raw_ptr<EcheTray> eche_tray_ = nullptr;
   // Calling the factory constructor is enough to set it up.
   std::unique_ptr<TestAshWebViewFactory> test_web_view_factory_ =
       std::make_unique<TestAshWebViewFactory>();

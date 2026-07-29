@@ -10,8 +10,8 @@
 #import "base/memory/raw_ptr.h"
 #import "base/memory/weak_ptr.h"
 #import "components/omnibox/browser/autocomplete_match.h"
-#import "components/omnibox/browser/omnibox_client.h"
 #import "ios/chrome/browser/autocomplete/model/autocomplete_scheme_classifier_impl.h"
+#import "ios/chrome/browser/omnibox/model/omnibox_client_ios.h"
 
 @protocol LensOmniboxClientDelegate;
 @protocol LensWebProvider;
@@ -21,9 +21,9 @@ namespace feature_engagement {
 class Tracker;
 }
 
-/// OmniboxClient for the omnibox in the lens overlay.
+/// OmniboxClientIOS for the omnibox in the lens overlay.
 /// Interface that allows the omnibox component to interact with its embedder.
-class LensOmniboxClient final : public OmniboxClient {
+class LensOmniboxClient final : public OmniboxClientIOS {
  public:
   LensOmniboxClient(ProfileIOS* profile,
                     feature_engagement::Tracker* tracker,
@@ -111,10 +111,10 @@ class LensOmniboxClient final : public OmniboxClient {
       const AutocompleteMatch& match,
       const AutocompleteMatch& alternative_nav_match) override;
   void OnThumbnailOnlyAccept() override;
-  base::WeakPtr<OmniboxClient> AsWeakPtr() override;
+  base::WeakPtr<OmniboxClientIOS> AsWeakPtr() override;
 
  private:
-  raw_ptr<ProfileIOS> profile_;
+  raw_ptr<ProfileIOS, DanglingUntriaged> profile_;
   AutocompleteSchemeClassifierImpl scheme_classifier_;
   raw_ptr<feature_engagement::Tracker> engagement_tracker_;
   __weak id<LensWebProvider> web_provider_;

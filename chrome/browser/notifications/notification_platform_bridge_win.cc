@@ -15,18 +15,18 @@
 #include <utility>
 #include <vector>
 
+#include "base/base64.h"
 #include "base/base_paths_win.h"
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
-#include "base/hash/hash.h"
+#include "base/functional/callback_helpers.h"
 #include "base/i18n/file_util_icu.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/path_service.h"
-#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/utf_string_conversions.h"
@@ -62,6 +62,7 @@
 #include "components/webapps/common/web_app_id.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
+#include "crypto/hash.h"
 #include "ui/message_center/public/cpp/notification.h"
 #include "url/origin.h"
 
@@ -138,7 +139,8 @@ void ForwardNotificationOperationOnUiThread(
       incognito,
       base::BindOnce(&NotificationDisplayServiceImpl::ProfileLoadedCallback,
                      operation, notification_type, origin, notification_id,
-                     action_index, reply, by_user, base::DoNothing()));
+                     action_index, reply, by_user, /*is_suspicious=*/false,
+                     base::DoNothing()));
 }
 
 GetSettingPolicy ConvertSettingPolicy(
@@ -360,7 +362,9 @@ class NotificationPlatformBridgeWinImpl
   // is not an icon with the expected name, location, and AUMI in
   // the start menu, the browser's AUMI will be returned, because Windows won't
   // display a notification unless there is an icon with the same AUMI as the
-  // notification in the start menu.
+  // notification in the start menu. The shortcut must also have the correct
+  // toast_activator clsid, or else clicking on the notification won't invoke
+  // the platform_helper to bring up Chrome.
   static std::wstring GetAppIdForNotification(
       const message_center::Notification* notification,
       const std::string& profile_id,
@@ -409,9 +413,12 @@ class NotificationPlatformBridgeWinImpl
     base::win::ShortcutProperties shortcut_properties;
     if (!base::win::ResolveShortcutProperties(
             start_menu_shortcut_path,
-            base::win::ShortcutProperties::PROPERTIES_APP_ID,
+            base::win::ShortcutProperties::PROPERTIES_APP_ID |
+                base::win::ShortcutProperties::PROPERTIES_TOAST_ACTIVATOR_CLSID,
             &shortcut_properties) ||
-        shortcut_properties.app_id != app_user_model_id) {
+        shortcut_properties.app_id != app_user_model_id ||
+        shortcut_properties.toast_activator_clsid !=
+            install_static::GetToastActivatorClsid()) {
       return GetBrowserAppId();
     }
     return app_user_model_id;
@@ -425,7 +432,7 @@ class NotificationPlatformBridgeWinImpl
                std::unique_ptr<message_center::Notification> notification,
                std::unique_ptr<NotificationCommon::Metadata> metadata) {
     // TODO(finnur): Move this to a RoInitialized thread, as per
-    // crbug.com/761039.
+    // crbug.com/40538006.
     DCHECK(notification_task_runner_->RunsTasksInCurrentSequence());
 
     const std::wstring app_user_model_id = GetAppIdForNotification(
@@ -913,7 +920,9 @@ class NotificationPlatformBridgeWinImpl
     std::string payload = base::StringPrintf(
         "%s|%s|%s|%d", notification_id.c_str(), profile_id.c_str(),
         base::WideToUTF8(app_user_model_id).c_str(), incognito);
-    return base::NumberToWString(base::Hash(payload));
+    // The tag has a max length of 63 characters (plus null terminator).
+    // Base64Encode yields 44 chars.
+    return base::ASCIIToWide(base::Base64Encode(crypto::hash::Sha256(payload)));
   }
 
   HRESULT OnFailed(winui::Notifications::IToastNotification* notification,
@@ -1181,7 +1190,7 @@ bool NotificationPlatformBridgeWin::SystemNotificationEnabled() {
   // Version::WIN10_RS4), causing endless loops in displaying
   // notifications. It significantly amplified the memory and CPU usage.
   // Therefore, we enable Windows 10 system notification only for build 17134
-  // and later. See crbug.com/882622 and crbug.com/878823 for more details.
+  // and later. See crbug.com/41412934 and crbug.com/41410683 for more details.
   return base::win::GetVersion() >= base::win::Version::WIN10_RS4 && enabled;
 }
 

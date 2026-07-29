@@ -9,6 +9,8 @@
 #import "base/apple/foundation_util.h"
 #import "ios/chrome/app/main_controller.h"
 #import "ios/chrome/browser/metrics/model/tab_usage_recorder_browser_agent.h"
+#import "ios/chrome/browser/reader_mode/model/reader_mode_tab_helper.h"
+#import "ios/chrome/browser/scene/coordinator/scene_coordinator.h"
 #import "ios/chrome/browser/sessions/model/session_restoration_service.h"
 #import "ios/chrome/browser/sessions/model/session_restoration_service_factory.h"
 #import "ios/chrome/browser/shared/coordinator/scene/scene_controller.h"
@@ -21,9 +23,9 @@
 #import "ios/chrome/browser/shared/model/web_state_list/web_state_list.h"
 #import "ios/chrome/browser/shared/public/commands/browser_commands.h"
 #import "ios/chrome/browser/shared/public/commands/open_new_tab_command.h"
+#import "ios/chrome/browser/shared/public/commands/scene_commands.h"
 #import "ios/chrome/browser/shared/public/commands/show_signin_command.h"
 #import "ios/chrome/browser/shared/public/features/system_flags.h"
-#import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/tab_grid_coordinator.h"
 #import "ios/chrome/browser/tabs/model/tab_title_util.h"
 #import "ios/chrome/browser/url_loading/model/url_loading_params.h"
 #import "ios/chrome/browser/web_state_list/model/web_usage_enabler/web_usage_enabler_browser_agent.h"
@@ -44,8 +46,8 @@ WebStateList* GetCurrentWebStateList() {
 // Close all tabs for `browser` and request the session to be saved.
 void CloseAllTabsForBrowser(Browser* browser) {
   DCHECK(browser);
-  const int close_flags = WebStateList::CLOSE_USER_ACTION;
-  CloseAllWebStates(*browser->GetWebStateList(), close_flags);
+  const auto close_reason = WebStateList::ClosingReason::kUserAction;
+  CloseAllWebStates(*browser->GetWebStateList(), close_reason);
   ProfileIOS* profile = browser->GetProfile();
   SessionRestorationServiceFactory::GetForProfile(profile)->SaveSessions();
 }
@@ -69,8 +71,7 @@ void OpenNewTab() {
                     withURLLoadParams:params];
       return;
     }
-    id<ApplicationCommands, BrowserCommands> handler =
-        chrome_test_util::HandlerForActiveBrowser();
+    id<SceneCommands> handler = chrome_test_util::HandlerForActiveBrowser();
     [handler openURLInNewTab:command];
   }
 }
@@ -82,18 +83,6 @@ void SimulateExternalAppURLOpeningWithURL(NSURL* URL) {
   UIApplication* application = UIApplication.sharedApplication;
   UIScene* scene = application.connectedScenes.anyObject;
   [scene.delegate scene:scene openURLContexts:[NSSet setWithObject:context]];
-}
-
-void SimulateAddAccountFromWeb() {
-  id<ApplicationCommands, BrowserCommands> handler =
-      chrome_test_util::HandlerForActiveBrowser();
-  ShowSigninCommand* command = [[ShowSigninCommand alloc]
-      initWithOperation:AuthenticationOperation::kAddAccount
-            accessPoint:signin_metrics::AccessPoint::kUnknown];
-  UIViewController* baseViewController =
-      GetForegroundActiveScene()
-          .browserProviderInterface.mainBrowserProvider.viewController;
-  [handler showSignin:command baseViewController:baseViewController];
 }
 
 void OpenNewIncognitoTab() {
@@ -109,15 +98,29 @@ void OpenNewIncognitoTab() {
                                                       withURLLoadParams:params];
       return;
     }
-    id<ApplicationCommands, BrowserCommands> handler =
-        chrome_test_util::HandlerForActiveBrowser();
+    id<SceneCommands> handler = chrome_test_util::HandlerForActiveBrowser();
     [handler openURLInNewTab:command];
   }
 }
 
 web::WebState* GetCurrentWebState() {
   WebStateList* web_state_list = GetCurrentWebStateList();
-  return web_state_list ? web_state_list->GetActiveWebState() : nullptr;
+  if (!web_state_list) {
+    return nullptr;
+  }
+  web::WebState* current_web_state = web_state_list->GetActiveWebState();
+  if (!current_web_state) {
+    return nullptr;
+  }
+
+  // If there is a Reading Mode web state enabled on the page, run tests on the
+  // content that is displayed here.
+  ReaderModeTabHelper* reader_mode_tab_helper =
+      ReaderModeTabHelper::FromWebState(current_web_state);
+  if (reader_mode_tab_helper) {
+    return reader_mode_tab_helper->GetReaderModeWebState() ?: current_web_state;
+  }
+  return current_web_state;
 }
 
 web::WebState* GetNextWebState() {
@@ -155,7 +158,7 @@ void CloseCurrentTab() {
     return;
   }
   web_state_list->CloseWebStateAt(web_state_list->active_index(),
-                                  WebStateList::CLOSE_USER_ACTION);
+                                  WebStateList::ClosingReason::kUserAction);
 }
 
 void PinCurrentTab() {
@@ -171,8 +174,8 @@ void PinCurrentTab() {
 void CloseTabAtIndex(NSUInteger index) {
   @autoreleasepool {  // Make sure that all internals are deallocated.
     DCHECK_LE(index, static_cast<NSUInteger>(INT_MAX));
-    GetCurrentWebStateList()->CloseWebStateAt(static_cast<int>(index),
-                                              WebStateList::CLOSE_USER_ACTION);
+    GetCurrentWebStateList()->CloseWebStateAt(
+        static_cast<int>(index), WebStateList::ClosingReason::kUserAction);
   }
 }
 
@@ -181,7 +184,8 @@ NSUInteger GetIndexOfActiveNormalTab() {
 }
 
 void CloseAllTabsInCurrentMode() {
-  CloseAllWebStates(*GetCurrentWebStateList(), WebStateList::CLOSE_USER_ACTION);
+  CloseAllWebStates(*GetCurrentWebStateList(),
+                    WebStateList::ClosingReason::kUserAction);
 }
 
 void CloseAllTabs() {
@@ -194,9 +198,9 @@ void CloseAllTabs() {
     CloseAllTabsForBrowser(GetMainBrowser());
   }
   if (GetInactiveTabCount() && GetForegroundActiveScene()) {
-    CloseAllTabsForBrowser(
-        GetForegroundActiveScene()
-            .browserProviderInterface.mainBrowserProvider.inactiveBrowser);
+    CloseAllTabsForBrowser(GetForegroundActiveScene()
+                               .browserProviderInterface.mainBrowserProvider
+                               .browser->GetInactiveBrowser());
   }
 }
 
@@ -214,7 +218,8 @@ NSUInteger GetMainTabCount() {
 
 NSUInteger GetInactiveTabCount() {
   return GetForegroundActiveScene()
-      .browserProviderInterface.mainBrowserProvider.inactiveBrowser
+      .browserProviderInterface.mainBrowserProvider.browser
+      ->GetInactiveBrowser()
       ->GetWebStateList()
       ->count();
 }
@@ -283,7 +288,7 @@ BOOL CloseAllNormalTabs() {
   Browser* browser = GetMainBrowser();
   DCHECK(browser);
   CloseAllWebStates(*browser->GetWebStateList(),
-                    WebStateList::CLOSE_USER_ACTION);
+                    WebStateList::ClosingReason::kUserAction);
   return YES;
 }
 
@@ -295,7 +300,7 @@ BOOL CloseAllIncognitoTabs() {
       scene_state.browserProviderInterface.incognitoBrowserProvider.browser;
   DCHECK(browser);
   CloseAllWebStates(*browser->GetWebStateList(),
-                    WebStateList::CLOSE_USER_ACTION);
+                    WebStateList::ClosingReason::kUserAction);
   return YES;
 }
 

@@ -81,13 +81,8 @@ class SEATBELT_EXPORT Seatbelt {
   static bool ApplyCompiledProfile(const std::string& profile,
                                    std::string* error);
 
-  // Frees an error buffer allocated from libsandbox.dylib routines.
-  static void FreeError(char* errorbuf);
-
   // Returns whether or not the process is currently sandboxed.
   static bool IsSandboxed();
-
-  static const char* kProfilePureComputation;
 
   Seatbelt(const Seatbelt& other) = delete;
   Seatbelt& operator=(const Seatbelt& other) = delete;

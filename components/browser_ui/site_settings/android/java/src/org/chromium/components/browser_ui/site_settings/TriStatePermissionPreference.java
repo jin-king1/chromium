@@ -4,7 +4,6 @@
 
 package org.chromium.components.browser_ui.site_settings;
 
-import static org.chromium.build.NullUtil.assumeNonNull;
 import static org.chromium.components.content_settings.PrefNames.ENABLE_GEOLOCATION_CPSS;
 import static org.chromium.components.content_settings.PrefNames.ENABLE_NOTIFICATION_CPSS;
 import static org.chromium.components.content_settings.PrefNames.ENABLE_QUIET_GEOLOCATION_PERMISSION_UI;
@@ -16,20 +15,20 @@ import android.view.View;
 import android.widget.RadioGroup;
 import android.widget.TextView;
 
-import androidx.preference.Preference;
 import androidx.preference.PreferenceViewHolder;
 
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.build.annotations.Initializer;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
+import org.chromium.components.browser_ui.settings.ContainedRadioButtonGroupPreference;
 import org.chromium.components.browser_ui.widget.RadioButtonWithDescription;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.prefs.PrefService;
 
 /** A three state(loud, cpss, quiet) radio group preference for notifications and geolocation */
 @NullMarked
-public class TriStatePermissionPreference extends Preference
+public class TriStatePermissionPreference extends ContainedRadioButtonGroupPreference
         implements RadioGroup.OnCheckedChangeListener {
 
     private RadioButtonWithDescription mQuiet;
@@ -44,7 +43,6 @@ public class TriStatePermissionPreference extends Preference
     @SuppressWarnings("NullAway.Init")
     private String mCpssPref;
 
-    private boolean mShowTitle;
     private TextView mTitleView;
 
     public TriStatePermissionPreference(Context context, AttributeSet attrs) {
@@ -62,9 +60,8 @@ public class TriStatePermissionPreference extends Preference
      *     UI settings.
      */
     @Initializer
-    public void initialize(PrefService prefService, boolean showTitle) {
+    public void initialize(PrefService prefService) {
         mPrefService = prefService;
-        mShowTitle = showTitle;
         if (getKey().equals("notifications_tri_state_toggle")) {
             mQuietUiPref = ENABLE_QUIET_NOTIFICATION_PERMISSION_UI;
             mCpssPref = ENABLE_NOTIFICATION_CPSS;
@@ -81,19 +78,11 @@ public class TriStatePermissionPreference extends Preference
     @SuppressWarnings("NullAway")
     public void onBindViewHolder(PreferenceViewHolder holder) {
         mQuiet = (RadioButtonWithDescription) holder.findViewById(R.id.quiet);
-        assumeNonNull(mQuiet);
         mCpss = (RadioButtonWithDescription) holder.findViewById(R.id.cpss);
-        assumeNonNull(mCpss);
         mLoud = (RadioButtonWithDescription) holder.findViewById(R.id.loud);
-        assumeNonNull(mLoud);
         mTitleView = (TextView) holder.findViewById(R.id.radio_button_title);
-        if (mShowTitle) {
-            mTitleView.setVisibility(View.VISIBLE);
-        } else {
-            mTitleView.setVisibility(View.GONE);
-        }
+        mTitleView.setVisibility(View.VISIBLE);
         mRadioGroup = (RadioGroup) holder.findViewById(R.id.radio_button_layout);
-        assumeNonNull(mRadioGroup);
         mRadioGroup.setOnCheckedChangeListener(this);
         RadioButtonWithDescription selectedRadioButton = getSelectedRadioButton();
         if (selectedRadioButton != null) selectedRadioButton.setChecked(true);

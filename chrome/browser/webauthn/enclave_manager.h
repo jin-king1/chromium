@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/cancelable_callback.h"
 #include "base/files/file_path.h"
 #include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
@@ -19,11 +20,14 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/sequence_checker.h"
+#include "base/thread_annotations.h"
+#include "base/time/time.h"
 #include "base/timer/timer.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/webauthn/enclave_manager_interface.h"
 #include "chrome/browser/webauthn/local_authentication_token.h"
+#include "components/os_crypt/async/common/encryptor.h"
+#include "components/trusted_vault/trusted_vault_client.h"
 #include "components/trusted_vault/trusted_vault_connection.h"
 #include "content/public/browser/global_routing_id.h"
 #include "crypto/user_verifying_key.h"
@@ -33,6 +37,10 @@
 #if BUILDFLAG(IS_MAC)
 #include "chrome/common/chrome_version.h"
 #endif  // BUILDFLAG(IS_MAC)
+
+#if BUILDFLAG(IS_CHROMEOS)
+#include <variant>
+#endif  // BUILDFLAG(IS_CHROMEOS)
 
 class GaiaId;
 
@@ -44,18 +52,12 @@ namespace crypto {
 class RefCountedUserVerifyingSigningKey;
 }  // namespace crypto
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 namespace ash {
 class WebAuthNDialogController;
 class ActiveSessionAuthController;
 }  // namespace ash
 #endif
-
-#if BUILDFLAG(IS_MAC)
-namespace device::enclave {
-class ICloudRecoveryKey;
-}  // namespace device::enclave
-#endif  // BUILDFLAG(IS_MAC)
 
 namespace network {
 class SharedURLLoaderFactory;
@@ -80,6 +82,10 @@ namespace trusted_vault {
 struct GpmPinMetadata;
 class RecoveryKeyStoreConnection;
 class TrustedVaultAccessTokenFetcherFrontend;
+
+#if BUILDFLAG(IS_MAC)
+class ICloudRecoveryKey;
+#endif  // BUILDFLAG(IS_MAC)
 }  // namespace trusted_vault
 
 // EnclaveManager stores and manages the passkey enclave state. One instance
@@ -103,12 +109,6 @@ class EnclaveManager : public EnclaveManagerInterface {
                                  ".webauthn-uvk";
 #endif  // BUILDFLAG(IS_MAC)
   struct StoreKeysArgs;
-  class Observer : public base::CheckedObserver {
-   public:
-    // OnKeyStores is called when MagicArch provides keys to the EnclaveManager
-    // by calling `StoreKeys`.
-    virtual void OnKeysStored() = 0;
-  };
 
   struct UVKeyOptions {
     UVKeyOptions();
@@ -124,7 +124,7 @@ class EnclaveManager : public EnclaveManagerInterface {
     // The RenderFrameHost from which the request originates.
     content::GlobalRenderFrameHostId render_frame_host_id;
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
     std::variant<raw_ptr<ash::WebAuthNDialogController>,
                  raw_ptr<ash::ActiveSessionAuthController>>
         dialog_controller;
@@ -133,6 +133,91 @@ class EnclaveManager : public EnclaveManagerInterface {
     // An optional auth context. Currently only used to pass LAcontext to Apple
     // Keychain operations.
     std::optional<webauthn::LocalAuthenticationToken> local_auth_token;
+  };
+
+  // LINT.IfChange(EnclaveManagerActionOutcome)
+  enum class ActionOutcome {
+    // This outcome indicates successful completion of the action executed by
+    // Enclave Manager's state machine:
+    kSuccess = 0,
+    // All remaining outcomes correspond to different failures.
+    // These outcomes indicate that the state machine has been either cancelled,
+    // or destroyed, or did not execute any steps:
+    kGenericError = 1,
+    kStateMachineHasBeenDestroyed = 2,
+    kActionCancelled = 3,
+    // These outcomes indicate failures of different steps of the Enclave
+    // Manager's state machine. The names of these enum entries obey the format
+    // `k<StepName>Failed<FailureReason>`.
+    kDoDownloadingRecoveryKeyStoreKeysFailedFetchingCertXmlOrSigXml = 4,
+    kDoGeneratingKeysFailedEventFailure = 5,
+    kDoJoiningDomainFailedTrustedVaultRegistrationError = 6,
+    kDoJoiningPINToDomainFailedSecretWrappingMalformedResponse = 7,
+    kDoJoiningPINToDomainFailedTrustedVaultRegistrationStatusFailure = 8,
+    kDoJoiningUpdatedPINToDomainFailedTrustedVaultRegistrationStatusError = 9,
+    kDoNextActionFailedRenewPinWhileUserNotRegistered = 10,
+    kDoNextActionFailedSetOrUpdatePinWhileUserNotRegistered = 11,
+    kDoRegisteringWithEnclaveFailedEnclaveRegistrationError = 12,
+    kDoRegisteringWithEnclaveFailedEventFailure = 13,
+    kDoRegisteringWithEnclaveFailedWrappedKeyWasInvalid = 14,
+    kDoRenewingPINFailedCohortNotYetDeprecated = 15,
+    kDoRenewingPINFailedErrorResponse = 16,
+    kDoRenewingPINFailedEventFailure = 17,
+    kDoRenewingPINFailedParseWrappedPinFromCborFailure = 18,
+    kDoRenewingPINFailedRecoveryStoreDowngrade = 19,
+    kDoSettingPINFailedCanNotParseWrappedPinFromCbor = 20,
+    kDoSettingPINFailedEventFailure = 21,
+    kDoSettingPINFailedPinChangeResultedInErrorResponse = 22,
+    kDoStoringOpportunisticallyRetrievedKeyFailedNoSystemUvNoGpmPin = 23,
+    kDoStoringOpportunisticallyRetrievedKeyFailedWrappedPinParsingProblem = 24,
+    kDoSyncingWithSecurityDomainFailedAlreadyHasPin = 25,
+    kDoSyncingWithSecurityDomainFailedSecurityDomainHasBeenReset = 26,
+    kDoSyncingWithSecurityDomainFailedTriedToChangePinButSdsReportsNoPin = 27,
+    kDoSyncingWithSecurityDomainFailedTrustedVaultErrorResponse = 28,
+    kDoUnregisteringFailedEnclaveResponseError = 29,
+    kDoUnregisteringFailedEventFailure = 30,
+    kDoWaitingForEnclaveTokenForPINWrappingFailedEventFailure = 31,
+    kDoWaitingForEnclaveTokenForRegistrationFailedEventFailure = 32,
+    kDoWaitingForEnclaveTokenForUnregisterFailedEventFailure = 33,
+    kDoWaitingForEnclaveTokenForWrappingFailedToGetAccessToken = 34,
+    kDoWaitingForRecoveryKeyStoreFailedToUploadToRecoveryKeyStore = 35,
+    kDoWrappingPINAndSecretFailedErrorResponse = 36,
+    kDoWrappingPINAndSecretFailedEventFailure = 37,
+    kDoWrappingPINAndSecretFailedToTranslateResponseToProto = 38,
+    kDoWrappingSecretsFailedToStoreWrappedSecrets = 39,
+    kDoWrappingSecretsFailedToWrapSecurityDomainSecrets = 40,
+    kDoWrappingSecretsFailedWrappingResultedInError = 41,
+    kUploadVaultAndMemberFromResponseFailedResponseWasNotMap = 42,
+    kUploadVaultAndMemberFromResponseFailedToParseResponse = 43,
+    kDoNextActionFailedAccountMismatch = 44,
+    kMaxValue = kDoNextActionFailedAccountMismatch,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/webauthn/enums.xml:EnclaveManagerActionOutcome)
+
+  class UvKeyCreationLock {
+   public:
+    virtual ~UvKeyCreationLock() = default;
+    UvKeyCreationLock(const UvKeyCreationLock&) = delete;
+    UvKeyCreationLock& operator=(const UvKeyCreationLock&) = delete;
+
+   protected:
+    UvKeyCreationLock() = default;
+  };
+
+  // A reference to this object is returned to represent a claim on key provided
+  // by accounts.google.com. See `GetStoreKeysLock`.
+  class StoreKeysLock {
+   public:
+    explicit StoreKeysLock(base::WeakPtr<EnclaveManager> manager);
+    StoreKeysLock(const StoreKeysLock&) = delete;
+    StoreKeysLock(StoreKeysLock&&) = delete;
+    StoreKeysLock& operator=(const StoreKeysLock&) = delete;
+    StoreKeysLock& operator=(StoreKeysLock&&) = delete;
+    ~StoreKeysLock();
+
+   private:
+    const base::WeakPtr<EnclaveManager> manager_;
+    SEQUENCE_CHECKER(sequence_checker_);
   };
 
   EnclaveManager(
@@ -151,28 +236,40 @@ class EnclaveManager : public EnclaveManagerInterface {
   bool is_idle() const;
   // Returns true if the persistent state has been loaded from the disk. (Or
   // else the loading failed and an empty state is being used.)
-  bool is_loaded() const;
+  bool IsLoaded() const override;
   // Returns true if the current user has been registered with the enclave.
-  bool is_registered() const override;
+  bool IsRegistered() const override;
   // Returns true if `StoreKeys` has been called and thus `AddDeviceToAccount`
   // or `AddDeviceAndPINToAccount` can be called.
   bool has_pending_keys() const;
   // Returns true if the current user has joined the security domain and has one
   // or more wrapped security domain secrets available. (This implies
-  // `is_registered`.)
-  bool is_ready() const;
+  // `IsRegistered`.)
+  bool IsReady() const override;
   // Returns the number of times that `StoreKeys` has been called.
   unsigned store_keys_count() const;
 
   // Load the persisted state from disk. Harmless to call if `is_loaded`.
   void Load(base::OnceClosure closure);
+  // Preforms `Load` after the given delay,
+  void LoadAfterDelay(base::TimeDelta delay,
+                      base::OnceClosure closure) override;
   // Register with the enclave if not already registered.
   void RegisterIfNeeded(Callback callback);
   // Set up an account with a newly-created PIN.
   void SetupWithPIN(std::string pin, Callback callback);
-  // Adds the current device to the security domain. Only valid to call after
-  // `StoreKeys` has been called and thus `has_pending_keys` returns true. If
-  // `pin_metadata` has a value then it is taken to be the current GPM PIN.
+  // Take a lock that prevents any keys provided by accounts.google.com from
+  // being opportunistically used to register with the enclave. While a
+  // `StoreKeysLock` object exists, any stored keys will wait for a call to,
+  // e.g. `AddDeviceToAccount`. The lock only needs to span the `StoreKeys`
+  // call, it doesn't need to be held throughout adding the device to the
+  // security domain.
+  std::unique_ptr<StoreKeysLock> GetStoreKeysLock();
+  // Adds the current device to the security domain. This method is supposed to
+  // be called after calling `StoreKeys` (with a lock outstanding from
+  // `GetStoreKeysLock`) and thus `has_pending_keys` returns true.
+  //
+  // If `pin_metadata` has a value then it is taken to be the current GPM PIN.
   // If you want to add a new PIN to the account, see
   // `AddDeviceAndPINToAccount`.
   //
@@ -184,7 +281,12 @@ class EnclaveManager : public EnclaveManagerInterface {
   // Adds the current device, and a GPM PIN, to the security domain. Only valid
   // to call after `StoreKeys` has been called and thus `has_pending_keys`
   // returns true.
-  void AddDeviceAndPINToAccount(std::string pin, Callback callback);
+  // `previous_pin_public_key` must be set if the PIN is replacing an existing
+  // GPM PIN.
+  void AddDeviceAndPINToAccount(
+      std::string pin,
+      std::optional<std::string> previous_pin_public_key,
+      Callback callback);
   // Set a PIN on an account that doesn't currently have one.
   void SetPIN(std::string pin, std::string rapt, Callback callback);
   // Change the GPM PIN on the account. If a RAPT (Reauthentication Proof Token)
@@ -198,7 +300,7 @@ class EnclaveManager : public EnclaveManagerInterface {
   // immediately after enrollment while we still have the security domain secret
   // around.
   void AddICloudRecoveryKey(
-      std::unique_ptr<device::enclave::ICloudRecoveryKey> icloud_recovery_key,
+      std::unique_ptr<trusted_vault::ICloudRecoveryKey> icloud_recovery_key,
       Callback callback);
 #endif  // BUILDFLAG(IS_MAC)
   // Send a request to the enclave to delete the registration for the current
@@ -228,7 +330,11 @@ class EnclaveManager : public EnclaveManagerInterface {
   // `is_ready` and the user's state has `deferred_uv_key_creation` = true.
   // The callback will create a new UV key and provides the public key to the
   // invoker.
-  device::enclave::UVKeyCreationCallback UserVerifyingKeyCreationCallback();
+  // The `UVKeyCreationLock` prevents any other attempts to create UV keys
+  // while it is alive. Its destruction releases the lock.
+  std::pair<std::unique_ptr<UvKeyCreationLock>,
+            device::enclave::UVKeyCreationCallback>
+  UserVerifyingKeyCreationCallback();
   // Fetch a wrapped security domain secret for the given epoch. Only valid to
   // call if `is_ready`.
   std::optional<std::vector<uint8_t>> GetWrappedSecret(int32_t version);
@@ -248,7 +354,9 @@ class EnclaveManager : public EnclaveManagerInterface {
   // Returns a copy of the wrapped PIN for passing to `MakeClaimedPINSlowly`.
   // Requires `has_wrapped_pin`.
   std::unique_ptr<webauthn_pb::EnclaveLocalState_WrappedPIN> GetWrappedPIN();
-
+  // Replaces the wrapped PIN data.
+  // Requires `has_wrapped_pin`.
+  void SetWrappedPINDataForTesting(std::vector<uint8_t> wrapped_pin_data);
   // Enumerates the types of user verifying signing keys that the EnclaveManager
   // might have for the currently signed-in user.
   enum class UvKeyState {
@@ -266,7 +374,37 @@ class EnclaveManager : public EnclaveManagerInterface {
     // biometrics.
     kUsesChromeUI,
   };
-  UvKeyState uv_key_state(bool platform_has_biometrics) const;
+  // PlatformUvSupport enumerates the kind of user verifying key support
+  // available on this device.
+  enum class PlatformUvSupport {
+    // User verifying keys are not supported.
+    kNoUvKey,
+
+    // User verifying keys are supported, but biometrics are not available.
+    kUvKeyButNoBiometrics,
+
+    // User verifying keys are supported with biometrics.
+    kUvKeyWithBiometrics,
+  };
+
+  UvKeyState uv_key_state(PlatformUvSupport platform_uv_support) const;
+
+  std::unique_ptr<trusted_vault::TrustedVaultConnection::Request>
+  CheckGpmPinAvailability(GpmPinAvailabilityCallback callback) override;
+
+  // Checks whether UserVerifyingKeyCreationCallback() is available to be
+  // called, returning true if not. There should only be one key creation
+  // callback in existence at any one time, or else one could overwrite a
+  // previous caller's keys. Attempting to get a key creation callback
+  // while already locked results in a process crash.
+  bool deferred_uv_key_creation_locked() const {
+    return deferred_uv_key_creation_in_progress_;
+  }
+
+  // Called when `deferred_uv_key_creation_in_progress_` is true, to be
+  // notified when the existing key creation has completed. The boolean
+  // argument indicates whether the key creation was successful.
+  void AddPendingUvRequest(base::OnceCallback<void(bool)> callback);
 
   // Calls the given callback with `true` if the current platform supports
   // making user-verifying keys.
@@ -276,14 +414,19 @@ class EnclaveManager : public EnclaveManagerInterface {
   std::unique_ptr<signin::PrimaryAccountAccessTokenFetcher> GetAccessToken(
       base::OnceCallback<void(std::optional<std::string>)> callback);
 
-  void AddObserver(Observer* observer);
-  void RemoveObserver(Observer* observer);
+  void AddObserver(Observer* observer) override;
+  void RemoveObserver(Observer* observer) override;
 
   // This function is called by the MagicArch integration when the user
-  // successfully completes recovery.
-  void StoreKeys(const GaiaId& gaia_id,
-                 std::vector<std::vector<uint8_t>> keys,
-                 int last_key_version);
+  // successfully completes recovery. It must be called either with a lock
+  // outstanding from `GetStoreKeysLock`, or without a lock (but in this case
+  // the keys will be stored only if a system UV is available).
+  void StoreKeys(
+      const GaiaId& gaia_id,
+      std::vector<trusted_vault::TrustedVaultKeyAndVersion> keys,
+      std::optional<trusted_vault::TrustedVaultUserActionTriggerForUMA>
+          user_action_trigger);
+  bool IsStoringKeysFromOutOfContextRetrievalEnabled();
 
   // Slowly compute a PIN claim for the given PIN for submission to the enclave.
   static std::unique_ptr<device::enclave::ClaimedPIN> MakeClaimedPINSlowly(
@@ -294,7 +437,7 @@ class EnclaveManager : public EnclaveManagerInterface {
   // `on_stop` when stopped. Otherwise return false.
   bool RunWhenStoppedForTesting(base::OnceClosure on_stop);
 
-  webauthn_pb::EnclaveLocalState& local_state_for_testing() const;
+  webauthn_pb::EnclaveLocalState& local_state_for_testing();
 
   // Release the cached HW and UV key references.
   void ClearCachedKeysForTesting();
@@ -309,6 +452,11 @@ class EnclaveManager : public EnclaveManagerInterface {
   // Toggle invariant checks.
   static void EnableInvariantChecksForTesting(bool enable);
 
+  // Check whether the GPM PIN Vault should be renewed, and do so if needed.
+  void ConsiderPinRenewalForTesting();
+
+  void NotifyObserversThatStateUpdated();
+
   unsigned renewal_checks_for_testing() const;
   unsigned renewal_attempts_for_testing() const;
 
@@ -318,13 +466,27 @@ class EnclaveManager : public EnclaveManagerInterface {
       base::span<const uint8_t> security_domain_secret,
       std::string_view pin);
 
+  // Encrypts `cbor_bytes` representing a wrapped PIN with
+  // `security_domain_secret`.
+  static std::vector<uint8_t> EncryptWrappedPIN(
+      base::span<const uint8_t> security_domain_secret,
+      base::span<const uint8_t> cbor_bytes);
+
   base::WeakPtr<EnclaveManager> GetWeakPtr();
 
  private:
+  enum class SystemUv {
+    kNotSupported,
+    kSupported,
+  };
+  using OpportunisticRetrievalCheck = std::variant<
+      trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult,
+      SystemUv>;
   class StateMachine;
   class IdentityObserver;
   struct PendingAction;
   friend class StateMachine;
+  friend class StoreKeysLock;
   FRIEND_TEST_ALL_PREFIXES(EnclaveUVTest, UnregisterOnMissingUserVerifyingKey);
 
   // Starts a `StateMachine` to process the current request.
@@ -382,6 +544,50 @@ class EnclaveManager : public EnclaveManagerInterface {
   void ConsiderPinRenewal();
   void OnRenewalComplete(bool success);
 
+  // Take the lock for UV key creation. Only one can exist at a time.
+  std::unique_ptr<UvKeyCreationLock> TakeUvKeyCreationLock();
+
+  // This is a callback for the UvKeyCreationLock.
+  void OnUvKeyCreationLockReleased();
+
+  // These clean up local state on resolution of a callback that was returned
+  // from UserVerifyingKeyCreationCallback();
+  void OnDeferredUvKeyCreationFailure();
+  void OnDeferredUvKeyCreationSuccess();
+
+  // Returns true if |state| indicates that the security domain has been reset,
+  // i.e. that the local Chrome state no longer matches what's on the security
+  // domain.
+  bool IsSecurityDomainReset(
+      const trusted_vault::DownloadAuthenticationFactorsRegistrationStateResult&
+          state);
+
+  // Called when the OSCrypt encryptor is available.
+  void OnOsCryptReady(scoped_refptr<os_crypt_async::Encryptor> encryptor);
+
+  // Stores keys in the pending state (the keys will remain in this state until
+  // `AddDeviceToAccount` is called).
+  void StorePendingKeys(
+      const GaiaId& gaia_id,
+      std::vector<trusted_vault::TrustedVaultKeyAndVersion> keys);
+
+  // Stores keys and performs `AddDeviceToAccount` if the system UV or the GPM
+  // PIN is available.
+  void StoreKeysFromOutOfContextRetrieval(
+      const GaiaId& gaia_id,
+      std::vector<trusted_vault::TrustedVaultKeyAndVersion> keys);
+  void OpportunisticStoreKeysAddComplete(ActionOutcome action_outcome);
+  void NotifyObserversAboutOutOfContextRecoveryOutcome(
+      OutOfContextRecoveryOutcome outcome);
+  void TemporarilyCachePendingOpportunisticKeys(
+      const GaiaId& gaia_id,
+      std::vector<trusted_vault::TrustedVaultKeyAndVersion> keys);
+
+  void RemoveGaiaIdsFromLocalState(base::flat_set<GaiaId> gaia_ids_to_remove);
+
+  base::OnceCallback<void(EnclaveManager::ActionOutcome)>
+  ToActionOutcomeCallback(EnclaveManager::Callback callback);
+
   const base::FilePath file_path_;
   const raw_ptr<signin::IdentityManager> identity_manager_;
   device::NetworkContextFactory network_context_factory_;
@@ -404,6 +610,8 @@ class EnclaveManager : public EnclaveManagerInterface {
   base::OnceClosure write_finished_callback_;
 
   std::unique_ptr<StoreKeysArgs> pending_keys_;
+  std::unique_ptr<StoreKeysArgs> opportunistic_pending_keys_;
+  base::CancelableOnceClosure opportunistic_pending_keys_invalidation_task_;
   std::unique_ptr<StateMachine> state_machine_;
   std::vector<base::OnceClosure> load_callbacks_;
   std::deque<std::unique_ptr<PendingAction>> pending_actions_;
@@ -412,6 +620,9 @@ class EnclaveManager : public EnclaveManagerInterface {
   unsigned renewal_checks_ = 0;
   unsigned renewal_attempts_ = 0;
   bool is_renewing_ = false;
+  bool deferred_uv_key_creation_in_progress_ = false;
+  std::optional<bool> deferred_uv_key_creation_successful_;
+  std::vector<base::OnceCallback<void(bool)>> pending_uv_key_requests_;
 
   // These fields store the security domain secret immediately after a
   // device has been added to the security domain.
@@ -424,6 +635,7 @@ class EnclaveManager : public EnclaveManagerInterface {
       identity_key_;
 
   unsigned store_keys_count_ = 0;
+  unsigned store_keys_lock_depth_ = 0;
 
   // Timer for recording a metric measuring the delay to load the Enclave
   // state.
@@ -431,7 +643,10 @@ class EnclaveManager : public EnclaveManagerInterface {
 
   base::ObserverList<Observer> observer_list_;
 
+  scoped_refptr<os_crypt_async::Encryptor> encryptor_;
+
   SEQUENCE_CHECKER(sequence_checker_);
+
   base::WeakPtrFactory<EnclaveManager> weak_ptr_factory_{this};
 };
 

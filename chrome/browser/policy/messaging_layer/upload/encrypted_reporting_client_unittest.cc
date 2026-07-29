@@ -9,7 +9,6 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/functional/callback_helpers.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -146,14 +145,14 @@ class EncryptedReportingClientTest : public ::testing::Test {
 
   void DecrementSequenceId(int64_t by = 0L) { sequence_id_ -= (by + 1L); }
 
-  base::Value::Dict GetRequestBody(size_t index, bool expect_dm_token = true) {
+  base::DictValue GetRequestBody(size_t index, bool expect_dm_token = true) {
     CHECK_LT(index, url_loader_factory_.pending_requests()->size());
     const network::ResourceRequest& request =
         (*url_loader_factory_.pending_requests())[index].request;
     if (expect_dm_token) {
-      EXPECT_TRUE(base::Contains(request.headers.ToString(), kDmToken));
+      EXPECT_TRUE(request.headers.ToString().contains(kDmToken));
     } else {
-      EXPECT_FALSE(base::Contains(request.headers.ToString(), kDmToken));
+      EXPECT_FALSE(request.headers.ToString().contains(kDmToken));
     }
     CHECK(request.request_body);
     CHECK(request.request_body->elements());
@@ -162,22 +161,23 @@ class EncryptedReportingClientTest : public ::testing::Test {
         base::JSONReader::Read(request.request_body->elements()
                                    ->at(0)
                                    .As<network::DataElementBytes>()
-                                   .AsStringPiece());
+                                   .AsStringPiece(),
+                               base::JSON_PARSE_CHROMIUM_EXTENSIONS);
     CHECK(body);
     CHECK(body->is_dict());
     return body->GetDict().Clone();
   }
 
   void SimulateCustomResponseForRequest(size_t index,
-                                        StatusOr<base::Value::Dict> response) {
+                                        StatusOr<base::DictValue> response) {
     ASSERT_THAT(index, Lt(url_loader_factory_.pending_requests()->size()));
     const std::string& pending_request_url =
         (*url_loader_factory_.pending_requests())[index].request.url.spec();
     EXPECT_THAT(pending_request_url, StartsWith(kServerUrl));
 
-    std::string response_string = "";
+    std::string response_string;
     if (response.has_value()) {
-      base::JSONWriter::Write(response.value(), &response_string);
+      response_string = base::WriteJson(response.value()).value_or("");
     }
     url_loader_factory_.SimulateResponseForPendingRequest(pending_request_url,
                                                           response_string);
@@ -216,7 +216,7 @@ class EncryptedReportingClientTest : public ::testing::Test {
           policy::EnterpriseManagementAuthority::CLOUD_DOMAIN);
 
   scoped_refptr<ResourceManager> memory_resource_;
-  base::Value::Dict context_;
+  base::DictValue context_;
   bool need_encryption_key_ = false;
   int config_file_version_ = 0;
   std::vector<EncryptedRecord> payload_records_;
@@ -263,7 +263,7 @@ TEST_F(EncryptedReportingClientTest, RegularUploads) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 
   // Send record #11 for upload.
@@ -294,7 +294,7 @@ TEST_F(EncryptedReportingClientTest, RegularUploads) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 }
 
@@ -364,7 +364,7 @@ TEST_F(EncryptedReportingClientTest, TimedOutUploadWithSameRecords) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/1, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 }
 
@@ -434,7 +434,7 @@ TEST_F(EncryptedReportingClientTest, TimedOutUploadWithAddedRecord) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/1, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 }
 
@@ -467,7 +467,7 @@ TEST_F(EncryptedReportingClientTest, KeyRequestAlone) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 
   // Can repeat immediately - no throttling when there are no records.
@@ -493,7 +493,7 @@ TEST_F(EncryptedReportingClientTest, KeyRequestAlone) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 }
 
@@ -563,7 +563,7 @@ TEST_F(EncryptedReportingClientTest, ForceConfirmAndRetract) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 }
 
@@ -633,7 +633,7 @@ TEST_F(EncryptedReportingClientTest, ServiceRejectedByRateLimiting) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
   }
 
   // Send record #11 for upload.
@@ -699,7 +699,7 @@ TEST_F(EncryptedReportingClientTest, UploadSucceedsWithoutDeviceInfo) {
   ASSERT_TRUE(response.has_value());
   SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-  base::IgnoreResult(GetAndValidateResponse(response_event));
+  GetAndValidateResponse(response_event);
 }
 
 TEST_F(EncryptedReportingClientTest, IdenticalUploadRetriesThrottled) {
@@ -785,8 +785,8 @@ TEST_F(EncryptedReportingClientTest, IdenticalUploadRetriesThrottled) {
 
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(
-        response_event, /*expected_seq_id=*/kFirstSequenceId - 1));
+    GetAndValidateResponse(response_event,
+                           /*expected_seq_id=*/kFirstSequenceId - 1);
 
     encrypted_reporting_client->AccountForAllowedJob(
         payload_records_.rbegin()->sequence_information().priority(),
@@ -893,8 +893,8 @@ TEST_F(EncryptedReportingClientTest, UploadsSequenceThrottled) {
 
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(
-        response_event, /*expected_seq_id=*/sequence_id_ - 2));
+    GetAndValidateResponse(response_event,
+                           /*expected_seq_id=*/sequence_id_ - 2);
 
     encrypted_reporting_client->AccountForAllowedJob(
         payload_records_.rbegin()->sequence_information().priority(),
@@ -951,7 +951,7 @@ TEST_F(EncryptedReportingClientTest, SecurityUploadsSequenceNotThrottled) {
     ASSERT_TRUE(response.has_value());
     SimulateCustomResponseForRequest(/*index=*/0, std::move(response));
 
-    base::IgnoreResult(GetAndValidateResponse(response_event));
+    GetAndValidateResponse(response_event);
 
     encrypted_reporting_client->AccountForAllowedJob(
         payload_records_.rbegin()->sequence_information().priority(),

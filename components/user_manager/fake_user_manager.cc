@@ -6,7 +6,6 @@
 
 #include <memory>
 
-#include "chromeos/ash/components/settings/cros_settings.h"
 #include "components/account_id/account_id.h"
 #include "components/user_manager/fake_user_manager_delegate.h"
 #include "components/user_manager/test_helper.h"
@@ -17,10 +16,7 @@ namespace user_manager {
 
 FakeUserManager::FakeUserManager(PrefService* local_state)
     : UserManagerImpl(std::make_unique<FakeUserManagerDelegate>(),
-                      local_state,
-                      ash::CrosSettings::IsInitialized()
-                          ? ash::CrosSettings::Get()
-                          : nullptr) {}
+                      local_state) {}
 
 FakeUserManager::~FakeUserManager() = default;
 
@@ -29,9 +25,7 @@ std::string FakeUserManager::GetFakeUsernameHash(const AccountId& account_id) {
 }
 
 void FakeUserManager::UserLoggedIn(const AccountId& account_id,
-                                   const std::string& username_hash,
-                                   bool browser_restart,
-                                   bool is_child) {
+                                   const std::string& username_hash) {
   // Please keep the implementation in sync with
   // FakeChromeUserManager::UserLoggedIn. We're in process to merge.
   for (auto& user : user_storage_) {
@@ -42,9 +36,7 @@ void FakeUserManager::UserLoggedIn(const AccountId& account_id,
       if (!primary_user_) {
         primary_user_ = user.get();
       }
-      if (active_user_) {
-        NotifyUserAddedToSession(user.get());
-      } else {
+      if (!active_user_) {
         active_user_ = user.get();
       }
       break;

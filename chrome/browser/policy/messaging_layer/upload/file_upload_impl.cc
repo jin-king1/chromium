@@ -2,23 +2,22 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/policy/messaging_layer/upload/file_upload_impl.h"
 
 #include <string>
 #include <string_view>
 #include <vector>
 
+#include "base/check_is_test.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file.h"
 #include "base/files/file_util.h"
 #include "base/memory/ptr_util.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/sequence_checker.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
 #include "base/task/bind_post_task.h"
@@ -50,8 +49,28 @@
 #include "services/network/public/cpp/shared_url_loader_factory.h"
 #include "services/network/public/cpp/simple_url_loader.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace reporting {
+
+namespace {
+const base::FilePath* g_allowed_directory_for_testing = nullptr;
+constexpr char kTargetDir[] = "/var/spool/support";
+
+bool IsUrlAllowed(const GURL& url) {
+  if (!url.is_valid()) {
+    return false;
+  }
+  if (url.DomainIs("googleapis.com")) {
+    return true;
+  }
+  if (g_allowed_directory_for_testing &&
+      (url.host() == "127.0.0.1" || url.DomainIs("localhost"))) {
+    return true;
+  }
+  return false;
+}
+}  // namespace
 
 constexpr char kAuthorizationPrefix[] = "Bearer ";
 
@@ -378,15 +397,27 @@ class FileUploadDelegate::InitContext
           base::unexpected(Status(error::DATA_LOSS, "No upload URL returned")));
       return;
     }
+    if (!delegate() ||
+        !delegate()->IsResumableUploadUrlAllowed(GURL(*upload_url))) {
+      Complete(base::unexpected(
+          Status(error::INVALID_ARGUMENT,
+                 base::StrCat(
+                     {"Resumable upload URL is not allowed=", *upload_url}))));
+      return;
+    }
 
     Complete(std::make_pair(total_,
                             base::StrCat({origin_path_, "\n", *upload_url})));
   }
 
   static StatusOr<int64_t> InitFile(const std::string origin_path) {
+    const base::FilePath file_path(origin_path);
+    if (!FileUploadDelegate::IsPathAllowed(file_path)) {
+      return base::unexpected(
+          Status(error::INVALID_ARGUMENT, "Path is not allowed"));
+    }
     auto handle = std::make_unique<base::File>(
-        base::FilePath(origin_path),
-        base::File::FLAG_OPEN | base::File::FLAG_READ);
+        file_path, base::File::FLAG_OPEN | base::File::FLAG_READ);
     if (!handle->IsValid()) {
       base::UmaHistogramEnumeration(
           reporting::kUmaDataLossErrorReason,
@@ -458,10 +489,16 @@ class FileUploadDelegate::NextStepContext
     }
     origin_path_ = tokens[0];
     resumable_upload_url_ = GURL(tokens[1]);
-    if (!resumable_upload_url_.is_valid()) {
+    if (!IsUrlAllowed(resumable_upload_url_)) {
       Complete(base::unexpected(
           Status(error::DATA_LOSS,
                  base::StrCat({"Corrupt resumable upload URL=", tokens[1]}))));
+      return;
+    }
+    if (!delegate()->IsResumableUploadUrlAllowed(resumable_upload_url_)) {
+      Complete(base::unexpected(Status(
+          error::INVALID_ARGUMENT,
+          base::StrCat({"Resumable upload URL is not allowed=", tokens[1]}))));
       return;
     }
 
@@ -659,6 +696,11 @@ class FileUploadDelegate::NextStepContext
                                             int64_t total,
                                             int64_t offset,
                                             int64_t size) {
+    const base::FilePath file_path(origin_path);
+    if (!FileUploadDelegate::IsPathAllowed(file_path)) {
+      return base::unexpected(
+          Status(error::INVALID_ARGUMENT, "Path is not allowed"));
+    }
     // Retrieve data from the file to be attached. Note: it could be done with
     // `AttachFileForUpload` instead, but loading into memory allows to check
     // integrity of the file (TBD; for now we only verify file access and
@@ -666,8 +708,7 @@ class FileUploadDelegate::NextStepContext
     std::string buffer;
 
     auto handle = std::make_unique<base::File>(
-        base::FilePath(origin_path),
-        base::File::FLAG_OPEN | base::File::FLAG_READ);
+        file_path, base::File::FLAG_OPEN | base::File::FLAG_READ);
     if (!handle->IsValid()) {
       base::UmaHistogramEnumeration(
           reporting::kUmaDataLossErrorReason,
@@ -694,8 +735,9 @@ class FileUploadDelegate::NextStepContext
     // Load into buffer.
     buffer.resize(
         size);  // Initialization is redundant, but std::string mandates it.
-    const int read_size = handle->Read(offset, buffer.data(), size);
-    if (read_size < 0) {
+    const std::optional<size_t> read_size =
+        handle->Read(offset, base::as_writable_byte_span(buffer));
+    if (!read_size) {
       base::UmaHistogramEnumeration(reporting::kUmaDataLossErrorReason,
                                     DataLossErrorReason::CANNOT_READ_FILE,
                                     DataLossErrorReason::MAX_VALUE);
@@ -713,7 +755,7 @@ class FileUploadDelegate::NextStepContext
                  base::StrCat({"Failed to read file=", origin_path,
                                " offset=", base::NumberToString(offset),
                                " size=", base::NumberToString(size),
-                               " read=", base::NumberToString(read_size)})));
+                               " read=", base::NumberToString(*read_size)})));
     }
     return buffer;
   }
@@ -773,7 +815,7 @@ class FileUploadDelegate::FinalContext
     }
     origin_path_ = tokens[0];
     resumable_upload_url_ = GURL(tokens[1]);
-    if (!resumable_upload_url_.is_valid()) {
+    if (!IsUrlAllowed(resumable_upload_url_)) {
       base::UmaHistogramEnumeration(
           reporting::kUmaDataLossErrorReason,
           DataLossErrorReason::CORRUPT_RESUMABLE_UPLOAD_URL,
@@ -783,12 +825,19 @@ class FileUploadDelegate::FinalContext
                  base::StrCat({"Corrupt resumable upload URL=", tokens[1]}))));
       return;
     }
+    if (!delegate()->IsResumableUploadUrlAllowed(resumable_upload_url_)) {
+      Complete(base::unexpected(Status(
+          error::INVALID_ARGUMENT,
+          base::StrCat({"Resumable upload URL is not allowed=", tokens[1]}))));
+      return;
+    }
 
     // Query upload.
     DVLOG(1) << "Starting Query URL fetcher.";
     auto resource_request = std::make_unique<::network::ResourceRequest>();
     resource_request->url = resumable_upload_url_;
     resource_request->headers.SetHeader(kUploadCommandHeader, "query");
+    resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
 
     url_loader_ = delegate()->CreatePostLoader(std::move(resource_request));
 
@@ -931,6 +980,40 @@ class FileUploadDelegate::FinalContext
       GUARDED_BY_CONTEXT(sequence_checker_);
 };
 
+// static
+void FileUploadDelegate::SetAllowedDirectoryForTesting(
+    const base::FilePath* allowed_directory) {
+  CHECK_IS_TEST();
+  g_allowed_directory_for_testing = allowed_directory;
+}
+
+// static
+bool FileUploadDelegate::IsPathAllowed(const base::FilePath& path) {
+  if (path.empty() || !path.IsAbsolute() || path.ReferencesParent()) {
+    return false;
+  }
+
+  // Symbolic links are banned to prevent path traversal/symlink bypasses.
+  if (base::IsLink(path)) {
+    return false;
+  }
+
+  base::FilePath allowed_dir;
+  if (g_allowed_directory_for_testing) {
+    CHECK_IS_TEST();
+    allowed_dir = *g_allowed_directory_for_testing;
+  } else {
+    allowed_dir = base::FilePath(kTargetDir);
+  }
+
+  return path.DirName() == allowed_dir;
+}
+
+bool FileUploadDelegate::IsResumableUploadUrlAllowed(const GURL& url) const {
+  DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+  return url.is_valid() && url::IsSameOriginWith(url, upload_url_);
+}
+
 FileUploadDelegate::FileUploadDelegate() {
   DETACH_FROM_SEQUENCE(sequence_checker_);
 }
@@ -1015,6 +1098,10 @@ FileUploadDelegate::CreatePostLoader(
     std::unique_ptr<::network::ResourceRequest> resource_request) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   resource_request->method = "POST";
+  // Traffic annotation declares cookies_allowed: NO. Enforce kOmit for every
+  // request issued by this delegate so SameSite=None cookies are never
+  // attached to the (potentially missived-supplied) resumable_upload_url_.
+  resource_request->credentials_mode = network::mojom::CredentialsMode::kOmit;
   if (resource_request->url.is_empty()) {
     resource_request->url = upload_url_;
   }
@@ -1128,7 +1215,13 @@ void FileUploadDelegate::DoFinalize(
 }
 
 void FileUploadDelegate::DoDeleteFile(std::string_view origin_path) {
-  const auto delete_result = base::DeleteFile(base::FilePath(origin_path));
+  const base::FilePath file_path(origin_path);
+  if (!IsPathAllowed(file_path)) {
+    LOG(WARNING) << "Ignoring deletion request for unsafe path: "
+                 << origin_path;
+    return;
+  }
+  const auto delete_result = base::DeleteFile(file_path);
   if (!delete_result) {
     LOG(WARNING) << "Failed to delete file=" << origin_path;
   }

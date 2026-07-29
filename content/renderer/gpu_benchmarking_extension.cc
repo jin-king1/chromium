@@ -44,8 +44,8 @@
 #include "content/renderer/render_thread_impl.h"
 #include "content/renderer/skia_benchmarking_extension.h"
 #include "gin/arguments.h"
-#include "gin/handle.h"
 #include "gin/object_template_builder.h"
+#include "gin/public/wrappable_pointer_tags.h"
 #include "gpu/config/gpu_driver_bug_workaround_type.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "skia/ext/codec_utils.h"
@@ -69,10 +69,13 @@
 #include "third_party/skia/include/core/SkStream.h"
 #include "third_party/skia/include/docs/SkMultiPictureDocument.h"
 #include "third_party/skia/include/docs/SkXPSDocument.h"
+#include "third_party/skia/include/encode/SkPngRustEncoder.h"
 #include "ui/events/base_event_utils.h"
 #include "ui/gfx/ca_layer_result.h"
 #include "ui/gfx/geometry/size_f.h"
+#include "v8/include/cppgc/allocation.h"
 #include "v8/include/v8-context.h"
+#include "v8/include/v8-cppgc.h"
 #include "v8/include/v8-exception.h"
 #include "v8/include/v8-function.h"
 #include "v8/include/v8-isolate.h"
@@ -80,14 +83,12 @@
 #include "v8/include/v8-persistent-handle.h"
 #include "v8/include/v8-primitive.h"
 
-#if BUILDFLAG(IS_WIN) && !defined(NDEBUG)
-// XpsObjectModel.h indirectly includes <wincrypt.h> which is
-// incompatible with Chromium's OpenSSL. By including wincrypt_shim.h
-// first, problems are avoided.
-// clang-format off
-#include "base/win/wincrypt_shim.h"
-// clang-format on
+#if defined(ENABLE_PRINTING)
+#include "printing/metafile_skia.h"   // nogncheck
+#include "printing/print_settings.h"  // nogncheck
+#endif
 
+#if BUILDFLAG(IS_WIN) && !defined(NDEBUG)
 #include <objbase.h>
 
 #include <XpsObjectModel.h>
@@ -187,7 +188,7 @@ class SkPictureSerializer {
       DCHECK(file.isValid());
 
       SkSerialProcs procs{
-          .fImageProc = [](SkImage* img, void*) -> sk_sp<SkData> {
+          .fImageProc = [](SkImage* img, void*) -> SkSerialReturnType {
             // Note: if the picture contains texture-backed (gpu) images, they
             // will fail to be read-back and therefore fail to be encoded unless
             // we can thread the correct GrDirectContext through to here.
@@ -292,7 +293,7 @@ void RunCallbackHelper(CallbackAndContext* callback_and_context,
 }
 
 void OnMicroBenchmarkCompleted(CallbackAndContext* callback_and_context,
-                               base::Value::Dict result) {
+                               base::DictValue result) {
   RunCallbackHelper(callback_and_context,
                     std::optional<base::Value>(std::move(result)));
 }
@@ -519,6 +520,7 @@ bool BeginSmoothDrag(GpuBenchmarkingContext* context,
 }
 
 static void PrintDocument(blink::WebLocalFrame* frame, SkDocument* doc) {
+#if defined(ENABLE_PRINTING)
   const float kPageWidth = 612.0f;   // 8.5 inch
   const float kPageHeight = 792.0f;  // 11 inch
   const float kMarginTop = 29.0f;    // 0.40 inch
@@ -528,14 +530,18 @@ static void PrintDocument(blink::WebLocalFrame* frame, SkDocument* doc) {
   blink::WebPrintParams params(gfx::SizeF(kContentWidth, kContentHeight));
   params.printer_dpi = 300;
   uint32_t page_count = frame->PrintBegin(params, blink::WebNode());
+  printing::MetafileSkia metafile(printing::mojom::SkiaDocumentType::kMSKP,
+                                  printing::PrintSettings::NewCookie());
   for (uint32_t i = 0; i < page_count; ++i) {
     SkCanvas* sk_canvas = doc->beginPage(kPageWidth, kPageHeight);
     cc::SkiaPaintCanvas canvas(sk_canvas);
+    canvas.SetPrintingMetafile(&metafile);
     cc::PaintCanvasAutoRestore auto_restore(&canvas, true);
     canvas.translate(kMarginLeft, kMarginTop);
     frame->PrintPage(i, &canvas);
   }
   frame->PrintEnd();
+#endif
 }
 
 static void PrintDocumentTofile(v8::Isolate* isolate,
@@ -586,12 +592,15 @@ static sk_sp<SkDocument> MakeXPSDocument(SkWStream* s) {
     LOG(ERROR) << "CoCreateInstance(CLSID_XpsOMObjectFactory, ...) failed:"
                << logging::SystemErrorCodeToString(hr);
   }
-  return SkXPS::MakeDocument(s, factory.Get());
+
+  SkXPS::Options opts;
+  opts.pngEncoder = [](SkWStream* dst, const SkPixmap& src) {
+    return SkPngRustEncoder::Encode(dst, src, {});
+  };
+  return SkXPS::MakeDocument(s, factory.Get(), opts);
 }
 #endif
 }  // namespace
-
-gin::WrapperInfo GpuBenchmarking::kWrapperInfo = {gin::kEmbedderNativeGin};
 
 // static
 void GpuBenchmarking::Install(base::WeakPtr<RenderFrameImpl> frame) {
@@ -605,15 +614,13 @@ void GpuBenchmarking::Install(base::WeakPtr<RenderFrameImpl> frame) {
 
   v8::Context::Scope context_scope(context);
 
-  gin::Handle<GpuBenchmarking> controller =
-      gin::CreateHandle(isolate, new GpuBenchmarking(frame));
-  if (controller.IsEmpty())
-    return;
+  auto* controller = cppgc::MakeGarbageCollected<GpuBenchmarking>(
+      isolate->GetCppHeap()->GetAllocationHandle(), frame);
+  v8::Local<v8::Object> wrapper =
+      controller->GetWrapper(isolate).ToLocalChecked();
 
   v8::Local<v8::Object> chrome = GetOrCreateChromeObject(isolate, context);
-  chrome
-      ->Set(context, gin::StringToV8(isolate, "gpuBenchmarking"),
-            controller.ToV8())
+  chrome->Set(context, gin::StringToV8(isolate, "gpuBenchmarking"), wrapper)
       .Check();
 }
 
@@ -720,6 +727,10 @@ void GpuBenchmarking::SetRasterizeOnlyVisibleContent() {
   cc::LayerTreeDebugState current = context.layer_tree_host()->GetDebugState();
   current.rasterize_only_visible_content = true;
   context.layer_tree_host()->SetDebugState(current);
+}
+
+const gin::WrapperInfo* GpuBenchmarking::wrapper_info() const {
+  return &kWrapperInfo;
 }
 
 namespace {

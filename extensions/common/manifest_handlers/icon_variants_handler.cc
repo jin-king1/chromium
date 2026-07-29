@@ -11,11 +11,15 @@
 #include "base/lazy_instance.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/values.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/api/icon_variants.h"
 #include "extensions/common/extension.h"
+#include "extensions/common/extension_features.h"
 #include "extensions/common/icons/extension_icon_variants.h"
 #include "extensions/common/manifest_constants.h"
 #include "ui/gfx/color_utils.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -24,19 +28,20 @@ static base::LazyInstance<ExtensionIconSet>::DestructorAtExit g_empty_icon_set =
     LAZY_INSTANCE_INITIALIZER;
 }  // namespace
 
+namespace keys = manifest_keys;
+
+// static
+const char* IconVariantsInfo::kManifestDataKey = keys::kIconVariants;
+
 IconVariantsInfo::IconVariantsInfo() = default;
 IconVariantsInfo::~IconVariantsInfo() = default;
-
 IconVariantsHandler::IconVariantsHandler() = default;
 IconVariantsHandler::~IconVariantsHandler() = default;
 
-namespace keys = manifest_keys;
-using IconVariantsManifestKeys = extensions::api::icon_variants::ManifestKeys;
-
-// extensions::diagnostics::
-using Id = extensions::diagnostics::icon_variants::Id;
-using Severity = extensions::diagnostics::icon_variants::Severity;
-using Feature = extensions::diagnostics::icon_variants::Feature;
+using extensions::api::icon_variants::ManifestKeys;
+using extensions::diagnostics::icon_variants::Id;
+using extensions::diagnostics::icon_variants::Severity;
+using extensions::diagnostics::icon_variants::Feature;
 
 namespace {
 void AddInstallWarning(Extension& extension, const std::string& warning) {
@@ -57,8 +62,10 @@ void AddInstallWarningForId(Extension& extension, Id id) {
 ExtensionIconVariants GetIconVariants(Extension& extension) {
   ExtensionIconVariants icon_variants;
 
-  // Convert the input key into a list containing everything.
-  const base::Value::List* icon_variants_list =
+  // Convert the input key into a list containing everything. Auto-generated
+  // `ManifestKeys` are intentionally not being used here so that arbitrary size
+  // keys can be specified that are not explicitly defined in the IDL schema.
+  const base::ListValue* icon_variants_list =
       extension.manifest()->available_values().FindList(keys::kIconVariants);
   if (!icon_variants_list) {
     icon_variants.AddDiagnostic(Feature::kIconVariants,
@@ -66,13 +73,12 @@ ExtensionIconVariants GetIconVariants(Extension& extension) {
     return icon_variants;
   }
 
-  icon_variants.Parse(icon_variants_list);
+  icon_variants.Parse(extension, icon_variants_list);
 
   // Verify `icon_variants`, e.g. that at least one `icon_variant` is valid.
   if (icon_variants.IsEmpty()) {
     icon_variants.AddDiagnostic(Feature::kIconVariants,
                                 Id::kIconVariantsInvalid);
-    return icon_variants;
   }
 
   return icon_variants;
@@ -82,14 +88,30 @@ ExtensionIconVariants GetIconVariants(Extension& extension) {
 // static
 bool IconVariantsInfo::HasIconVariants(const Extension* extension) {
   DCHECK(extension);
-  const IconVariantsInfo* info = IconVariantsInfo::GetIconVariants(extension);
-  return info && info->icon_variants;
+  if (!IconVariantsInfo::SupportsIconVariants(*extension)) {
+    return false;
+  }
+  const IconVariantsInfo* info = IconVariantsInfo::GetIconVariants(*extension);
+  return info && info->icon_variants && !info->icon_variants->IsEmpty();
 }
 
+// static
 const IconVariantsInfo* IconVariantsInfo::GetIconVariants(
-    const Extension* extension) {
-  return static_cast<IconVariantsInfo*>(
-      extension->GetManifestData(IconVariantsManifestKeys::kIconVariants));
+    const Extension& extension) {
+  if (!IconVariantsInfo::SupportsIconVariants(extension)) {
+    return nullptr;
+  }
+  return extension.GetManifestData<IconVariantsInfo>();
+}
+
+// static
+bool IconVariantsInfo::SupportsIconVariants(const Extension& extension) {
+  if (extension.manifest_version() < 3 || !extension.is_extension()) {
+    return false;
+  }
+
+  return base::FeatureList::IsEnabled(
+      extensions_features::kExtensionIconVariants);
 }
 
 void IconVariantsInfo::InitializeIconSets() {
@@ -101,17 +123,17 @@ void IconVariantsInfo::InitializeIconSets() {
     for (const auto& size : sizes) {
       // Add the size path pair to both extension icon sets if unspecified.
       if (color_schemes.empty()) {
-        dark_.Add(size.first, size.second);
-        light_.Add(size.first, size.second);
+        dark_.Add(size.first, size.second.relative_path().AsUTF8Unsafe());
+        light_.Add(size.first, size.second.relative_path().AsUTF8Unsafe());
         continue;
       }
 
       if (color_schemes.contains(ExtensionIconVariant::ColorScheme::kDark)) {
-        dark_.Add(size.first, size.second);
+        dark_.Add(size.first, size.second.relative_path().AsUTF8Unsafe());
       }
 
       if (color_schemes.contains(ExtensionIconVariant::ColorScheme::kLight)) {
-        light_.Add(size.first, size.second);
+        light_.Add(size.first, size.second.relative_path().AsUTF8Unsafe());
       }
     }
   }
@@ -130,13 +152,18 @@ const ExtensionIconSet& IconVariantsInfo::Get(
 bool IconVariantsHandler::Parse(Extension* extension, std::u16string* error) {
   DCHECK(extension);
 
+  if (!IconVariantsInfo::SupportsIconVariants(*extension)) {
+    AddInstallWarningForId(*extension, Id::kIconVariantsNotEnabled);
+    return true;
+  }
+
   // The `icon_variants` key should be able to be parsed from generated .idl.
   // This only verifies the limited subset of keys supported by
   // json_schema_compiler. The manifest_keys wouldn't contain icon sizes, so
   // all keys will be parsed from the same source list after this verification.
   std::u16string ignore_generated_parsing_errors;
-  IconVariantsManifestKeys manifest_keys;
-  if (!IconVariantsManifestKeys::ParseFromDictionary(
+  ManifestKeys manifest_keys;
+  if (!ManifestKeys::ParseFromDictionary(
           extension->manifest()->available_values(), manifest_keys,
           ignore_generated_parsing_errors)) {
     // `ParseFromDictionary` returns false if .e.g. a manifest string doesn't
@@ -168,13 +195,12 @@ bool IconVariantsHandler::Parse(Extension* extension, std::u16string* error) {
   icon_variants_info->icon_variants = std::move(icon_variants);
   icon_variants_info->InitializeIconSets();
 
-  extension->SetManifestData(keys::kIconVariants,
-                             std::move(icon_variants_info));
+  extension->SetManifestData(std::move(icon_variants_info));
   return true;
 }
 
 bool IconVariantsHandler::Validate(
-    const Extension* extension,
+    const Extension& extension,
     std::string* error,
     std::vector<InstallWarning>* warnings) const {
   // TODO(crbug.com/41419485): Validate icon existence.

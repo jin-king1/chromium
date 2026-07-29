@@ -15,15 +15,11 @@ namespace lens {
 namespace prefs {
 
 void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
-  // There are ongoing discussions about which policy we should use, so both
-  // policies are registered just in case.
   registry->RegisterIntegerPref(
       kLensOverlaySettings,
       static_cast<int>(LensOverlaySettingsPolicyValue::kEnabled));
-
-  registry->RegisterIntegerPref(
-      kGenAiLensOverlaySettings,
-      static_cast<int>(GenAiLensOverlaySettingsPolicyValue::kAllowed));
+  registry->RegisterIntegerPref(kLensOverlayNonBlockingPrivacyNoticeShownCount,
+                                0);
 
   registry->RegisterBooleanPref(kLensSharingPageScreenshotEnabled, false);
   registry->RegisterBooleanPref(kLensSharingPageContentEnabled, false);

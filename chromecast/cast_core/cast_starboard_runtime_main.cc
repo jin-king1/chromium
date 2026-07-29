@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 // The entrypoint for the starboard cast runtime. If loggy is enabled (typically
 // used for partner builds), this code forks a separate process to run loggy for
 // logging.
@@ -20,6 +15,8 @@
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/json/json_reader.h"
@@ -41,12 +38,10 @@ constexpr char kArgvKey[] = "argv";
 // arguments.
 class JSONArgsParser {
  public:
-  JSONArgsParser(int argc, const char** argv) {
-    if (!TryParseJson(argc, argv)) {
+  JSONArgsParser(base::span<const char*> argv) {
+    if (!TryParseJson(argv)) {
       // If args were not provided as JSON, use defaults.
-      for (int i = 0; i < argc; i++) {
-        argv_.push_back(argv[i]);
-      }
+      argv_.assign(argv.begin(), argv.end());
       argv_.push_back(nullptr);
     }
   }
@@ -59,42 +54,27 @@ class JSONArgsParser {
   // If the command is of the format `<command> <json>`, tries to parse
   // parameters from the JSON blob in |argv[1] instead of directly from
   // |argv|. Returns true if successful; otherwise, returns false.
-  bool TryParseJson(int argc, const char** argv) {
+  bool TryParseJson(base::span<const char*> argv) {
     // Required format is `<command> <json>`
-    if (argc != 2) {
+    if (argv.size() != 2) {
       return false;
     }
 
     // JSON must be the following format. All keys and values are strings.
     // {"parameters":{"argv":["arg1", ...]}}
-    std::string argv1 = std::string(argv[1]);
-    std::optional<base::Value::Dict> root = base::JSONReader::ReadDict(argv1);
-    if (!root) {
-      // Try to fix unquoted JSON
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, "{", "{\"");
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, "[", "[\"");
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, "]", "\"]");
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, ":", "\":\"");
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, ",", "\",\"");
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, ":\"[", ":[");
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, ":\"{", ":{");
-
-      // Special case to handle unix:/tmp. This means that things like
-      // "valid_key_unix":"/valid_value" will fail to parse. Known issue.
-      base::ReplaceSubstringsAfterOffset(&argv1, 0, "unix\":\"/", "unix:/");
-      root = base::JSONReader::ReadDict(argv1);
-    }
+    std::optional<base::DictValue> root =
+        base::JSONReader::ReadDict(argv[1], base::JSON_PARSE_CHROMIUM_EXTENSIONS);
 
     if (!root) {
       return false;
     }
 
-    base::Value::Dict* v = root->FindDict(kParametersKey);
+    base::DictValue* v = root->FindDict(kParametersKey);
     if (!v) {
       return false;
     }
 
-    base::Value::List* argv_list = v->FindList(kArgvKey);
+    base::ListValue* argv_list = v->FindList(kArgvKey);
     if (!argv_list) {
       return false;
     }
@@ -124,7 +104,9 @@ class JSONArgsParser {
 }  // namespace
 
 int main(int argc, const char** argv) {
-  JSONArgsParser args(argc, argv);
+  // SAFETY: required from caller.
+  JSONArgsParser args(
+      UNSAFE_BUFFERS(base::span<const char*>(argv, static_cast<size_t>(argc))));
 
   chromecast::ForkAndRunLogProcessIfSpecified(args.argc(), args.argv());
 
@@ -134,7 +116,8 @@ int main(int argc, const char** argv) {
   base::CommandLine temp_cmd(args.argc(), args.argv());
   std::string home_override = temp_cmd.GetSwitchValueASCII(kHomeEnvOverride);
   if (!home_override.empty()) {
-    LOG(INFO) << "HOME variable was previously \"" << getenv("HOME")
+    const char * maybe_home = getenv("HOME");
+    LOG(INFO) << "HOME variable was previously \"" << (maybe_home ? maybe_home : "[UNSET]")
               << "\"; overriding to \"" << home_override << "\".";
     setenv("HOME", home_override.c_str(), 1);
 

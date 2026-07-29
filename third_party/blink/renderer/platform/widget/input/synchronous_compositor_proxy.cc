@@ -15,6 +15,18 @@
 
 namespace blink {
 
+struct SynchronousCompositorProxy::SharedMemoryWithSize {
+  base::WritableSharedMemoryMapping shared_memory;
+  const size_t buffer_size;
+  bool zeroed;
+
+  SharedMemoryWithSize(base::WritableSharedMemoryMapping shm_mapping,
+                       size_t buffer_size)
+      : shared_memory(std::move(shm_mapping)),
+        buffer_size(buffer_size),
+        zeroed(true) {}
+};
+
 SynchronousCompositorProxy::SynchronousCompositorProxy(
     InputHandlerProxy* input_handler_proxy)
     : input_handler_proxy_(input_handler_proxy),
@@ -32,7 +44,7 @@ SynchronousCompositorProxy::SynchronousCompositorProxy(
 SynchronousCompositorProxy::~SynchronousCompositorProxy() {
   // The LayerTreeFrameSink is destroyed/removed by the compositor before
   // shutting down everything.
-  DCHECK_EQ(layer_tree_frame_sink_, nullptr);
+  CHECK_EQ(layer_tree_frame_sink_, nullptr);
   input_handler_proxy_->SetSynchronousInputHandler(nullptr);
 }
 
@@ -143,18 +155,6 @@ void SynchronousCompositorProxy::WillSkipDraw() {
     layer_tree_frame_sink_->WillSkipDraw();
   }
 }
-
-struct SynchronousCompositorProxy::SharedMemoryWithSize {
-  base::WritableSharedMemoryMapping shared_memory;
-  const size_t buffer_size;
-  bool zeroed;
-
-  SharedMemoryWithSize(base::WritableSharedMemoryMapping shm_mapping,
-                       size_t buffer_size)
-      : shared_memory(std::move(shm_mapping)),
-        buffer_size(buffer_size),
-        zeroed(true) {}
-};
 
 void SynchronousCompositorProxy::ZeroSharedMemory() {
   // It is possible for this to get called twice, eg. if draw is called before

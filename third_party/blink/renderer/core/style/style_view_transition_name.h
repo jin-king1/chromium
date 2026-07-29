@@ -5,12 +5,10 @@
 #ifndef THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_VIEW_TRANSITION_NAME_H_
 #define THIRD_PARTY_BLINK_RENDERER_CORE_STYLE_STYLE_VIEW_TRANSITION_NAME_H_
 
-#include "third_party/blink/renderer/core/css/style_rule_view_transition.h"
 #include "third_party/blink/renderer/core/dom/tree_scope.h"
 #include "third_party/blink/renderer/core/style/style_image.h"
 #include "third_party/blink/renderer/platform/heap/garbage_collected.h"
 #include "third_party/blink/renderer/platform/wtf/text/atomic_string.h"
-#include "ui/gfx/geometry/point.h"
 
 namespace blink {
 

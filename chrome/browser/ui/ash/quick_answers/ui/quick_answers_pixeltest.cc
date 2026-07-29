@@ -202,7 +202,7 @@ class QuickAnswersPixelTestBase
         quick_answers_ui_controller->GetReadWriteCardsUiController();
 
     quick_answers_ui_controller->CreateQuickAnswersViewForPixelTest(
-        browser()->profile(), kTestQuery, intent,
+        browser()->GetProfile(), kTestQuery, intent,
         {
             .title = kTestTitle,
             .design = GetDesign(GetParam()),
@@ -370,7 +370,6 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersPixelTest, Result) {
   structured_result.definition_result->phonetics_info.query_text = kTestQuery;
   structured_result.definition_result->phonetics_info.phonetics_audio =
       GURL(kTestPhoneticsUrl);
-  structured_result.definition_result->phonetics_info.tts_audio_enabled = true;
   GetQuickAnswersUiController()->RenderQuickAnswersViewWithResult(
       structured_result);
 
@@ -526,7 +525,6 @@ IN_PROC_BROWSER_TEST_P(QuickAnswersPixelTestInternal, InternalUi) {
   structured_result.definition_result->phonetics_info.query_text = kTestQuery;
   structured_result.definition_result->phonetics_info.phonetics_audio =
       GURL(kTestPhoneticsUrl);
-  structured_result.definition_result->phonetics_info.tts_audio_enabled = true;
   GetQuickAnswersUiController()->RenderQuickAnswersViewWithResult(
       structured_result);
 

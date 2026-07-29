@@ -4,40 +4,48 @@
 
 #include "chrome/renderer/extensions/api/chrome_extensions_renderer_api_provider.h"
 
-#include "chrome/grit/renderer_resources.h"
+#include <string_view>
+
+#include "build/chromeos_buildflags.h"
+#include "chrome/grit/renderer_resources_resources.h"
 #include "chrome/renderer/extensions/api/extension_hooks_delegate.h"
+#include "chrome/renderer/extensions/api/identity_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/notifications_native_handler.h"
+#include "chrome/renderer/extensions/api/page_capture_custom_bindings.h"
+#include "chrome/renderer/extensions/api/tabs_hooks_delegate.h"
 #include "components/guest_view/buildflags/buildflags.h"
 #include "extensions/buildflags/buildflags.h"
 #include "extensions/renderer/bindings/api_bindings_system.h"
+#include "extensions/renderer/lazy_background_page_native_handler.h"
 #include "extensions/renderer/module_system.h"
 #include "extensions/renderer/native_extension_bindings_system.h"
 #include "extensions/renderer/resource_bundle_source_map.h"
+#include "extensions/renderer/script_context.h"
+#include "pdf/buildflags.h"
+#include "printing/buildflags/buildflags.h"
 
 #if BUILDFLAG(ENABLE_EXTENSIONS)
-#include "build/chromeos_buildflags.h"
-#include "chrome/renderer/extensions/api/app_hooks_delegate.h"
-#include "chrome/renderer/extensions/api/identity_hooks_delegate.h"
-#include "chrome/renderer/extensions/api/media_galleries_custom_bindings.h"
-#include "chrome/renderer/extensions/api/page_capture_custom_bindings.h"
 #include "chrome/renderer/extensions/api/sync_file_system_custom_bindings.h"
-#include "chrome/renderer/extensions/api/tabs_hooks_delegate.h"
-#include "extensions/renderer/dispatcher.h"
-#include "extensions/renderer/lazy_background_page_native_handler.h"
-#include "extensions/renderer/native_handler.h"
-#include "extensions/renderer/script_context.h"
-#include "printing/buildflags/buildflags.h"
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
+#include "chrome/renderer/extensions/api/app_hooks_delegate.h"
+#endif  // BUILDFLAG(ENABLE_PLATFORM_APPS)
 
 #if BUILDFLAG(IS_CHROMEOS)
 #include "chrome/renderer/extensions/api/accessibility_private_hooks_delegate.h"
 #include "chrome/renderer/extensions/api/file_browser_handler_custom_bindings.h"
 #include "chrome/renderer/extensions/api/file_manager_private_custom_bindings.h"
+#include "chrome/renderer/extensions/api/media_galleries_custom_bindings.h"
 #include "chrome/renderer/extensions/api/platform_keys_natives.h"
 #if BUILDFLAG(USE_CUPS)
 #include "chrome/renderer/extensions/api/printing_hooks_delegate.h"
 #endif  // BUILDFLAG(USE_CUPS)
 #endif  // BUILDFLAG(IS_CHROMEOS)
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+#if BUILDFLAG(ENABLE_PDF_INK2)
+#include "chrome/renderer/extensions/api/pdf_viewer_private_custom_bindings.h"
+#endif
 
 namespace extensions {
 
@@ -50,6 +58,25 @@ void ChromeExtensionsRendererAPIProvider::RegisterNativeHandlers(
   module_system->RegisterNativeHandler(
       "notifications_private",
       std::make_unique<NotificationsNativeHandler>(context));
+  module_system->RegisterNativeHandler(
+      "page_capture", std::make_unique<PageCaptureCustomBindings>(
+                          context, bindings_system->GetIPCMessageSender()));
+
+#if BUILDFLAG(ENABLE_PDF_INK2)
+  module_system->RegisterNativeHandler(
+      "pdf_viewer_private",
+      std::make_unique<PdfViewerPrivateCustomBindings>(context));
+#endif
+
+  // The following are native handlers that are defined in //extensions, but
+  // are only used for APIs defined in Chrome.
+  // TODO(devlin): We should clean this up. If an API is defined in Chrome,
+  // there's no reason to have its native handlers residing and being compiled
+  // in //extensions.
+  module_system->RegisterNativeHandler(
+      "lazy_background_page",
+      std::make_unique<LazyBackgroundPageNativeHandler>(context));
+
 #if BUILDFLAG(ENABLE_EXTENSIONS)
   module_system->RegisterNativeHandler(
       "sync_file_system",
@@ -63,43 +90,32 @@ void ChromeExtensionsRendererAPIProvider::RegisterNativeHandlers(
   module_system->RegisterNativeHandler(
       "file_manager_private",
       std::make_unique<FileManagerPrivateCustomBindings>(context));
-#endif  // BUILDFLAG(IS_CHROMEOS)
   module_system->RegisterNativeHandler(
       "mediaGalleries",
       std::make_unique<MediaGalleriesCustomBindings>(context));
-  module_system->RegisterNativeHandler(
-      "page_capture", std::make_unique<PageCaptureCustomBindings>(
-                          context, bindings_system->GetIPCMessageSender()));
-
-  // The following are native handlers that are defined in //extensions, but
-  // are only used for APIs defined in Chrome.
-  // TODO(devlin): We should clean this up. If an API is defined in Chrome,
-  // there's no reason to have its native handlers residing and being compiled
-  // in //extensions.
-  module_system->RegisterNativeHandler(
-      "lazy_background_page",
-      std::make_unique<LazyBackgroundPageNativeHandler>(context));
+#endif  // BUILDFLAG(IS_CHROMEOS)
 #endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 }
 
 void ChromeExtensionsRendererAPIProvider::AddBindingsSystemHooks(
     Dispatcher* dispatcher,
     NativeExtensionBindingsSystem* bindings_system) const {
-  // TODO(crbug.com/356905053): Move bindings supported on desktop android here.
+  // Bindings are stored in a map so the order of registration doesn't matter.
   APIBindingsSystem* bindings = bindings_system->api_system();
   bindings->RegisterHooksDelegate(
       "extension", std::make_unique<extensions::ExtensionHooksDelegate>(
                        bindings_system->messaging_service()));
-#if BUILDFLAG(ENABLE_EXTENSIONS)
+  bindings->RegisterHooksDelegate(
+      "identity", std::make_unique<extensions::IdentityHooksDelegate>());
+  bindings->RegisterHooksDelegate(
+      "tabs", std::make_unique<extensions::TabsHooksDelegate>(
+                  bindings_system->messaging_service()));
+#if BUILDFLAG(ENABLE_PLATFORM_APPS)
   bindings->RegisterHooksDelegate(
       "app", std::make_unique<extensions::AppHooksDelegate>(
                  dispatcher, bindings->request_handler(),
                  bindings_system->GetIPCMessageSender()));
-  bindings->RegisterHooksDelegate(
-      "tabs", std::make_unique<extensions::TabsHooksDelegate>(
-                  bindings_system->messaging_service()));
-  bindings->RegisterHooksDelegate(
-      "identity", std::make_unique<extensions::IdentityHooksDelegate>());
+#endif  // BUILDFLAG(ENABLE_PLATFORM_APPS)
 #if BUILDFLAG(IS_CHROMEOS)
   bindings->RegisterHooksDelegate(
       "accessibilityPrivate",
@@ -109,119 +125,138 @@ void ChromeExtensionsRendererAPIProvider::AddBindingsSystemHooks(
       "printing", std::make_unique<extensions::PrintingHooksDelegate>());
 #endif  // BUILDFLAG(USE_CUPS)
 #endif  // BUILDFLAG(IS_CHROMEOS)
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
 }
 
 void ChromeExtensionsRendererAPIProvider::PopulateSourceMap(
     ResourceBundleSourceMap* source_map) const {
-  // Custom bindings.
-  // TODO(crbug.com/356905053): Move bindings supported on desktop android here.
-  source_map->RegisterSource("notifications",
-                             IDR_NOTIFICATIONS_CUSTOM_BINDINGS_JS);
+  struct RegisterSourceData {
+    std::string_view name;
+    int resource_id;
+  };
 
-#if BUILDFLAG(ENABLE_EXTENSIONS)
-  source_map->RegisterSource("action", IDR_ACTION_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("browserAction",
-                             IDR_BROWSER_ACTION_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("declarativeContent",
-                             IDR_DECLARATIVE_CONTENT_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("desktopCapture",
-                             IDR_DESKTOP_CAPTURE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("developerPrivate",
-                             IDR_DEVELOPER_PRIVATE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("downloads", IDR_DOWNLOADS_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("gcm", IDR_GCM_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("identity", IDR_IDENTITY_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("imageWriterPrivate",
-                             IDR_IMAGE_WRITER_PRIVATE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("input.ime", IDR_INPUT_IME_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("mediaGalleries",
-                             IDR_MEDIA_GALLERIES_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("omnibox", IDR_OMNIBOX_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("pageAction", IDR_PAGE_ACTION_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("pageCapture",
-                             IDR_PAGE_CAPTURE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("syncFileSystem",
-                             IDR_SYNC_FILE_SYSTEM_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("tabCapture", IDR_TAB_CAPTURE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("tts", IDR_TTS_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("ttsEngine", IDR_TTS_ENGINE_CUSTOM_BINDINGS_JS);
+  static constexpr RegisterSourceData kSources[] = {
+      // Custom bindings.
+      {"action", IDR_RENDERER_RESOURCES_EXTENSIONS_ACTION_CUSTOM_BINDINGS_JS},
+      {"browserAction",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_BROWSER_ACTION_CUSTOM_BINDINGS_JS},
+      {"declarativeContent",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_DECLARATIVE_CONTENT_CUSTOM_BINDINGS_JS},
+      {"desktopCapture",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_DESKTOP_CAPTURE_CUSTOM_BINDINGS_JS},
+      {"developerPrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_DEVELOPER_PRIVATE_CUSTOM_BINDINGS_JS},
+      {"downloads",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_DOWNLOADS_CUSTOM_BINDINGS_JS},
+      {"gcm", IDR_RENDERER_RESOURCES_EXTENSIONS_GCM_CUSTOM_BINDINGS_JS},
+      {"identity",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_IDENTITY_CUSTOM_BINDINGS_JS},
+      {"imageWriterPrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_IMAGE_WRITER_PRIVATE_CUSTOM_BINDINGS_JS},
+      {"input.ime",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_INPUT_IME_CUSTOM_BINDINGS_JS},
+      {"mediaGalleries",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_MEDIA_GALLERIES_CUSTOM_BINDINGS_JS},
+      {"notifications",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_NOTIFICATIONS_CUSTOM_BINDINGS_JS},
+      {"omnibox", IDR_RENDERER_RESOURCES_EXTENSIONS_OMNIBOX_CUSTOM_BINDINGS_JS},
+      {"pageAction",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PAGE_ACTION_CUSTOM_BINDINGS_JS},
+      {"pageCapture",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PAGE_CAPTURE_CUSTOM_BINDINGS_JS},
+      {"syncFileSystem",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_SYNC_FILE_SYSTEM_CUSTOM_BINDINGS_JS},
+      {"tabCapture",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_TAB_CAPTURE_CUSTOM_BINDINGS_JS},
+      {"tts", IDR_RENDERER_RESOURCES_EXTENSIONS_TTS_CUSTOM_BINDINGS_JS},
+      {"ttsEngine",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_TTS_ENGINE_CUSTOM_BINDINGS_JS},
+
+#if BUILDFLAG(ENABLE_PDF_INK2)
+      {"pdfViewerPrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PDF_VIEWER_PRIVATE_CUSTOM_BINDINGS_JS},
+#endif
 
 #if BUILDFLAG(IS_CHROMEOS)
-  source_map->RegisterSource("certificateProvider",
-                             IDR_CERTIFICATE_PROVIDER_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("enterprise.platformKeys",
-                             IDR_ENTERPRISE_PLATFORM_KEYS_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("enterprise.platformKeys.CryptoKey",
-                             IDR_ENTERPRISE_PLATFORM_KEYS_CRYPTO_KEY_JS);
-  source_map->RegisterSource("enterprise.platformKeys.SubtleCrypto",
-                             IDR_ENTERPRISE_PLATFORM_KEYS_SUBTLE_CRYPTO_JS);
-  source_map->RegisterSource("enterprise.platformKeys.Token",
-                             IDR_ENTERPRISE_PLATFORM_KEYS_TOKEN_JS);
-  source_map->RegisterSource("fileBrowserHandler",
-                             IDR_FILE_BROWSER_HANDLER_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("fileSystemProvider",
-                             IDR_FILE_SYSTEM_PROVIDER_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("platformKeys",
-                             IDR_PLATFORM_KEYS_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("platformKeys.getCryptoKeyUtil",
-                             IDR_PLATFORM_KEYS_GET_CRYPTO_KEY_UTIL_JS);
-  source_map->RegisterSource("platformKeys.Key", IDR_PLATFORM_KEYS_KEY_JS);
-  source_map->RegisterSource("platformKeys.SubtleCrypto",
-                             IDR_PLATFORM_KEYS_SUBTLE_CRYPTO_JS);
-  source_map->RegisterSource("platformKeys.utils", IDR_PLATFORM_KEYS_UTILS_JS);
+      {"certificateProvider",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_CERTIFICATE_PROVIDER_CUSTOM_BINDINGS_JS},
+      {"enterprise.platformKeys",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_ENTERPRISE_PLATFORM_KEYS_CUSTOM_BINDINGS_JS},
+      {"enterprise.platformKeys.CryptoKey",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_ENTERPRISE_PLATFORM_KEYS_CRYPTO_KEY_JS},
+      {"enterprise.platformKeys.SubtleCrypto",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_ENTERPRISE_PLATFORM_KEYS_SUBTLE_CRYPTO_JS},
+      {"enterprise.platformKeys.Token",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_ENTERPRISE_PLATFORM_KEYS_TOKEN_JS},
+      {"fileBrowserHandler",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_FILE_BROWSER_HANDLER_CUSTOM_BINDINGS_JS},
+      {"fileSystemProvider",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_FILE_SYSTEM_PROVIDER_CUSTOM_BINDINGS_JS},
+      {"platformKeys",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PLATFORM_KEYS_CUSTOM_BINDINGS_JS},
+      {"platformKeys.getCryptoKeyUtil",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PLATFORM_KEYS_GET_CRYPTO_KEY_UTIL_JS},
+      {"platformKeys.Key",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PLATFORM_KEYS_KEY_JS},
+      {"platformKeys.SubtleCrypto",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PLATFORM_KEYS_SUBTLE_CRYPTO_JS},
+      {"platformKeys.utils",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_PLATFORM_KEYS_UTILS_JS},
 
-  // Remote Apps.
-  source_map->RegisterSource("chromeos.remote_apps.mojom-lite",
-                             IDR_REMOTE_APPS_MOJOM_LITE_JS);
-  source_map->RegisterSource("chromeos.remote_apps",
-                             IDR_REMOTE_APPS_BINDINGS_JS);
-  source_map->RegisterSource("url/mojom/url.mojom-lite",
-                             IDR_MOJO_URL_MOJOM_LITE_JS);
+      // Remote Apps.
+      {"chromeos.remote_apps.mojom-lite",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_COMPONENTS_REMOTE_APPS_MOJOM_REMOTE_APPS_MOJOM_LITE_JS},
+      {"chromeos.remote_apps",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_REMOTE_APPS_REMOTE_APPS_BINDINGS_JS},
+      {"url/mojom/url.mojom-lite",
+       IDR_RENDERER_RESOURCES_MOJO_URL_MOJOM_URL_MOJOM_LITE_JS},
 
-  source_map->RegisterSource("fileManagerPrivate",
-                             IDR_FILE_MANAGER_PRIVATE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("terminalPrivate",
-                             IDR_TERMINAL_PRIVATE_CUSTOM_BINDINGS_JS);
+      {"fileManagerPrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_FILE_MANAGER_PRIVATE_CUSTOM_BINDINGS_JS},
+      {"terminalPrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_TERMINAL_PRIVATE_CUSTOM_BINDINGS_JS},
 
-  // IME service on Chrome OS.
-  source_map->RegisterSource("ash.ime.mojom.ime_service.mojom",
-                             IDR_IME_SERVICE_MOJOM_JS);
-  source_map->RegisterSource("ash.ime.mojom.input_engine.mojom",
-                             IDR_IME_SERVICE_INPUT_ENGINE_MOJOM_JS);
-  source_map->RegisterSource("ash.ime.mojom.input_method.mojom",
-                             IDR_IME_SERVICE_INPUT_METHOD_MOJOM_JS);
-  source_map->RegisterSource("ash.ime.mojom.input_method_host.mojom",
-                             IDR_IME_SERVICE_INPUT_METHOD_HOST_MOJOM_JS);
-  source_map->RegisterSource("chromeos.ime.service",
-                             IDR_IME_SERVICE_BINDINGS_JS);
+      // IME service on Chrome OS.
+      {"ash.ime.mojom.ime_service.mojom",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_ASH_SERVICES_IME_PUBLIC_MOJOM_IME_SERVICE_MOJOM_JS},
+      {"ash.ime.mojom.input_engine.mojom",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_ASH_SERVICES_IME_PUBLIC_MOJOM_INPUT_ENGINE_MOJOM_JS},
+      {"ash.ime.mojom.input_method.mojom",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_ASH_SERVICES_IME_PUBLIC_MOJOM_INPUT_METHOD_MOJOM_JS},
+      {"ash.ime.mojom.input_method_host.mojom",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_ASH_SERVICES_IME_PUBLIC_MOJOM_INPUT_METHOD_HOST_MOJOM_JS},
+      {"chromeos.ime.service",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_CHROMEOS_IME_SERVICE_BINDINGS_JS},
 
-  source_map->RegisterSource("chromeos.tts.mojom.google_tts_stream.mojom",
-                             IDR_GOOGLE_TTS_STREAM_MOJOM_JS);
-  source_map->RegisterSource("chromeos.tts.google_stream",
-                             IDR_GOOGLE_TTS_STREAM_BINDINGS_JS);
+      {"chromeos.tts.mojom.google_tts_stream.mojom",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_SERVICES_TTS_PUBLIC_MOJOM_TTS_SERVICE_MOJOM_JS},
+      {"chromeos.tts.google_stream",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_CHROMEOS_GOOGLE_TTS_STREAM_BINDINGS_JS},
 
-  source_map->RegisterSource("ash.enhanced_network_tts.mojom-lite",
-                             IDR_ENHANCED_NETWORK_TTS_MOJOM_LITE_JS);
-  source_map->RegisterSource("ash.enhanced_network_tts",
-                             IDR_ENHANCED_NETWORK_TTS_BINDINGS_JS);
+      {"ash.enhanced_network_tts.mojom-lite",
+       IDR_RENDERER_RESOURCES_MOJO_CHROMEOS_ASH_COMPONENTS_ENHANCED_NETWORK_TTS_MOJOM_ENHANCED_NETWORK_TTS_MOJOM_LITE_JS},
+      {"ash.enhanced_network_tts",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_ENHANCED_NETWORK_TTS_ENHANCED_NETWORK_TTS_CUSTOM_BINDINGS_JS},
 #endif  // BUILDFLAG(IS_CHROMEOS)
 
-  source_map->RegisterSource(
-      "webrtcDesktopCapturePrivate",
-      IDR_WEBRTC_DESKTOP_CAPTURE_PRIVATE_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("webrtcLoggingPrivate",
-                             IDR_WEBRTC_LOGGING_PRIVATE_CUSTOM_BINDINGS_JS);
+      {"webrtcDesktopCapturePrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_WEBRTC_DESKTOP_CAPTURE_PRIVATE_CUSTOM_BINDINGS_JS},
+      {"webrtcLoggingPrivate",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_WEBRTC_LOGGING_PRIVATE_CUSTOM_BINDINGS_JS},
 
-  // Platform app sources that are not API-specific..
-  source_map->RegisterSource("chromeWebViewContextMenusApiMethods",
-                             IDR_CHROME_WEB_VIEW_CONTEXT_MENUS_API_METHODS_JS);
-  source_map->RegisterSource("chromeWebViewElement",
-                             IDR_CHROME_WEB_VIEW_ELEMENT_JS);
-  source_map->RegisterSource("chromeWebViewInternal",
-                             IDR_CHROME_WEB_VIEW_INTERNAL_CUSTOM_BINDINGS_JS);
-  source_map->RegisterSource("chromeWebView", IDR_CHROME_WEB_VIEW_JS);
-#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+      // Platform app sources that are not API-specific..
+      {"chromeWebViewContextMenusApiMethods",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_WEB_VIEW_CHROME_WEB_VIEW_CONTEXT_MENUS_API_METHODS_JS},
+      {"chromeWebViewElement",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_WEB_VIEW_CHROME_WEB_VIEW_ELEMENT_JS},
+      {"chromeWebViewInternal",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_WEB_VIEW_CHROME_WEB_VIEW_INTERNAL_CUSTOM_BINDINGS_JS},
+      {"chromeWebView",
+       IDR_RENDERER_RESOURCES_EXTENSIONS_WEB_VIEW_CHROME_WEB_VIEW_JS},
+  };
+
+  for (const auto& source : kSources) {
+    source_map->RegisterSource(source.name, source.resource_id);
+  }
 }
 
 void ChromeExtensionsRendererAPIProvider::EnableCustomElementAllowlist() const {

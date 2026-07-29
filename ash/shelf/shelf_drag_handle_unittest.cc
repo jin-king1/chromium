@@ -21,7 +21,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 #include "ui/wm/core/window_util.h"
 
 namespace ash {
@@ -59,7 +59,7 @@ class DragHandleContextualNudgeTest : public ShelfLayoutManagerTestBase {
   }
   void TearDown() override {
     contextual_tooltip::ClearClockOverrideForTesting();
-    AshTestBase::TearDown();
+    ShelfLayoutManagerTestBase::TearDown();
   }
 
   base::SimpleTestClock test_clock_;
@@ -156,8 +156,8 @@ TEST_F(DragHandleContextualNudgeTest,
   EXPECT_EQ(ShelfBackgroundType::kInApp,
             GetShelfLayoutManager()->shelf_background_type());
 
-  ui::ScopedAnimationDurationScaleMode normal_animation_duration(
-      ui::ScopedAnimationDurationScaleMode::SLOW_DURATION);
+  gfx::ScopedAnimationDurationScaleMode normal_animation_duration(
+      gfx::ScopedAnimationDurationScaleMode::SLOW_DURATION);
   GetShelfWidget()->GetDragHandle()->MaybeShowDragHandleNudge();
   EXPECT_TRUE(GetShelfWidget()->GetDragHandle()->GetVisible());
   EXPECT_TRUE(
@@ -823,7 +823,7 @@ TEST_F(DragHandleContextualNudgeTest,
        DragHandleTapDoesNotShowNudgeForSplitScreen) {
   TabletModeControllerTestApi().EnterTabletMode();
   std::unique_ptr<aura::Window> window =
-      AshTestBase::CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   wm::ActivateWindow(window.get());
 
   ShelfWidget* const shelf_widget = GetShelfWidget();
@@ -848,7 +848,7 @@ TEST_F(DragHandleContextualNudgeTest, DragHandleNudgeHiddenOnSplitScreen) {
   TabletModeControllerTestApi().EnterTabletMode();
 
   std::unique_ptr<aura::Window> window =
-      AshTestBase::CreateTestWindow(gfx::Rect(0, 0, 400, 400));
+      CreateWindowWithAppType(chromeos::AppType::NON_APP, {400, 400});
   wm::ActivateWindow(window.get());
 
   ShelfWidget* const shelf_widget = GetShelfWidget();

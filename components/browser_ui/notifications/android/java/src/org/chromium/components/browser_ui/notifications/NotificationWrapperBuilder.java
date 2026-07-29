@@ -21,6 +21,10 @@ import org.chromium.build.annotations.Nullable;
 /** Abstraction over Notification.Builder and NotificationCompat.Builder interfaces. */
 @NullMarked
 public interface NotificationWrapperBuilder {
+    // Android strips images > ~5mb (crbug.com/390677997), so resize bitmaps to be smaller than
+    // this to reduce memory and to avoid them from getting stripped.
+    int BIG_PICTURE_BITMAP_MAX_SIZE_IN_KB = 4500;
+
     NotificationWrapperBuilder setAutoCancel(boolean autoCancel);
 
     @Deprecated
@@ -99,7 +103,7 @@ public interface NotificationWrapperBuilder {
 
     NotificationWrapperBuilder setVibrate(long[] vibratePattern);
 
-    NotificationWrapperBuilder setSound(Uri sound);
+    NotificationWrapperBuilder setSound(@Nullable Uri sound);
 
     NotificationWrapperBuilder setSilent(boolean silent);
 

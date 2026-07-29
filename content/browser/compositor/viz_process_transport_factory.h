@@ -14,8 +14,6 @@
 #include "content/browser/compositor/image_transport_factory.h"
 #include "gpu/command_buffer/common/context_result.h"
 #include "gpu/ipc/client/gpu_channel_host.h"
-#include "services/viz/privileged/mojom/compositing/frame_sink_manager.mojom.h"
-#include "services/viz/public/mojom/compositing/compositor_frame_sink.mojom.h"
 #include "ui/compositor/compositor.h"
 
 namespace base {
@@ -34,11 +32,14 @@ namespace viz {
 class CompositingModeReporterImpl;
 class HostDisplayClient;
 class RasterContextProvider;
-}
-
-namespace viz {
 class ContextProviderCommandBuffer;
 }
+
+#if BUILDFLAG(IS_MAC)
+namespace ui {
+class DisplayLinkMacMojo;
+}
+#endif
 
 namespace content {
 
@@ -68,7 +69,6 @@ class VizProcessTransportFactory : public ui::ContextFactory,
   SharedMainThreadRasterContextProvider() override;
 
   void RemoveCompositor(ui::Compositor* compositor) override;
-  gpu::GpuMemoryBufferManager* GetGpuMemoryBufferManager() override;
   cc::TaskGraphRunner* GetTaskGraphRunner() override;
   viz::FrameSinkId AllocateFrameSinkId() override;
   viz::SubtreeCaptureId AllocateSubtreeCaptureId() override;
@@ -118,6 +118,17 @@ class VizProcessTransportFactory : public ui::ContextFactory,
   gpu::ContextResult TryCreateContextsForGpuCompositing(
       scoped_refptr<gpu::GpuChannelHost> gpu_channel_host);
 
+#if BUILDFLAG(IS_MAC)
+  void CreateDisplayLinkMacMojoIfNeeded(
+      base::WeakPtr<ui::Compositor> compositor);
+
+  // Whether a delayedTask that creates DisplayLinkMacMojo and launches
+  // VSyncThread has been posted.
+  bool vsync_thread_task_posted_ = false;
+
+  std::unique_ptr<ui::DisplayLinkMacMojo> display_link_mac_mojo_{nullptr};
+#endif
+
   const raw_ptr<gpu::GpuChannelEstablishFactory> gpu_channel_establish_factory_;
 
   // Controls the compositing mode based on what mode the display compositors
@@ -126,8 +137,7 @@ class VizProcessTransportFactory : public ui::ContextFactory,
       compositing_mode_reporter_;
 
   // ContextProvider used on worker threads for rasterization.
-  scoped_refptr<cc::RasterContextProviderWrapper>
-      worker_context_provider_wrapper_;
+  scoped_refptr<viz::RasterContextProvider> worker_context_provider_;
 
   // ContextProvider used on the main thread. Shared by ui::Compositors.
   scoped_refptr<viz::ContextProviderCommandBuffer> main_context_provider_;

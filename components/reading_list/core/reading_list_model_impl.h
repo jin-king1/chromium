@@ -18,7 +18,7 @@
 #include "components/reading_list/core/reading_list_model_storage.h"
 #include "components/reading_list/core/reading_list_sync_bridge.h"
 #include "components/sync/base/storage_type.h"
-#include "google_apis/gaia/core_account_id.h"
+#include "google_apis/gaia/gaia_id.h"
 
 namespace base {
 class Clock;
@@ -64,14 +64,15 @@ class ReadingListModelImpl : public ReadingListModel {
   scoped_refptr<const ReadingListEntry> GetEntryByURL(
       const GURL& gurl) const override;
   bool IsUrlSupported(const GURL& url) override;
-  CoreAccountId GetAccountWhereEntryIsSavedTo(const GURL& url) override;
+  GaiaId GetAccountWhereEntryIsSavedTo(const GURL& url) override;
   bool NeedsExplicitUploadToSyncServer(const GURL& url) const override;
   void MarkAllForUploadToSyncServerIfNeeded() override;
   const ReadingListEntry& AddOrReplaceEntry(
       const GURL& url,
       const std::string& title,
       reading_list::EntrySource source,
-      base::TimeDelta estimated_read_time) override;
+      std::optional<base::TimeDelta> estimated_read_time,
+      std::optional<base::Time> creation_time) override;
   void RemoveEntryByURL(const GURL& url,
                         const base::Location& location) override;
   void SetReadStatusIfExists(const GURL& url, bool read) override;
@@ -100,7 +101,8 @@ class ReadingListModelImpl : public ReadingListModel {
   // API specifically for changes received via sync.
   ReadingListEntry* SyncMergeEntry(scoped_refptr<ReadingListEntry> entry);
   void SyncRemoveEntry(const GURL& url);
-  void SyncDeleteAllEntriesAndSyncMetadata();
+  void SyncDeleteAllEntriesAndSyncMetadata(
+      std::unique_ptr<syncer::MetadataChangeList> metadata_change_list);
 
   class ScopedReadingListBatchUpdateImpl : public ScopedReadingListBatchUpdate,
                                            public ReadingListModelObserver {
@@ -203,7 +205,12 @@ class ReadingListModelImpl : public ReadingListModel {
 
   ReadingListSyncBridge sync_bridge_;
 
-  base::ObserverList<ReadingListModelObserver>::Unchecked observers_;
+  // TODO(crbug.com/484371187): Investigate if reentrancy can be removed.
+  base::ObserverList<
+      ReadingListModelObserver,
+      /*check_empty=*/false,
+      base::ObserverListReentrancyPolicy::kAllowReentrancyUntriaged>::Unchecked
+      observers_;
 
   bool loaded_ = false;
 

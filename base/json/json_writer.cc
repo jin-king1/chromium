@@ -9,11 +9,13 @@
 #include <cmath>
 #include <limits>
 #include <string_view>
+#include <variant>
 
 #include "base/json/string_escape.h"
 #include "base/logging.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_number_conversions.h"
+#include "base/strings/to_string.h"
 #include "base/values.h"
 #include "build/build_config.h"
 
@@ -65,13 +67,13 @@ JSONWriter::JSONWriter(int options, std::string* json, size_t max_depth)
   CHECK_LE(max_depth, internal::kAbsoluteMaxDepth);
 }
 
-bool JSONWriter::BuildJSONString(absl::monostate node, size_t depth) {
+bool JSONWriter::BuildJSONString(std::monostate node, size_t depth) {
   json_string_->append("null");
   return true;
 }
 
 bool JSONWriter::BuildJSONString(bool node, size_t depth) {
-  json_string_->append(node ? "true" : "false");
+  json_string_->append(base::ToString(node));
   return true;
 }
 
@@ -118,7 +120,7 @@ bool JSONWriter::BuildJSONString(const Value::BlobStorage& node, size_t depth) {
   return omit_binary_values_;
 }
 
-bool JSONWriter::BuildJSONString(const Value::Dict& node, size_t depth) {
+bool JSONWriter::BuildJSONString(const DictValue& node, size_t depth) {
   internal::StackMarker depth_check(max_depth_, &stack_depth_);
 
   if (depth_check.IsTooDeep()) {
@@ -172,7 +174,7 @@ bool JSONWriter::BuildJSONString(const Value::Dict& node, size_t depth) {
   return result;
 }
 
-bool JSONWriter::BuildJSONString(const Value::List& node, size_t depth) {
+bool JSONWriter::BuildJSONString(const ListValue& node, size_t depth) {
   internal::StackMarker depth_check(max_depth_, &stack_depth_);
 
   if (depth_check.IsTooDeep()) {

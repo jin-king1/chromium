@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_PERMISSIONS_SYSTEM_MOCK_PLATFORM_HANDLE_H_
 #define CHROME_BROWSER_PERMISSIONS_SYSTEM_MOCK_PLATFORM_HANDLE_H_
 
+#include "base/functional/callback.h"
 #include "chrome/browser/permissions/system/platform_handle.h"
 #include "testing/gmock/include/gmock/gmock.h"
 
@@ -20,6 +21,11 @@ class MockPlatformHandle : public PlatformHandle {
   MOCK_METHOD(bool, CanPrompt, (ContentSettingsType type), (override));
   MOCK_METHOD(bool, IsDenied, (ContentSettingsType type), (override));
   MOCK_METHOD(bool, IsAllowed, (ContentSettingsType type), (override));
+  MOCK_METHOD(void,
+              IsDeniedFresh,
+              (ContentSettingsType type,
+               SystemPermissionDeniedCallback callback),
+              (override));
   MOCK_METHOD(void,
               OpenSystemSettings,
               (content::WebContents * web_contents, ContentSettingsType type),

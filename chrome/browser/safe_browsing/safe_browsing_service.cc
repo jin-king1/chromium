@@ -22,10 +22,9 @@
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "base/trace_event/trace_event.h"
-#include "build/branding_buildflags.h"
 #include "build/build_config.h"
-#include "chrome/browser/browser_features.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/net/system_network_context_manager.h"
 #include "chrome/browser/profiles/profile.h"
@@ -44,10 +43,16 @@
 #include "chrome/browser/safe_browsing/safe_browsing_metrics_collector_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_navigation_observer_manager_factory.h"
 #include "chrome/browser/safe_browsing/safe_browsing_pref_change_handler.h"
+#include "chrome/browser/safe_browsing/security_settings_bundle_pref_change_handler.h"
 #include "chrome/browser/safe_browsing/services_delegate.h"
+#include "chrome/browser/site_protection/site_familiarity_utils.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/common/chrome_switches.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
+#include "components/content_settings/core/browser/host_content_settings_map.h"
+#include "components/content_settings/core/common/features.h"
+#include "components/content_settings/core/common/pref_names.h"
 #include "components/download/public/common/download_item.h"
 #include "components/prefs/pref_change_registrar.h"
 #include "components/prefs/pref_service.h"
@@ -55,7 +60,7 @@
 #include "components/safe_browsing/content/browser/safe_browsing_navigation_observer_manager.h"
 #include "components/safe_browsing/content/browser/triggers/trigger_manager.h"
 #include "components/safe_browsing/content/browser/ui_manager.h"
-#include "components/safe_browsing/content/browser/web_ui/safe_browsing_ui.h"
+#include "components/safe_browsing/content/browser/web_ui/web_ui_content_info_singleton.h"
 #include "components/safe_browsing/content/common/file_type_policies.h"
 #include "components/safe_browsing/core/browser/db/database_manager.h"
 #include "components/safe_browsing/core/browser/ping_manager.h"
@@ -74,6 +79,11 @@
 #include "services/network/public/cpp/cross_thread_pending_shared_url_loader_factory.h"
 #include "services/network/public/cpp/features.h"
 #include "services/preferences/public/mojom/tracked_preference_validation_delegate.mojom.h"
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_MAC)
+#include "chrome/browser/safe_browsing/security_settings_bundle_toast_helper.h"
+#endif
 
 #if BUILDFLAG(IS_WIN)
 #include "chrome/install_static/install_util.h"
@@ -95,10 +105,6 @@
 #if BUILDFLAG(FULL_SAFE_BROWSING)
 #include "chrome/browser/safe_browsing/hash_realtime_service_factory.h"
 #include "chrome/browser/safe_browsing/incident_reporting/binary_integrity_analyzer.h"
-#endif
-
-#if BUILDFLAG(IS_CHROMEOS_ASH)
-#include "chromeos/ash/components/browser_context_helper/browser_context_types.h"
 #endif
 
 using content::BrowserThread;
@@ -159,21 +165,133 @@ std::unique_ptr<ClientSafeBrowsingReportRequest> CreateDownloadReport(
 }
 #endif
 
-void OnGotCookies(
-    std::unique_ptr<mojo::Remote<network::mojom::CookieManager>> remote,
-    const std::vector<net::CanonicalCookie>& cookies) {
-  base::UmaHistogramBoolean("SafeBrowsing.HasCookieAtStartup2",
-                            !cookies.empty());
-  if (!cookies.empty()) {
-    base::TimeDelta age = base::Time::Now() - cookies.front().CreationDate();
-    // Cookies can be up to 6 months old. Using millisecond precision over such
-    // a long time period overflows numeric limits. Instead, use a counts
-    // histogram and lower granularity.
-    base::UmaHistogramCounts10000("SafeBrowsing.CookieAgeHours2",
-                                  age.InHours());
+void TriggerSecuritySettingsBundleToastIfNeeded(
+    base::WeakPtr<Profile> profile) {
+  if (!profile) {
+    return;
   }
+
+#if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) || \
+    BUILDFLAG(IS_MAC)
+  if (GetSecurityBundleSetting(*profile->GetPrefs()) ==
+      SecuritySettingsBundleSetting::ENHANCED) {
+    SecuritySettingsBundleToastHelper::GetForProfile(profile.get())
+        ->TriggerIfNeeded();
+  }
+#endif  // BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_WIN) ||
+        // BUILDFLAG(IS_MAC)
 }
 
+// Helper function to determine if any Javascript Optimizer settings are
+// managed by a policy.
+// TODO(crbug.com/491533053): Find a better place to define this helper
+// function.
+bool IsJavascriptOptimizerPolicyManaged(const PrefService& prefs) {
+  return prefs.IsManagedPreference(
+             prefs::kManagedDefaultJavaScriptOptimizerSetting) ||
+         prefs.IsManagedPreference(
+             prefs::kManagedJavaScriptOptimizerAllowedForSites) ||
+         prefs.IsManagedPreference(
+             prefs::kManagedJavaScriptOptimizerBlockedForSites);
+}
+
+// Migrate enhanced-safe-browsing user to enhanced-security bundle if needed.
+void MigrateUserToEnhancedSecurityBundleIfNeeded(
+    base::WeakPtr<Profile> profile) {
+  if (!profile) {
+    return;
+  }
+
+  // Do not perform migration if the any bundled settings are managed by a
+  // policy.
+  PrefService* prefs = profile->GetPrefs();
+
+  if (IsSafeBrowsingPolicyManaged(*prefs) ||
+      IsJavascriptOptimizerPolicyManaged(*prefs)) {
+    return;
+  }
+
+  if (!base::FeatureList::IsEnabled(kMigrateEnhancedSbUserToEnhancedBundle)) {
+    return;
+  }
+
+  // If we have attempted to migrate the user previously, don't try again. This
+  // is a one-time migration. That's why this check needs to happen before
+  // attempting the checks below.
+  if (prefs->GetBoolean(
+          ::prefs::kBundledSettingsCheckedMigrateUserToEnhancedBundle)) {
+    return;
+  }
+  prefs->SetBoolean(::prefs::kBundledSettingsCheckedMigrateUserToEnhancedBundle,
+                    true);
+
+  // Don't migrate if the user is already using the enhanced bundle.
+  if (GetSecurityBundleSetting(*prefs) ==
+      SecuritySettingsBundleSetting::ENHANCED) {
+    return;
+  }
+
+  // Only migrate enhanced safe-browsing users.
+  if (GetSafeBrowsingState(*prefs) != SafeBrowsingState::ENHANCED_PROTECTION) {
+    return;
+  }
+
+  SetSecurityBundleSetting(*prefs, SecuritySettingsBundleSetting::ENHANCED);
+
+  // TODO(crbug.com/491533053): Fix the circular dependency for generated
+  // preferences.
+  if (site_protection::CanEnableBlockingJavascriptOptimizersForUnfamiliarSites(
+          profile.get()) &&
+      site_protection::ComputeDefaultJavascriptOptimizerSetting(
+          profile.get()) ==
+          content_settings::JavascriptOptimizerSetting::kAllowed) {
+    HostContentSettingsMapFactory::GetForProfile(profile.get())
+        ->SetDefaultContentSetting(ContentSettingsType::JAVASCRIPT_OPTIMIZER,
+                                   CONTENT_SETTING_ALLOW);
+    prefs->SetBoolean(prefs::kJavascriptOptimizerBlockedForUnfamiliarSites,
+                      true);
+  }
+
+  prefs->SetInteger(
+      prefs::kSecuritySettingsBundleMigrationToastState,
+      static_cast<int>(SecuritySettingsBundleToastState::kPending));
+}
+
+// Performs a one-time cleanup for the legacy,
+// kMigrateToBlockV8OptimizerOnUnfamiliarSites migration.
+//
+// Previously, the migration logic would explicitly set the user's
+// js-opt preference to
+// `JavascriptOptimizerSetting::kBlockedForUnfamiliarSites`. Now, the
+// setting is dynamically determined in
+// `site_protection::ComputeDefaultJavascriptOptimizerSetting`.
+//
+// This function clears the preference backing
+// kBlockedForUnfamiliarSites for users who were migrated by the legacy
+// functionality.
+void MigrateUserToAutomaticJavaScriptBlocking(base::WeakPtr<Profile> profile) {
+  if (!profile) {
+    return;
+  }
+
+  PrefService* pref_service = profile->GetPrefs();
+
+  if (pref_service->GetBoolean(
+          prefs::kMigratedToJavascriptOptimizerBlockedForUnfamiliarSites)) {
+    if (pref_service->GetBoolean(
+            prefs::kJavascriptOptimizerBlockedForUnfamiliarSites)) {
+      // We can't differentiate whether the preference was set by the legacy
+      // migration or by the user themselves without additional state, so
+      // assume it was the migration and clear it to allow the new
+      // declarative implementation to take effect.
+      pref_service->ClearPref(
+          prefs::kJavascriptOptimizerBlockedForUnfamiliarSites);
+    }
+    // Clear the migration marker so this cleanup runs only once.
+    pref_service->ClearPref(
+        prefs::kMigratedToJavascriptOptimizerBlockedForUnfamiliarSites);
+  }
+}
 }  // namespace
 
 // static
@@ -222,7 +340,7 @@ void SafeBrowsingServiceImpl::Initialize() {
   bool result = base::PathService::Get(chrome::DIR_USER_DATA, &user_data_dir);
   DCHECK(result);
 
-  WebUIInfoSingleton::GetInstance()->set_safe_browsing_service(this);
+  WebUIContentInfoSingleton::GetInstance()->set_safe_browsing_service(this);
 
   ui_manager_ = CreateUIManager();
 
@@ -259,12 +377,13 @@ void SafeBrowsingServiceImpl::ShutDown() {
   user_population_prefs_.clear();
   min_allowed_time_for_referrer_chains_.clear();
   pref_change_handlers_map_.clear();
+  bundled_settings_pref_change_handlers_map_.clear();
 
   Stop(true);
 
   services_delegate_->ShutdownServices();
 
-  WebUIInfoSingleton::GetInstance()->set_safe_browsing_service(nullptr);
+  WebUIContentInfoSingleton::GetInstance()->set_safe_browsing_service(nullptr);
 
   proxy_config_monitor_.reset();
 }
@@ -378,7 +497,7 @@ SafeBrowsingUIManager* SafeBrowsingServiceImpl::CreateUIManager() {
   return new SafeBrowsingUIManager(
       std::make_unique<ChromeSafeBrowsingUIManagerDelegate>(),
       std::make_unique<ChromeSafeBrowsingBlockingPageFactory>(),
-      GURL(chrome::kChromeUINewTabURL));
+      chrome::ChromeUINewTabURLAsGURL());
 }
 
 void SafeBrowsingServiceImpl::RegisterAllDelayedAnalysis() {
@@ -458,6 +577,10 @@ void SafeBrowsingServiceImpl::OnProfileAdded(Profile* profile) {
                  base::BindRepeating(
                      &SafeBrowsingServiceImpl::EnhancedProtectionPrefChange,
                      base::Unretained(this), profile));
+  registrar->Add(prefs::kSecuritySettingsBundle,
+                 base::BindRepeating(
+                     &SafeBrowsingServiceImpl::SecuritySettingsBundlePrefChange,
+                     base::Unretained(this), profile));
   registrar->Add(
       unified_consent::prefs::kUrlKeyedAnonymizedDataCollectionEnabled,
       base::BindRepeating(
@@ -497,11 +620,15 @@ void SafeBrowsingServiceImpl::OnProfileAdded(Profile* profile) {
   UMA_HISTOGRAM_BOOLEAN("SafeBrowsing.Pref.Enhanced",
                         pref_service->GetBoolean(prefs::kSafeBrowsingEnhanced));
 
-  // Record the current enhanced protection pref state for regular profiles only
+  // Record the current enhanced protection pref state and JS Optimizer setting
+  // for regular profiles only
   if (profiles::IsRegularUserProfile(profile)) {
     UMA_HISTOGRAM_BOOLEAN(
         "SafeBrowsing.Pref.Enhanced.RegularProfile",
         pref_service->GetBoolean(prefs::kSafeBrowsingEnhanced));
+    UMA_HISTOGRAM_ENUMERATION(
+        "SafeBrowsing.Pref.JsOptimizerSetting",
+        site_protection::ComputeDefaultJavascriptOptimizerSetting(profile));
   }
 
   // Extended Reporting metrics are handled together elsewhere.
@@ -524,14 +651,48 @@ void SafeBrowsingServiceImpl::OnProfileAdded(Profile* profile) {
   // Create pref change handler for each profile.
   pref_change_handlers_map_[profile] =
       std::make_unique<SafeBrowsingPrefChangeHandler>(profile);
+  bundled_settings_pref_change_handlers_map_[profile] =
+      std::make_unique<SecuritySettingsBundlePrefChangeHandler>(profile);
 
   SafeBrowsingMetricsCollectorFactory::GetForProfile(profile)->StartLogging();
 
   CreateServicesForProfile(profile);
 
-  RecordStartupCookieMetrics(profile);
-
   CleanupExternalAppRedirectTimestamps(*pref_service);
+
+  // Post task to isolate enhanced-security-bundle migration from other code
+  // which reads settings controlled by the bundle on startup. Migration should
+  // be viewed similarly to user changing individual settings in the bundle via
+  // chrome://settings.
+  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&MigrateUserToEnhancedSecurityBundleIfNeeded,
+                                profile->GetWeakPtr()));
+
+  // If the user was migrated to the enhanced security bundle, show the toast.
+  // This is separate from the above task in case the browser was killed after
+  // the migration occurred.
+  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&TriggerSecuritySettingsBundleToastIfNeeded,
+                                profile->GetWeakPtr()));
+
+  // Post task to isolate the automatic js-opt blocking migration from other
+  // code that may be accessing the setting. The feature should be viewed
+  // similarly to a user changing the setting through the settings UI.
+  content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&MigrateUserToAutomaticJavaScriptBlocking,
+                                profile->GetWeakPtr()));
+
+  base::OnceClosure add_profile_tasks_completed_closure_for_testing =
+      TakeAddProfileTasksCompletedClosureForTesting();  // IN-TEST
+  if (add_profile_tasks_completed_closure_for_testing) {
+    // Must be posted after the other tasks have been queued.
+    content::BrowserThread::GetTaskRunnerForThread(content::BrowserThread::UI)
+        ->PostTask(FROM_HERE,
+                   std::move(add_profile_tasks_completed_closure_for_testing));
+  }
 }
 
 void SafeBrowsingServiceImpl::OnOffTheRecordProfileCreated(
@@ -548,6 +709,7 @@ void SafeBrowsingServiceImpl::OnProfileWillBeDestroyed(Profile* profile) {
   DCHECK(pref_service);
   prefs_map_.erase(pref_service);
   pref_change_handlers_map_.erase(profile);
+  bundled_settings_pref_change_handlers_map_.erase(profile);
   user_population_prefs_.erase(pref_service);
   min_allowed_time_for_referrer_chains_.erase(profile);
 }
@@ -573,6 +735,14 @@ void SafeBrowsingServiceImpl::EnhancedProtectionPrefChange(Profile* profile) {
   }
 }
 
+void SafeBrowsingServiceImpl::SecuritySettingsBundlePrefChange(
+    Profile* profile) {
+  auto it = bundled_settings_pref_change_handlers_map_.find(profile);
+  if (it != bundled_settings_pref_change_handlers_map_.end()) {
+    it->second->MaybeShowEnhancedBundleSettingChangeNotification();
+  }
+}
+
 void SafeBrowsingServiceImpl::UpdateMinAllowedTimeForReferrerChains(
     Profile* profile) {
   bool enabled = RealTimePolicyEngine::HasPrefPermissionsToPerformFullURLLookup(
@@ -593,13 +763,14 @@ void SafeBrowsingServiceImpl::UpdateMinAllowedTimeForReferrerChains(
 
 base::Time SafeBrowsingServiceImpl::GetMinAllowedTimestampForReferrerChains(
     Profile* profile) {
-  if (!min_allowed_time_for_referrer_chains_.contains(profile) ||
-      min_allowed_time_for_referrer_chains_[profile] == std::nullopt) {
+  auto it = min_allowed_time_for_referrer_chains_.find(profile);
+  if (it == min_allowed_time_for_referrer_chains_.end() ||
+      it->second == std::nullopt) {
     // If this method gets called when the map value indicates no referrer
     // chains are allowed, return the max time.
     return base::Time::Max();
   }
-  return min_allowed_time_for_referrer_chains_[profile].value();
+  return *it->second;
 }
 
 void SafeBrowsingServiceImpl::RefreshState() {
@@ -645,11 +816,8 @@ void SafeBrowsingServiceImpl::SendDownloadReport(
                                      show_download_in_folder);
   Profile* profile = Profile::FromBrowserContext(
       content::DownloadItemUtils::GetBrowserContext(download));
-  PingManager::ReportThreatDetailsResult result =
-      ChromePingManagerFactory::GetForBrowserContext(profile)
-          ->ReportThreatDetails(std::move(report));
-  base::UmaHistogramEnumeration(
-      "SafeBrowsing.ClientSafeBrowsingReport.SendDownloadReportResult", result);
+  ChromePingManagerFactory::GetForBrowserContext(profile)->ReportThreatDetails(
+      std::move(report));
   return;
 }
 
@@ -776,26 +944,7 @@ SafeBrowsingServiceImpl::CreateNetworkContextParams() {
   return params;
 }
 
-void SafeBrowsingServiceImpl::RecordStartupCookieMetrics(Profile* profile) {
-  // Exclude system profiles.
-  if (!profile->IsRegularProfile() && !profile->IsIncognitoProfile()) {
-    return;
-  }
-  network::mojom::NetworkContext* network_context = GetNetworkContext(profile);
-  if (!network_context) {
-    return;
-  }
-  auto cookie_manager_remote =
-      std::make_unique<mojo::Remote<network::mojom::CookieManager>>();
-  network_context->GetCookieManager(
-      cookie_manager_remote->BindNewPipeAndPassReceiver());
 
-  mojo::Remote<network::mojom::CookieManager>* cookie_manager_raw =
-      cookie_manager_remote.get();
-  (*cookie_manager_raw)
-      ->GetAllCookies(
-          base::BindOnce(&OnGotCookies, std::move(cookie_manager_remote)));
-}
 
 void SafeBrowsingServiceImpl::FillReferrerChain(
     Profile* profile,
@@ -822,11 +971,12 @@ bool SafeBrowsingServiceImpl::IsURLAllowlisted(
       primary_main_frame->GetGlobalId();
   auto rfh_locator =
       security_interstitials::UnsafeResourceLocator::CreateForRenderFrameToken(
-          primary_main_frame_id.child_id,
+          primary_main_frame_id.child_id.value(),
           primary_main_frame->GetFrameToken().value());
   return ui_manager_->IsAllowlisted(url, rfh_locator,
                                     /*navigation_id=*/std::nullopt,
-                                    SBThreatType::SB_THREAT_TYPE_URL_PHISHING);
+                                    SBThreatType::SB_THREAT_TYPE_URL_PHISHING,
+                                    safe_browsing::ThreatSource::UNKNOWN);
 }
 
 void SafeBrowsingServiceImpl::MaybeSendExternalAppRedirectReport(

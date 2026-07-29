@@ -51,7 +51,6 @@ action_foreach("validation_test_data_list") {
 mojom("test_deserializer_interface") {
   testonly = true
   generate_java = true
-  generate_rust = true
   sources = [ "deserializer.test-mojom" ]
   js_generate_struct_deserializers = true
 }
@@ -59,18 +58,17 @@ mojom("test_deserializer_interface") {
 mojom("test_interfaces") {
   testonly = true
   generate_java = true
-  generate_rust = true
   webui_module_path = "/"
   generate_legacy_js_bindings = true
 
   sources = [
-    "equals_test_structs.test-mojom",
     "math_calculator.test-mojom",
     "no_module.test-mojom",
     "nullable_value_types.test-mojom",
     "ping_service.test-mojom",
     "rect.test-mojom",
     "regression_tests.test-mojom",
+    "result.test-mojom",
     "sample_factory.test-mojom",
     "sample_interfaces.test-mojom",
     "sample_service.test-mojom",
@@ -209,7 +207,7 @@ mojom("test_interfaces_for_containers_of_optionals") {
       types = [
         {
           mojom =
-              "mojo.test.containers_of_nullable_types.mojom.TypemappedStruct"
+              "mojo.test.containers_of_nullable_types.mojom.TypemappedContainer"
           cpp = "::mojo::test::containers_of_nullable_types::NativeStruct"
         },
       ]
@@ -237,14 +235,12 @@ mojom("test_export") {
   export_class_attribute = "MOJO_TEST_EXPORT"
   export_define = "MOJO_TEST_IMPLEMENTATION=1"
   export_header = "mojo/public/cpp/bindings/tests/mojo_test_export.h"
+  visibility = [ ":test_export_component" ]
   if (use_blink) {
     export_class_attribute_blink = "MOJO_TEST_BLINK_EXPORT"
     export_define_blink = "MOJO_TEST_BLINK_IMPLEMENTATION=1"
     export_header_blink =
         "mojo/public/cpp/bindings/tests/mojo_test_blink_export.h"
-  }
-  visibility = [ ":test_export_component" ]
-  if (use_blink) {
     visibility_blink = [ ":test_export_blink_component" ]
   }
 }
@@ -286,7 +282,6 @@ mojom("test_export2") {
 mojom("test_mojom_import") {
   testonly = true
   generate_java = true
-  generate_rust = true
   webui_module_path = "/"
   generate_legacy_js_bindings = true
   sources = [ "sample_import.test-mojom" ]
@@ -295,21 +290,18 @@ mojom("test_mojom_import") {
 mojom("test_mojom_import_wrapper") {
   testonly = true
   generate_java = true
-  generate_rust = true
   public_deps = [ ":test_mojom_import" ]
 }
 
 mojom("test_mojom_import_wrapper_wrapper") {
   testonly = true
   generate_java = true
-  generate_rust = true
   public_deps = [ ":test_mojom_import_wrapper" ]
 }
 
 mojom("test_mojom_import2") {
   testonly = true
   generate_java = true
-  generate_rust = true
   webui_module_path = "/"
   generate_legacy_js_bindings = true
   sources = [ "sample_import2.test-mojom" ]
@@ -417,7 +409,6 @@ mojom("test_no_sources") {
 mojom("echo") {
   testonly = true
   generate_java = true
-  generate_rust = true
   sources = [
     "echo.test-mojom",
     "echo_import/echo_import.test-mojom",

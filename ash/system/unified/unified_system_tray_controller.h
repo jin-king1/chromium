@@ -11,7 +11,7 @@
 #include "ash/system/time/calendar_metrics.h"
 #include "ash/system/unified/quick_settings_view.h"
 #include "ash/system/unified/unified_system_tray_model.h"
-#include "base/memory/safety_checks.h"
+#include "base/memory/advanced_memory_safety_checks.h"
 #include "base/memory/scoped_refptr.h"
 #include "components/global_media_controls/public/constants.h"
 
@@ -27,7 +27,8 @@ class UnifiedSystemTrayModel;
 
 // Controller class of `QuickSettingsView`. Handles events of the view.
 class ASH_EXPORT UnifiedSystemTrayController
-    : public UnifiedVolumeSliderController::Delegate {
+    : public UnifiedVolumeSliderController::Delegate,
+      public chromeos::PowerManagerClient::Observer {
   // Do not remove this macro!
   // The macro is maintained by the memory safety team.
   ADVANCED_MEMORY_SAFETY_CHECKS();
@@ -169,6 +170,7 @@ class ASH_EXPORT UnifiedSystemTrayController
   }
 
   void ShutDownDetailedViewController();
+  void PrepareBubbleDestroy();
 
  private:
   friend class AccessibilityFeaturePodControllerTest;
@@ -194,7 +196,7 @@ class ASH_EXPORT UnifiedSystemTrayController
   scoped_refptr<UnifiedSystemTrayModel> model_;
 
   // Unowned. Owned by Views hierarchy.
-  raw_ptr<QuickSettingsView, DanglingUntriaged> quick_settings_view_ = nullptr;
+  raw_ptr<QuickSettingsView> quick_settings_view_ = nullptr;
 
   // Unowned.
   raw_ptr<UnifiedSystemTrayBubble> bubble_ = nullptr;
@@ -213,12 +215,12 @@ class ASH_EXPORT UnifiedSystemTrayController
 
   // Controller of volume slider. Owned.
   std::unique_ptr<UnifiedVolumeSliderController> volume_slider_controller_;
-  raw_ptr<views::View, DanglingUntriaged> unified_volume_view_ = nullptr;
+  raw_ptr<views::View> unified_volume_view_ = nullptr;
 
   // Controller of brightness slider. Owned.
   std::unique_ptr<UnifiedBrightnessSliderController>
       brightness_slider_controller_;
-  raw_ptr<views::View, DanglingUntriaged> unified_brightness_view_ = nullptr;
+  raw_ptr<views::View> unified_brightness_view_ = nullptr;
 
   bool showing_accessibility_detailed_view_ = false;
 

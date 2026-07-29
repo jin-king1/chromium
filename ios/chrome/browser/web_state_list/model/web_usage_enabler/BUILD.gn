@@ -15,6 +15,7 @@ source_set("web_usage_enabler") {
     "//base",
     "//ios/chrome/browser/shared/model/browser",
     "//ios/chrome/browser/shared/model/web_state_list",
+    "//ios/chrome/browser/tabs/model:dependency_installer",
   ]
 }
 
@@ -31,6 +32,7 @@ source_set("unit_tests") {
     "//ios/chrome/browser/shared/model/profile/test",
     "//ios/chrome/browser/shared/model/web_state_list",
     "//ios/web",
+    "//ios/web/public/test",
     "//ios/web/public/test/fakes",
     "//testing/gtest",
     "//url",

@@ -12,6 +12,8 @@
 #include "base/logging.h"
 #include "base/time/time.h"
 #include "components/signin/public/identity_manager/account_info.h"
+#include "components/signin/public/identity_manager/identity_manager.h"
+#include "components/signin/public/identity_manager/tribool.h"
 #include "google_apis/gaia/gaia_auth_util.h"
 #include "google_apis/gaia/google_service_auth_error.h"
 
@@ -544,13 +546,22 @@ void AccountManagedStatusFinder::OnExtendedAccountInfoUpdated(
   }
 
   // Keep waiting if `info` isn't complete yet.
-  if (info.hosted_domain.empty()) {
+  if (info.IsManaged() == signin::Tribool::kUnknown) {
     return;
   }
 
-  // This is the relevant account! Determine its type.
-  OutcomeDeterminedAsync(info.IsManaged() ? Outcome::kEnterprise
-                                          : Outcome::kConsumerNotWellKnown);
+  if (!identity_manager_->AreRefreshTokensLoaded()) {
+    // `OnRefreshTokensLoaded()` will update the outcome.
+    return;
+  }
+
+  // This is the relevant account! Determine its type. It can't be any of the
+  // types that can be known synchronously, otherwise it would have been
+  // determined already, either in the constructor or in
+  // `OnRefreshTokensLoaded()`.
+  OutcomeDeterminedAsync(signin::TriboolToBoolOrDie(info.IsManaged())
+                             ? Outcome::kEnterprise
+                             : Outcome::kConsumerNotWellKnown);
 }
 
 void AccountManagedStatusFinder::OnRefreshTokenRemovedForAccount(
@@ -573,7 +584,7 @@ void AccountManagedStatusFinder::OnErrorStateOfRefreshTokenUpdatedForAccount(
   DCHECK_EQ(outcome_, Outcome::kPending);
 
   if (!identity_manager_->AreRefreshTokensLoaded()) {
-    // `OnRefreshTokensLoaded` will update the outcome.
+    // `OnRefreshTokensLoaded()` will update the outcome.
     return;
   }
 
@@ -648,15 +659,16 @@ AccountManagedStatusFinder::DetermineOutcome() const {
   // The easy cases didn't apply, so actually get the canonical info from
   // IdentityManager. This may or may not be available immediately.
   AccountInfo info = identity_manager_->FindExtendedAccountInfo(account_);
-  if (!info.hosted_domain.empty()) {
-    return info.IsManaged() ? Outcome::kEnterprise
-                            : Outcome::kConsumerNotWellKnown;
+  if (info.IsManaged() != signin::Tribool::kUnknown) {
+    return signin::TriboolToBoolOrDie(info.IsManaged())
+               ? Outcome::kEnterprise
+               : Outcome::kConsumerNotWellKnown;
   }
 
-  GoogleServiceAuthError authError =
+  GoogleServiceAuthError auth_error =
       identity_manager_->GetErrorStateOfRefreshTokenForAccount(
           account_.account_id);
-  if (!ignore_persistent_auth_errors_ && authError.IsPersistentError()) {
+  if (!ignore_persistent_auth_errors_ && auth_error.IsPersistentError()) {
     return Outcome::kTimeout;
   }
 
@@ -682,12 +694,12 @@ void AccountManagedStatusFinder::OutcomeDeterminedAsync(Outcome type) {
 }
 
 #if BUILDFLAG(IS_ANDROID)
-static jlong JNI_AccountManagedStatusFinder_CreateNativeObject(
+static int64_t JNI_AccountManagedStatusFinder_CreateNativeObject(
     JNIEnv* env,
     IdentityManager* identity_manager,
-    CoreAccountInfo& account,
-    base::RepeatingClosure& callback,
-    jlong timeout_in_millis) {
+    const CoreAccountInfo& account,
+    base::RepeatingClosure&& callback,
+    int64_t timeout_in_millis) {
   base::TimeDelta timeout = timeout_in_millis < 0
                                 ? base::TimeDelta::Max()
                                 : base::Milliseconds(timeout_in_millis);
@@ -700,9 +712,14 @@ void AccountManagedStatusFinder::DestroyNativeObject(JNIEnv* env) {
   delete this;
 }
 
-jint AccountManagedStatusFinder::GetOutcomeFromNativeObject(JNIEnv* env) const {
-  return static_cast<jint>(GetOutcome());
+int32_t AccountManagedStatusFinder::GetOutcomeFromNativeObject(
+    JNIEnv* env) const {
+  return static_cast<int32_t>(GetOutcome());
 }
 #endif
 
 }  // namespace signin
+
+#if BUILDFLAG(IS_ANDROID)
+DEFINE_JNI(AccountManagedStatusFinder)
+#endif

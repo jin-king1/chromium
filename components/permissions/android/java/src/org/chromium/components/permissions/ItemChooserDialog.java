@@ -31,6 +31,7 @@ import org.chromium.base.MathUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.ui.base.DeviceFormFactor;
+import org.chromium.ui.util.CommonOnLayoutChangeListeners;
 import org.chromium.ui.widget.TextViewWithClickableSpans;
 
 import java.lang.annotation.Retention;
@@ -108,28 +109,28 @@ public class ItemChooserDialog implements DeviceItemAdapter.Observer {
         int DISCOVERY_IDLE = 3;
     }
 
-    private Context mContext;
-    private Window mWindow;
+    private final Context mContext;
+    private final Window mWindow;
 
     // The dialog this class encapsulates.
     private Dialog mDialog;
 
     // The callback to notify when the user selected an item.
-    private ItemSelectedCallback mItemSelectedCallback;
+    private final ItemSelectedCallback mItemSelectedCallback;
 
     // Individual UI elements.
-    private TextViewWithClickableSpans mTitle;
-    private TextViewWithClickableSpans mEmptyMessage;
-    private ProgressBar mProgressBar;
-    private ListView mListView;
-    private TextView mStatus;
-    private Button mConfirmButton;
+    private final TextViewWithClickableSpans mTitle;
+    private final TextViewWithClickableSpans mEmptyMessage;
+    private final ProgressBar mProgressBar;
+    private final ListView mListView;
+    private final TextView mStatus;
+    private final Button mConfirmButton;
 
     // The labels to display in the dialog.
-    private ItemChooserLabels mLabels;
+    private final ItemChooserLabels mLabels;
 
     // The adapter containing the items to show in the dialog.
-    private DeviceItemAdapter mItemAdapter;
+    private final DeviceItemAdapter mItemAdapter;
 
     // How much of the height of the screen should be taken up by the listview.
     private static final float LISTVIEW_HEIGHT_PERCENT = 0.30f;
@@ -175,15 +176,21 @@ public class ItemChooserDialog implements DeviceItemAdapter.Observer {
 
         mTitle.setText(labels.title);
         mTitle.setMovementMethod(LinkMovementMethod.getInstance());
-
         mEmptyMessage.setMovementMethod(LinkMovementMethod.getInstance());
         mStatus.setMovementMethod(LinkMovementMethod.getInstance());
+
+        /**
+         * Note: {@link android.widget.TextView#setMovementMethod} overrides the view's focus state.
+         * setFocusable must be called afterward to restore the desired behavior.
+         */
+        mTitle.setFocusable(false);
+        mEmptyMessage.setFocusable(false);
 
         mConfirmButton = (Button) dialogContainer.findViewById(R.id.positive);
         mConfirmButton.setText(labels.positiveButton);
         mConfirmButton.setEnabled(false);
 
-        View.OnClickListener clickListener =
+        View.OnClickListener clickConfirmListener =
                 new View.OnClickListener() {
                     @Override
                     public void onClick(View v) {
@@ -193,13 +200,29 @@ public class ItemChooserDialog implements DeviceItemAdapter.Observer {
                     }
                 };
 
+        Button cancelButton = dialogContainer.findViewById(R.id.negative);
+        if (PermissionsAndroidFeatureMap.isEnabled(
+                PermissionsAndroidFeatureList.ANDROID_ITEM_CHOOSER_CANCEL_BUTTON)) {
+            cancelButton.setText(context.getString(R.string.item_chooser_dialog_cancel_button));
+            View.OnClickListener clickCancelListener =
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View v) {
+                            dismiss();
+                        }
+                    };
+            cancelButton.setOnClickListener(clickCancelListener);
+        } else {
+            cancelButton.setVisibility(View.GONE);
+        }
+
         mItemAdapter =
                 new DeviceItemAdapter(
                         mContext, /* itemsSelectable= */ true, R.layout.item_chooser_dialog_row);
         mItemAdapter.setNotifyOnChange(true);
         mItemAdapter.setObserver(this);
 
-        mConfirmButton.setOnClickListener(clickListener);
+        mConfirmButton.setOnClickListener(clickConfirmListener);
         mListView.setOnItemClickListener(mItemAdapter);
 
         mListView.setAdapter(mItemAdapter);
@@ -213,21 +236,20 @@ public class ItemChooserDialog implements DeviceItemAdapter.Observer {
         showDialogForView(dialogContainer);
 
         dialogContainer.addOnLayoutChangeListener(
-                (View v, int l, int t, int r, int b, int ol, int ot, int or, int ob) -> {
-                    if (l != ol || t != ot || r != or || b != ob) {
-                        // The list is the main element in the dialog and it should grow and
-                        // shrink according to the size of the screen available.
-                        View listViewContainer = dialogContainer.findViewById(R.id.container);
-                        listViewContainer.setLayoutParams(
-                                new LinearLayout.LayoutParams(
-                                        LayoutParams.MATCH_PARENT,
-                                        getListHeight(
-                                                mWindow.getDecorView().getHeight(),
-                                                mContext.getResources()
-                                                        .getDisplayMetrics()
-                                                        .density)));
-                    }
-                });
+                CommonOnLayoutChangeListeners.createBoundsChangedListener(
+                        () -> {
+                            // The list is the main element in the dialog and it should grow and
+                            // shrink according to the size of the screen available.
+                            View listViewContainer = dialogContainer.findViewById(R.id.container);
+                            listViewContainer.setLayoutParams(
+                                    new LinearLayout.LayoutParams(
+                                            LayoutParams.MATCH_PARENT,
+                                            getListHeight(
+                                                    mWindow.getDecorView().getHeight(),
+                                                    mContext.getResources()
+                                                            .getDisplayMetrics()
+                                                            .density)));
+                        }));
     }
 
     // DeviceItemAdapter.Observer:

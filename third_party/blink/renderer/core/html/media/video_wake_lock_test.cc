@@ -57,6 +57,8 @@ class VideoWakeLockPictureInPictureSession final
               const viz::SurfaceId&,
               const gfx::Size&,
               bool show_play_pause_button) override {}
+  void UpdateMediaPosition(
+      media_session::mojom::blink::MediaPositionPtr) override {}
 
  private:
   mojo::Receiver<mojom::blink::PictureInPictureSession> receiver_;
@@ -84,6 +86,8 @@ class VideoWakeLockPictureInPictureService final
       bool,
       mojo::PendingRemote<mojom::blink::PictureInPictureSessionObserver>,
       const gfx::Rect&,
+      bool,
+      const media::VideoSpatialFormat&,
       StartSessionCallback callback) override {
     mojo::PendingRemote<mojom::blink::PictureInPictureSession> session_remote;
     session_ = std::make_unique<VideoWakeLockPictureInPictureSession>(
@@ -179,12 +183,12 @@ class VideoWakeLockTest : public testing::Test {
 
     GetFrame().GetBrowserInterfaceBroker().SetBinderForTesting(
         mojom::blink::PictureInPictureService::Name_,
-        WTF::BindRepeating(&VideoWakeLockPictureInPictureService::Bind,
-                           WTF::Unretained(&pip_service_)));
+        BindRepeating(&VideoWakeLockPictureInPictureService::Bind,
+                      Unretained(&pip_service_)));
 
     fake_layer_ = cc::Layer::Create();
 
-    GetDocument().body()->setInnerHTML(
+    GetDocument().body()->SetInnerHTMLWithoutTrustedTypes(
         "<body><div></div><video></video></body>");
     video_ = To<HTMLVideoElement>(
         GetDocument().QuerySelector(AtomicString("video")));
@@ -268,6 +272,8 @@ class VideoWakeLockTest : public testing::Test {
 
   void UpdateObservers() {
     UpdateAllLifecyclePhasesForTest();
+    task_environment_.FastForwardBy(VideoWakeLock::kIntersectionObserverDelay +
+                                    base::Microseconds(1));
     test::RunPendingTasks();
   }
 
@@ -298,7 +304,8 @@ class VideoWakeLockTest : public testing::Test {
   }
 
  private:
-  test::TaskEnvironment task_environment_;
+  test::TaskEnvironment task_environment_{
+      base::test::TaskEnvironment::TimeSource::MOCK_TIME};
   std::unique_ptr<VideoWakeLockTestWebFrameClient> client_;
   Persistent<HTMLDivElement> div_;
   Persistent<HTMLVideoElement> video_;

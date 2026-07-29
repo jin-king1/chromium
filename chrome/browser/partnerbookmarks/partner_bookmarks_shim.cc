@@ -63,6 +63,9 @@ bool g_disable_partner_bookmarks_editing = false;
 PartnerBookmarksShim* PartnerBookmarksShim::BuildForBrowserContext(
     content::BrowserContext* browser_context) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+  if (!browser_context) {
+    return nullptr;
+  }
 
   PartnerBookmarksShim* data = static_cast<PartnerBookmarksShim*>(
       browser_context->GetUserData(kPartnerBookmarksShimUserDataKey));
@@ -267,14 +270,14 @@ void PartnerBookmarksShim::ReloadNodeMapping() {
     return;
   }
 
-  const base::Value::List& list =
+  const base::ListValue& list =
       prefs_->GetList(prefs::kPartnerBookmarkMappings);
 
   for (const auto& entry : list) {
     if (!entry.is_dict()) {
       NOTREACHED();
     }
-    const base::Value::Dict& dict = entry.GetDict();
+    const base::DictValue& dict = entry.GetDict();
 
     const std::string* url = dict.FindString(kMappingUrl);
     const std::string* provider_title = dict.FindString(kMappingProviderTitle);
@@ -295,10 +298,10 @@ void PartnerBookmarksShim::SaveNodeMapping() {
     return;
   }
 
-  base::Value::List list;
+  base::ListValue list;
   for (NodeRenamingMap::const_iterator i = node_rename_remove_map_.begin();
        i != node_rename_remove_map_.end(); ++i) {
-    base::Value::Dict dict;
+    base::DictValue dict;
     dict.Set(kMappingUrl, i->first.url().spec());
     dict.Set(kMappingProviderTitle, i->first.provider_title());
     dict.Set(kMappingTitle, i->second);

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "headless/public/headless_shell.h"
 
 #include <memory>
@@ -14,6 +9,7 @@
 #include "base/base_switches.h"
 #include "base/check_deref.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
@@ -21,6 +17,7 @@
 #include "base/version_info/version_info.h"
 #include "build/branding_buildflags.h"
 #include "build/build_config.h"
+#include "components/os_crypt/common/os_crypt_switches.h"
 #include "content/public/app/content_main.h"
 #include "content/public/common/content_switches.h"
 #include "headless/lib/browser/headless_browser_impl.h"
@@ -33,19 +30,11 @@
 #include "net/base/filename_util.h"
 #include "url/gurl.h"
 
-#if BUILDFLAG(IS_MAC)
-#include "components/os_crypt/sync/os_crypt_switches.h"  // nogncheck
-#endif
-
 #if BUILDFLAG(IS_WIN)
 #include "base/strings/utf_string_conversions.h"
 #include "components/crash/core/app/crash_switches.h"  // nogncheck
 #include "components/crash/core/app/run_as_crashpad_handler_win.h"
 #include "sandbox/win/src/sandbox_types.h"
-#endif
-
-#if defined(HEADLESS_USE_POLICY)
-#include "components/headless/policy/headless_mode_policy.h"  // nogncheck
 #endif
 
 #if defined(HEADLESS_ENABLE_COMMANDS)
@@ -100,22 +89,11 @@ class HeadlessShell {
 void HeadlessShell::OnBrowserStart(HeadlessBrowser* browser) {
   browser_ = browser;
 
-#if defined(HEADLESS_USE_POLICY)
-  if (HeadlessModePolicy::IsHeadlessModeDisabled(
-          static_cast<HeadlessBrowserImpl*>(browser)->GetPrefs())) {
-    LOG(ERROR) << "Headless mode is disallowed by the system admin.";
-    ShutdownSoon();
-    return;
-  }
-#endif
-
-  HeadlessBrowserContext::Builder context_builder =
-      browser_->CreateBrowserContextBuilder();
-
   // Create browser context and set it as the default. The default browser
   // context is used by the Target.createTarget() DevTools command when no other
   // context is given.
-  HeadlessBrowserContext* browser_context = context_builder.Build();
+  HeadlessBrowserContext* browser_context = browser_->CreateBrowserContext();
+  CHECK(browser_context);
   browser_->SetDefaultBrowserContext(browser_context);
 
   const bool devtools_enabled = static_cast<HeadlessBrowserImpl*>(browser)
@@ -128,9 +106,7 @@ void HeadlessShell::OnBrowserStart(HeadlessBrowser* browser) {
 
   // Remove empty arguments sometimes left there by scripts to prevent weird
   // error messages.
-  args.erase(
-      std::remove(args.begin(), args.end(), base::CommandLine::StringType()),
-      args.end());
+  std::erase(args, base::CommandLine::StringType());
 
   // If no explicit URL is present assume about:blank unless we're being
   // driven by a debugger.
@@ -143,8 +119,6 @@ void HeadlessShell::OnBrowserStart(HeadlessBrowser* browser) {
   }
 
   GURL target_url = ConvertArgumentToURL(args.front());
-  HeadlessWebContents::Builder builder(
-      browser_context->CreateWebContentsBuilder());
 
   // Check for headless commands and instantiate headless command handler
   // that will execute the commands against the target page.
@@ -152,7 +126,7 @@ void HeadlessShell::OnBrowserStart(HeadlessBrowser* browser) {
   if (HeadlessCommandHandler::HasHeadlessCommandSwitches(command_line)) {
     GURL handler_url = HeadlessCommandHandler::GetHandlerUrl();
     HeadlessWebContents* web_contents =
-        builder.SetInitialURL(handler_url).Build();
+        browser_context->CreateWebContents(handler_url);
     if (!web_contents) {
       LOG(ERROR) << "Navigation to " << handler_url << " failed.";
       ShutdownSoon();
@@ -169,7 +143,8 @@ void HeadlessShell::OnBrowserStart(HeadlessBrowser* browser) {
 #endif
 
   // Otherwise just open the target page.
-  HeadlessWebContents* web_contents = builder.SetInitialURL(target_url).Build();
+  HeadlessWebContents* web_contents =
+      browser_context->CreateWebContents(target_url);
   if (!web_contents) {
     LOG(ERROR) << "Navigation to " << target_url << " failed.";
     ShutdownSoon();
@@ -276,8 +251,8 @@ int HeadlessShellMain(content::ContentMainParams params) {
 #endif
 
   if (command_line.HasSwitch(switches::kVersion)) {
-    printf("%s %s\n", version_info::GetProductName().data(),
-           version_info::GetVersionNumber().data());
+    UNSAFE_TODO(printf("%s %s\n", version_info::GetProductName().data(),
+                       version_info::GetVersionNumber().data()));
     return EXIT_SUCCESS;
   }
 

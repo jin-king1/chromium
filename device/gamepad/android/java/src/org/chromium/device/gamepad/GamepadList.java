@@ -19,6 +19,7 @@ import org.jni_zero.CalledByNative;
 import org.jni_zero.JNINamespace;
 import org.jni_zero.NativeMethods;
 
+import org.chromium.base.ContextUtils;
 import org.chromium.base.ThreadUtils;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
@@ -41,7 +42,7 @@ public class GamepadList {
     private @Nullable InputManager mInputManager;
     private int mAttachedToWindowCounter;
     private boolean mIsGamepadAPIActive;
-    private InputDeviceListener mInputDeviceListener;
+    private final InputDeviceListener mInputDeviceListener;
 
     private GamepadList() {
         mInputDeviceListener =
@@ -83,15 +84,17 @@ public class GamepadList {
      * prepare itself for gamepad input. It must be called before {@link onGenericMotionEvent} and
      * {@link dispatchKeyEvent}.
      */
-    public static void onAttachedToWindow(Context context) {
+    public static void onAttachedToWindow() {
         assert ThreadUtils.runningOnUiThread();
-        getInstance().attachedToWindow(context);
+        getInstance().attachedToWindow();
     }
 
-    private void attachedToWindow(Context context) {
+    private void attachedToWindow() {
         if (mAttachedToWindowCounter++ == 0) {
-            mInputManager = (InputManager) context.getApplicationContext()
-                    .getSystemService(Context.INPUT_SERVICE);
+            mInputManager =
+                    (InputManager)
+                            ContextUtils.getApplicationContext()
+                                    .getSystemService(Context.INPUT_SERVICE);
             synchronized (mLock) {
                 initializeDevices();
             }
@@ -308,7 +311,6 @@ public class GamepadList {
                     device.updateButtonsAndAxesMapping();
                     GamepadListJni.get()
                             .setGamepadData(
-                                    GamepadList.this,
                                     webGamepadsPtr,
                                     /* index= */ i,
                                     device.isStandardGamepad(),
@@ -324,7 +326,6 @@ public class GamepadList {
                 } else {
                     GamepadListJni.get()
                             .setGamepadData(
-                                    GamepadList.this,
                                     webGamepadsPtr,
                                     /* index= */ i,
                                     /* mapping= */ false,
@@ -368,9 +369,11 @@ public class GamepadList {
     private void doVibration(int index, double strongMagnitude, double weakMagnitude) {
         GamepadDevice device;
         synchronized (mLock) {
-            device = assumeNonNull(getDevice(index));
+            device = getDevice(index);
         }
-        device.doVibration(strongMagnitude, weakMagnitude);
+        if (device != null) {
+            device.doVibration(strongMagnitude, weakMagnitude);
+        }
     }
 
     @CalledByNative
@@ -381,9 +384,11 @@ public class GamepadList {
     private void cancelVibration(int index) {
         GamepadDevice device;
         synchronized (mLock) {
-            device = assumeNonNull(getDevice(index));
+            device = getDevice(index);
         }
-        device.cancelVibration();
+        if (device != null) {
+            device.cancelVibration();
+        }
     }
 
     private static class LazyHolder {
@@ -393,7 +398,6 @@ public class GamepadList {
     @NativeMethods
     interface Natives {
         void setGamepadData(
-                GamepadList caller,
                 long webGamepadsPtr,
                 int index,
                 boolean mapping,

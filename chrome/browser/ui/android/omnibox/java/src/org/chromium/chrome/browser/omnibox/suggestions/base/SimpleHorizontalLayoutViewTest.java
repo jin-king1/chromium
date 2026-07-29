@@ -4,16 +4,19 @@
 
 package org.chromium.chrome.browser.omnibox.suggestions.base;
 
+import static org.junit.Assert.assertEquals;
+
 import android.app.Activity;
 import android.content.Context;
 import android.view.View;
 import android.view.View.MeasureSpec;
 
-import org.junit.Assert;
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.Robolectric;
 import org.robolectric.annotation.Config;
 
@@ -27,6 +30,7 @@ public class SimpleHorizontalLayoutViewTest {
     private static final int SMALL_VIEW_WIDTH = 50;
     private static final int LARGE_VIEW_WIDTH = 120;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private SimpleHorizontalLayoutViewForTest mView;
     private Activity mActivity;
 
@@ -65,8 +69,6 @@ public class SimpleHorizontalLayoutViewTest {
 
     @Before
     public void setUp() {
-        MockitoAnnotations.initMocks(this);
-
         mActivity = Robolectric.buildActivity(Activity.class).setup().get();
         mView = new SimpleHorizontalLayoutViewForTest(mActivity);
 
@@ -85,8 +87,7 @@ public class SimpleHorizontalLayoutViewTest {
      */
     private void executeLayoutTest(int containerWidth, int contentHeight, int layoutDirection) {
         mView.setLayoutDirection(layoutDirection);
-        Assert.assertEquals(
-                "layout direction not supported", layoutDirection, mView.getLayoutDirection());
+        assertEquals("layout direction not supported", layoutDirection, mView.getLayoutDirection());
 
         // Let ContentView drive the height of the Suggestion. The dummy view could shrink, so let's
         // prevent that from happening. We don't technically have any content, so we need to prevent
@@ -98,12 +99,12 @@ public class SimpleHorizontalLayoutViewTest {
 
     /** Confirm that specified view is positioned at specific coordinates. */
     private void verifyViewLayout(View v, int left, int top, int right, int bottom) {
-        Assert.assertEquals("left view edge", left, v.getLeft());
-        Assert.assertEquals("top view edge", top, v.getTop());
-        Assert.assertEquals("right view edge", right, v.getRight());
-        Assert.assertEquals("bottom view edge", bottom, v.getBottom());
-        Assert.assertEquals("view width", right - left, v.getMeasuredWidth());
-        Assert.assertEquals("view height", bottom - top, v.getMeasuredHeight());
+        assertEquals("left view edge", left, v.getLeft());
+        assertEquals("top view edge", top, v.getTop());
+        assertEquals("right view edge", right, v.getRight());
+        assertEquals("bottom view edge", bottom, v.getBottom());
+        assertEquals("view width", right - left, v.getMeasuredWidth());
+        assertEquals("view height", bottom - top, v.getMeasuredHeight());
     }
 
     /**

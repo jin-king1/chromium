@@ -7,6 +7,7 @@
 
 #include "base/containers/flat_map.h"
 #include "base/functional/callback.h"
+#include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/profiles/profile.h"
 #include "components/browsing_data/content/browsing_data_model.h"
@@ -30,9 +31,10 @@ class ChromeBrowsingDataModelDelegate final
     kIsolatedWebApp,  // Not yet deletable.
     kMediaDeviceSalt,
     kFederatedIdentity,
+    kPrivateVerificationTokens,
 
     kFirstType = kTopics,
-    kLastType = kFederatedIdentity,
+    kLastType = kPrivateVerificationTokens,
   };
 
   static void BrowsingDataAccessed(content::RenderFrameHost* rfh,

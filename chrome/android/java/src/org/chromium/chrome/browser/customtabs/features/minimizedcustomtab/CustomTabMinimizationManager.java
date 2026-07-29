@@ -4,19 +4,17 @@
 
 package org.chromium.chrome.browser.customtabs.features.minimizedcustomtab;
 
-import static org.chromium.chrome.browser.crash.ChromePureJavaExceptionReporter.reportJavaException;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.ALL_KEYS;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.FAVICON;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.TITLE;
 import static org.chromium.chrome.browser.customtabs.features.minimizedcustomtab.MinimizedCardProperties.URL;
-import static org.chromium.chrome.browser.tab.TabLoadIfNeededCaller.ON_ACTIVITY_SHOWN_THEN_SHOW;
 import static org.chromium.chrome.browser.tab.TabSelectionType.FROM_USER;
 
 import android.app.PictureInPictureParams;
 import android.os.Build.VERSION;
 import android.os.Build.VERSION_CODES;
 import android.os.Bundle;
-import android.os.SystemClock;
+import android.os.PersistableBundle;
 import android.text.TextUtils;
 import android.util.Rational;
 
@@ -30,7 +28,8 @@ import androidx.lifecycle.Lifecycle.State;
 import org.chromium.base.Log;
 import org.chromium.base.ObserverList;
 import org.chromium.base.metrics.RecordHistogram;
-import org.chromium.base.supplier.Supplier;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.ActivityTabProvider;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
@@ -41,6 +40,7 @@ import org.chromium.chrome.browser.lifecycle.SaveInstanceStateObserver;
 import org.chromium.chrome.browser.tab.Tab;
 import org.chromium.chrome.browser.tab.TabFavicon;
 import org.chromium.chrome.browser.tab.TabHidingType;
+import org.chromium.chrome.browser.tab.TabUtils;
 import org.chromium.components.dom_distiller.core.DomDistillerUrlUtils;
 import org.chromium.components.url_formatter.UrlFormatter;
 import org.chromium.content_public.common.ContentUrlConstants;
@@ -51,9 +51,10 @@ import org.chromium.url.GURL;
 import java.lang.annotation.Retention;
 import java.lang.annotation.RetentionPolicy;
 import java.lang.ref.WeakReference;
-import java.util.concurrent.TimeUnit;
+import java.util.function.Supplier;
 
 /** Class that manages minimizing a Custom Tab into picture-in-picture. */
+@NullMarked
 public class CustomTabMinimizationManager
         implements CustomTabMinimizeDelegate,
                 Consumer<PictureInPictureModeChangedInfo>,
@@ -79,12 +80,10 @@ public class CustomTabMinimizationManager
 
     @VisibleForTesting static final Rational ASPECT_RATIO = new Rational(16, 9);
 
-    @VisibleForTesting static WeakReference<CustomTabMinimizeDelegate> sLastMinimizeDelegate;
+    @VisibleForTesting
+    static @Nullable WeakReference<CustomTabMinimizeDelegate> sLastMinimizeDelegate;
 
     @VisibleForTesting static final String KEY_IS_CCT_MINIMIZED = "isCctMinimized";
-
-    @VisibleForTesting
-    static final String KEY_CCT_MINIMIZATION_SYSTEM_TIME = "cctMinimizationSystemTime";
 
     // --- For debugging
     private static final String TAG = "CTMinimizationMgr";
@@ -105,9 +104,8 @@ public class CustomTabMinimizationManager
     private final ObserverList<Observer> mObservers = new ObserverList<>();
     private final ActivityLifecycleDispatcher mLifecycleDispatcher;
     private final Supplier<Bundle> mSavedInstanceStateSupplier;
-    private MinimizedCardCoordinator mCoordinator;
-    private PropertyModel mModel;
-    private long mMinimizationSystemTime;
+    private @Nullable MinimizedCardCoordinator mCoordinator;
+    private @Nullable PropertyModel mModel;
     private boolean mMinimized;
 
     /**
@@ -150,16 +148,18 @@ public class CustomTabMinimizationManager
     public void onSaveInstanceState(Bundle outState) {
         if (mMinimized) {
             outState.putBoolean(KEY_IS_CCT_MINIMIZED, true);
-            outState.putLong(KEY_CCT_MINIMIZATION_SYSTEM_TIME, mMinimizationSystemTime);
             putIntoBundleFromModel(outState, mModel);
         }
     }
+
+    @Override
+    public void onSaveInstanceState(Bundle outState, PersistableBundle outPersistentState) {}
 
     /** Minimize the Custom Tab into picture-in-picture. */
     @Override
     public void minimize() {
         if (mMinimized) return;
-        if (!mTabProvider.hasValue()) return;
+        if (!(mTabProvider.get() != null)) return;
         mFeatureEngagementDelegate.notifyUserEngaged();
         var builder = new PictureInPictureParams.Builder().setAspectRatio(ASPECT_RATIO);
         if (VERSION.SDK_INT >= VERSION_CODES.S) {
@@ -177,26 +177,26 @@ public class CustomTabMinimizationManager
         } catch (NullPointerException e) {
             if (doesExceptionMatch(e, TASK_DISPLAY_AREA_NPE_STR)) {
                 String msg = "NullPointerException";
-                reportException(msg, e);
+                logException(msg, e);
             } else {
                 throw e;
             }
         } catch (IllegalStateException e) {
             if (doesExceptionMatch(e, DEVICE_DOES_NOT_SUPPORT_ISE_STR)) {
                 String msg = "Device doesn't support picture-in-picture mode.";
-                reportException(msg, e);
+                logException(msg, e);
             } else if (doesExceptionMatch(e, ACTIVITY_DOES_NOT_SUPPORT_ISE_STR)) {
                 String msg =
                         "Current activity does not support picture-in-picture. Activity class: "
                                 + mActivity.getLocalClassName();
-                reportException(msg, e);
+                logException(msg, e);
             } else {
                 throw e;
             }
         } catch (IllegalArgumentException e) {
             if (doesExceptionMatch(e, ROOT_TASK_IAE_STR)) {
                 String msg = "IllegalArgumentException";
-                reportException(msg, e);
+                logException(msg, e);
             } else {
                 throw e;
             }
@@ -211,7 +211,6 @@ public class CustomTabMinimizationManager
 
         mActivity.addOnPictureInPictureModeChangedListener(this);
         notifyObservers(true);
-        mMinimizationSystemTime = SystemClock.elapsedRealtime();
     }
 
     @Override
@@ -242,9 +241,10 @@ public class CustomTabMinimizationManager
         Tab tab = mTabProvider.get();
 
         if (tab == null) {
+            Bundle savedInstanceState = mSavedInstanceStateSupplier.get();
             boolean wasInitializedMinimized =
-                    mSavedInstanceStateSupplier.hasValue()
-                            && mSavedInstanceStateSupplier.get().getBoolean(KEY_IS_CCT_MINIMIZED);
+                    savedInstanceState != null
+                            && savedInstanceState.getBoolean(KEY_IS_CCT_MINIMIZED);
             String msg =
                     "Tab is null. Activity state is "
                             + mActivity.getLifecycle().getCurrentState()
@@ -252,18 +252,13 @@ public class CustomTabMinimizationManager
                             + wasInitializedMinimized
                             + ". isInPip: "
                             + pictureInPictureModeChangedInfo.isInPictureInPictureMode();
-            Log.e(TAG, msg);
-            reportJavaException(new Exception(msg));
+            logException(msg, new Exception());
         }
 
         if (pictureInPictureModeChangedInfo.isInPictureInPictureMode()) {
             showMinimizedCard(/* fromSavedState= */ false);
             updateTabForMinimization(tab);
             CustomTabsConnection.getInstance().onMinimized(mIntentData.getSession());
-            RecordHistogram.recordEnumeratedHistogram(
-                    "CustomTabs.MinimizedEvents",
-                    MinimizationEvents.MINIMIZE,
-                    MinimizationEvents.COUNT);
         } else {
             mActivity.removeOnPictureInPictureModeChangedListener(this);
             notifyObservers(false);
@@ -272,16 +267,6 @@ public class CustomTabMinimizationManager
             // before destruction. In that case, the state will be CREATED.
             var state = mActivity.getLifecycle().getCurrentState();
             if (state == State.CREATED || state == State.DESTROYED) {
-                RecordHistogram.recordEnumeratedHistogram(
-                        "CustomTabs.MinimizedEvents",
-                        MinimizationEvents.DESTROY,
-                        MinimizationEvents.COUNT);
-                if (mMinimizationSystemTime != 0) {
-                    RecordHistogram.recordTimesHistogram(
-                            "CustomTabs.TimeElapsedSinceMinimized.Destroyed",
-                            TimeUnit.MILLISECONDS.toSeconds(
-                                    SystemClock.elapsedRealtime() - mMinimizationSystemTime));
-                }
                 mCloseTabRunnable.run();
                 return;
             }
@@ -289,23 +274,13 @@ public class CustomTabMinimizationManager
             mMinimized = false;
             updateTabForMaximization(tab);
             CustomTabsConnection.getInstance().onUnminimized(mIntentData.getSession());
-            RecordHistogram.recordEnumeratedHistogram(
-                    "CustomTabs.MinimizedEvents",
-                    MinimizationEvents.MAXIMIZE,
-                    MinimizationEvents.COUNT);
-            if (mMinimizationSystemTime != 0) {
-                RecordHistogram.recordTimesHistogram(
-                        "CustomTabs.TimeElapsedSinceMinimized.Maximized",
-                        TimeUnit.MILLISECONDS.toSeconds(
-                                SystemClock.elapsedRealtime() - mMinimizationSystemTime));
-            }
         }
     }
 
     private void maybeInitializeAsMinimized() {
+        Bundle savedInstanceState = mSavedInstanceStateSupplier.get();
         mMinimized =
-                mSavedInstanceStateSupplier.hasValue()
-                        && mSavedInstanceStateSupplier.get().getBoolean(KEY_IS_CCT_MINIMIZED);
+                savedInstanceState != null && savedInstanceState.getBoolean(KEY_IS_CCT_MINIMIZED);
 
         if (mMinimized) {
             mLifecycleDispatcher.register(
@@ -320,10 +295,6 @@ public class CustomTabMinimizationManager
                                     CustomTabMinimizationManager.this);
                             showMinimizedCard(/* fromSavedState= */ true);
                             notifyObservers(true);
-                            mMinimizationSystemTime =
-                                    mSavedInstanceStateSupplier
-                                            .get()
-                                            .getLong(KEY_CCT_MINIMIZATION_SYSTEM_TIME);
                             mLifecycleDispatcher.unregister(this);
                         }
                     });
@@ -332,7 +303,7 @@ public class CustomTabMinimizationManager
 
     private void showMinimizedCard(boolean fromSavedState) {
         if (fromSavedState) {
-            assert mSavedInstanceStateSupplier.hasValue();
+            assert mSavedInstanceStateSupplier.get() != null;
             mModel = toModel(mSavedInstanceStateSupplier.get());
         } else {
             Tab tab = mTabProvider.get();
@@ -360,21 +331,17 @@ public class CustomTabMinimizationManager
                         mActivity, mActivity.findViewById(android.R.id.content), mModel);
     }
 
-    private void updateTabForMinimization(Tab tab) {
+    private void updateTabForMinimization(@Nullable Tab tab) {
         if (tab == null) return;
 
         tab.stopLoading();
         tab.hide(TabHidingType.ACTIVITY_HIDDEN);
-        var webContents = tab.getWebContents();
-        if (webContents != null) {
-            webContents.suspendAllMediaPlayers();
-            webContents.setAudioMuted(true);
-        }
+        TabUtils.pauseMedia(tab);
     }
 
-    private void updateTabForMaximization(Tab tab) {
+    private void updateTabForMaximization(@Nullable Tab tab) {
         if (tab == null) return;
-        tab.show(FROM_USER, ON_ACTIVITY_SHOWN_THEN_SHOW);
+        tab.show(FROM_USER);
         var webContents = tab.getWebContents();
         if (webContents != null) {
             webContents.setAudioMuted(false);
@@ -390,7 +357,7 @@ public class CustomTabMinimizationManager
         }
     }
 
-    private CustomTabMinimizeDelegate getLastMinimizeDelegate() {
+    private @Nullable CustomTabMinimizeDelegate getLastMinimizeDelegate() {
         if (sLastMinimizeDelegate == null) return null;
 
         return sLastMinimizeDelegate.get();
@@ -431,7 +398,7 @@ public class CustomTabMinimizationManager
         }
     }
 
-    private static void putIntoBundleFromModel(Bundle out, PropertyModel model) {
+    private static void putIntoBundleFromModel(Bundle out, @Nullable PropertyModel model) {
         if (model == null) return;
 
         out.putString(TITLE.toString(), model.get(TITLE));
@@ -451,11 +418,10 @@ public class CustomTabMinimizationManager
         return e.getMessage() != null && e.getMessage().contains(subString);
     }
 
-    private void reportException(String msg, Exception e) {
+    private void logException(String msg, Exception e) {
         String msgWithState =
                 msg + " -- ActivityState: " + mLifecycleDispatcher.getCurrentActivityState();
         Log.e(TAG, msgWithState, e);
-        reportJavaException(new Exception(msg, e));
     }
 
     private void recordMinimizeSuccess(boolean success) {

@@ -3,20 +3,24 @@
 // found in the LICENSE file.
 package org.chromium.chrome.browser.privacy_sandbox;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.content.Context;
 import android.os.Bundle;
 import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
 import androidx.fragment.app.Fragment;
 
 import org.chromium.base.Callback;
 import org.chromium.base.metrics.RecordHistogram;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.base.supplier.OneshotSupplier;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
+import org.chromium.chrome.browser.flags.ChromeFeatureList;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
 import org.chromium.chrome.browser.settings.SettingsNavigationFactory;
@@ -31,6 +35,7 @@ import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
  * <p>Subclasses have to call super.onCreatePreferences(bundle, s) when overriding
  * onCreatePreferences.
  */
+@NullMarked
 public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSettingsFragment {
     // Key for the argument with which the PrivacySandbox fragment will be launched. The value for
     // this argument should be part of the PrivacySandboxReferrer enum, which contains all points of
@@ -39,15 +44,27 @@ public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSetti
 
     private PrivacySandboxBridge mPrivacySandboxBridge;
     private OneshotSupplier<SnackbarManager> mSnackbarManagerSupplier;
-    private Callback<Context> mCookieSettingsNavigation;
+    private @Nullable Callback<Context> mCookieSettingsNavigation;
 
     /** Launches the right version of PrivacySandboxSettings depending on feature flags. */
     public static void launchPrivacySandboxSettings(
             Context context, @PrivacySandboxReferrer int referrer) {
+        // Hide the Privacy Sandbox if the Ad Privacy UX Deprecation feature is enabled.
+        // TODO(crbug.com/494266203): Once all surfaces are properly gated with this feature, add a
+        // crash to make sure other components don't call this if the feature is enabled.
+        if (ChromeFeatureList.isEnabled(
+                ChromeFeatureList.PRIVACY_SANDBOX_AD_PRIVACY_UX_DEPRECATION)) {
+            return;
+        }
         Bundle fragmentArgs = new Bundle();
         fragmentArgs.putInt(PRIVACY_SANDBOX_REFERRER, referrer);
         SettingsNavigationFactory.createSettingsNavigation()
-                .startSettings(context, PrivacySandboxSettingsFragment.class, fragmentArgs);
+                .startSettings(
+                        context,
+                        PrivacySandboxSettingsFragment.class,
+                        fragmentArgs,
+                        // If this comes from "Privacy and security" page, open it as a child of it.
+                        /* addToBackStack= */ referrer == PrivacySandboxReferrer.PRIVACY_SETTINGS);
     }
 
     @Override
@@ -61,10 +78,10 @@ public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSetti
         // Add the custom question mark button.
         menu.clear();
         MenuItem help =
-                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, R.string.menu_help);
+                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, getHelpMenuStringRes());
         help.setIcon(
                 TraceEventVectorDrawableCompat.create(
-                        getResources(), R.drawable.ic_help_and_feedback, getActivity().getTheme()));
+                        getResources(), R.drawable.ic_help_24dp, getActivity().getTheme()));
     }
 
     @Override
@@ -78,6 +95,7 @@ public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSetti
         return false;
     }
 
+    @Initializer
     public void setSnackbarManagerSupplier(
             OneshotSupplier<SnackbarManager> snackbarManagerSupplier) {
         mSnackbarManagerSupplier = snackbarManagerSupplier;
@@ -93,7 +111,7 @@ public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSetti
 
     protected void showSnackbar(
             int stringResId,
-            SnackbarManager.SnackbarController controller,
+            SnackbarManager.@Nullable SnackbarController controller,
             int type,
             int identifier,
             int actionStringResId,
@@ -103,8 +121,9 @@ public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSetti
         if (actionStringResId != 0) {
             snackbar.setAction(getResources().getString(actionStringResId), null);
         }
-        if (multiLine) snackbar.setSingleLine(false);
-        mSnackbarManagerSupplier.get().showSnackbar(snackbar);
+        if (multiLine) snackbar.setDefaultLines(false);
+        SnackbarManager snackbarManager = assumeNonNull(mSnackbarManagerSupplier.get());
+        snackbarManager.showSnackbar(snackbar);
     }
 
     protected void parseAndRecordReferrer() {
@@ -128,11 +147,16 @@ public abstract class PrivacySandboxSettingsBaseFragment extends ChromeBaseSetti
     }
 
     protected void startSettings(Class<? extends Fragment> fragment) {
-        SettingsNavigationFactory.createSettingsNavigation().startSettings(getContext(), fragment);
+        SettingsNavigationFactory.createSettingsNavigation()
+                .startSettings(
+                        getContext(),
+                        fragment,
+                        /* fragmentArgs= */ null,
+                        /* addToBackStack= */ true);
     }
 
     @Override
-    public void setProfile(@NonNull Profile profile) {
+    public void setProfile(Profile profile) {
         super.setProfile(profile);
         mPrivacySandboxBridge = new PrivacySandboxBridge(profile);
     }

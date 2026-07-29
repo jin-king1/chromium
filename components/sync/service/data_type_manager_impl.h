@@ -41,7 +41,6 @@ class DataTypeManagerImpl : public DataTypeManager,
   void Configure(DataTypeSet preferred_types,
                  const ConfigureContext& context) override;
   void DataTypePreconditionChanged(DataType type) override;
-  void ResetDataTypeErrors() override;
 
   // Needed only for backend migration.
   void PurgeForMigration(DataTypeSet undesired_types) override;
@@ -55,9 +54,11 @@ class DataTypeManagerImpl : public DataTypeManager,
   DataTypeSet GetActiveProxyDataTypes() const override;
   DataTypeSet GetTypesWithPendingDownloadForInitialSync() const override;
   DataTypeSet GetDataTypesWithPermanentErrors() const override;
+  DataTypeStatusTable::TypeErrorMap GetDataTypeErrors() const override;
   void GetTypesWithUnsyncedData(
       DataTypeSet requested_types,
-      base::OnceCallback<void(DataTypeSet)> callback) const override;
+      base::OnceCallback<void(absl::flat_hash_map<DataType, size_t>)> callback)
+      const override;
   void GetLocalDataDescriptions(
       DataTypeSet types,
       base::OnceCallback<void(std::map<DataType, LocalDataDescription>)>
@@ -71,7 +72,7 @@ class DataTypeManagerImpl : public DataTypeManager,
       DataTypeSet throttled_types,
       DataTypeSet backed_off_types) const override;
   void GetAllNodesForDebugging(
-      base::OnceCallback<void(base::Value::List)> callback) const override;
+      base::OnceCallback<void(base::ListValue)> callback) const override;
   void GetEntityCountsForDebugging(
       base::RepeatingCallback<void(const TypeEntitiesCount&)> callback)
       const override;
@@ -105,11 +106,12 @@ class DataTypeManagerImpl : public DataTypeManager,
 
   void Restart();
 
+  void ResetDataTypeErrors();
+
   void NotifyStart();
   void NotifyDone(ConfigureStatus status);
 
-  void ConfigureImpl(DataTypeSet preferred_types,
-                     const ConfigureContext& context);
+  void ConfigureImpl();
 
   // Calls data type controllers of requested types to connect.
   void ConnectDataTypes();

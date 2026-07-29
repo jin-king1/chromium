@@ -2,10 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "chrome/browser/ui/certificate_dialogs.h"
 
@@ -24,7 +20,7 @@
 #include "base/logging.h"
 #include "base/task/thread_pool.h"
 #include "chrome/browser/download/download_prefs.h"
-#include "chrome/browser/ui/chrome_select_file_policy.h"
+#include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
 #include "chrome/grit/generated_resources.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/filename_util.h"
@@ -35,11 +31,6 @@
 #include "ui/shell_dialogs/select_file_dialog.h"
 #include "ui/shell_dialogs/selected_file_info.h"
 #include "url/gurl.h"
-
-#if BUILDFLAG(USE_NSS_CERTS)
-#include "chrome/common/net/x509_certificate_model_nss.h"
-#include "net/cert/x509_util_nss.h"
-#endif
 
 namespace {
 
@@ -267,25 +258,6 @@ void ShowCertExportDialog(content::WebContents* web_contents,
   new Exporter(web_contents, parent, std::move(certs), cert_title,
                /*full_export=*/false);
 }
-
-#if BUILDFLAG(USE_NSS_CERTS)
-void ShowCertExportDialog(content::WebContents* web_contents,
-                          gfx::NativeWindow parent,
-                          net::ScopedCERTCertificateList::iterator certs_begin,
-                          net::ScopedCERTCertificateList::iterator certs_end) {
-  DCHECK(certs_begin != certs_end);
-  std::vector<bssl::UniquePtr<CRYPTO_BUFFER>> cert_chain;
-  for (auto it = certs_begin; it != certs_end; ++it) {
-    cert_chain.push_back(net::x509_util::CreateCryptoBuffer(
-        net::x509_util::CERTCertificateAsSpan(it->get())));
-  }
-
-  // Exporter is self-deleting.
-  new Exporter(web_contents, parent, std::move(cert_chain),
-               x509_certificate_model::GetTitle(certs_begin->get()),
-               /*full_export=*/false);
-}
-#endif
 
 #if BUILDFLAG(CHROME_ROOT_STORE_CERT_MANAGEMENT_UI)
 void ShowCertExportDialogSaveAll(

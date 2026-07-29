@@ -21,12 +21,10 @@
 #include "components/safe_browsing/core/browser/password_protection/metrics_util.h"
 #include "components/safe_browsing/core/browser/password_protection/password_protection_request.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
-#include "mojo/public/cpp/bindings/associated_remote.h"
+#include "content/public/browser/render_widget_host_view.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
-#include "components/safe_browsing/content/common/safe_browsing.mojom.h"
 #include "mojo/public/cpp/base/proto_wrapper_passkeys.h"
-#include "mojo/public/cpp/bindings/remote.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
@@ -34,7 +32,7 @@ class GURL;
 
 namespace content {
 class WebContents;
-}
+}  // namespace content
 
 namespace safe_browsing {
 
@@ -63,7 +61,8 @@ class PasswordProtectionRequestContent final
       LoginReputationClientRequest::TriggerType type,
       bool password_field_exists,
       PasswordProtectionServiceBase* pps,
-      int request_timeout_in_ms);
+      int request_timeout_in_ms,
+      std::optional<OtpPhishingVerdictCallback> otp_phishing_verdict_callback);
 
   PasswordProtectionRequestContent(
       content::WebContents* web_contents,
@@ -78,7 +77,8 @@ class PasswordProtectionRequestContent final
       LoginReputationClientRequest::TriggerType type,
       bool password_field_exists,
       PasswordProtectionServiceBase* pps,
-      int request_timeout_in_ms);
+      int request_timeout_in_ms,
+      std::optional<OtpPhishingVerdictCallback> otp_phishing_verdict_callback);
 
   // CancelableRequest implementation
   void Cancel(bool timed_out) override;
@@ -129,17 +129,8 @@ class PasswordProtectionRequestContent final
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   bool IsClientSideDetectionEnabled() override;
 
-  // Extracts DOM features.
-  void GetDomFeatures() override;
-
-  // Called when the DOM feature extraction is complete.
-  void OnGetDomFeatures(mojom::PhishingDetectorResult result,
-                        std::optional<mojo_base::ProtoWrapper> verdict);
-
-  void ExtractClientPhishingRequestFeatures(ClientPhishingRequest verdict);
-
-  // Called when the DOM feature extraction times out.
-  void OnGetDomFeatureTimeout();
+  // Add debugging metadata from CSD feature cache.
+  void AddDebuggingMetadata() override;
 
   bool IsVisualFeaturesEnabled() override;
 
@@ -153,7 +144,7 @@ class PasswordProtectionRequestContent final
   void CollectVisualFeatures();
 
   // Processes the screenshot of the login page into visual features.
-  void OnScreenshotTaken(const SkBitmap& bitmap);
+  void OnScreenshotTaken(const content::CopyFromSurfaceResult& result);
 
   // Called when the visual feature extraction is complete.
   void OnVisualFeatureCollectionDone(
@@ -182,14 +173,6 @@ class PasswordProtectionRequestContent final
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
   // When we start extracting visual features.
   base::TimeTicks visual_feature_start_time_;
-
-  // The Mojo pipe used for extracting DOM features from the renderer.
-  mojo::AssociatedRemote<safe_browsing::mojom::PhishingDetector>
-      phishing_detector_;
-
-  // Whether the DOM features collection is finished, either by timeout or by
-  // successfully gathering the features.
-  bool dom_features_collection_complete_;
 #endif  // BUILDFLAG(SAFE_BROWSING_AVAILABLE)
 
   base::WeakPtrFactory<PasswordProtectionRequestContent> weak_factory_{this};

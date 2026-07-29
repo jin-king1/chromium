@@ -90,7 +90,7 @@ MediaControlTrackSelectorListElement::MediaControlTrackSelectorListElement(
     : MediaControlPopupMenuElement(media_controls), is_video_(is_video) {
   setAttribute(html_names::kRoleAttr, AtomicString("menu"));
   setAttribute(html_names::kAriaLabelAttr,
-               WTF::AtomicString(GetLocale().QueryString(
+               AtomicString(GetLocale().QueryString(
                    IDS_MEDIA_OVERFLOW_MENU_TRACK_SELECTION_SUBMENU_TITLE)));
   if (is_video) {
     SetShadowPseudoId(
@@ -103,7 +103,7 @@ MediaControlTrackSelectorListElement::MediaControlTrackSelectorListElement(
 
 void MediaControlTrackSelectorListElement::SetIsWanted(bool wanted) {
   if (wanted) {
-    RemoveChildren(kOmitSubtreeModifiedEvent);
+    RemoveChildren();
     RepopulateTrackList();
   }
   if (!wanted && !GetMediaControls().OverflowMenuIsWanted()) {
@@ -132,9 +132,11 @@ void MediaControlTrackSelectorListElement::DefaultEventHandler(Event& event) {
 
     auto i = To<Element>(target)->GetIntegralAttribute(SelectedTrackIdAttr());
     if (is_video_) {
-      MediaElement().videoTracks().AnonymousIndexedGetter(i)->setSelected(true);
+      MediaElement().videoTracks().AnonymousIndexedGetter(i)->setSelected(
+          true, TrackBase::ChangeSource::kUser);
     } else {
-      MediaElement().audioTracks().AnonymousIndexedGetter(i)->setEnabled(true);
+      MediaElement().audioTracks().AnonymousIndexedGetter(i)->setEnabled(
+          true, TrackBase::ChangeSource::kUser);
     }
 
     // Close the list.
@@ -152,7 +154,7 @@ void MediaControlTrackSelectorListElement::RepopulateTrackList() {
       Text::Create(GetDocument(),
                    GetLocale().QueryString(
                        IDS_MEDIA_OVERFLOW_MENU_TRACK_SELECTION_SUBMENU_TITLE)));
-  header_item->setAttribute(html_names::kRoleAttr, AtomicString("button"));
+  header_item->setAttribute(html_names::kRoleAttr, keywords::kButton);
   header_item->setAttribute(html_names::kAriaLabelAttr,
                             AtomicString(GetLocale().QueryString(
                                 IDS_AX_MEDIA_BACK_TO_OPTIONS_BUTTON)));

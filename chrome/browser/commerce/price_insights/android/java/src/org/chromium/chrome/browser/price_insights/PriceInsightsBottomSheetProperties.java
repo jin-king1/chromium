@@ -7,12 +7,14 @@ package org.chromium.chrome.browser.price_insights;
 import android.view.View;
 import android.view.View.OnClickListener;
 
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modelutil.PropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableBooleanPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableIntPropertyKey;
 import org.chromium.ui.modelutil.PropertyModel.WritableObjectPropertyKey;
 
 /** Properties for price insights bottom sheet. */
+@NullMarked
 public class PriceInsightsBottomSheetProperties {
     public static final WritableObjectPropertyKey<String> PRICE_TRACKING_TITLE =
             new WritableObjectPropertyKey<>();
@@ -64,16 +66,5 @@ public class PriceInsightsBottomSheetProperties {
                 PRICE_HISTORY_CHART,
                 OPEN_URL_BUTTON_VISIBLE,
                 OPEN_URL_BUTTON_ON_CLICK_LISTENER
-            };
-
-    public static final PropertyKey[] PRICE_TRACKING_KEYS =
-            new PropertyKey[] {
-                PRICE_TRACKING_TITLE,
-                PRICE_TRACKING_BUTTON_TEXT,
-                PRICE_TRACKING_BUTTON_ICON,
-                PRICE_TRACKING_BUTTON_FOREGROUND_COLOR,
-                PRICE_TRACKING_BUTTON_BACKGROUND_COLOR,
-                PRICE_TRACKING_BUTTON_ENABLED,
-                PRICE_TRACKING_BUTTON_ON_CLICK_LISTENER
             };
 }

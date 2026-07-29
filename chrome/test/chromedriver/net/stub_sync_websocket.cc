@@ -16,10 +16,10 @@
 
 namespace {
 
-bool ParseCommand(const base::Value::Dict& command,
+bool ParseCommand(const base::DictValue& command,
                   int* cmd_id,
                   std::string* method,
-                  base::Value::Dict* params,
+                  base::DictValue* params,
                   std::string* session_id) {
   std::optional<int> maybe_id = command.FindInt("id");
   EXPECT_TRUE(maybe_id);
@@ -44,7 +44,7 @@ bool ParseCommand(const base::Value::Dict& command,
   }
 
   // params might miss, this is acceptable
-  const base::Value::Dict* maybe_params = command.FindDict("params");
+  const base::DictValue* maybe_params = command.FindDict("params");
   if (maybe_params) {
     *params = maybe_params->Clone();
   }
@@ -55,9 +55,10 @@ bool ParseCommand(const base::Value::Dict& command,
 bool ParseMessage(const std::string& message,
                   int* cmd_id,
                   std::string* method,
-                  base::Value::Dict* params,
+                  base::DictValue* params,
                   std::string* session_id) {
-  std::optional<base::Value> value = base::JSONReader::Read(message);
+  std::optional<base::Value> value =
+      base::JSONReader::Read(message, base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   EXPECT_TRUE(value);
   EXPECT_TRUE(value && value->is_dict());
   if (!value || !value->is_dict()) {
@@ -72,10 +73,10 @@ bool ParseMessage(const std::string& message,
 StubSyncWebSocket::StubSyncWebSocket() {
   AddCommandHandler(
       "Inspector.enable",
-      base::BindRepeating([](int cmd_id, const base::Value::Dict& params,
-                             base::Value::Dict& response) {
+      base::BindRepeating([](int cmd_id, const base::DictValue& params,
+                             base::DictValue& response) {
         response.Set("id", cmd_id);
-        response.Set("result", base::Value::Dict());
+        response.Set("result", base::DictValue());
         return true;
       }));
 }
@@ -99,7 +100,7 @@ bool StubSyncWebSocket::Send(const std::string& message) {
   }
   int cmd_id;
   std::string method;
-  base::Value::Dict params;
+  base::DictValue params;
   std::string session_id;
 
   if (!ParseMessage(message, &cmd_id, &method, &params, &session_id)) {
@@ -108,14 +109,13 @@ bool StubSyncWebSocket::Send(const std::string& message) {
 
   if (connect_complete_) {
     auto it = command_handlers_.find(method);
-    base::Value::Dict response;
+    base::DictValue response;
     if (it == command_handlers_.end() ||
         !it->second.Run(cmd_id, params, response)) {
       GenerateDefaultResponse(cmd_id, response);
     }
-    std::string serialized_response;
-    base::JSONWriter::Write(base::Value(std::move(response)),
-                            &serialized_response);
+    std::string serialized_response =
+        base::WriteJson(base::Value(std::move(response))).value_or("");
     if (response_limit_ > 0) {
       --response_limit_;
       queued_response_.push(std::move(serialized_response));
@@ -158,9 +158,9 @@ bool StubSyncWebSocket::PopMessage(std::string* dest) {
 }
 
 void StubSyncWebSocket::GenerateDefaultResponse(int cmd_id,
-                                                base::Value::Dict& response) {
+                                                base::DictValue& response) {
   response.Set("id", cmd_id);
-  base::Value::Dict result;
+  base::DictValue result;
   result.Set("param", 1);
   response.Set("result", std::move(result));
 }
@@ -205,13 +205,13 @@ void StubSyncWebSocket::EnqueueHandshakeResponse(int cmd_id,
       handshake_target_set_autoattach_handled_ ||
       (handshake_add_script_handled_ && handshake_runtime_eval_handled_);
 
-  base::Value::Dict response;
+  base::DictValue response;
   response.Set("id", cmd_id);
-  base::Value::Dict result;
+  base::DictValue result;
   result.Set("param", 1);
   response.Set("result", std::move(result));
-  std::string message;
-  base::JSONWriter::Write(base::Value(std::move(response)), &message);
+  std::string message =
+      base::WriteJson(base::Value(std::move(response))).value_or("");
   if (response_limit_ > 0) {
     --response_limit_;
     queued_response_.push(std::move(message));

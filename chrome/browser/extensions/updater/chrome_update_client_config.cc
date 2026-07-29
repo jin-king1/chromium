@@ -24,6 +24,7 @@
 #include "base/time/time.h"
 #include "base/version.h"
 #include "chrome/browser/component_updater/component_updater_utils.h"
+#include "chrome/browser/extensions/updater/authenticated_network_fetcher.h"
 #include "chrome/browser/extensions/updater/extension_update_client_command_line_config_policy.h"
 #include "chrome/browser/extensions/updater/extension_updater_switches.h"
 #include "chrome/browser/google/google_brand.h"
@@ -34,6 +35,7 @@
 #include "components/services/patch/content/patch_service.h"
 #include "components/services/unzip/content/unzip_service.h"
 #include "components/update_client/activity_data_service.h"
+#include "components/update_client/crx_cache.h"
 #include "components/update_client/crx_downloader_factory.h"
 #include "components/update_client/net/network_chromium.h"
 #include "components/update_client/patch/patch_impl.h"
@@ -48,6 +50,9 @@
 #include "content/public/browser/storage_partition.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_prefs_observer.h"
+#include "extensions/buildflags/buildflags.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 namespace extensions {
 
@@ -183,7 +188,14 @@ ChromeUpdateClientConfig::ChromeUpdateClientConfig(
           base::BindRepeating(&extensions::GetPrefService, context_),
           std::make_unique<ExtensionActivityDataService>(
               ExtensionPrefs::Get(context)))),
-      url_override_(url_override) {}
+      url_override_(url_override) {
+  base::FilePath path;
+  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &path);
+  crx_cache_ = base::MakeRefCounted<update_client::CrxCache>(
+      result ? std::optional<base::FilePath>(
+                   path.AppendASCII("extensions_crx_cache"))
+             : std::nullopt);
+}
 
 ChromeUpdateClientConfig::~ChromeUpdateClientConfig() = default;
 
@@ -265,15 +277,16 @@ ChromeUpdateClientConfig::GetNetworkFetcherFactory() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
   if (!network_fetcher_factory_) {
     network_fetcher_factory_ =
-        base::MakeRefCounted<update_client::NetworkFetcherChromiumFactory>(
-            context_->GetDefaultStoragePartition()
-                ->GetURLLoaderFactoryForBrowserProcess(),
-            // Only extension updates that require authentication are served
-            // from chrome.google.com, so send cookies if and only if that is
-            // the download domain.
-            base::BindRepeating([](const GURL& url) {
-              return url.DomainIs("chrome.google.com");
-            }));
+        base::MakeRefCounted<AuthenticatedNetworkFetcherFactory>(
+            base::MakeRefCounted<update_client::NetworkFetcherChromiumFactory>(
+                context_->GetDefaultStoragePartition()
+                    ->GetURLLoaderFactoryForBrowserProcess(),
+                // Only extension updates that require authentication are served
+                // from chrome.google.com, so send cookies if and only if that
+                // is the download domain.
+                base::BindRepeating([](const GURL& url) {
+                  return url.DomainIs("chrome.google.com");
+                })));
   }
   return network_fetcher_factory_;
 }
@@ -380,14 +393,17 @@ void ChromeUpdateClientConfig::SetChromeUpdateClientConfigFactoryForTesting(
   GetFactoryCallback() = factory;
 }
 
-std::optional<base::FilePath> ChromeUpdateClientConfig::GetCrxCachePath()
+scoped_refptr<update_client::CrxCache> ChromeUpdateClientConfig::GetCrxCache()
     const {
-  base::FilePath path;
-  bool result = base::PathService::Get(chrome::DIR_USER_DATA, &path);
-  return result ? std::optional<base::FilePath>(
-                      path.AppendASCII("extensions_crx_cache"))
-                : std::nullopt;
+  return crx_cache_;
 }
+
+#if BUILDFLAG(CHROME_FOR_TESTING)
+std::vector<std::string> ChromeUpdateClientConfig::GetRequiredComponents()
+    const {
+  return {};
+}
+#endif
 
 bool ChromeUpdateClientConfig::IsConnectionMetered() const {
   return impl_.IsConnectionMetered();

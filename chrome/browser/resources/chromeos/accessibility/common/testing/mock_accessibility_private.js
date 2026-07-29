@@ -308,6 +308,21 @@ class MockAccessibilityPrivate {
         }
       },
     };
+
+    this.onSelectToSpeakKeysPressedChanged = {
+      addListener: listener => {},
+      removeListener: listener => {},
+    };
+
+    this.onSelectToSpeakMouseChanged = {
+      addListener: listener => {},
+      removeListener: listener => {},
+    };
+
+    this.onSelectToSpeakContextMenuClicked = {
+      addListener: listener => {},
+      removeListener: listener => {},
+    };
   }
 
   /**
@@ -386,15 +401,22 @@ class MockAccessibilityPrivate {
    * Whether a feature is enabled. This doesn't look at command line flags; set
    * enabled state with MockAccessibilityPrivate::enableFeatureForTest.
    * @param {AccessibilityFeature} feature
-   * @param {function(boolean): void} callback
+   * @param {function(boolean): void} [callback]
    */
   isFeatureEnabled(feature, callback) {
-    callback(this.enabledFeatures_.has(feature));
+    if (callback) {
+      callback(this.enabledFeatures_.has(feature));
+      return;
+    }
+
+    return Promise.resolve(this.enabledFeatures_.has(feature));
   }
 
   /**
    * Creates a synthetic keyboard event.
    * @param {chrome.accessibilityPrivate.SyntheticKeyboardEvent} event
+   * @param {boolean} useRewriters
+   * @param {boolean} isRepeat
    */
   sendSyntheticKeyEvent(event, useRewriters, isRepeat) {
     event.useRewriters = useRewriters;
@@ -405,12 +427,22 @@ class MockAccessibilityPrivate {
 
   /** @return {?PumpkinData} */
   installPumpkinForDictation(callback) {
-    callback(MockAccessibilityPrivate.pumpkinData_);
+    if (callback) {
+      callback(MockAccessibilityPrivate.pumpkinData_);
+      return;
+    }
+
+    return Promise.resolve(MockAccessibilityPrivate.pumpkinData_);
   }
 
   /** @return {?FaceGazeAssets} */
   installFaceGazeAssets(callback) {
-    callback(this.faceGazeAssets_);
+    if (callback) {
+      callback(this.faceGazeAssets_);
+      return;
+    }
+
+    return Promise.resolve(this.faceGazeAssets_);
   }
 
   /** Called in order to toggle FaceGaze gesture info for settings. */
@@ -541,10 +573,10 @@ class MockAccessibilityPrivate {
    * occur when the user or a chrome extension toggles Dictation active state.
    * @param {boolean} activated
    */
-  callOnToggleDictation(activated) {
+  async callOnToggleDictation(activated) {
     this.dictationActivated_ = activated;
     if (this.dictationToggleListener_) {
-      this.dictationToggleListener_(activated);
+      await this.dictationToggleListener_(activated);
     }
   }
 
@@ -643,7 +675,12 @@ class MockAccessibilityPrivate {
 
   /** @return {!Array<!chrome.accessibilityPrivate.ScreenRect>} */
   getDisplayBounds(callback) {
-    callback(this.displayBounds_);
+    if (callback) {
+      callback(this.displayBounds_);
+      return;
+    }
+
+    return Promise.resolve(this.displayBounds_);
   }
 
   /**
@@ -714,7 +751,7 @@ class MockAccessibilityPrivate {
     };
 
     const data = {};
-    const pumpkinDir = '../../accessibility_common/third_party/pumpkin';
+    const pumpkinDir = `../../accessibility_common/third_party/pumpkin`;
     data.js_pumpkin_tagger_bin_js =
         await getFileBytes(`${pumpkinDir}/js_pumpkin_tagger_bin.js`);
     data.tagger_wasm_main_js =
@@ -769,7 +806,7 @@ class MockAccessibilityPrivate {
 
     const assets = {};
     const mediapipeDir =
-        '../../accessibility_common/third_party/mediapipe_task_vision';
+        `../../accessibility_common/third_party/mediapipe_task_vision`;
     assets.model = await getFileBytes(`${mediapipeDir}/face_landmarker.task`);
     assets.wasm =
         await getFileBytes(`${mediapipeDir}/vision_wasm_internal.wasm`);
@@ -781,12 +818,31 @@ class MockAccessibilityPrivate {
    * @param {string} description
    * @param {?string|undefined} cancelName
    * @param {function(boolean): void} callback
+   * @return {!Promise<boolean>} if `callback` is not provided.
    */
-  showConfirmationDialog(title, description, cancelName, callback) {}
+  showConfirmationDialog(title, description, cancelName, callback) {
+    if (callback) {
+      // Do not invoke `callback` because tests do not run WebCamFaceLandmarker
+      // init.
+      return;
+    }
 
+    // Similarly, returns a promise that never resolves.
+    return new Promise(resolve => {});
+  }
+
+  /**
+   * @param {!chrome.accessibilityPrivate.ScreenPoint} target
+   * @param {!chrome.accessibilityPrivate.ScrollDirection} direction
+   */
   scrollAtPoint(target, direction) {
     this.scrollAtPointData_.count += 1;
     this.scrollAtPointData_.target = target;
     this.scrollAtPointData_.direction = direction;
   }
+
+  /**
+   * No-op to prevent error in testing.
+   */
+  setSelectToSpeakState(state) {}
 }

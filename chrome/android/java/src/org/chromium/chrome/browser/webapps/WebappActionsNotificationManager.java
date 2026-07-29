@@ -4,17 +4,19 @@
 
 package org.chromium.chrome.browser.webapps;
 
+import static org.chromium.build.NullUtil.assumeNonNull;
+
 import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 
-import androidx.annotation.NonNull;
-
 import org.chromium.base.ContextUtils;
 import org.chromium.base.IntentUtils;
 import org.chromium.base.metrics.RecordUserAction;
 import org.chromium.blink.mojom.DisplayMode;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.IntentHandler;
 import org.chromium.chrome.browser.browserservices.intents.BrowserServicesIntentDataProvider;
@@ -43,13 +45,12 @@ import java.lang.ref.WeakReference;
  * of goals: - Presents the current URL. - Exposes 'Share' and 'Open in Chrome' actions. - Messages
  * that Web App runs in Chrome.
  */
+@NullMarked
 public class WebappActionsNotificationManager implements PauseResumeWithNativeObserver {
-    private static final String ACTION_SHARE =
-            "org.chromium.chrome.browser.webapps.NOTIFICATION_ACTION_SHARE";
-    private static final String ACTION_OPEN_IN_CHROME =
-            "org.chromium.chrome.browser.webapps.NOTIFICATION_ACTION_OPEN_IN_CHROME";
-    private static final String ACTION_FOCUS =
-            "org.chromium.chrome.browser.webapps.NOTIFICATION_ACTION_FOCUS";
+    static final String ACTION_PREFIX = "org.chromium.chrome.browser.webapps.NOTIFICATION_ACTION_";
+    private static final String ACTION_SHARE = ACTION_PREFIX + "SHARE";
+    private static final String ACTION_OPEN_IN_CHROME = ACTION_PREFIX + "OPEN_IN_CHROME";
+    private static final String ACTION_FOCUS = ACTION_PREFIX + "FOCUS";
 
     private final CustomTabActivityTabProvider mTabProvider;
     private final BrowserServicesIntentDataProvider mIntentDataProvider;
@@ -74,7 +75,7 @@ public class WebappActionsNotificationManager implements PauseResumeWithNativeOb
     }
 
     private static void maybeShowNotification(
-            Tab tab, BrowserServicesIntentDataProvider intentDataProvider) {
+            @Nullable Tab tab, BrowserServicesIntentDataProvider intentDataProvider) {
         WebappExtras webappExtras = intentDataProvider.getWebappExtras();
         if (tab == null || webappExtras == null) return;
 
@@ -94,7 +95,7 @@ public class WebappActionsNotificationManager implements PauseResumeWithNativeOb
     }
 
     private static NotificationWrapper createNotification(
-            Context appContext, Tab tab, @NonNull WebappExtras webappExtras) {
+            Context appContext, Tab tab, WebappExtras webappExtras) {
         // The pending intents target an activity (instead of a service or a broadcast receiver) so
         // that the notification tray closes when a user taps the one of the notification action
         // links.
@@ -168,9 +169,7 @@ public class WebappActionsNotificationManager implements PauseResumeWithNativeOb
         if (ACTION_SHARE.equals(intent.getAction())) {
             // Not routing through onMenuOrKeyboardAction to control UMA String.
             Tab tab = customTabActivity.getActivityTab();
-            customTabActivity
-                    .getShareDelegateSupplier()
-                    .get()
+            assumeNonNull(customTabActivity.getShareDelegateSupplier().get())
                     .share(tab, false, ShareOrigin.WEBAPP_NOTIFICATION);
             RecordUserAction.record("Webapp.NotificationShare");
             return true;

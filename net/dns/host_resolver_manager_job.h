@@ -9,6 +9,7 @@
 #include <deque>
 #include <memory>
 #include <optional>
+#include <variant>
 #include <vector>
 
 #include "base/containers/linked_list.h"
@@ -28,17 +29,19 @@
 #include "net/dns/public/dns_query_type.h"
 #include "net/dns/public/secure_dns_mode.h"
 #include "net/log/net_log_with_source.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace net {
 
 class ResolveContext;
+class HostResolverInternalResult;
 class HostResolverMdnsTask;
 class HostResolverNat64Task;
 
 // Key used to identify a HostResolverManager::Job.
 struct HostResolverManager::JobKey {
-  JobKey(HostResolver::Host host, ResolveContext* resolve_context);
+  JobKey(HostResolver::Host host,
+         handles::NetworkHandle target_network,
+         ResolveContext* resolve_context);
   ~JobKey();
 
   JobKey(const JobKey& other);
@@ -56,8 +59,17 @@ struct HostResolverManager::JobKey {
   base::WeakPtr<ResolveContext> resolve_context;
 
   HostCache::Key ToCacheKey(bool secure) const;
-
+  // TODO(crbug.com/495684670): Remove this once the old way of doing
+  // multi-networking has been removed. Currently, this is used as a compat
+  // layer between the two.
   handles::NetworkHandle GetTargetNetwork() const;
+
+ private:
+  // TODO(crbug.com/495684670): Make this public once the old way of doing
+  // multi-networking has been removed. Currently, this should always be
+  // accessed via GetTargetNetwork(), which provides a compat layer between the
+  // two.
+  handles::NetworkHandle target_network = handles::kInvalidNetworkHandle;
 };
 
 // Aggregates all Requests for the same Key. Dispatched via
@@ -66,6 +78,58 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
                                  public HostResolverDnsTask::Delegate,
                                  public DnsTaskResultsManager::Delegate {
  public:
+  // Describes the complete fallback path taken to successfully resolve a host.
+  // Used to analyze the frequency and success rate of fallbacks between Secure
+  // DNS, built-in Classic DNS (Do53), Platform DNS, and the System Resolver.
+  //
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(ResolveFallbackPath)
+  enum class ResolveFallbackPath {
+    // Successfully resolved via Secure DNS (DoH) without fallback.
+    kSecureSuccess = 0,
+    // Secure DNS failed, fallback to Classic DNS (built-in Do53) succeeded.
+    kSecureFallbackToClassicSuccess = 1,
+    // Secure DNS failed, fallback to Platform DNS succeeded.
+    kSecureFallbackToPlatformSuccess = 2,
+    // Secure DNS failed, fallback directly to System Resolver succeeded.
+    kSecureFallbackToSystemSuccess = 3,
+    // Secure DNS and Classic DNS both failed, fallback to System Resolver
+    // succeeded.
+    kSecureFallbackToClassicFallbackToSystemSuccess = 4,
+    // Secure DNS and Platform DNS both failed, fallback to System Resolver
+    // succeeded.
+    kSecureFallbackToPlatformFallbackToSystemSuccess = 5,
+    // Successfully resolved via Classic DNS (built-in Do53) without fallback.
+    kClassicSuccess = 6,
+    // Successfully resolved via Platform DNS without fallback.
+    kPlatformSuccess = 7,
+    // Classic DNS failed, fallback to System Resolver succeeded.
+    kClassicFallbackToSystemSuccess = 8,
+    // Platform DNS failed, fallback to System Resolver succeeded.
+    kPlatformFallbackToSystemSuccess = 9,
+    // Successfully resolved via System Resolver from the start (no built-in DNS
+    // attempted).
+    kSystemSuccess = 10,
+    kMaxValue = kSystemSuccess,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:ResolveFallbackPath)
+
+  // Helper method to calculate the ResolveFallbackPath based on the final
+  // successful TaskType and the history of failed attempts. Returns
+  // std::nullopt if the combination is not applicable for the metrics.
+  //
+  // WARNING: This method assumes the current task ordering configured by
+  // HostResolverManager::ResolveLocally() and
+  // HostResolverManager::CreateTaskSequence(). If you modify the task ordering
+  // in those methods, update this method accordingly.
+  static std::optional<ResolveFallbackPath> CalculateResolvePath(
+      TaskType successful_task_type,
+      bool secure_dns_failed,
+      bool classic_dns_failed,
+      bool platform_dns_failed);
+
   // Creates new job for |key| where |request_net_log| is bound to the
   // request that spawned it.
   Job(const base::WeakPtr<HostResolverManager>& resolver,
@@ -150,6 +214,31 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   }
 
  private:
+  // Explains why a Job didn't attempt HTTPS query.
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(HttpsNotAttemptedReason)
+  enum class HttpsNotAttemptedReason {
+    // The reason is unknown. This is the last resort option and should be
+    // avoided as much as possible.
+    kUnknown = 0,
+    // Querying HTTPS is disabled.
+    kQueryingHttpsDisabled = 1,
+    // Built-in DNS resolver is disabled.
+    kBuiltInResolverDisabled = 2,
+    // No DnsClient.
+    kNoDnsClient = 3,
+    // DnsTask wasn't scheduled because it hadn't been working for a while.
+    kFallbackFromInsecureTransactionPreferred = 4,
+    // Insecure DnsTask was not allowed to query HTTPS.
+    kInsecureDnsTaskDisabled = 5,
+    // DnsTask was executed but fell back to the system task.
+    kFallbackToSystemTaskAfterDnsTask = 6,
+    kMaxValue = kFallbackToSystemTaskAfterDnsTask,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/net/enums.xml:HttpsNotAttemptedReason)
+
   // Keeps track of the highest priority.
   class PriorityTracker {
    public:
@@ -190,7 +279,13 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
     std::array<size_t, NUM_PRIORITIES> counts_ = {};
   };
 
-  base::Value::Dict NetLogJobCreationParams(const NetLogSource& source);
+  // This is private static, instead of being in an anonymous namespace, to have
+  // access to HostResolverManager::TaskType. Otherwise,
+  // HostResolverManager::TaskType would need to be made public.
+  static TaskType AttemptModeToTaskType(
+      DnsTransactionFactory::AttemptMode attempt_mode);
+
+  base::DictValue NetLogJobCreationParams(const NetLogSource& source);
 
   void Finish();
 
@@ -227,7 +322,7 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
 
   void InsecureCacheLookup();
 
-  void StartDnsTask(bool secure);
+  void StartDnsTask(DnsTransactionFactory::AttemptMode attempt_mode);
   void StartNextDnsTransaction();
   // Called if DnsTask fails. It is posted from StartDnsTask, so Job may be
   // deleted before this callback. In this case dns_task is deleted as well,
@@ -236,29 +331,34 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
                         base::TimeDelta duration,
                         bool allow_fallback,
                         const HostCache::Entry& failure_results,
-                        bool secure);
+                        DnsTransactionFactory::AttemptMode attempt_mode);
   // HostResolverDnsTask::Delegate implementation:
-  void OnDnsTaskComplete(base::TimeTicks start_time,
-                         bool allow_fallback,
-                         HostResolverDnsTask::Results results,
-                         bool secure) override;
+  void OnDnsTaskComplete(
+      base::TimeTicks start_time,
+      bool allow_fallback,
+      HostResolverDnsTask::Results results,
+      DnsTransactionFactory::AttemptMode attempt_mode) override;
   void OnIntermediateTransactionsComplete(
       std::optional<HostResolverDnsTask::SingleTransactionResults>
           single_transaction_results) override;
+  bool IsHappyEyeballsV3Enabled() const override;
   void AddTransactionTimeQueued(base::TimeDelta time_queued) override;
 
   // DnsTaskResultsManager::Delegate implementation:
   void OnServiceEndpointsUpdated() override;
 
   void StartMdnsTask();
-  void OnMdnsTaskComplete();
+  void OnMdnsTaskComplete(base::TimeTicks start_time);
   void OnMdnsImmediateFailure(int rv);
 
   void StartNat64Task();
-  void OnNat64TaskComplete();
+  void OnNat64TaskComplete(base::TimeTicks start_time,
+                           std::unique_ptr<HostResolverInternalResult> result);
 
   void RecordJobHistograms(const HostCache::Entry& results,
-                           std::optional<TaskType> task_type);
+                           std::optional<TaskType> successful_task_type);
+
+  void RecordJobHttpsHistograms();
 
   void MaybeCacheResult(const HostCache::Entry& results,
                         base::TimeDelta ttl,
@@ -269,20 +369,27 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   // If not |allow_cache|, result will not be stored in the host cache, even if
   // result would otherwise allow doing so. Update the key to reflect |secure|,
   // which indicates whether or not the result was obtained securely.
-  void CompleteRequests(const HostCache::Entry& results,
-                        base::TimeDelta ttl,
-                        bool allow_cache,
-                        bool secure,
-                        std::optional<TaskType> task_type);
+  void CompleteRequests(
+      const HostCache::Entry& results,
+      base::TimeDelta ttl,
+      bool allow_cache,
+      bool secure,
+      std::optional<TaskType> successful_task_type,
+      std::optional<base::TimeDelta> task_completion_delay = std::nullopt,
+      std::optional<DohResolutionDetails> doh_details = std::nullopt);
 
   void CompleteRequestsWithoutCache(
       const HostCache::Entry& results,
       std::optional<HostCache::EntryStaleness> stale_info,
-      TaskType task_type);
+      TaskType successful_task_type,
+      std::optional<base::TimeDelta> task_completion_delay = std::nullopt);
 
   // Convenience wrapper for CompleteRequests in case of failure.
   void CompleteRequestsWithError(int net_error,
-                                 std::optional<TaskType> task_type);
+                                 std::optional<TaskType> successful_task_type);
+
+  // Notifies requests that the job was cancelled.
+  void CancelRequests();
 
   RequestPriority priority() const override;
 
@@ -300,10 +407,11 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   struct CompletionResult {
     const HostCache::Entry entry;
     base::TimeDelta ttl;
-    bool secure;
+    DnsTransactionFactory::AttemptMode attempt_mode;
   };
 
-  // Results to use in last-ditch attempt to complete request.
+  // Results of failed tasks, used in last-ditch attempt to complete request or
+  // to record fallback path metrics.
   std::vector<CompletionResult> completion_results_;
 
   // The sequence of tasks to run in this Job. Tasks may be aborted and removed
@@ -329,8 +437,17 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   // Result of DnsTask.
   int dns_task_error_ = OK;
 
+  // Set to true when this Job executed DnsTask.
+  bool dns_task_executed_ = false;
+
+  // Set to whether DnsTask disabled HTTPS query. Set only when DnsTask
+  // succeeds.
+  bool dns_task_https_disabled_ = false;
+
   raw_ptr<const base::TickClock> tick_clock_;
   base::TimeTicks start_time_;
+
+  bool secure_dns_attempted_ = false;
 
   HostResolver::HttpsSvcbOptions https_svcb_options_;
 
@@ -339,6 +456,9 @@ class HostResolverManager::Job : public PrioritizedDispatcher::Job,
   // Resolves the host using the system DNS resolver, which can be overridden
   // for tests.
   std::unique_ptr<HostResolverSystemTask> system_task_;
+
+  // Set to true when this Job falls back to the system DNS task after DNS task.
+  bool fallback_to_system_task_after_dns_task_ = false;
 
   // Resolves the host using a DnsTransaction.
   std::unique_ptr<HostResolverDnsTask> dns_task_;

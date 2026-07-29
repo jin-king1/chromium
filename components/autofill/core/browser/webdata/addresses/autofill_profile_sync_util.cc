@@ -4,17 +4,23 @@
 
 #include "components/autofill/core/browser/webdata/addresses/autofill_profile_sync_util.h"
 
-#include "base/strings/string_util.h"
+#include <memory>
+#include <string>
+
+#include "base/check.h"
+#include "base/feature_list.h"
 #include "base/strings/utf_string_conversions.h"
+#include "base/time/time.h"
 #include "base/uuid.h"
+#include "components/autofill/core/browser/country_type.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_structured_address_component.h"
 #include "components/autofill/core/browser/data_quality/autofill_data_util.h"
 #include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/geo/country_names.h"
-#include "components/autofill/core/browser/proto/autofill_sync.pb.h"
 #include "components/autofill/core/common/autofill_constants.h"
 #include "components/autofill/core/common/autofill_features.h"
+#include "components/sync/protocol/autofill_specifics.pb.h"
 #include "components/sync/protocol/entity_data.h"
 
 using sync_pb::AutofillProfileSpecifics;
@@ -66,12 +72,12 @@ ConvertProfileToSpecificsVerificationStatus(VerificationStatus profile_status) {
   }
 }
 
+}  // namespace
+
 bool IsAutofillProfileSpecificsValid(
     const AutofillProfileSpecifics& specifics) {
   return base::Uuid::ParseCaseInsensitive(specifics.guid()).is_valid();
 }
-
-}  // namespace
 
 std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
     const AutofillProfile& entry) {
@@ -99,8 +105,9 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
   // syncing functionality, all profiles are explicitly synced as verified.
   specifics->set_deprecated_origin(kSettingsOrigin);
 
-  if (!entry.profile_label().empty())
+  if (!entry.profile_label().empty()) {
     specifics->set_profile_label(entry.profile_label());
+  }
 
   specifics->set_use_count(entry.usage_history().use_count());
   specifics->set_use_date(entry.usage_history().use_date().ToTimeT());
@@ -114,12 +121,6 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
       base::UTF16ToUTF8(entry.GetRawInfo(NAME_MIDDLE))));
   specifics->add_name_last(
       data_util::TruncateUTF8(base::UTF16ToUTF8(entry.GetRawInfo(NAME_LAST))));
-  if (base::FeatureList::IsEnabled(features::kAutofillSupportLastNamePrefix)) {
-    specifics->add_name_last_prefix(data_util::TruncateUTF8(
-        base::UTF16ToUTF8(entry.GetRawInfo(NAME_LAST_PREFIX))));
-    specifics->add_name_last_core(data_util::TruncateUTF8(
-        base::UTF16ToUTF8(entry.GetRawInfo(NAME_LAST_CORE))));
-  }
   specifics->add_name_last_first(data_util::TruncateUTF8(
       base::UTF16ToUTF8(entry.GetRawInfo(NAME_LAST_FIRST))));
   specifics->add_name_last_second(data_util::TruncateUTF8(
@@ -135,14 +136,6 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
       entry.GetVerificationStatus(NAME_MIDDLE)));
   specifics->add_name_last_status(ConvertProfileToSpecificsVerificationStatus(
       entry.GetVerificationStatus(NAME_LAST)));
-  if (base::FeatureList::IsEnabled(features::kAutofillSupportLastNamePrefix)) {
-    specifics->add_name_last_prefix_status(
-        ConvertProfileToSpecificsVerificationStatus(
-            entry.GetVerificationStatus(NAME_LAST_PREFIX)));
-    specifics->add_name_last_core_status(
-        ConvertProfileToSpecificsVerificationStatus(
-            entry.GetVerificationStatus(NAME_LAST_CORE)));
-  }
   specifics->add_name_last_first_status(
       ConvertProfileToSpecificsVerificationStatus(
           entry.GetVerificationStatus(NAME_LAST_FIRST)));
@@ -155,27 +148,24 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
   specifics->add_name_full_status(ConvertProfileToSpecificsVerificationStatus(
       entry.GetVerificationStatus(NAME_FULL)));
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillSupportPhoneticNameForJP)) {
-    // Set alternative name-related values.
-    specifics->set_alternative_full_name(
-        base::UTF16ToUTF8(entry.GetRawInfo(ALTERNATIVE_FULL_NAME)));
-    specifics->set_alternative_given_name(
-        base::UTF16ToUTF8(entry.GetRawInfo(ALTERNATIVE_GIVEN_NAME)));
-    specifics->set_alternative_family_name(
-        base::UTF16ToUTF8(entry.GetRawInfo(ALTERNATIVE_FAMILY_NAME)));
+  // Set alternative name-related values.
+  specifics->set_alternative_full_name(
+      base::UTF16ToUTF8(entry.GetRawInfo(ALTERNATIVE_FULL_NAME)));
+  specifics->set_alternative_given_name(
+      base::UTF16ToUTF8(entry.GetRawInfo(ALTERNATIVE_GIVEN_NAME)));
+  specifics->set_alternative_family_name(
+      base::UTF16ToUTF8(entry.GetRawInfo(ALTERNATIVE_FAMILY_NAME)));
 
-    // Set alternative name-related statuses.
-    specifics->set_alternative_full_name_status(
-        ConvertProfileToSpecificsVerificationStatus(
-            entry.GetVerificationStatus(ALTERNATIVE_FULL_NAME)));
-    specifics->set_alternative_given_name_status(
-        ConvertProfileToSpecificsVerificationStatus(
-            entry.GetVerificationStatus(ALTERNATIVE_GIVEN_NAME)));
-    specifics->set_alternative_family_name_status(
-        ConvertProfileToSpecificsVerificationStatus(
-            entry.GetVerificationStatus(ALTERNATIVE_FAMILY_NAME)));
-  }
+  // Set alternative name-related statuses.
+  specifics->set_alternative_full_name_status(
+      ConvertProfileToSpecificsVerificationStatus(
+          entry.GetVerificationStatus(ALTERNATIVE_FULL_NAME)));
+  specifics->set_alternative_given_name_status(
+      ConvertProfileToSpecificsVerificationStatus(
+          entry.GetVerificationStatus(ALTERNATIVE_GIVEN_NAME)));
+  specifics->set_alternative_family_name_status(
+      ConvertProfileToSpecificsVerificationStatus(
+          entry.GetVerificationStatus(ALTERNATIVE_FAMILY_NAME)));
 
   // Set email, phone and company values.
   specifics->add_email_address(data_util::TruncateUTF8(
@@ -192,6 +182,12 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
       base::UTF16ToUTF8(entry.GetRawInfo(ADDRESS_HOME_STATE))));
   specifics->set_address_home_zip(data_util::TruncateUTF8(
       base::UTF16ToUTF8(entry.GetRawInfo(ADDRESS_HOME_ZIP))));
+  if (base::FeatureList::IsEnabled(features::kAutofillSupportSplitZipCode)) {
+    specifics->set_address_home_zip_prefix(
+        base::UTF16ToUTF8(entry.GetRawInfo(ADDRESS_HOME_ZIP_PREFIX)));
+    specifics->set_address_home_zip_suffix(
+        base::UTF16ToUTF8(entry.GetRawInfo(ADDRESS_HOME_ZIP_SUFFIX)));
+  }
   specifics->set_address_home_sorting_code(data_util::TruncateUTF8(
       base::UTF16ToUTF8(entry.GetRawInfo(ADDRESS_HOME_SORTING_CODE))));
   specifics->set_address_home_dependent_locality(data_util::TruncateUTF8(
@@ -254,6 +250,14 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
   specifics->set_address_home_zip_status(
       ConvertProfileToSpecificsVerificationStatus(
           entry.GetVerificationStatus(ADDRESS_HOME_ZIP)));
+  if (base::FeatureList::IsEnabled(features::kAutofillSupportSplitZipCode)) {
+    specifics->set_address_home_zip_prefix_status(
+        ConvertProfileToSpecificsVerificationStatus(
+            entry.GetVerificationStatus(ADDRESS_HOME_ZIP_PREFIX)));
+    specifics->set_address_home_zip_suffix_status(
+        ConvertProfileToSpecificsVerificationStatus(
+            entry.GetVerificationStatus(ADDRESS_HOME_ZIP_SUFFIX)));
+  }
   specifics->set_address_home_sorting_code_status(
       ConvertProfileToSpecificsVerificationStatus(
           entry.GetVerificationStatus(ADDRESS_HOME_SORTING_CODE)));
@@ -326,11 +330,10 @@ std::unique_ptr<EntityData> CreateEntityDataFromAutofillProfile(
   return entity_data;
 }
 
-std::optional<AutofillProfile> CreateAutofillProfileFromSpecifics(
+AutofillProfile CreateAutofillProfileFromValidSpecifics(
     const AutofillProfileSpecifics& specifics) {
-  if (!IsAutofillProfileSpecificsValid(specifics)) {
-    return std::nullopt;
-  }
+  CHECK(IsAutofillProfileSpecificsValid(specifics));
+
   // Update the country field, which can contain either a country code (if set
   // by a newer version of Chrome), or a country name (if set by an older
   // version of Chrome).
@@ -385,29 +388,6 @@ std::optional<AutofillProfile> CreateAutofillProfileFromSpecifics(
               : AutofillProfileSpecifics::VerificationStatus::
                     AutofillProfileSpecifics_VerificationStatus_VERIFICATION_STATUS_UNSPECIFIED));
 
-  if (base::FeatureList::IsEnabled(features::kAutofillSupportLastNamePrefix)) {
-    profile.SetRawInfoWithVerificationStatus(
-        NAME_LAST_PREFIX,
-        base::UTF8ToUTF16(specifics.name_last_prefix_size()
-                              ? specifics.name_last_prefix(0)
-                              : std::string()),
-        ConvertSpecificsToProfileVerificationStatus(
-            specifics.name_last_prefix_status_size()
-                ? specifics.name_last_prefix_status(0)
-                : AutofillProfileSpecifics::VerificationStatus::
-                      AutofillProfileSpecifics_VerificationStatus_VERIFICATION_STATUS_UNSPECIFIED));
-
-    profile.SetRawInfoWithVerificationStatus(
-        NAME_LAST_CORE,
-        base::UTF8ToUTF16(specifics.name_last_core_size()
-                              ? specifics.name_last_core(0)
-                              : std::string()),
-        ConvertSpecificsToProfileVerificationStatus(
-            specifics.name_last_core_status_size()
-                ? specifics.name_last_core_status(0)
-                : AutofillProfileSpecifics::VerificationStatus::
-                      AutofillProfileSpecifics_VerificationStatus_VERIFICATION_STATUS_UNSPECIFIED));
-  }
   profile.SetRawInfoWithVerificationStatus(
       NAME_LAST_FIRST,
       base::UTF8ToUTF16(specifics.name_last_first_size()
@@ -453,24 +433,21 @@ std::optional<AutofillProfile> CreateAutofillProfileFromSpecifics(
                       AutofillProfileSpecifics_VerificationStatus_VERIFICATION_STATUS_UNSPECIFIED));
   }
 
-  if (base::FeatureList::IsEnabled(
-          features::kAutofillSupportPhoneticNameForJP)) {
-    profile.SetRawInfoWithVerificationStatus(
-        ALTERNATIVE_FULL_NAME,
-        base::UTF8ToUTF16(specifics.alternative_full_name()),
-        ConvertSpecificsToProfileVerificationStatus(
-            specifics.alternative_full_name_status()));
-    profile.SetRawInfoWithVerificationStatus(
-        ALTERNATIVE_GIVEN_NAME,
-        base::UTF8ToUTF16(specifics.alternative_given_name()),
-        ConvertSpecificsToProfileVerificationStatus(
-            specifics.alternative_given_name_status()));
-    profile.SetRawInfoWithVerificationStatus(
-        ALTERNATIVE_FAMILY_NAME,
-        base::UTF8ToUTF16(specifics.alternative_family_name()),
-        ConvertSpecificsToProfileVerificationStatus(
-            specifics.alternative_family_name_status()));
-  }
+  profile.SetRawInfoWithVerificationStatus(
+      ALTERNATIVE_FULL_NAME,
+      base::UTF8ToUTF16(specifics.alternative_full_name()),
+      ConvertSpecificsToProfileVerificationStatus(
+          specifics.alternative_full_name_status()));
+  profile.SetRawInfoWithVerificationStatus(
+      ALTERNATIVE_GIVEN_NAME,
+      base::UTF8ToUTF16(specifics.alternative_given_name()),
+      ConvertSpecificsToProfileVerificationStatus(
+          specifics.alternative_given_name_status()));
+  profile.SetRawInfoWithVerificationStatus(
+      ALTERNATIVE_FAMILY_NAME,
+      base::UTF8ToUTF16(specifics.alternative_family_name()),
+      ConvertSpecificsToProfileVerificationStatus(
+          specifics.alternative_family_name_status()));
 
   profile.SetRawInfo(EMAIL_ADDRESS,
                      base::UTF8ToUTF16(specifics.email_address_size()
@@ -499,6 +476,19 @@ std::optional<AutofillProfile> CreateAutofillProfileFromSpecifics(
       ADDRESS_HOME_ZIP, base::UTF8ToUTF16(specifics.address_home_zip()),
       ConvertSpecificsToProfileVerificationStatus(
           specifics.address_home_zip_status()));
+
+  if (base::FeatureList::IsEnabled(features::kAutofillSupportSplitZipCode)) {
+    profile.SetRawInfoWithVerificationStatus(
+        ADDRESS_HOME_ZIP_PREFIX,
+        base::UTF8ToUTF16(specifics.address_home_zip_prefix()),
+        ConvertSpecificsToProfileVerificationStatus(
+            specifics.address_home_zip_prefix_status()));
+    profile.SetRawInfoWithVerificationStatus(
+        ADDRESS_HOME_ZIP_SUFFIX,
+        base::UTF8ToUTF16(specifics.address_home_zip_suffix()),
+        ConvertSpecificsToProfileVerificationStatus(
+            specifics.address_home_zip_suffix_status()));
+  }
 
   profile.SetRawInfoWithVerificationStatus(
       ADDRESS_HOME_SORTING_CODE,
@@ -642,7 +632,7 @@ std::optional<AutofillProfile> CreateAutofillProfileFromSpecifics(
   // When adding field types, ensure that they don't need to be added here and
   // update the last checked value.
   // TODO(crbug.com/359768803): Handle alternative names here.
-  static_assert(FieldType::MAX_VALID_FIELD_TYPE == 185,
+  static_assert(FieldType::MAX_VALID_FIELD_TYPE == 220,
                 "New field type needs to be reviewed for inclusion in sync");
 
   // The profile may be in a legacy state. By calling |FinalizeAfterImport()|

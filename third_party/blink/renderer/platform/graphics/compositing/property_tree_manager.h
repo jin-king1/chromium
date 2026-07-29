@@ -40,6 +40,9 @@ class ScrollPaintPropertyNode;
 class SynthesizedClip;
 class TransformPaintPropertyNode;
 
+using StackScrollTranslationVector =
+    HeapVector<Member<const TransformPaintPropertyNode>, 32>;
+
 class PropertyTreeManagerClient {
  public:
   virtual ~PropertyTreeManagerClient() = default;
@@ -160,6 +163,9 @@ class PropertyTreeManager {
   static bool DirectlyUpdatePageScaleTransform(
       cc::LayerTreeHost&,
       const TransformPaintPropertyNode&);
+  static void DirectlyUpdateScrollingContentsCullRect(
+      cc::LayerTreeHost&,
+      const ScrollPaintPropertyNode&);
 
   // This function only updates the cc scroll tree scroll offset and does not
   // update the cc transform node's scroll offset.
@@ -193,7 +199,13 @@ class PropertyTreeManager {
   // TODO(crbug.com/504464): There is ongoing work in cc to delay render surface
   // decision until later phase of the pipeline. Remove premature optimization
   // here once the work is ready.
-  void UpdateConditionalRenderSurfaceReasons(const cc::LayerList& layers);
+  void UpdateConditionalRenderSurfaceReasons(
+      const cc::LayerList& layers,
+      const HashSet<int>& layers_having_text,
+      const HashSet<int>& layers_having_video);
+
+  void EnsureCompositorNodesForAnchorPositionAdjustmentContainers(
+      const StackScrollTranslationVector& scroll_translations);
 
   // The type of operation the current cc effect node applies.
   enum CcEffectType {
@@ -227,13 +239,6 @@ class PropertyTreeManager {
     EffectState() = default;
     explicit EffectState(const CurrentEffectState&);
 
-    // The cc effect node that has the corresponding drawing state to the
-    // effect and clip state from the last
-    // SwitchToEffectNodeWithSynthesizedClip.
-    int effect_id;
-
-    CcEffectType effect_type;
-
     // The effect state of the cc effect node. It's never nullptr.
     Member<const EffectPaintPropertyNode> effect;
 
@@ -249,6 +254,13 @@ class PropertyTreeManager {
     // moved up from the original effect.
     // Otherwise it's |&clip->LocalTransformSpace()|.
     Member<const TransformPaintPropertyNode> transform;
+
+    // The cc effect node that has the corresponding drawing state to the
+    // effect and clip state from the last
+    // SwitchToEffectNodeWithSynthesizedClip.
+    int effect_id;
+
+    CcEffectType effect_type;
 
     // Whether the transform space of this state may be 2d axis misaligned to
     // the containing render surface. As there may be new render surfaces
@@ -293,11 +305,11 @@ class PropertyTreeManager {
     CurrentEffectState() = default;
     explicit CurrentEffectState(const EffectState&);
 
-    int effect_id = 0;
-    CcEffectType effect_type = kEffect;
     const EffectPaintPropertyNode* effect = nullptr;
     const ClipPaintPropertyNode* clip = nullptr;
     const TransformPaintPropertyNode* transform = nullptr;
+    int effect_id = 0;
+    CcEffectType effect_type = kEffect;
     EffectState::Alignment may_be_2d_axis_misaligned_to_render_surface =
         EffectState::kAligned;
     bool contained_by_non_render_surface_synthetic_rounded_clip = false;
@@ -361,6 +373,9 @@ class PropertyTreeManager {
   uint32_t NonCompositedMainThreadRepaintReasons(
       const TransformPaintPropertyNode& scroll_translation) const;
 
+  // The current effect state. Virtually it's the top of the effect stack if
+  // it and effect_stack_ are treated as a whole stack.
+  EffectState current_;
   PropertyTreeManagerClient& client_;
 
   // Property trees which should be updated by the manager.
@@ -378,12 +393,6 @@ class PropertyTreeManager {
 
   LayerListBuilder& layer_list_builder_;
 
-  int new_sequence_number_;
-
-  // The current effect state. Virtually it's the top of the effect stack if
-  // it and effect_stack_ are treated as a whole stack.
-  EffectState current_;
-
   // This keep track of cc effect stack. Whenever a new cc effect is nested,
   // a new entry is pushed, and the entry will be popped when the effect closed.
   // Note: This is a "restore stack", i.e. the top element does not represent
@@ -399,6 +408,9 @@ class PropertyTreeManager {
   // clip_expander of their cc nodes after all effect nodes have been converted.
   HeapVector<Member<const ClipPaintPropertyNode>, 16>
       pixel_moving_filter_clip_expanders_;
+
+  HashSet<CompositorElementId> anchor_position_adjustment_container_ids_;
+  int new_sequence_number_;
 };
 
 }  // namespace blink

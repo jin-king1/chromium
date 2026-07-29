@@ -5,13 +5,13 @@
 #include "ui/views/controls/button/label_button_border.h"
 
 #include <utility>
+#include <variant>
 
 #include "cc/paint/paint_flags.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/canvas.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/skia_conversions.h"
-#include "ui/gfx/sys_color_change_listener.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/button/label_button.h"
@@ -24,8 +24,10 @@ namespace views {
 namespace {
 
 // The text-button hot and pushed image IDs; normal is unadorned by default.
-constexpr int kTextHoveredImages[] = IMAGE_GRID(IDR_TEXTBUTTON_HOVER);
-constexpr int kTextPressedImages[] = IMAGE_GRID(IDR_TEXTBUTTON_PRESSED);
+constexpr ui::NineImageIds kTextHoveredImages =
+    IMAGE_GRID(IDR_TEXTBUTTON_HOVER);
+constexpr ui::NineImageIds kTextPressedImages =
+    IMAGE_GRID(IDR_TEXTBUTTON_PRESSED);
 
 // A helper function to paint the appropriate broder images.
 void PaintHelper(LabelButtonAssetBorder* border,
@@ -33,7 +35,7 @@ void PaintHelper(LabelButtonAssetBorder* border,
                  ui::NativeTheme::State state,
                  const gfx::Rect& rect,
                  const ui::NativeTheme::ExtraParams& extra) {
-  const auto& button = absl::get<ui::NativeTheme::ButtonExtraParams>(extra);
+  const auto& button = std::get<ui::NativeTheme::ButtonExtraParams>(extra);
   Painter* painter =
       border->GetPainter(button.is_focused, Button::GetButtonStateFrom(state));
   // Paint any corresponding unfocused painter if there is no focused painter.
@@ -94,7 +96,7 @@ void LabelButtonAssetBorder::Paint(const View& view, gfx::Canvas* canvas) {
       static_cast<const LabelButton*>(&view);
   gfx::Rect rect(native_theme_delegate->GetThemePaintRect());
   ui::NativeTheme::ExtraParams extra(
-      absl::in_place_type<ui::NativeTheme::ButtonExtraParams>);
+      std::in_place_type<ui::NativeTheme::ButtonExtraParams>);
   const gfx::Animation* animation = native_theme_delegate->GetThemeAnimation();
   ui::NativeTheme::State state = native_theme_delegate->GetThemeState(&extra);
 

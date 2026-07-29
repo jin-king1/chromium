@@ -12,7 +12,6 @@
 #include <string>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/fuchsia/fuchsia_logging.h"
 #include "base/fuchsia/mem_buffer_util.h"
 #include "base/fuchsia/process_context.h"
@@ -100,8 +99,7 @@ class WebEngineIntegrationUserAgentTest : public WebEngineIntegrationTest {
                            version_info::GetMajorVersionNumberAsInt());
 
     // Ensure the field was actually populated.
-    EXPECT_TRUE(
-        base::Contains(expected_ua, version_info::GetMajorVersionNumber()));
+    EXPECT_TRUE(expected_ua.contains(version_info::GetMajorVersionNumber()));
 
     return expected_ua;
   }
@@ -148,12 +146,12 @@ TEST_F(WebEngineIntegrationUserAgentTest, ValidProductOnly) {
   // the product tag.
   std::string result =
       ExecuteJavaScriptWithStringResult("document.body.innerText;");
-  EXPECT_TRUE(base::Contains(result, kValidUserAgentProduct));
+  EXPECT_TRUE(result.contains(kValidUserAgentProduct));
   EXPECT_EQ(result, expected);
 
   // Query & verify that the navigator.userAgent contains the product tag.
   result = ExecuteJavaScriptWithStringResult("navigator.userAgent;");
-  EXPECT_TRUE(base::Contains(result, kValidUserAgentProduct));
+  EXPECT_TRUE(result.contains(kValidUserAgentProduct));
   EXPECT_EQ(result, expected);
 }
 
@@ -173,12 +171,12 @@ TEST_F(WebEngineIntegrationUserAgentTest, ValidProductAndVersion) {
   // both product & version.
   std::string result =
       ExecuteJavaScriptWithStringResult("document.body.innerText;");
-  EXPECT_TRUE(base::Contains(result, kValidUserAgentProductAndVersion));
+  EXPECT_TRUE(result.contains(kValidUserAgentProductAndVersion));
   EXPECT_EQ(result, expected);
 
   // Query & verify that the navigator.userAgent contains product & version.
   result = ExecuteJavaScriptWithStringResult("navigator.userAgent;");
-  EXPECT_TRUE(base::Contains(result, kValidUserAgentProductAndVersion));
+  EXPECT_TRUE(result.contains(kValidUserAgentProductAndVersion));
   EXPECT_EQ(result, expected);
 
   // Verify navigator.platform is empty, see crbug.com/1348646.
@@ -274,7 +272,7 @@ TEST_F(WebEngineIntegrationTest, RemoteDebuggingPort) {
   ASSERT_NO_FATAL_FAILURE(LoadUrlAndExpectResponse(url.spec()));
   navigation_listener()->RunUntilUrlEquals(url);
 
-  base::Value::List devtools_list =
+  base::ListValue devtools_list =
       GetDevToolsListFromPort(remote_debugging_port);
   EXPECT_EQ(devtools_list.size(), 1u);
 
@@ -577,8 +575,28 @@ TEST_F(WebEngineIntegrationMediaTest, PlayAudioToAudioConsumer) {
   ASSERT_EQ(fake_audio_consumer_service_.num_instances(), 1U);
 
   auto pos = fake_audio_consumer_service_.instance(0)->GetMediaPosition();
-  EXPECT_GT(pos, base::Seconds(2.0));
-  EXPECT_LT(pos, base::Seconds(2.5));
+  // TODO(crbug.com/432628104): Tests the media position against the wall time
+  // is less reliable. Looking for a better solution.
+  // Total time of two videos playing back to back is roughly 2.821s,
+  // FakeAudioConsumerService sets 100-500 ms of buffering time. But the buffer
+  // time controls when the renderer starts sending extra data, not the length
+  // of the buffer. So the length of the buffer is always slightly larger than
+  // 100ms to 500ms, roughly 100ms + length of the data being sent from the
+  // renderer (call it chunk length later) to 500ms + chunk length. And the
+  // GetMediaPosition() when EOS is emitted should be between 2.321s - chunk
+  // length to 2.721s - chunk length. Since GetMediaPosition uses wall time and
+  // it needs extra time to process, so also loosen the upper limit to 2.8s.
+  EXPECT_GT(pos, base::Seconds(2.2));
+  #if defined(ARCH_CPU_ARM64)
+  // The arm64 machines we are running are extremely low performant, reducing
+  // the expectation to 10s to reduce flakiness. The test shouldn't rely on the
+  // speed of the emulator/test bot.
+  // See the test history,
+  // https://ci.chromium.org/ui/test/chrome/ninja%3A%2F%2Ffuchsia_web%2Fwebengine%3Aweb_engine_integration_tests%2FWebEngineIntegrationMediaTest.PlayAudioToAudioConsumer
+  EXPECT_LT(pos, base::Seconds(10.0));
+  #else
+  EXPECT_LT(pos, base::Seconds(2.8));
+  #endif
 
   EXPECT_EQ(fake_audio_consumer_service_.instance(0)->session_id(),
             kTestMediaSessionId);

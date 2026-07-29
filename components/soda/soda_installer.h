@@ -67,10 +67,11 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
   // uninstallation, and if so, triggers uninstallation.
   virtual void Init(PrefService* profile_prefs, PrefService* global_prefs);
 
-  // Schedules SODA for uninstallation if no SODA client features are
-  // currently enabled. Should be called when client features using SODA are
-  // disabled.
-  void SetUninstallTimer(PrefService* profile_prefs, PrefService* global_prefs);
+  // Schedules a SODA language pack for uninstallation. The language pack will
+  // not be uninstalled if it's the default language for a enabled feature that
+  // uses it. The SODA binary will be uninstalled when the last installed
+  // language pack is uninstalled.
+  void SetUninstallTimer(PrefService* global_prefs, std::string_view language);
 
   // Gets the directory path of the installed SODA lib bundle, or an empty path
   // if not installed. Currently Chrome OS only, returns empty path on other
@@ -81,19 +82,19 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
   // localized language code in BCP-47 (e.g. "en-US"), or an empty
   // path if not installed. Currently Chrome OS only, returns empty path on
   // other platforms.
-  virtual base::FilePath GetLanguagePath(const std::string& language) const = 0;
+  virtual base::FilePath GetLanguagePath(std::string_view language) const = 0;
 
   // Installs the user-selected SODA language model. Called by
   // LiveCaptionController when the kLiveCaptionEnabled or
   // kLiveCaptionLanguageCode preferences change. `language` is a localized
   // language e.g. "en-US". `global_prefs` is passed as part of component
   // registration for the non-ChromeOS implementation.
-  virtual void InstallLanguage(const std::string& language,
+  virtual void InstallLanguage(std::string_view language,
                                PrefService* global_prefs) = 0;
 
   // Uninstalls the language pack given a localized language code in BCP-47
   // (e.g. "en-US");
-  virtual void UninstallLanguage(const std::string& language,
+  virtual void UninstallLanguage(std::string_view language,
                                  PrefService* global_prefs) = 0;
 
   // Installs the SODA binary. `global_prefs` is passed as part of component
@@ -107,7 +108,7 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
   // Get the name of language DLC for a certain locale. This is currently only
   // being used in `SodaInstallerImplChromeOS`.
   virtual std::string GetLanguageDlcNameForLocale(
-      const std::string& locale) const;
+      std::string_view locale) const;
 
   // Returns whether or not SODA and the given language pack are installed on
   // this device. Will return a stale value until InstallSoda() and
@@ -123,11 +124,17 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
   // Removes an observer from the observer list.
   void RemoveObserver(Observer* observer);
 
-  // Method for checking in-progress downloads.
+  // Returns whether the given SODA language pack is currently downloading or
+  // the SODA language pack is installed but the SODA library is still
+  // downloading.
+  bool IsSodaLanguageDownloading(LanguageCode language_code) const;
+
+  // Returns whether the SODA library is downloading or the given SODA language
+  // pack is downloading.
   bool IsSodaDownloading(LanguageCode language_code) const;
 
-  // Returns the error encountered while installing soda for the language code
-  // or soda binary.
+  // Returns the error encountered while installing SODA for the language code
+  // or SODA binary.
   std::optional<ErrorCode> GetSodaInstallErrorCode(
       LanguageCode language_code) const;
 
@@ -137,7 +144,7 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
     never_download_soda_for_testing_ = true;
   }
 
-  // The soda binary is encoded as LanguageCode::kNone.
+  // The SODA binary is encoded as LanguageCode::kNone.
   void NotifySodaInstalledForTesting(
       LanguageCode language_code = LanguageCode::kNone);
   void NotifySodaErrorForTesting(
@@ -146,7 +153,7 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
   void UninstallSodaForTesting();
   void NotifySodaProgressForTesting(
       int progress,
-      LanguageCode language_code = LanguageCode::kNone);
+      LanguageCode language_code = LanguageCode::kEnUs);
   bool IsAnyLanguagePackInstalledForTesting() const;
 
   const std::set<LanguageCode> InstalledLanguages() const;
@@ -155,10 +162,21 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
 
   // Registers a language pack by adding it to the preference tracking the
   // installed SODA language packs.
-  void RegisterLanguage(const std::string& language, PrefService* global_prefs);
+  virtual void RegisterLanguage(std::string_view language,
+                                PrefService* global_prefs);
 
-  void UnregisterLanguage(const std::string& language,
+  virtual void UnregisterLanguage(std::string_view language,
+                                  PrefService* global_prefs);
+
+  bool IsLanguageEnabled(std::string_view language);
+
+  // Uninstalls unused language packs. Uninstalls the SODA binary if no
+  // installed language packs remain.
+  void MaybeUninstallSoda(PrefService* profile_prefs,
                           PrefService* global_prefs);
+
+  // Returns whether SODA was used recently.
+  bool WasSodaUsedRecently(PrefService* global_prefs);
 
  protected:
   // Initializes language and installs the per-language components.
@@ -213,7 +231,12 @@ class COMPONENT_EXPORT(SODA_INSTALLER) SodaInstaller {
   friend class SodaInstallerImplChromeOSTest;
   friend class SodaInstallerImplTest;
   // Any new feature using SODA should add its pref here.
-  bool IsAnyFeatureUsingSodaEnabled(PrefService* prefs);
+  bool IsAnyFeatureUsingSodaEnabled(PrefService* prefs) const;
+
+#if !BUILDFLAG(IS_CHROMEOS)
+  bool IsLanguageActiveDefault(std::string_view language,
+                               PrefService* profile_prefs) const;
+#endif  // !BUILDFLAG(IS_CHROMEOS)
 };
 
 }  // namespace speech

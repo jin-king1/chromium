@@ -9,7 +9,11 @@
 
 #import "base/containers/enum_set.h"
 
-typedef NS_ENUM(NSUInteger, SigninCoordinatorResult);
+@class SceneState;
+
+namespace signin_ui {
+enum class CancelationReason;
+}  // namespace signin_ui
 
 // The key in the user info dictionary containing the GoogleServiceAuthError
 // code.
@@ -40,13 +44,17 @@ enum class PostSignInAction {
   // Shows a snackbar displaying the account that just signed-in.
   kShowSnackbar,
   kFirstType = kShowSnackbar,
+  // Shows a snackbar to confirm the account that was just switched to.
+  kShowIdentityConfirmationSnackbar,
   // Enables SelectableType::kBookmarks for the account that just signed-in from
   // the bookmarks manager.
   kEnableUserSelectableTypeBookmarks,
   // Enables SelectableType::kReadingList for the account that just signed-in
   // from the reading list manager.
   kEnableUserSelectableTypeReadingList,
-  kLastType = kEnableUserSelectableTypeReadingList
+  // Shows the history sync screen after a profile switch.
+  kShowHistorySyncScreenAfterProfileSwitch,
+  kLastType = kShowHistorySyncScreenAfterProfileSwitch
 };
 
 using PostSignInActionSet = base::EnumSet<PostSignInAction,
@@ -62,16 +70,37 @@ enum class IdentityAvatarSize {
   Large,          // 48 pt.
 };
 
+// How to draw the AI Ring.
+enum class AITierRingSize {
+  // There are no rings.
+  kNoRing,
+  // Always keep the avatar image size the same, the avatar view can become
+  // bigger if the ring is added.
+  kImageSize,
+  // Always keep the avatar view the same, the avatar image can become smaller
+  // if the ring is added
+  kViewSize,
+};
+
+// The width of the AI tier ring.
+inline constexpr CGFloat kAiTierRingWidth = 3.0;
+// The margin between the identity disc and the AI tier ring.
+inline constexpr CGFloat kAiTierAndAvatarDistance = 2.0;
+
 namespace signin_ui {
 
 // Completion callback for a sign-in operation.
 // `success` is YES if the operation was successful.
-using SigninCompletionCallback = void (^)(SigninCoordinatorResult success);
+using SigninCompletionCallback = void (^)(CancelationReason cancelationReason);
 
 // Completion callback for a sign-out operation.
 // `success` is YES if the operation was successful.
-using SignoutCompletionCallback = void (^)(BOOL success);
+using SignoutCompletionCallback = void (^)(BOOL success,
+                                           SceneState* scene_state);
 
 }  // namespace signin_ui
+
+// Accessibility identifier for the premium avatar ring.
+extern NSString* const kPremiumAvatarRingAccessibilityIdentifier;
 
 #endif  // IOS_CHROME_BROWSER_SIGNIN_MODEL_CONSTANTS_H_

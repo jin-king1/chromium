@@ -4,7 +4,6 @@
 
 package org.chromium.components.webapps;
 
-import android.annotation.SuppressLint;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
@@ -20,6 +19,8 @@ import androidx.annotation.WorkerThread;
 
 import org.jni_zero.CalledByNative;
 
+import org.chromium.base.AconfigFlaggedApiDelegate;
+import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.Log;
 import org.chromium.base.StrictModeContext;
@@ -47,6 +48,8 @@ public class WebappsUtils {
     // Synchronization locks for thread-safe access to variables
     // sCheckedIfRequestPinShortcutSupported and sIsRequestPinShortcutSupported.
     private static final Object sLock = new Object();
+
+    private static @Nullable Boolean sIsTwaInstallerPackage;
 
     /**
      * Creates an intent that will add a shortcut to the home screen.
@@ -80,7 +83,13 @@ public class WebappsUtils {
             return;
         }
 
+        String defaultLauncher = getDefaultLauncherPackageName();
+        if (defaultLauncher == null) {
+            Log.w(TAG, "ShortcutManager is not supported and no default launcher found to target.");
+            return;
+        }
         Intent intent = createAddToHomeIntent(title, icon, shortcutIntent);
+        intent.setPackage(defaultLauncher);
         ContextUtils.getApplicationContext().sendBroadcast(intent);
         showAddedToHomescreenToast(title);
     }
@@ -151,14 +160,35 @@ public class WebappsUtils {
      *
      * @return if a shortcut can be added to the home screen under the current profile.
      */
-    @SuppressLint("WrongConstant")
     public static boolean isAddToHomeIntentSupported() {
         if (isRequestPinShortcutSupported()) return true;
+
+        String defaultLauncher = getDefaultLauncherPackageName();
+        if (defaultLauncher == null) return false;
+
         PackageManager pm = ContextUtils.getApplicationContext().getPackageManager();
         Intent i = new Intent(INSTALL_SHORTCUT);
-        List<ResolveInfo> receivers =
-                pm.queryBroadcastReceivers(i, PackageManager.GET_INTENT_FILTERS);
+        i.setPackage(defaultLauncher);
+        List<ResolveInfo> receivers = pm.queryBroadcastReceivers(i, 0);
         return !receivers.isEmpty();
+    }
+
+    private static @Nullable String getDefaultLauncherPackageName() {
+        Intent intent = new Intent(Intent.ACTION_MAIN);
+        intent.addCategory(Intent.CATEGORY_HOME);
+        PackageManager pm = ContextUtils.getApplicationContext().getPackageManager();
+        ResolveInfo resolveInfo = pm.resolveActivity(intent, PackageManager.MATCH_DEFAULT_ONLY);
+        if (resolveInfo == null || resolveInfo.activityInfo == null) {
+            return null;
+        }
+        String packageName = resolveInfo.activityInfo.packageName;
+        // If the resolveInfo is the system resolver (e.g., if there are multiple launchers
+        // and the user hasn't selected a default), we treat it as no default launcher.
+        if ("android".equals(packageName)
+                || "com.android.internal.app.ResolverActivity".equals(packageName)) {
+            return null;
+        }
+        return packageName;
     }
 
     /** Prepares whether Android O's ShortcutManager.requestPinShortcut() is supported. */
@@ -211,5 +241,39 @@ public class WebappsUtils {
             sCheckedIfRequestPinShortcutSupported = true;
             sIsRequestPinShortcutSupported = supported.booleanValue();
         }
+    }
+
+    @CalledByNative
+    private static boolean isWebAppServiceEnabled() {
+        var aconfigFlaggedApiDelegate = AconfigFlaggedApiDelegate.getInstance();
+        if (aconfigFlaggedApiDelegate == null) {
+            Log.e(TAG, "Failed to get AconfigFlaggedApiDelegate in isWebAppServiceEnabled()");
+            return false;
+        }
+        return aconfigFlaggedApiDelegate.isWebAppServiceEnabled();
+    }
+
+    public static void isTwaInstallerPackage(String title, Callback<Boolean> callback) {
+        if (sIsTwaInstallerPackage != null) {
+            callback.onResult(sIsTwaInstallerPackage);
+            return;
+        }
+        var aconfigFlaggedApiDelegate = AconfigFlaggedApiDelegate.getInstance();
+        if (aconfigFlaggedApiDelegate == null) {
+            Log.e(TAG, "Failed to get AconfigFlaggedApiDelegate in isWebAppServiceEnabled()");
+            callback.onResult(false);
+            return;
+        }
+
+        aconfigFlaggedApiDelegate.isInstalled(title).then(callback);
+    }
+
+    /**
+     * Override whether TwaInstallerPackage is installed for testing.
+     *
+     * @param installed Whether TwaInstallerPackage is installed.
+     */
+    public static void setIsTwaInstallerPackageForTesting(Boolean installed) {
+        sIsTwaInstallerPackage = installed;
     }
 }

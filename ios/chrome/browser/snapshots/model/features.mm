@@ -4,17 +4,17 @@
 
 #import "ios/chrome/browser/snapshots/model/features.h"
 
-#import "ios/chrome/browser/shared/public/features/features.h"
+BASE_FEATURE(kSnapshotInSwift, base::FEATURE_ENABLED_BY_DEFAULT);
 
-BASE_FEATURE(kSnapshotInSwift,
-             "SnapshotInSwift",
+BASE_FEATURE(kSnapshotCompressedJPEGQuality,
              base::FEATURE_DISABLED_BY_DEFAULT);
 
-BASE_FEATURE(kLargeCapacityInSnapshotLRUCache,
-             "LargeCapacityInSnapshotLRUCache",
-             base::FEATURE_DISABLED_BY_DEFAULT);
+bool IsSnapshotCompressedJPEGQualityEnabled() {
+  return base::FeatureList::IsEnabled(kSnapshotCompressedJPEGQuality);
+}
 
-bool IsLargeCapacityInSnapshotLRUCacheEnabled() {
-  return IsTabGroupInGridEnabled() &&
-         base::FeatureList::IsEnabled(kLargeCapacityInSnapshotLRUCache);
+BASE_FEATURE(kSnapshotDownsampleImage, base::FEATURE_DISABLED_BY_DEFAULT);
+
+bool IsSnapshotDownsampleImageEnabled() {
+  return base::FeatureList::IsEnabled(kSnapshotDownsampleImage);
 }

@@ -10,13 +10,13 @@
 #include <utility>
 #include <vector>
 
-#include "base/containers/contains.h"
 #include "base/files/file.h"
 #include "base/files/file_enumerator.h"
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/functional/bind.h"
 #include "base/no_destructor.h"
+#include "base/notimplemented.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/strcat.h"
 #include "base/strings/string_util.h"
@@ -25,7 +25,6 @@
 #include "chromeos/ash/components/dbus/cros_disks/cros_disks_client.h"
 #include "chromeos/ash/components/dbus/cros_disks/fake_cros_disks_client.h"
 #include "chromeos/ash/components/drivefs/drivefs_util.h"
-#include "chromeos/ash/components/drivefs/mojom/drivefs.mojom-shared.h"
 #include "chromeos/ash/components/drivefs/mojom/drivefs.mojom.h"
 #include "chromeos/components/drivefs/mojom/drivefs_native_messaging.mojom.h"
 #include "components/drive/file_errors.h"
@@ -59,7 +58,7 @@ base::FilePath MaybeMountDriveFs(
     const std::vector<std::string>& mount_options) {
   GURL source_url(source_path);
   DCHECK(source_url.is_valid());
-  if (source_url.scheme() != "drivefs") {
+  if (source_url.GetScheme() != "drivefs") {
     return {};
   }
   std::string datadir_suffix;
@@ -191,8 +190,7 @@ class FakeDriveFs::SearchQuery : public mojom::SearchQuery {
         const base::FilePath path = item_ptr->path;
         const drivefs::mojom::FileMetadata* metadata = item_ptr->metadata.get();
         if (!query.empty()) {
-          if (!base::Contains(base::ToLowerASCII(path.BaseName().value()),
-                              query)) {
+          if (!base::ToLowerASCII(path.BaseName().value()).contains(query)) {
             return true;
           }
         }
@@ -624,7 +622,7 @@ void FakeDriveFs::LocateFilesByItemIds(
       const auto& stored_metadata =
           metadata_[base::FilePath("/").Append(relative_path)];
       if (!stored_metadata.doc_id.empty() &&
-          base::Contains(item_ids, stored_metadata.doc_id)) {
+          std::ranges::contains(item_ids, stored_metadata.doc_id)) {
         results[stored_metadata.doc_id] = relative_path;
       }
       path = enumerator.Next();

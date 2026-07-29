@@ -11,7 +11,7 @@
 
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
+#include "base/notimplemented.h"
 #include "base/notreached.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/android/resource_mapper.h"
@@ -21,8 +21,6 @@
 #include "chrome/browser/sessions/exit_type_service.h"
 #include "chrome/browser/ui/android/hats/survey_client_android.h"
 #include "chrome/browser/ui/android/hats/survey_ui_delegate_android.h"
-#include "chrome/browser/ui/browser_finder.h"
-#include "chrome/grit/generated_resources.h"
 #include "components/messages/android/message_wrapper.h"
 #include "components/resources/android/theme_resources.h"
 #include "content/public/browser/browser_thread.h"
@@ -39,6 +37,7 @@ HatsServiceAndroid::DelayedSurveyTask::DelayedSurveyTask(
     content::WebContents* web_contents,
     const SurveyBitsData& product_specific_bits_data,
     const SurveyStringData& product_specific_string_data,
+    NavigationBehavior navigation_behavior,
     base::OnceClosure success_callback,
     base::OnceClosure failure_callback,
     const std::optional<std::string>& supplied_trigger_id,
@@ -47,6 +46,7 @@ HatsServiceAndroid::DelayedSurveyTask::DelayedSurveyTask(
       trigger_(trigger),
       product_specific_bits_data_(product_specific_bits_data),
       product_specific_string_data_(product_specific_string_data),
+      navigation_behavior_(navigation_behavior),
       success_callback_(std::move(success_callback)),
       failure_callback_(std::move(failure_callback)),
       supplied_trigger_id_(supplied_trigger_id),
@@ -60,6 +60,10 @@ void HatsServiceAndroid::DelayedSurveyTask::Launch() {
   CHECK(web_contents());
   if (!web_contents() ||
       web_contents()->GetVisibility() != content::Visibility::VISIBLE) {
+    if (!failure_callback_.is_null()) {
+      std::move(failure_callback_).Run();
+    }
+    hats_service_->RemoveTask(*this);
     return;
   }
 
@@ -74,15 +78,18 @@ void HatsServiceAndroid::DelayedSurveyTask::Launch() {
     message_->SetTitle(survey_options_.custom_invitation.value());
   }
 
-  hats::SurveyUiDelegateAndroid delegate(
-      message_.get(), web_contents()->GetTopLevelNativeWindow());
+  ui::WindowAndroid* window_android = web_contents()->GetTopLevelNativeWindow();
+
+  delegate_ = std::make_unique<hats::SurveyUiDelegateAndroid>(message_.get(),
+                                                              window_android);
 
   // Create survey client with delegate.
-  hats::SurveyClientAndroid survey_client(
-      trigger_, &delegate, hats_service_->profile(), supplied_trigger_id_);
-  survey_client.LaunchSurvey(web_contents()->GetTopLevelNativeWindow(),
-                             product_specific_bits_data_,
+  hats::SurveyClientAndroid survey_client(trigger_, delegate_.get(),
+                                          hats_service_->profile(),
+                                          supplied_trigger_id_, window_android);
+  survey_client.LaunchSurvey(window_android, product_specific_bits_data_,
                              product_specific_string_data_);
+  survey_launched_ = true;
 }
 
 void HatsServiceAndroid::DelayedSurveyTask::DismissCallback(
@@ -124,11 +131,31 @@ void HatsServiceAndroid::DelayedSurveyTask::DismissCallback(
     case messages::DismissReason::DISMISSED_BY_FEATURE:
       reason = ShouldShowSurveyReasonsAndroid::kAndroidDismissedByFeature;
       break;
+    case messages::DismissReason::CLOSE_BUTTON:
+      reason = ShouldShowSurveyReasonsAndroid::kAndroidCloseButton;
+      break;
     case messages::DismissReason::COUNT:
       NOTREACHED();
   }
   UMA_HISTOGRAM_ENUMERATION(kHatsShouldShowSurveyReasonAndroidHistogram,
                             reason);
+  hats_service_->RemoveTask(*this);
+}
+
+void HatsServiceAndroid::DelayedSurveyTask::DidFinishNavigation(
+    content::NavigationHandle* navigation_handle) {
+  if (survey_launched_) {
+    return;
+  }
+
+  if (hats_service_->IsNavigationAllowed(navigation_handle,
+                                         navigation_behavior_)) {
+    return;
+  }
+
+  if (!failure_callback_.is_null()) {
+    std::move(failure_callback_).Run();
+  }
   hats_service_->RemoveTask(*this);
 }
 
@@ -149,16 +176,19 @@ HatsServiceAndroid::HatsServiceAndroid(Profile* profile)
 
 HatsServiceAndroid::~HatsServiceAndroid() = default;
 
-void HatsServiceAndroid::LaunchSurvey(
+HatsService::LaunchError HatsServiceAndroid::LaunchSurvey(
     const std::string& trigger,
     base::OnceClosure success_callback,
     base::OnceClosure failure_callback,
     const SurveyBitsData& product_specific_bits_data,
-    const SurveyStringData& product_specific_string_data) {
+    const SurveyStringData& product_specific_string_data,
+    const std::optional<std::string>& supplied_trigger_id,
+    const SurveyOptions& survey_options) {
   NOTIMPLEMENTED();
+  return LaunchError::kError;
 }
 
-void HatsServiceAndroid::LaunchSurveyForWebContents(
+HatsService::LaunchError HatsServiceAndroid::LaunchSurveyForWebContents(
     const std::string& trigger,
     content::WebContents* web_contents,
     const SurveyBitsData& product_specific_bits_data,
@@ -169,37 +199,34 @@ void HatsServiceAndroid::LaunchSurveyForWebContents(
     const SurveyOptions& survey_options) {
   // By using a delayed survey with a delay of 0, we can centralize the object
   // lifecycle management duties for native clank survey triggers.
-  LaunchDelayedSurveyForWebContents(
+  return LaunchDelayedSurveyForWebContents(
       trigger, web_contents, 0, product_specific_bits_data,
-      product_specific_string_data, HatsService::NavigationBehaviour::ALLOW_ANY,
+      product_specific_string_data, HatsService::NavigationBehavior::ALLOW_ANY,
       std::move(success_callback), std::move(failure_callback),
       supplied_trigger_id, survey_options);
 }
 
-bool HatsServiceAndroid::LaunchDelayedSurvey(
+HatsService::LaunchError HatsServiceAndroid::LaunchDelayedSurvey(
     const std::string& trigger,
     int timeout_ms,
     const SurveyBitsData& product_specific_bits_data,
     const SurveyStringData& product_specific_string_data) {
   NOTIMPLEMENTED();
-  return false;
+  return LaunchError::kError;
 }
 
-bool HatsServiceAndroid::LaunchDelayedSurveyForWebContents(
+HatsService::LaunchError HatsServiceAndroid::LaunchDelayedSurveyForWebContents(
     const std::string& trigger,
     content::WebContents* web_contents,
     int timeout_ms,
     const SurveyBitsData& product_specific_bits_data,
     const SurveyStringData& product_specific_string_data,
-    NavigationBehaviour navigation_behaviour,
+    NavigationBehavior navigation_behavior,
     base::OnceClosure success_callback,
     base::OnceClosure failure_callback,
     const std::optional<std::string>& supplied_trigger_id,
     const SurveyOptions& survey_options) {
   CHECK(web_contents);
-  CHECK(navigation_behaviour ==
-        NavigationBehaviour::ALLOW_ANY);  // Currently only ALLOW_ANY is
-                                          // supported on Android
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (survey_configs_by_triggers_.find(trigger) ==
       survey_configs_by_triggers_.end()) {
@@ -207,15 +234,25 @@ bool HatsServiceAndroid::LaunchDelayedSurveyForWebContents(
     if (!failure_callback.is_null()) {
       std::move(failure_callback).Run();
     }
-    return false;
+    return LaunchError::kNoTriggerConfig;
+  }
+  // Check for duplicate task before moving callbacks.
+  auto duplicate_it =
+      std::ranges::find_if(pending_tasks_, [&](const DelayedSurveyTask& task) {
+        return task.web_contents() == web_contents && task.trigger() == trigger;
+      });
+  if (duplicate_it != pending_tasks_.end()) {
+    if (!failure_callback.is_null()) {
+      std::move(failure_callback).Run();
+    }
+    return LaunchError::kSurveyInProgress;
   }
   auto result = pending_tasks_.emplace(
       this, trigger, web_contents, product_specific_bits_data,
-      product_specific_string_data, std::move(success_callback),
-      std::move(failure_callback), supplied_trigger_id, survey_options);
-  if (!result.second) {
-    return false;
-  }
+      product_specific_string_data, navigation_behavior,
+      std::move(success_callback), std::move(failure_callback),
+      supplied_trigger_id, survey_options);
+  CHECK(result.second);
   auto success =
       base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
           FROM_HERE,
@@ -226,8 +263,9 @@ bool HatsServiceAndroid::LaunchDelayedSurveyForWebContents(
           base::Milliseconds(timeout_ms));
   if (!success) {
     pending_tasks_.erase(result.first);
+    return LaunchError::kError;
   }
-  return success;
+  return LaunchError::kNone;
 }
 
 bool HatsServiceAndroid::CanShowAnySurvey(bool user_prompted) const {
@@ -252,8 +290,7 @@ void HatsServiceAndroid::RecordSurveyAsShown(std::string trigger_id) {
                           return pair.second.trigger_id;
                         });
 
-  CHECK(trigger_survey_config != survey_configs_by_triggers_.end(),
-        base::NotFatalUntil::M130);
+  CHECK(trigger_survey_config != survey_configs_by_triggers_.end());
   std::string trigger = trigger_survey_config->first;
 
   UMA_HISTOGRAM_ENUMERATION(kHatsShouldShowSurveyReasonAndroidHistogram,
@@ -262,4 +299,8 @@ void HatsServiceAndroid::RecordSurveyAsShown(std::string trigger_id) {
 
 void HatsServiceAndroid::RemoveTask(const DelayedSurveyTask& task) {
   pending_tasks_.erase(task);
+}
+
+bool HatsServiceAndroid::HasPendingTasksForTesting() {
+  return !pending_tasks_.empty();
 }

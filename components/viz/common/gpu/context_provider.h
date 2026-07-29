@@ -10,7 +10,6 @@
 
 #include <memory>
 
-#include "base/functional/callback.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/stack_allocated.h"
 #include "base/synchronization/lock.h"
@@ -20,8 +19,6 @@
 #include "components/viz/common/viz_common_export.h"
 #include "gpu/command_buffer/common/capabilities.h"
 #include "gpu/command_buffer/common/context_result.h"
-
-class GrDirectContext;
 
 namespace base {
 class Lock;
@@ -80,6 +77,10 @@ class VIZ_COMMON_EXPORT ContextProvider {
   virtual void AddObserver(ContextLostObserver* obs) = 0;
   virtual void RemoveObserver(ContextLostObserver* obs) = 0;
 
+  // Returns true if the context has been lost. Can be called only after
+  // successful BindToCurrentSequence().
+  virtual bool IsLost() = 0;
+
   // Returns the lock that should be held if using this context from multiple
   // threads. This can be called on any thread.
   // NOTE: Helper method for ScopedContextLock. Use that instead of calling this
@@ -93,11 +94,6 @@ class VIZ_COMMON_EXPORT ContextProvider {
   // Get a ContextSupport interface to the 3d context.  The context provider
   // must have been successfully bound to a thread before calling this.
   virtual gpu::ContextSupport* ContextSupport() = 0;
-
-  // Get a Skia GPU raster interface to the 3d context.  The context provider
-  // must have been successfully bound to a thread before calling this.  Returns
-  // nullptr if a GrContext fails to initialize on this context.
-  virtual class GrDirectContext* GrContext() = 0;
 
   virtual gpu::SharedImageInterface* SharedImageInterface() = 0;
 
@@ -113,9 +109,6 @@ class VIZ_COMMON_EXPORT ContextProvider {
   // Get a GLES2 interface to the 3d context.  The context provider must have
   // been successfully bound to a thread before calling this.
   virtual gpu::gles2::GLES2Interface* ContextGL() = 0;
-
-  // Returns the format that should be used for GL texture storage.
-  virtual unsigned int GetGrGLTextureFormat(SharedImageFormat format) const = 0;
 
  protected:
   virtual ~ContextProvider() = default;

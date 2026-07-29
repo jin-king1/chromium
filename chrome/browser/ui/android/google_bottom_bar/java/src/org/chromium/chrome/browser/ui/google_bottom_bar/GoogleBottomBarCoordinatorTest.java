@@ -34,10 +34,10 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.DisableFeatures;
 import org.chromium.base.test.util.Features.EnableFeatures;
@@ -61,6 +61,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Supplier;
 
 /** Unit tests for {@link GoogleBottomBarCoordinator}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -69,6 +70,8 @@ public class GoogleBottomBarCoordinatorTest {
 
     private static final Map<Integer, Integer> BUTTON_ID_TO_CUSTOM_BUTTON_ID_MAP =
             Map.of(SAVE, 100, SHARE, 101, PIH_BASIC, 103, CUSTOM, 105, SEARCH, 106, HOME, 107);
+
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
     public ActivityScenarioRule<TestActivity> mActivityScenarioRule =
@@ -89,8 +92,6 @@ public class GoogleBottomBarCoordinatorTest {
     @Before
     public void setup() {
         mActivityScenarioRule.getScenario().onActivity(activity -> mActivity = activity);
-        MockitoAnnotations.initMocks(this);
-
         GoogleBottomBarIntentParams googleBottomBarIntentParams =
                 GoogleBottomBarIntentParams.newBuilder().build();
         List<CustomButtonParams> customButtonParamsList = new ArrayList<>();

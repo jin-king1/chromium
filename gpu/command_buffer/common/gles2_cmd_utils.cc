@@ -2,29 +2,24 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <array>
 
 // This file is here so other GLES2 related files can have a common set of
 // includes where appropriate.
-
-#include "gpu/command_buffer/common/gles2_cmd_utils.h"
 
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <GLES2/gl2extchromium.h>
 #include <GLES3/gl3.h>
 #include <GLES3/gl31.h>
+#include <GLES3/gl32.h>
 
 #include <sstream>
 
 #include "base/check_op.h"
 #include "base/notreached.h"
 #include "base/numerics/safe_math.h"
+#include "gpu/command_buffer/common/gles2_cmd_utils.h"
 #include "ui/gl/gl_enums.h"
 
 namespace gpu {
@@ -515,10 +510,6 @@ int GLES2Util::GLGetNumValuesReturned(int id) const {
     case GL_FRAGMENT_SHADER_DERIVATIVE_HINT_OES:
       return 1;
 
-    // Chromium internal bind_generates_resource query
-    case GL_BIND_GENERATES_RESOURCE_CHROMIUM:
-      return 1;
-
     // bad enum
     default:
       return 0;
@@ -578,15 +569,18 @@ uint32_t GLES2Util::ElementsPerGroup(int format, int type) {
     case GL_RGB:
     case GL_RGB_INTEGER:
     case GL_SRGB_EXT:
+    case GL_RGB16_EXT:
       return 3;
     case GL_LUMINANCE_ALPHA:
     case GL_RG_EXT:
     case GL_RG_INTEGER:
+    case GL_RG16_EXT:
       return 2;
     case GL_RGBA:
     case GL_RGBA_INTEGER:
     case GL_BGRA_EXT:
     case GL_SRGB_ALPHA_EXT:
+    case GL_RGBA16_EXT:
       return 4;
     case GL_ALPHA:
     case GL_LUMINANCE:
@@ -598,6 +592,7 @@ uint32_t GLES2Util::ElementsPerGroup(int format, int type) {
     case GL_DEPTH_STENCIL_OES:
     case GL_RED_EXT:
     case GL_RED_INTEGER:
+    case GL_R16_EXT:
       return 1;
     default:
       return 0;
@@ -1548,7 +1543,8 @@ std::string GLES2Util::GetStringBool(uint32_t value) {
 std::string GLES2Util::GetQualifiedEnumString(const EnumToString* table,
                                               size_t count,
                                               uint32_t value) {
-  for (const EnumToString* end = table + count; table < end; ++table) {
+  for (const EnumToString* end = UNSAFE_TODO(table + count); table < end;
+       UNSAFE_TODO(++table)) {
     if (table->value == value) {
       return table->name;
     }

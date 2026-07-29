@@ -4,11 +4,13 @@
 
 #include "chromeos/ui/wm/window_util.h"
 
+#include "base/functional/bind.h"
 #include "chromeos/ui/base/app_types.h"
 #include "chromeos/ui/base/display_util.h"
 #include "chromeos/ui/base/window_properties.h"
 #include "chromeos/ui/base/window_state_type.h"
 #include "chromeos/ui/wm/constants.h"
+#include "chromeos/ui/wm/interior_resize_handler_targeter.h"
 #include "ui/aura/client/aura_constants.h"
 #include "ui/aura/window.h"
 #include "ui/aura/window_delegate.h"
@@ -38,7 +40,7 @@ bool CanFloatWindowInClamshell(aura::Window* window) {
   CHECK(window);
 
   const gfx::Rect work_area =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window).work_area();
+      display::Screen::Get()->GetDisplayNearestWindow(window).work_area();
   const gfx::Size minimum_size = window->delegate()->GetMinimumSize();
   if (minimum_size.width() > work_area.width() - 2 * kFloatedWindowPaddingDp ||
       minimum_size.height() >
@@ -54,9 +56,20 @@ bool CanFloatWindowInTablet(aura::Window* window) {
 
 }  // namespace
 
+void InstallResizeHandleWindowTargeterForWindow(
+    aura::Window* window,
+    chromeos::ResizeBorderInsets border_insets) {
+  window->SetProperty(chromeos::kResizeBorderInsets, border_insets);
+  window->SetEventTargeter(
+      std::make_unique<chromeos::InteriorResizeHandleTargeter>(
+          border_insets, base::BindRepeating([](const aura::Window* window) {
+            return window->GetProperty(chromeos::kWindowStateTypeKey);
+          })));
+}
+
 bool IsLandscapeOrientationForWindow(aura::Window* window) {
   display::Display display =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window);
+      display::Screen::Get()->GetDisplayNearestWindow(window);
   const OrientationType orientation = RotationToOrientation(
       GetDisplayNaturalOrientation(display), display.rotation());
   return IsLandscapeOrientation(orientation);
@@ -71,7 +84,7 @@ gfx::Size GetFloatedWindowTabletSize(aura::Window* window) {
   }
 
   const gfx::Rect work_area =
-      display::Screen::GetScreen()->GetDisplayNearestWindow(window).work_area();
+      display::Screen::Get()->GetDisplayNearestWindow(window).work_area();
   const bool landscape = IsLandscapeOrientationForWindow(window);
 
   const gfx::Size preferred_size =
@@ -139,7 +152,7 @@ bool CanFloatWindow(aura::Window* window) {
     return false;
   }
 
-  return display::Screen::GetScreen()->InTabletMode()
+  return display::Screen::Get()->InTabletMode()
              ? CanFloatWindowInTablet(window)
              : CanFloatWindowInClamshell(window);
 }

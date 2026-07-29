@@ -16,6 +16,7 @@
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 
 namespace {
 
@@ -66,8 +67,9 @@ void AutoPipSettingOverlayView::ShowBubble(gfx::NativeView parent) {
   DCHECK(parent);
   init_.auto_pip_setting_view_->set_parent_window(parent);
   auto_pip_setting_view_ = init_.auto_pip_setting_view_.get();
-  widget_ = views::BubbleDialogDelegate::CreateBubble(
-      std::move(init_.auto_pip_setting_view_));
+  widget_ = views::BubbleDialogDelegate::CreateBubbleDeprecated(
+      std::move(init_.auto_pip_setting_view_),
+      views::Widget::InitParams::NATIVE_WIDGET_OWNS_WIDGET);
 
   // Delay showing the bubble, for both document and video pip, until after the
   // scrim animation completes.

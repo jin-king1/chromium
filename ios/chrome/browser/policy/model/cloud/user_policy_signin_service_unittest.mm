@@ -15,6 +15,8 @@
 #import "base/test/bind.h"
 #import "base/test/scoped_feature_list.h"
 #import "base/time/time.h"
+#import "components/enterprise/browser/groups/enterprise_groups_handler.h"
+#import "components/enterprise/browser/groups/groups_features.h"
 #import "components/policy/core/browser/browser_policy_connector.h"
 #import "components/policy/core/browser/cloud/user_policy_signin_service_util.h"
 #import "components/policy/core/common/cloud/cloud_external_data_manager.h"
@@ -25,14 +27,15 @@
 #import "components/policy/core/common/policy_pref_names.h"
 #import "components/policy/core/common/schema_registry.h"
 #import "components/prefs/pref_service.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_test_environment.h"
 #import "google_apis/gaia/gaia_constants.h"
 #import "google_apis/gaia/gaia_urls.h"
 #import "google_apis/gaia/google_service_auth_error.h"
+#import "ios/chrome/browser/enterprise/identifiers/profile_id_service_factory_ios.h"
 #import "ios/chrome/browser/policy/model/browser_policy_connector_ios.h"
 #import "ios/chrome/browser/policy/model/cloud/user_policy_constants.h"
 #import "ios/chrome/browser/policy/model/cloud/user_policy_signin_service_factory.h"
-#import "ios/chrome/browser/policy/model/cloud/user_policy_switch.h"
 #import "ios/chrome/browser/policy/model/device_management_service_configuration_ios.h"
 #import "ios/chrome/browser/shared/model/profile/test/test_profile_ios.h"
 #import "ios/chrome/test/ios_chrome_scoped_testing_local_state.h"
@@ -69,11 +72,12 @@ constexpr char kUserAffiliationId[] = "user-affiliation-id";
 
 // Builds and returns a UserCloudPolicyManager for testing.
 std::unique_ptr<UserCloudPolicyManager> BuildCloudPolicyManager() {
-  auto store = std::make_unique<MockUserCloudPolicyStore>();
+  auto store = std::make_unique<MockUserCloudPolicyStore>(
+      dm_protocol::GetChromeUserPolicyType());
   EXPECT_CALL(*store, Load()).Times(AnyNumber());
 
   return std::make_unique<UserCloudPolicyManager>(
-      std::move(store), base::FilePath(),
+      std::move(store), /*extension_install_store=*/nullptr, base::FilePath(),
       /*cloud_external_data_manager=*/nullptr,
       base::SingleThreadTaskRunner::GetCurrentDefault(),
       network::TestNetworkConnectionTracker::CreateGetter());
@@ -85,7 +89,10 @@ class UserPolicySigninServiceTest : public PlatformTest {
       : test_account_id_(AccountId::FromUserEmailGaiaId(
             kManagedTestUser,
             signin::GetTestGaiaIdForEmail(kManagedTestUser))),
-        register_completed_(false) {}
+        register_completed_(false) {
+    scoped_feature_list_.InitAndEnableFeature(
+        enterprise_groups::kEnterpriseGroupsExperiments);
+  }
 
   MOCK_METHOD1(OnPolicyRefresh, void(bool));
 
@@ -101,25 +108,22 @@ class UserPolicySigninServiceTest : public PlatformTest {
   }
 
   // Registers the `kManagedTestUser` for user policy.
-  void RegisterPolicyClientWithCallback(UserPolicySigninService* service) {
+  void RegisterPolicyClientWithCallback(UserPolicySigninService* service,
+                                        const AccountInfo& account_info) {
     UserPolicySigninServiceBase::PolicyRegistrationCallback callback =
         base::BindOnce(&UserPolicySigninServiceTest::OnRegisterCompleted,
                        base::Unretained(this));
-    AccountInfo account_info =
-        identity_test_env()->MakeAccountAvailable(kManagedTestUser);
     service->RegisterForPolicyWithAccountId(
-        kManagedTestUser, account_info.account_id, std::move(callback));
+        kManagedTestUser, account_info.account_id,
+        /*is_registration_for_management_consistency_check=*/false,
+        std::move(callback));
     ASSERT_TRUE(IsRequestActive());
   }
 
   void SetUp() override {
-    scoped_feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-    scoped_feature_list_->InitWithFeatures(
-        {policy::kUserPolicyForSigninOrSyncConsentLevel}, {});
-
     device_management_service_.ScheduleInitialization(0);
     base::RunLoop().RunUntilIdle();
-    UserPolicySigninServiceFactory::SetDeviceManagementServiceForTesting(
+    BrowserPolicyConnector::SetDeviceManagementServiceForTesting(
         &device_management_service_);
 
     pref_service_ = TestingApplicationContext::GetGlobal()->GetLocalState();
@@ -140,6 +144,9 @@ class UserPolicySigninServiceTest : public PlatformTest {
     mock_store_ =
         static_cast<MockUserCloudPolicyStore*>(manager_->core()->store());
     DCHECK(mock_store_);
+    enterprise_groups_profile_handler_ =
+        std::make_unique<EnterpriseGroupsProfileHandler>(
+            manager_->core(), pref_service_, profile_->GetProfileName());
 
     // Verify that the UserCloudPolicyManager core services aren't initialized
     // before creating the user policy service.
@@ -152,10 +159,13 @@ class UserPolicySigninServiceTest : public PlatformTest {
     }
     user_policy_signin_service_.reset();
     manager_->Shutdown();
+    enterprise_groups_profile_handler_->Shutdown();
+    enterprise_groups_profile_handler_.reset();
 
-    UserPolicySigninServiceFactory::SetDeviceManagementServiceForTesting(
-        nullptr);
+    BrowserPolicyConnector::SetDeviceManagementServiceForTesting(nullptr);
 
+    mock_store_ = nullptr;
+    manager_ = nullptr;
     profile_.reset();
     TestingApplicationContext::GetGlobal()
         ->GetBrowserPolicyConnector()
@@ -202,11 +212,11 @@ class UserPolicySigninServiceTest : public PlatformTest {
   // Simulates the flow that registrates an account for user policy.
   void RegisterForPolicyAndSignin() {
     EXPECT_CALL(*this, OnPolicyRefresh(true)).Times(0);
-    RegisterPolicyClientWithCallback(user_policy_signin_service_.get());
-
     // Sign in to Chrome.
-    identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                           signin::ConsentLevel::kSync);
+    AccountInfo account_info = identity_test_env()->MakePrimaryAccountAvailable(
+        kManagedTestUser, signin::ConsentLevel::kSignin);
+    RegisterPolicyClientWithCallback(user_policy_signin_service_.get(),
+                                     account_info);
 
     DoPendingRegistration(/*with_dm_token=*/true,
                           /*with_oauth_token_success=*/true);
@@ -226,9 +236,11 @@ class UserPolicySigninServiceTest : public PlatformTest {
   // service that is hold by `user_policy_signin_service_`.
   void InitUserPolicySigninService() {
     user_policy_signin_service_ = std::make_unique<UserPolicySigninService>(
-        profile_->GetPrefs(), pref_service_, &device_management_service_,
-        profile_->GetUserCloudPolicyManager(),
+        profile_->GetPrefs(), pref_service_,
+        enterprise::ProfileIdServiceFactoryIOS::GetForProfile(profile_.get()),
+        &device_management_service_, profile_->GetUserCloudPolicyManager(),
         identity_test_env_.identity_manager(),
+        enterprise_groups_profile_handler_.get(),
         profile_->GetSharedURLLoaderFactory());
   }
 
@@ -281,8 +293,6 @@ class UserPolicySigninServiceTest : public PlatformTest {
   IOSChromeScopedTestingLocalState scoped_testing_local_state_;
   raw_ptr<PrefService> pref_service_;
 
-  std::unique_ptr<base::test::ScopedFeatureList> scoped_feature_list_;
-
   std::unique_ptr<TestProfileIOS> profile_;
   raw_ptr<MockUserCloudPolicyStore> mock_store_ = nullptr;  // Not owned.
   SchemaRegistry schema_registry_;
@@ -303,154 +313,59 @@ class UserPolicySigninServiceTest : public PlatformTest {
   testing::StrictMock<MockJobCreationHandler> job_creation_handler_;
   FakeDeviceManagementService device_management_service_{
       &job_creation_handler_};
+  std::unique_ptr<EnterpriseGroupsProfileHandler>
+      enterprise_groups_profile_handler_;
 
   network::TestURLLoaderFactory test_url_loader_factory_;
   signin::IdentityTestEnvironment identity_test_env_;
   std::unique_ptr<UserPolicySigninService> user_policy_signin_service_;
+  base::test::ScopedFeatureList scoped_feature_list_;
 };
 
 // Tests that the user policy manager isn't initialized when initializing the
-// user policy service with a user that isn't syncing.
+// user policy service with a signed-out user.
 TEST_F(UserPolicySigninServiceTest, DontRegister_BecauseUserSignedOut) {
-  // Verify that the user isn't syncing before starting the user policy
+  // Verify that the user isn't signed in before starting the user policy
   // service.
   ASSERT_FALSE(identity_test_env()->identity_manager()->HasPrimaryAccount(
-      signin::ConsentLevel::kSync));
+      signin::ConsentLevel::kSignin));
 
-  // Initialize UserPolicySigninService without a syncing account which should
+  // Initialize UserPolicySigninService without a signed-in account which should
   // result in shutting down the manager.
   EXPECT_CALL(*mock_store_, Clear());
   InitUserPolicySigninService();
   Mock::VerifyAndClearExpectations(mock_store_);
 
   // Expect that the UserCloudPolicyManager isn't initialized because the user
-  // wasn't syncing, hence not eligible for user policy.
+  // wasn't signed in, hence not eligible for user policy.
   EXPECT_FALSE(manager_->core()->service());
+  EXPECT_FALSE(enterprise_groups_profile_handler_->IsObserving());
 }
 
 // Tests that the user policy manager isn't initialized when initializing the
-// user policy service with a user that is syncing with an unmanaged account
+// user policy service with a user that is signed in with an unmanaged account
 // that is not eligible for user policy.
 TEST_F(UserPolicySigninServiceTest, DontRegister_BecauseUnmanagedAccount) {
-  // Set the user as signed in and syncing with an unmanaged account.
+  // Set the user as signed in with an unmanaged account.
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable(kUnmanagedTestUser);
   identity_test_env()->SetPrimaryAccount(kUnmanagedTestUser,
-                                         signin::ConsentLevel::kSync);
+                                         signin::ConsentLevel::kSignin);
 
-  // Initialize the UserPolicySigninService with a syncing account that is
+  // Initialize the UserPolicySigninService with a signed-in account that is
   // unmanaged which should result in shutting down the manager.
   InitUserPolicySigninService();
 
   // Expect that the UserCloudPolicyManager isn't initialized because the user
   // was using an unmanaged account, hence not eligible for user policy.
   EXPECT_FALSE(manager_->core()->service());
-}
-
-// Tests that when User Policy is only enabled for signed in and no sync users
-// the user policy manager isn't initialized when signed-in+sync.
-TEST_F(UserPolicySigninServiceTest, DontRegister_BecauseSyncWhenSigninOnly) {
-  scoped_feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-  scoped_feature_list_->InitWithFeatures(
-      {policy::kUserPolicyForSigninAndNoSyncConsentLevel}, {});
-
-  // Set the user as signed in with a managed account.
-  AccountInfo account_info =
-      identity_test_env()->MakeAccountAvailable(kManagedTestUser);
-  identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
-
-  // Initialize UserPolicySigninService with a signed in account that is
-  // not syncing which should result in shutting down the manager.
-  EXPECT_CALL(*mock_store_, Clear());
-  InitUserPolicySigninService();
-  Mock::VerifyAndClearExpectations(mock_store_);
-
-  // Expect that the UserCloudPolicyManager isn't initialized because the user
-  // was signed in with a managed account but not syncing, hence not eligible
-  // for user policy.
-  EXPECT_FALSE(manager_->core()->service());
-}
-
-// Tests that the user policy manager isn't initialized when the user policy
-// feature is disabled despite the account being eligible for user policy.
-TEST_F(UserPolicySigninServiceTest, DontRegister_BecauseFeatureDisabled) {
-  // Disable the user policy features by clearing the scoped feature list.
-  scoped_feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-
-  // Set the user as syncing with a managed account.
-  AccountInfo account_info =
-      identity_test_env()->MakeAccountAvailable(kManagedTestUser);
-  identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
-
-  // Initialize UserPolicySigninService when the feature is disabled which
-  // will result in shutting down the manager and clearing the store.
-  EXPECT_CALL(*mock_store_, Clear());
-  InitUserPolicySigninService();
-  Mock::VerifyAndClearExpectations(mock_store_);
-
-  // Expect that the UserCloudPolicyManager isn't initialized because the user
-  // was signed in with a managed account but the user policy feature was
-  // disabled.
-  EXPECT_FALSE(manager_->core()->service());
+  EXPECT_FALSE(enterprise_groups_profile_handler_->IsObserving());
 }
 
 // Tests that the registration for user policy and the initialization of the
-// user policy manager can be done when the user is signed-in+sync and has
-// both consent levels enabled.
-TEST_F(UserPolicySigninServiceTest,
-       RegisterAndInitializeManage_AtInit_ForSync_WhenSinginOrSync) {
-  // Set the user as signed in and syncing.
-  AccountInfo account_info =
-      identity_test_env()->MakeAccountAvailable(kManagedTestUser);
-  identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
-
-  // Mark the store as loaded to allow registration during the initialization of
-  // the user policy service.
-  mock_store_->NotifyStoreLoaded();
-
-  // Initialize the UserPolicySigninService while the user has sync enabled and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
-  InitUserPolicySigninService();
-
-  // Run the delayed task to start the registration by fast forwarding the task
-  // runner clock.
-  task_environment_.FastForwardBy(
-      GetTryRegistrationDelayFromPrefs(profile_->GetPrefs()));
-
-  // Do the pending registration that was queued in the initialization of the
-  // service.
-  DoPendingRegistration(/*with_dm_token=*/true,
-                        /*with_oauth_token_success=*/true);
-  // Verify that the client is registered after the initialization.
-  ASSERT_TRUE(manager_->core()->client()->is_registered());
-
-  // Expect the UserCloudPolicyManager to be initialized when creating the
-  // service because the user is syncing and eligible for user policy.
-  EXPECT_EQ(mock_store_->signin_account_id(), test_account_id_);
-  ASSERT_TRUE(manager_->core()->service());
-
-  // Expect sign-out to clear the policy from the store and shutdown the
-  // UserCloudPolicyManager.
-  EXPECT_CALL(*mock_store_, Clear());
-  identity_test_env()->ClearPrimaryAccount();
-  ASSERT_FALSE(manager_->core()->service());
-}
-
-// Tests that the registration for user policy and the initialization of the
-// user policy manager is done when the user is signed-in and user policy
-// policy is enabled for both consent levels.
-TEST_F(UserPolicySigninServiceTest,
-       RegisterAndInitializeManager_AtInit_ForSignin_WhenSinginOrSync) {
-  // Enable for signed in without Sync.
-  scoped_feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-  scoped_feature_list_->InitWithFeatures(
-      {policy::kUserPolicyForSigninOrSyncConsentLevel}, {});
-
-  // Set the user as signed in without Sync.
+// user policy manager is done when the user is signed in.
+TEST_F(UserPolicySigninServiceTest, RegisterAndInitializeManager_AtInit) {
+  // Set the user as signed in.
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable(kManagedTestUser);
   identity_test_env()->SetPrimaryAccount(kManagedTestUser,
@@ -460,9 +375,9 @@ TEST_F(UserPolicySigninServiceTest,
   // the user policy service.
   mock_store_->NotifyStoreLoaded();
 
-  // Initialize the UserPolicySigninService while the user is signed in and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
+  // Initialize the UserPolicySigninService while the user is signed in and is
+  // eligible for user policy. This will kick off the asynchronous registration
+  // process.
   InitUserPolicySigninService();
 
   // Run the delayed task to start the registration by fast forwarding the task
@@ -478,64 +393,17 @@ TEST_F(UserPolicySigninServiceTest,
   ASSERT_TRUE(manager_->core()->client()->is_registered());
 
   // Expect the UserCloudPolicyManager to be initialized when creating the
-  // service because the user is syncing and eligible for user policy.
+  // service because the user is signed in and eligible for user policy.
   EXPECT_EQ(mock_store_->signin_account_id(), test_account_id_);
   ASSERT_TRUE(manager_->core()->service());
+  EXPECT_TRUE(enterprise_groups_profile_handler_->IsObserving());
 
   // Expect sign-out to clear the policy from the store and shutdown the
   // UserCloudPolicyManager.
   EXPECT_CALL(*mock_store_, Clear());
   identity_test_env()->ClearPrimaryAccount();
   ASSERT_FALSE(manager_->core()->service());
-}
-
-// Tests that the registration for user policy and the initialization of the
-// user policy manager is done when the user is signed in without sync and
-// user policy policy is enabled for signed in users with no sync.
-TEST_F(UserPolicySigninServiceTest,
-       RegisterAndInitializeManager_AtInit_ForSignin_WhenSigninOnly) {
-  // Enable for signed in without Sync.
-  scoped_feature_list_ = std::make_unique<base::test::ScopedFeatureList>();
-  scoped_feature_list_->InitWithFeatures(
-      {policy::kUserPolicyForSigninAndNoSyncConsentLevel}, {});
-
-  // Set the user as signed in without Sync.
-  AccountInfo account_info =
-      identity_test_env()->MakeAccountAvailable(kManagedTestUser);
-  identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSignin);
-
-  // Mark the store as loaded to allow registration during the initialization of
-  // the user policy service.
-  mock_store_->NotifyStoreLoaded();
-
-  // Initialize the UserPolicySigninService while the user is signed in and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
-  InitUserPolicySigninService();
-
-  // Run the delayed task to start the registration by fast forwarding the task
-  // runner clock.
-  task_environment_.FastForwardBy(
-      GetTryRegistrationDelayFromPrefs(profile_->GetPrefs()));
-
-  // Do the pending registration that was queued in the initialization of the
-  // service.
-  DoPendingRegistration(/*with_dm_token=*/true,
-                        /*with_oauth_token_success=*/true);
-  // Verify that the client is registered after the initialization.
-  ASSERT_TRUE(manager_->core()->client()->is_registered());
-
-  // Expect the UserCloudPolicyManager to be initialized when creating the
-  // service because the user is syncing and eligible for user policy.
-  EXPECT_EQ(mock_store_->signin_account_id(), test_account_id_);
-  ASSERT_TRUE(manager_->core()->service());
-
-  // Expect sign-out to clear the policy from the store and shutdown the
-  // UserCloudPolicyManager.
-  EXPECT_CALL(*mock_store_, Clear());
-  identity_test_env()->ClearPrimaryAccount();
-  ASSERT_FALSE(manager_->core()->service());
+  EXPECT_FALSE(enterprise_groups_profile_handler_->IsObserving());
 }
 
 // Tests that registration is still possible after the manager was shutdown
@@ -546,19 +414,19 @@ TEST_F(UserPolicySigninServiceTest, RegisterAndInitializeManager_AfterSignOut) {
   // context.
   identity_test_env()->EnableRemovalOfExtendedAccountInfo();
 
-  // Set the user as signed in and syncing.
+  // Set the user as signed in.
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable(kManagedTestUser);
   identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
+                                         signin::ConsentLevel::kSignin);
 
   // Mark the store as loaded to allow registration during the initialization of
   // the user policy service.
   mock_store_->NotifyStoreLoaded();
 
-  // Initialize the UserPolicySigninService while the user has sync enabled and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
+  // Initialize the UserPolicySigninService while the user is signed in and is
+  // eligible for user policy. This will kick off the asynchronous registration
+  // process.
   InitUserPolicySigninService();
 
   // Register.
@@ -569,7 +437,7 @@ TEST_F(UserPolicySigninServiceTest, RegisterAndInitializeManager_AfterSignOut) {
   ASSERT_TRUE(manager_->core()->client()->is_registered());
 
   // Expect the UserCloudPolicyManager to be initialized when creating the
-  // service because the user is syncing and eligible for user policy.
+  // service because the user is signed in and eligible for user policy.
   EXPECT_EQ(mock_store_->signin_account_id(), test_account_id_);
   ASSERT_TRUE(manager_->core()->service());
 
@@ -591,19 +459,19 @@ TEST_F(UserPolicySigninServiceTest, CanHandleError_Register) {
   // context.
   identity_test_env()->EnableRemovalOfExtendedAccountInfo();
 
-  // Set the user as signed in and syncing.
+  // Set the user as signed in.
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable(kManagedTestUser);
   identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
+                                         signin::ConsentLevel::kSignin);
 
   // Mark the store as loaded to allow registration during the initialization of
   // the user policy service.
   mock_store_->NotifyStoreLoaded();
 
-  // Initialize the UserPolicySigninService while the user has sync enabled and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
+  // Initialize the UserPolicySigninService while the user is signed in and is
+  // eligible for user policy. This will kick off the asynchronous registration
+  // process.
   InitUserPolicySigninService();
 
   // Register with failure.
@@ -627,19 +495,19 @@ TEST_F(UserPolicySigninServiceTest, CanHandleError_OauthToken) {
   // context.
   identity_test_env()->EnableRemovalOfExtendedAccountInfo();
 
-  // Set the user as signed in and syncing.
+  // Set the user as signed in.
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable(kManagedTestUser);
   identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
+                                         signin::ConsentLevel::kSignin);
 
   // Mark the store as loaded to allow registration during the initialization of
   // the user policy service.
   mock_store_->NotifyStoreLoaded();
 
-  // Initialize the UserPolicySigninService while the user has sync enabled and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
+  // Initialize the UserPolicySigninService while the user is signed in and is
+  // eligible for user policy. This will kick off the asynchronous registration
+  // process.
   InitUserPolicySigninService();
 
   // Register with failure.
@@ -664,23 +532,23 @@ TEST_F(UserPolicySigninServiceTest, IgnorePendingRegistrationAfterShutdown) {
   // context.
   identity_test_env()->EnableRemovalOfExtendedAccountInfo();
 
-  // Set the user as signed in and syncing.
+  // Set the user as signed in.
   AccountInfo account_info =
       identity_test_env()->MakeAccountAvailable(kManagedTestUser);
   identity_test_env()->SetPrimaryAccount(kManagedTestUser,
-                                         signin::ConsentLevel::kSync);
+                                         signin::ConsentLevel::kSignin);
 
   // Mark the store as loaded to allow registration during the initialization of
   // the user policy service.
   mock_store_->NotifyStoreLoaded();
 
-  // Initialize the UserPolicySigninService while the user has sync enabled and
-  // is eligible for user policy. This will kick off the asynchronous
-  // registration process.
+  // Initialize the UserPolicySigninService while the user is signed in and is
+  // eligible for user policy. This will kick off the asynchronous registration
+  // process.
   InitUserPolicySigninService();
 
   // Expect the UserCloudPolicyManager to be initialized when creating the
-  // service because the user is syncing and eligible for user policy.
+  // service because the user is signed in and eligible for user policy.
   EXPECT_EQ(mock_store_->signin_account_id(), test_account_id_);
   ASSERT_TRUE(manager_->core()->service());
 

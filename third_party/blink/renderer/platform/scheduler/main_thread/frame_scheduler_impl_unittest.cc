@@ -13,24 +13,21 @@
 #include "base/functional/callback.h"
 #include "base/functional/callback_helpers.h"
 #include "base/location.h"
+#include "base/memory/memory_pressure_listener_registry.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/field_trial_param_associator.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/run_loop.h"
 #include "base/task/common/task_annotator.h"
-#include "base/task/sequence_manager/test/sequence_manager_for_test.h"
-#include "base/task/single_thread_task_runner.h"
 #include "base/task/thread_pool.h"
 #include "base/test/bind.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_command_line.h"
 #include "base/test/scoped_feature_list.h"
-#include "base/test/task_environment.h"
 #include "base/time/time.h"
 #include "base/unguessable_token.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/features.h"
 #include "third_party/blink/public/common/switches.h"
 #include "third_party/blink/public/platform/scheduler/web_agent_group_scheduler.h"
@@ -46,6 +43,7 @@
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_priority.h"
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_queue_type.h"
 #include "third_party/blink/renderer/platform/scheduler/public/web_scheduling_task_queue.h"
+#include "third_party/blink/renderer/platform/scheduler/test/task_environment.h"
 #include "third_party/blink/renderer/platform/scheduler/test/web_scheduling_test_helper.h"
 
 using base::sequence_manager::TaskQueue;
@@ -89,7 +87,7 @@ std::unique_ptr<FrameSchedulerImpl> CreateFrameScheduler(
     bool is_in_embedded_frame_tree,
     FrameScheduler::FrameType frame_type) {
   auto frame_scheduler = page_scheduler->CreateFrameScheduler(
-      delegate, is_in_embedded_frame_tree, frame_type);
+      delegate, LocalFrameToken(), is_in_embedded_frame_tree, frame_type);
   std::unique_ptr<FrameSchedulerImpl> frame_scheduler_impl(
       static_cast<FrameSchedulerImpl*>(frame_scheduler.release()));
   return frame_scheduler_impl;
@@ -173,10 +171,11 @@ constexpr TaskType kAllFrameTaskTypes[] = {
     TaskType::kWebGPU,
     TaskType::kInternalPostMessageForwarding,
     TaskType::kInternalNavigationCancellation,
-    TaskType::kInternalAutofill};
+    TaskType::kInternalAutofill,
+    TaskType::kBackForwardCachePostedMessage};
 
 static_assert(
-    static_cast<int>(TaskType::kMaxValue) == 88,
+    static_cast<int>(TaskType::kMaxValue) == 89,
     "When adding a TaskType, make sure that kAllFrameTaskTypes is updated.");
 
 void AppendToVectorTestTask(Vector<String>* vector, String value) {
@@ -241,6 +240,19 @@ MATCHER(BlockingDetailsIsEmpty, "BlockingDetails is empty.") {
       arg.sticky_features_and_js_locations->details_list.empty();
   return non_sticky_vector_empty && sticky_vector_empty;
 }
+
+class MockMainThreadScheduler : public MainThreadSchedulerImpl {
+ public:
+  explicit MockMainThreadScheduler(
+      base::sequence_manager::SequenceManager* manager)
+      : MainThreadSchedulerImpl(manager) {}
+
+  MOCK_METHOD(void, OnMainFramePaint, ());
+};
+
+using TaskEnvironmentWithMockMainThreadScheduler =
+    test::TaskEnvironmentWithMainThreadSchedulerBase<MockMainThreadScheduler>;
+
 class FrameSchedulerImplTest : public testing::Test {
  public:
   FrameSchedulerImplTest()
@@ -271,16 +283,11 @@ class FrameSchedulerImplTest : public testing::Test {
   ~FrameSchedulerImplTest() override = default;
 
   void SetUp() override {
-    scheduler_ = std::make_unique<MainThreadSchedulerImpl>(
-        base::sequence_manager::SequenceManagerForTest::Create(
-            nullptr, task_environment_.GetMainThreadTaskRunner(),
-            task_environment_.GetMockTickClock(),
-            base::sequence_manager::SequenceManager::Settings::Builder()
-                .SetPrioritySettings(CreatePrioritySettings())
-                .Build()));
-    agent_group_scheduler_ = scheduler_->CreateAgentGroupScheduler();
+    agent_group_scheduler_ =
+        task_environment_.GetMainThreadScheduler()->CreateAgentGroupScheduler();
     page_scheduler_ =
-        CreatePageScheduler(nullptr, scheduler_.get(), *agent_group_scheduler_);
+        CreatePageScheduler(nullptr, task_environment_.GetMainThreadScheduler(),
+                            *agent_group_scheduler_);
     frame_scheduler_delegate_ = std::make_unique<
         testing::StrictMock<FrameSchedulerDelegateForTesting>>();
     frame_scheduler_ = CreateFrameScheduler(
@@ -301,8 +308,9 @@ class FrameSchedulerImplTest : public testing::Test {
 
   void StorePageInBackForwardCache() {
     page_scheduler_->SetPageVisible(false);
-    page_scheduler_->SetPageFrozen(true);
+    // Set BFCache state first to avoid a duplicate policy update.
     page_scheduler_->SetPageBackForwardCached(true);
+    page_scheduler_->SetPageFrozen(true);
   }
 
   void RestorePageFromBackForwardCache() {
@@ -316,8 +324,6 @@ class FrameSchedulerImplTest : public testing::Test {
     frame_scheduler_.reset();
     page_scheduler_.reset();
     agent_group_scheduler_ = nullptr;
-    scheduler_->Shutdown();
-    scheduler_.reset();
     frame_scheduler_delegate_.reset();
   }
 
@@ -360,7 +366,7 @@ class FrameSchedulerImplTest : public testing::Test {
           ->GetTaskRunnerWithDefaultTaskType()
           ->PostTask(FROM_HERE,
                      base::BindOnce(&AppendToVectorTestTask, run_order,
-                                    String::FromUTF8(task)));
+                                    String::FromUtf8(task)));
     }
   }
 
@@ -382,27 +388,27 @@ class FrameSchedulerImplTest : public testing::Test {
         case 'L':
           LoadingTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
               FROM_HERE, base::BindOnce(&AppendToVectorTestTask, run_order,
-                                        String::FromUTF8(task)));
+                                        String::FromUtf8(task)));
           break;
         case 'T':
           ThrottleableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
               FROM_HERE, base::BindOnce(&AppendToVectorTestTask, run_order,
-                                        String::FromUTF8(task)));
+                                        String::FromUtf8(task)));
           break;
         case 'P':
           PausableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
               FROM_HERE, base::BindOnce(&AppendToVectorTestTask, run_order,
-                                        String::FromUTF8(task)));
+                                        String::FromUtf8(task)));
           break;
         case 'U':
           UnpausableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
               FROM_HERE, base::BindOnce(&AppendToVectorTestTask, run_order,
-                                        String::FromUTF8(task)));
+                                        String::FromUtf8(task)));
           break;
         case 'D':
           DeferrableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
               FROM_HERE, base::BindOnce(&AppendToVectorTestTask, run_order,
-                                        String::FromUTF8(task)));
+                                        String::FromUtf8(task)));
           break;
         default:
           NOTREACHED();
@@ -520,7 +526,6 @@ class FrameSchedulerImplTest : public testing::Test {
   JavaScriptTimerNormalThrottleableTaskQueue() {
     return GetTaskQueue(
         FrameSchedulerImpl::ThrottleableTaskQueueTraits()
-            .SetPrioritisationType(PrioritisationType::kJavaScriptTimer)
             .SetCanBeDeferredForRendering(true));
   }
 
@@ -528,7 +533,6 @@ class FrameSchedulerImplTest : public testing::Test {
   JavaScriptTimerIntensivelyThrottleableTaskQueue() {
     return GetTaskQueue(
         FrameSchedulerImpl::ThrottleableTaskQueueTraits()
-            .SetPrioritisationType(PrioritisationType::kJavaScriptTimer)
             .SetCanBeIntensivelyThrottled(true)
             .SetCanBeDeferredForRendering(true));
   }
@@ -536,7 +540,6 @@ class FrameSchedulerImplTest : public testing::Test {
   scoped_refptr<MainThreadTaskQueue> JavaScriptTimerNonThrottleableTaskQueue() {
     return GetTaskQueue(
         FrameSchedulerImpl::DeferrableTaskQueueTraits()
-            .SetPrioritisationType(PrioritisationType::kJavaScriptTimer)
             .SetCanBeDeferredForRendering(true));
   }
 
@@ -606,9 +609,9 @@ class FrameSchedulerImplTest : public testing::Test {
         {GetUnreportedTaskTime()});
   }
 
+  base::MemoryPressureListenerRegistry memory_pressure_listener_registry_;
   base::test::ScopedFeatureList feature_list_;
-  base::test::TaskEnvironment task_environment_;
-  std::unique_ptr<MainThreadSchedulerImpl> scheduler_;
+  TaskEnvironmentWithMockMainThreadScheduler task_environment_;
   Persistent<AgentGroupScheduler> agent_group_scheduler_;
   std::unique_ptr<PageSchedulerImpl> page_scheduler_;
   std::unique_ptr<FrameSchedulerImpl> frame_scheduler_;
@@ -694,8 +697,10 @@ class FrameSchedulerImplTestWithIntensiveWakeUpThrottlingBase
   using Super = FrameSchedulerImplTest;
 
   FrameSchedulerImplTestWithIntensiveWakeUpThrottlingBase()
-      : FrameSchedulerImplTest({features::kIntensiveWakeUpThrottling},
-                               {features::kStopInBackground}) {}
+      : FrameSchedulerImplTest(
+            std::vector<base::test::FeatureRef>{
+                features::kIntensiveWakeUpThrottling},
+            std::vector<base::test::FeatureRef>{features::kStopInBackground}) {}
 
   void SetUp() override {
     Super::SetUp();
@@ -890,6 +895,13 @@ TEST_F(FrameSchedulerImplTest, PauseAndResume) {
   UnpausableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
       FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
 
+  std::unique_ptr<WebSchedulingTaskQueue> web_scheduling_task_queue =
+      frame_scheduler_->CreateWebSchedulingTaskQueue(
+          WebSchedulingQueueType::kTaskQueue,
+          WebSchedulingPriority::kUserVisiblePriority);
+  web_scheduling_task_queue->GetTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+
   frame_scheduler_->SetPaused(true);
 
   EXPECT_EQ(0, counter);
@@ -900,7 +912,30 @@ TEST_F(FrameSchedulerImplTest, PauseAndResume) {
 
   EXPECT_EQ(1, counter);
   base::RunLoop().RunUntilIdle();
-  EXPECT_EQ(5, counter);
+  EXPECT_EQ(6, counter);
+}
+
+TEST_F(FrameSchedulerImplTest, PauseBeforeWebSchedulingQueueCreated) {
+  int counter = 0;
+
+  frame_scheduler_->SetPaused(true);
+
+  std::unique_ptr<WebSchedulingTaskQueue> web_scheduling_task_queue =
+      frame_scheduler_->CreateWebSchedulingTaskQueue(
+          WebSchedulingQueueType::kTaskQueue,
+          WebSchedulingPriority::kUserVisiblePriority);
+  web_scheduling_task_queue->GetTaskRunner()->PostTask(
+      FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+
+  EXPECT_EQ(0, counter);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0, counter);
+
+  frame_scheduler_->SetPaused(false);
+
+  EXPECT_EQ(0, counter);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, counter);
 }
 
 namespace {
@@ -987,7 +1022,7 @@ INSTANTIATE_TEST_SUITE_P(
     testing::Values(TaskType::kJavascriptTimerDelayedLowNesting,
                     TaskType::kJavascriptTimerDelayedHighNesting),
     [](const testing::TestParamInfo<TaskType>& info) {
-      return TaskTypeNames::TaskTypeToString(info.param);
+      return TaskTypeNames::TaskTypeToString(info.param).value;
     });
 
 TEST_F(FrameSchedulerImplTest, FreezeForegroundOnlyTasks) {
@@ -1110,12 +1145,14 @@ TEST_F(FrameSchedulerImplTest, FramePostsCpuTasksThroughReloadRenavigate) {
                     {true, FrameScheduler::FrameType::kSubframe,
                      FrameScheduler::NavigationType::kSameDocument, true, 1}};
   for (const auto& test_case : kTestCases) {
-    SCOPED_TRACE(String::Format(
-        "FrameType: %d, NavigationType: %d : TaskTime.is_zero %d, CallCount %d",
-        static_cast<int>(test_case.frame_type),
-        static_cast<int>(test_case.navigation_type),
-        test_case.expect_unreported_task_time_zero,
-        test_case.expected_total_calls));
+    SCOPED_TRACE(StrCat(
+        {"FrameType: ", String::Number(static_cast<int>(test_case.frame_type)),
+         ", NavigationType: ",
+         String::Number(static_cast<int>(test_case.navigation_type)),
+         " : TaskTime.is_zero ",
+         String::Number(
+             static_cast<int>(test_case.expect_unreported_task_time_zero)),
+         ", CallCount ", String::Number(test_case.expected_total_calls)}));
     ResetFrameScheduler(test_case.embedded_frame_tree, test_case.frame_type);
     EXPECT_TRUE(GetUnreportedTaskTime().is_zero());
     EXPECT_EQ(0, GetTotalUpdateTaskTimeCalls());
@@ -1138,6 +1175,58 @@ TEST_F(FrameSchedulerImplTest, FramePostsCpuTasksThroughReloadRenavigate) {
               GetUnreportedTaskTime().is_zero());
     EXPECT_EQ(test_case.expected_total_calls, GetTotalUpdateTaskTimeCalls());
   }
+}
+
+class FrameSchedulerImplTestWithBFCacheWithSharedWorker
+    : public FrameSchedulerImplTest {
+ public:
+  FrameSchedulerImplTestWithBFCacheWithSharedWorker()
+      : FrameSchedulerImplTest({features::kBFCacheWithSharedWorker}, {}) {}
+};
+
+TEST_F(FrameSchedulerImplTestWithBFCacheWithSharedWorker,
+       CanRunInBFCache_RunsWhenInBFCache) {
+  int counter = 0;
+  GetTaskQueue(TaskType::kBackForwardCachePostedMessage)
+      ->GetTaskRunnerWithDefaultTaskType()
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+  PausableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
+      FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+
+  StorePageInBackForwardCache();
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(1, counter);
+
+  RestorePageFromBackForwardCache();
+  task_environment_.FastForwardUntilNoTasksRemain();
+
+  EXPECT_EQ(2, counter);
+}
+
+TEST_F(FrameSchedulerImplTestWithBFCacheWithSharedWorker,
+       CanRunInBFCache_IsFrozenWhenNotInBFCache) {
+  int counter = 0;
+  GetTaskQueue(TaskType::kBackForwardCachePostedMessage)
+      ->GetTaskRunnerWithDefaultTaskType()
+      ->PostTask(FROM_HERE,
+                 base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+  PausableTaskQueue()->GetTaskRunnerWithDefaultTaskType()->PostTask(
+      FROM_HERE, base::BindOnce(&IncrementCounter, base::Unretained(&counter)));
+
+  page_scheduler_->SetPageVisible(false);
+  page_scheduler_->SetPageFrozen(true);
+
+  base::RunLoop().RunUntilIdle();
+
+  EXPECT_EQ(0, counter);
+
+  page_scheduler_->SetPageFrozen(false);
+  task_environment_.FastForwardUntilNoTasksRemain();
+
+  EXPECT_EQ(2, counter);
 }
 
 class FrameSchedulerImplTestWithUnfreezableLoading
@@ -1541,7 +1630,7 @@ TEST_F(FrameSchedulerImplTest, ThrottledTaskTypes) {
   for (TaskType task_type : kAllFrameTaskTypes) {
     SCOPED_TRACE(testing::Message()
                  << "TaskType is "
-                 << TaskTypeNames::TaskTypeToString(task_type));
+                 << TaskTypeNames::TaskTypeToString(task_type).value);
     switch (task_type) {
       case TaskType::kIdleTask:
       case TaskType::kInternalContentCapture:
@@ -1618,41 +1707,10 @@ TEST_F(FrameSchedulerImplTest, ComputePriorityForDetachedFrame) {
   frame_scheduler_->ComputePriority(task_queue.get());
 }
 
-class FrameSchedulerImplLowPriorityAsyncScriptExecutionTest
-    : public FrameSchedulerImplTest,
-      public testing::WithParamInterface<std::string> {
- public:
-  FrameSchedulerImplLowPriorityAsyncScriptExecutionTest()
-      : FrameSchedulerImplTest(
-            features::kLowPriorityAsyncScriptExecution,
-            {{features::kLowPriorityAsyncScriptExecutionLowerTaskPriorityParam
-                  .name,
-              specified_priority()}},
-            {}) {}
-
-  std::string specified_priority() { return GetParam(); }
-  TaskPriority GetExpectedPriority() {
-    if (specified_priority() == "high") {
-      return TaskPriority::kHighPriority;
-    } else if (specified_priority() == "low") {
-      return TaskPriority::kLowPriority;
-    } else if (specified_priority() == "best_effort") {
-      return TaskPriority::kBestEffortPriority;
-    }
-    NOTREACHED();
-  }
-};
-
-INSTANTIATE_TEST_SUITE_P(All,
-                         FrameSchedulerImplLowPriorityAsyncScriptExecutionTest,
-                         testing::Values("high", "low", "best_effort"));
-
-TEST_P(FrameSchedulerImplLowPriorityAsyncScriptExecutionTest,
-       LowPriorityScriptExecutionHasBestEffortPriority) {
+TEST_F(FrameSchedulerImplTest, LowPriorityScriptExecutionHasLowPriority) {
   EXPECT_EQ(
-      GetExpectedPriority(),
-      GetTaskQueue(TaskType::kLowPriorityScriptExecution)->GetQueuePriority())
-      << specified_priority();
+      TaskPriority::kLowPriority,
+      GetTaskQueue(TaskType::kLowPriorityScriptExecution)->GetQueuePriority());
 }
 
 TEST_F(FrameSchedulerImplTest, BackForwardCacheOptOut) {
@@ -1688,6 +1746,52 @@ TEST_F(FrameSchedulerImplTest, BackForwardCacheOptOut) {
   EXPECT_THAT(
       frame_scheduler_->GetActiveFeaturesTrackedForBackForwardCacheMetrics(),
       testing::UnorderedElementsAre());
+}
+
+TEST_F(FrameSchedulerImplTest, RetainsThreadTypeUnderWebRTCMediaThreadTypes) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitAndEnableFeature(features::kWebRtcUseMediaThreadTypes);
+
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
+  auto feature_handle1 =
+      frame_scheduler_->RegisterFeature(SchedulingPolicy::Feature::kWebRTC, {});
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
+  auto feature_handle2 =
+      frame_scheduler_->RegisterFeature(SchedulingPolicy::Feature::kWebRTC, {});
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
+  feature_handle1.reset();
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
+  feature_handle2.reset();
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
+}
+
+TEST_F(FrameSchedulerImplTest, ResetsThreadTypeUnderWebRTCDefaultThreadType) {
+  base::test::ScopedFeatureList feature_list;
+  feature_list.InitWithFeatures(
+      {features::kRendererMainIsDefaultThreadTypeForWebRTC},
+      {features::kWebRtcUseMediaThreadTypes});
+
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
+  auto feature_handle1 =
+      frame_scheduler_->RegisterFeature(SchedulingPolicy::Feature::kWebRTC, {});
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kDefault);
+  auto feature_handle2 =
+      frame_scheduler_->RegisterFeature(SchedulingPolicy::Feature::kWebRTC, {});
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kDefault);
+  feature_handle1.reset();
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kDefault);
+  feature_handle2.reset();
+  EXPECT_EQ(base::PlatformThread::GetCurrentThreadType(),
+            base::ThreadType::kPresentation);
 }
 
 TEST_F(FrameSchedulerImplTest, FeatureUpload) {
@@ -2007,8 +2111,7 @@ TEST_F(WebSchedulingTaskQueueTest, DynamicPriorityContinuations) {
 TEST_F(WebSchedulingTaskQueueTest, WebScheduingAndNonWebScheduingTasks) {
   Vector<String> run_order;
   Vector<TestTaskSpecEntry> test_spec = {
-      {.descriptor = "Idle",
-       .type_info = TaskType::kLowPriorityScriptExecution},
+      {.descriptor = "Idle", .type_info = TaskType::kInternalContentCapture},
       {.descriptor = "BG",
        .type_info = WebSchedulingParams(
            {.queue_type = WebSchedulingQueueType::kTaskQueue,
@@ -2120,81 +2223,51 @@ TEST_F(FrameSchedulerImplTest, ThrottledJSTimerTasksRunTime) {
   }
 }
 
-namespace {
-class MockMainThreadScheduler : public MainThreadSchedulerImpl {
- public:
-  explicit MockMainThreadScheduler(
-      base::test::TaskEnvironment& task_environment)
-      : MainThreadSchedulerImpl(
-            base::sequence_manager::SequenceManagerForTest::Create(
-                nullptr,
-                task_environment.GetMainThreadTaskRunner(),
-                task_environment.GetMockTickClock(),
-                base::sequence_manager::SequenceManager::Settings::Builder()
-                    .SetPrioritySettings(CreatePrioritySettings())
-                    .Build())) {}
-
-  MOCK_METHOD(void, OnMainFramePaint, ());
-};
-}  // namespace
-
 TEST_F(FrameSchedulerImplTest, ReportFMPAndFCPForMainFrames) {
-  MockMainThreadScheduler mock_main_thread_scheduler{task_environment_};
-  AgentGroupScheduler* agent_group_scheduler =
-      mock_main_thread_scheduler.CreateAgentGroupScheduler();
-  std::unique_ptr<PageSchedulerImpl> page_scheduler = CreatePageScheduler(
-      nullptr, &mock_main_thread_scheduler, *agent_group_scheduler);
-
   std::unique_ptr<FrameSchedulerImpl> main_frame_scheduler =
-      CreateFrameScheduler(page_scheduler.get(), nullptr,
+      CreateFrameScheduler(page_scheduler_.get(), nullptr,
                            /*is_in_embedded_frame_tree=*/false,
                            FrameScheduler::FrameType::kMainFrame);
 
-  EXPECT_CALL(mock_main_thread_scheduler, OnMainFramePaint).Times(2);
+  EXPECT_CALL(*task_environment_.GetMainThreadScheduler(), OnMainFramePaint)
+      .Times(2);
 
-  main_frame_scheduler->OnFirstMeaningfulPaint(base::TimeTicks::Now());
+  main_frame_scheduler->OnFirstMeaningfulPaint();
   main_frame_scheduler->OnFirstContentfulPaintInMainFrame();
 
   main_frame_scheduler = nullptr;
-  page_scheduler = nullptr;
-  agent_group_scheduler = nullptr;
-  mock_main_thread_scheduler.Shutdown();
 }
 
 TEST_F(FrameSchedulerImplTest, DontReportFMPAndFCPForSubframes) {
-  MockMainThreadScheduler mock_main_thread_scheduler{task_environment_};
-  AgentGroupScheduler* agent_group_scheduler =
-      mock_main_thread_scheduler.CreateAgentGroupScheduler();
-  std::unique_ptr<PageSchedulerImpl> page_scheduler = CreatePageScheduler(
-      nullptr, &mock_main_thread_scheduler, *agent_group_scheduler);
-
   // Test for direct subframes.
   {
     std::unique_ptr<FrameSchedulerImpl> subframe_scheduler =
-        CreateFrameScheduler(page_scheduler.get(), nullptr,
+        CreateFrameScheduler(page_scheduler_.get(), nullptr,
                              /*is_in_embedded_frame_tree=*/false,
                              FrameScheduler::FrameType::kSubframe);
 
-    EXPECT_CALL(mock_main_thread_scheduler, OnMainFramePaint).Times(0);
+    EXPECT_CALL(*task_environment_.GetMainThreadScheduler(), OnMainFramePaint)
+        .Times(0);
 
-    subframe_scheduler->OnFirstMeaningfulPaint(base::TimeTicks::Now());
+    subframe_scheduler->OnFirstMeaningfulPaint();
+
+    subframe_scheduler = nullptr;
   }
 
   // Now test for embedded main frames.
   {
     std::unique_ptr<FrameSchedulerImpl> subframe_scheduler =
-        CreateFrameScheduler(page_scheduler.get(), nullptr,
+        CreateFrameScheduler(page_scheduler_.get(), nullptr,
                              /*is_in_embedded_frame_tree=*/true,
                              FrameScheduler::FrameType::kMainFrame);
 
-    EXPECT_CALL(mock_main_thread_scheduler, OnMainFramePaint).Times(0);
+    EXPECT_CALL(*task_environment_.GetMainThreadScheduler(), OnMainFramePaint)
+        .Times(0);
 
-    subframe_scheduler->OnFirstMeaningfulPaint(base::TimeTicks::Now());
+    subframe_scheduler->OnFirstMeaningfulPaint();
+
+    subframe_scheduler = nullptr;
   }
-
-  page_scheduler = nullptr;
-  agent_group_scheduler = nullptr;
-  mock_main_thread_scheduler.Shutdown();
 }
 
 // Verify that tasks run at the expected time in a frame that is same-origin
@@ -2914,7 +2987,7 @@ INSTANTIATE_TEST_SUITE_P(
             /* task_type=*/TaskType::kWebSchedulingPostedTask,
             /* is_intensive_throttling_expected=*/true}),
     [](const testing::TestParamInfo<IntensiveWakeUpThrottlingTestParam>& info) {
-      return TaskTypeNames::TaskTypeToString(info.param.task_type);
+      return TaskTypeNames::TaskTypeToString(info.param.task_type).value;
     });
 
 TEST_F(FrameSchedulerImplTestWithIntensiveWakeUpThrottlingPolicyOverride,
@@ -2934,24 +3007,13 @@ TEST_F(FrameSchedulerImplTestWithIntensiveWakeUpThrottlingPolicyOverride,
   EXPECT_FALSE(IsIntensiveWakeUpThrottlingEnabled());
 }
 
-class FrameSchedulerImplTestQuickIntensiveWakeUpThrottlingEnabled
-    : public FrameSchedulerImplTest {
- public:
-  FrameSchedulerImplTestQuickIntensiveWakeUpThrottlingEnabled()
-      : FrameSchedulerImplTest(
-            {features::kQuickIntensiveWakeUpThrottlingAfterLoading},
-            {}) {}
-};
-
-TEST_F(FrameSchedulerImplTestQuickIntensiveWakeUpThrottlingEnabled,
-       LoadingPageGracePeriod) {
+TEST_F(FrameSchedulerImplTest, LoadingPageGracePeriod) {
   EXPECT_EQ(
       base::Seconds(kIntensiveWakeUpThrottling_GracePeriodSeconds_Default),
       GetIntensiveWakeUpThrottlingGracePeriod(true));
 }
 
-TEST_F(FrameSchedulerImplTestQuickIntensiveWakeUpThrottlingEnabled,
-       LoadedPageGracePeriod) {
+TEST_F(FrameSchedulerImplTest, LoadedPageGracePeriod) {
   EXPECT_EQ(base::Seconds(
                 kIntensiveWakeUpThrottling_GracePeriodSecondsLoaded_Default),
             GetIntensiveWakeUpThrottlingGracePeriod(false));
@@ -3113,8 +3175,9 @@ class FrameSchedulerImplNoThrottlingVisibleAgentTest
     FrameSchedulerImplTest::SetUp();
 
     if (IsOtherFrameOnDifferentPage()) {
-      other_page_scheduler_ = CreatePageScheduler(nullptr, scheduler_.get(),
-                                                  *agent_group_scheduler_);
+      other_page_scheduler_ = CreatePageScheduler(
+          nullptr, task_environment_.GetMainThreadScheduler(),
+          *agent_group_scheduler_);
       EXPECT_TRUE(other_page_scheduler_->IsPageVisible());
     }
 

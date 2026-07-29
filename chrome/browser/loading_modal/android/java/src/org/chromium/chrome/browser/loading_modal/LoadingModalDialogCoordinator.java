@@ -14,7 +14,6 @@ import android.widget.RelativeLayout;
 import androidx.annotation.IntDef;
 import androidx.annotation.VisibleForTesting;
 
-import org.chromium.base.supplier.Supplier;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.ui.modaldialog.ModalDialogManager;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
@@ -84,22 +83,19 @@ public class LoadingModalDialogCoordinator {
     /**
      * Creates the {@link LoadingModalDialogCoordinator}.
      *
-     * @param modalDialogManagerSupplier The supplier of the ModalDialogManager which is going to
-     *         display the dialog.
+     * @param modalDialogManager The ModalDialogManager which is going to display the dialog.
      * @param context The context for accessing resources.
      */
     public static LoadingModalDialogCoordinator create(
-            Supplier<ModalDialogManager> modalDialogManagerSupplier, Context context) {
-        return create(modalDialogManagerSupplier, context, new Handler(Looper.getMainLooper()));
+            ModalDialogManager modalDialogManager, Context context) {
+        return create(modalDialogManager, context, new Handler(Looper.getMainLooper()));
     }
 
     @VisibleForTesting
     static LoadingModalDialogCoordinator create(
-            Supplier<ModalDialogManager> modalDialogManagerSupplier,
-            Context context,
-            Handler handler) {
+            ModalDialogManager modalDialogManager, Context context, Handler handler) {
         LoadingModalDialogMediator dialogMediator =
-                new LoadingModalDialogMediator(modalDialogManagerSupplier, handler);
+                new LoadingModalDialogMediator(modalDialogManager, handler);
         RelativeLayout dialogView =
                 (RelativeLayout) LayoutInflater.from(context).inflate(R.layout.loading_modal, null);
         RelativeLayout buttonsView =

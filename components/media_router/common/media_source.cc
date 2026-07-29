@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/390223051): Remove C-library calls to fix the errors.
-#pragma allow_unsafe_libc_calls
-#endif
-
 #include "components/media_router/common/media_source.h"
 
 #include <algorithm>
@@ -16,6 +11,8 @@
 #include <string>
 #include <string_view>
 
+#include "base/compiler_specific.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "build/build_config.h"
@@ -26,6 +23,7 @@
 #include "net/base/url_util.h"
 #include "third_party/blink/public/platform/modules/remoteplayback/remote_playback_source.h"
 #include "url/gurl.h"
+#include "url/url_constants.h"
 
 namespace media_router {
 
@@ -52,17 +50,25 @@ constexpr std::array<const char* const, 5> kAllowedSchemes{
      "test"}};
 
 bool IsSchemeAllowed(const GURL& url) {
-  return url.SchemeIsHTTPOrHTTPS() ||
-         std::ranges::any_of(kAllowedSchemes, [&url](const char* const scheme) {
-           return url.SchemeIs(scheme);
-         });
+  if (url.SchemeIs(url::kHttpsScheme)) {
+    return true;
+  } else if (url.SchemeIs(url::kHttpScheme)) {
+    return net::IsLocalhost(url);
+  } else {
+    return std::ranges::any_of(
+        kAllowedSchemes,
+        [&url](const char* const scheme) { return url.SchemeIs(scheme); });
+  }
 }
 
 bool IsSystemAudioCaptureSupported() {
   if (!media::IsSystemLoopbackCaptureSupported()) {
     return false;
   }
-#if BUILDFLAG(IS_LINUX)
+#if BUILDFLAG(IS_MAC)
+  return media::IsMacSckSystemLoopbackCaptureSupported() ||
+         base::FeatureList::IsEnabled(media::kMacCatapLoopbackAudioForCast);
+#elif BUILDFLAG(IS_LINUX)
   return base::FeatureList::IsEnabled(media::kPulseaudioLoopbackForCast);
 #else
   return true;
@@ -70,6 +76,35 @@ bool IsSystemAudioCaptureSupported() {
 }
 
 }  // namespace
+
+bool IsDialAppName(std::string_view app_name) {
+  if (app_name.empty() || app_name == "." || app_name == "..") {
+    return false;
+  }
+  // Reject the RFC 3986 dot-segment tokens so GetDialAppUrl()'s Resolve() call
+  // cannot traverse outside the device's Application-URL path namespace.
+  if (app_name == "." || app_name == "..") {
+    return false;
+  }
+  return std::ranges::all_of(app_name, [](char c) {
+    return base::IsAsciiAlpha(c) || base::IsAsciiDigit(c) || c == '-' ||
+           c == '.' || c == '_' || c == '~';
+  });
+}
+
+GURL GetDialAppUrl(const GURL& app_url, const std::string& app_name) {
+  if (!IsDialAppName(app_name) || !app_url.is_valid()) {
+    return GURL();
+  }
+
+  // The DIAL spec (Section 5.4) implies that the app URL must not have a
+  // trailing slash.
+  std::string spec = app_url.spec();
+  if (!spec.empty() && spec.back() != '/') {
+    spec += "/";
+  }
+  return GURL(spec).Resolve(app_name);
+}
 
 bool IsLegacyCastPresentationUrl(const GURL& url) {
   return base::StartsWith(url.spec(), kLegacyCastPresentationUrlPrefix,
@@ -82,9 +117,17 @@ bool IsValidPresentationUrl(const GURL& url) {
 
 bool IsValidStandardPresentationSource(const std::string& media_source) {
   const GURL source_url(media_source);
-  return source_url.is_valid() && source_url.SchemeIsHTTPOrHTTPS() &&
-         !base::StartsWith(source_url.spec(), kLegacyCastPresentationUrlPrefix,
-                           base::CompareCase::INSENSITIVE_ASCII);
+  if (!source_url.is_valid()) {
+    return false;
+  } else if (source_url.SchemeIs(url::kHttpsScheme)) {
+    return !base::StartsWith(source_url.spec(),
+                             kLegacyCastPresentationUrlPrefix,
+                             base::CompareCase::INSENSITIVE_ASCII);
+  } else if (source_url.SchemeIs(url::kHttpScheme)) {
+    return net::IsLocalhost(source_url);
+  } else {
+    return false;
+  }
 }
 
 bool IsAutoJoinPresentationId(const std::string& presentation_id) {
@@ -146,9 +189,7 @@ MediaSource MediaSource::ForDesktop(const std::string& desktop_media_id,
 
 // static
 MediaSource MediaSource::ForUnchosenDesktop() {
-  return IsSystemAudioCaptureSupported() &&
-                 base::FeatureList::IsEnabled(
-                     media::kCastLoopbackAudioToAudioReceivers)
+  return IsSystemAudioCaptureSupported()
              ? MediaSource(std::string(kUnchosenDesktopWithAudioMediaUrn))
              : MediaSource(std::string(kUnchosenDesktopMediaUrn));
 }
@@ -175,7 +216,7 @@ bool MediaSource::IsRemotePlaybackSource() const {
 
 std::optional<int> MediaSource::TabId() const {
   int tab_id;
-  if (sscanf(id_.c_str(), kTabMediaUrnFormat, &tab_id) != 1) {
+  if (UNSAFE_TODO(sscanf(id_.c_str(), kTabMediaUrnFormat, &tab_id)) != 1) {
     return std::nullopt;
   }
   return tab_id;
@@ -224,7 +265,11 @@ bool MediaSource::IsDialSource() const {
 }
 
 std::string MediaSource::AppNameFromDialSource() const {
-  return IsDialSource() ? url_.path() : "";
+  if (!IsDialSource()) {
+    return "";
+  }
+  std::string app_name = url_.GetPath();
+  return IsDialAppName(app_name) ? app_name : "";
 }
 
 std::string MediaSource::TruncateForLogging(size_t max_length) const {
@@ -248,7 +293,7 @@ void MediaSource::AppendTabIdToRemotePlaybackUrlQuery(int tab_id) {
   GURL::Replacements replacements;
   std::string tab_id_query = base::StringPrintf("tab_id=%d", tab_id);
   std::string new_query =
-      (url_.has_query() ? url_.query() + "&" : "") + tab_id_query;
+      (url_.has_query() ? url_.GetQuery() + "&" : "") + tab_id_query;
   replacements.SetQueryStr(new_query);
   url_ = url_.ReplaceComponents(replacements);
   id_ = url_.spec();

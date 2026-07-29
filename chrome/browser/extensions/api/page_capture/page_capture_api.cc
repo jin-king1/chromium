@@ -11,18 +11,21 @@
 #include "base/functional/bind.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/task/thread_pool.h"
-#include "build/chromeos_buildflags.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "components/sessions/content/session_tab_helper.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_security_policy.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/common/child_process_id.h"
 #include "content/public/common/mhtml_generation_params.h"
 #include "extensions/browser/extension_api_frame_id_map.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/buildflags/buildflags.h"
 #include "extensions/common/permissions/permissions_data.h"
 #include "url/origin.h"
+
+static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
 
 using content::BrowserThread;
 using content::ChildProcessSecurityPolicy;
@@ -165,8 +168,9 @@ void PageCaptureSaveAsMHTMLFunction::TemporaryFileCreatedOnIO(bool success) {
   }
 
   // Let the delegate know the reference has been created.
-  if (test_delegate_)
+  if (test_delegate_) {
     test_delegate_->OnTemporaryFileCreated(mhtml_file_);
+  }
 
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE,
@@ -225,10 +229,12 @@ void PageCaptureSaveAsMHTMLFunction::ReturnSuccess(int file_size) {
     return;
   }
 
-  ChildProcessSecurityPolicy::GetInstance()->GrantReadFile(source_process_id(),
-                                                           mhtml_path_);
+  // TODO(crbug.com/379869738) Remove FromUnsafeValue.
+  ChildProcessSecurityPolicy::GetInstance()->GrantReadFile(
+      content::ChildProcessId::FromUnsafeValue(source_process_id()),
+      mhtml_path_);
 
-  base::Value::Dict response;
+  base::DictValue response;
   response.Set("mhtmlFilePath", mhtml_path_.AsUTF8Unsafe());
   response.Set("mhtmlFileLength", file_size);
   response.Set("requestId", request_uuid().AsLowercaseString());

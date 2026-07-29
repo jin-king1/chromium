@@ -14,15 +14,14 @@
 #include "base/logging.h"
 #include "base/memory/ref_counted.h"
 #include "base/memory/singleton.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/sys_string_conversions.h"
 #include "base/synchronization/lock.h"
+#include "base/time/time.h"
 
 namespace base::ios {
 
 BASE_FEATURE(kScopedCriticalActionSkipOnShutdown,
-             "ScopedCriticalActionSkipOnShutdown",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 namespace {

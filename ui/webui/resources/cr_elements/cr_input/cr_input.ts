@@ -92,7 +92,6 @@ export class CrInputElement extends CrLitElement {
       },
 
       errorMessage: {type: String},
-      errorRole_: {type: String},
 
       /**
        * This is strictly used internally for styling, do not attempt to use
@@ -163,33 +162,28 @@ export class CrInputElement extends CrLitElement {
     };
   }
 
-  override ariaDescription: string|null = null;
-  override ariaLabel: string = '';
-  override autofocus: boolean = false;
-  autoValidate: boolean = false;
-  disabled: boolean = false;
-  errorMessage: string = '';
-  inputmode?: string;
-  inputTabindex: number = 0;
-  invalid: boolean = false;
-  label: string = '';
-  max?: number;
-  min?: number;
-  maxlength?: number;
-  minlength?: number;
-  pattern?: string;
-  placeholder: string|null = null;
-  readonly: boolean = false;
-  required: boolean = false;
-  type: string = 'text';
-  value: string = '';
-  protected internalValue_: string = '';
-  protected focused_: boolean = false;
-
-  override firstUpdated() {
-    // Use inputTabindex instead.
-    assert(!this.hasAttribute('tabindex'));
-  }
+  override accessor ariaDescription: string|null = null;
+  override accessor ariaLabel: string = '';
+  override accessor autofocus: boolean = false;
+  accessor autoValidate: boolean = false;
+  accessor disabled: boolean = false;
+  accessor errorMessage: string = '';
+  accessor inputmode: string|undefined;
+  accessor inputTabindex: number = 0;
+  accessor invalid: boolean = false;
+  accessor label: string = '';
+  accessor max: number|undefined;
+  accessor min: number|undefined;
+  accessor maxlength: number|undefined;
+  accessor minlength: number|undefined;
+  accessor pattern: string|undefined;
+  accessor placeholder: string|null = null;
+  accessor readonly: boolean = false;
+  accessor required: boolean = false;
+  accessor type: string = 'text';
+  accessor value: string = '';
+  protected accessor internalValue_: string = '';
+  protected accessor focused_: boolean = false;
 
   override willUpdate(changedProperties: PropertyValues<this>) {
     super.willUpdate(changedProperties);
@@ -213,6 +207,11 @@ export class CrInputElement extends CrLitElement {
       // Check that the 'type' is one of the supported types.
       assert(SUPPORTED_INPUT_TYPES.has(this.type));
     }
+  }
+
+  override firstUpdated() {
+    // Use inputTabindex instead.
+    assert(!this.hasAttribute('tabindex'));
   }
 
   override updated(changedProperties: PropertyValues<this>) {
@@ -282,6 +281,26 @@ export class CrInputElement extends CrLitElement {
 
   protected getAriaLabel_() {
     return this.ariaLabel || this.label || this.placeholder;
+  }
+
+  // Returns the id of the visible label element when aria-labelledby
+  // should reference it, or null otherwise. Some accessibility frameworks
+  // (notably ATK/AT-SPI used by Orca on Linux) do not reliably surface
+  // the input's accessible name from aria-label alone in this layout.
+  // Skipped when the host sets its own aria-label, so that takes
+  // precedence as before.
+  protected getAriaLabelledBy_(): string|null {
+    if (this.label && !this.ariaLabel) {
+      return 'label';
+    }
+    return null;
+  }
+
+  // The visible label is exposed to a11y only when referenced via
+  // aria-labelledby; otherwise it stays aria-hidden to avoid duplicating
+  // the inner input's aria-label.
+  protected getLabelAriaHidden_(): string|null {
+    return this.getAriaLabelledBy_() ? null : 'true';
   }
 
   protected getAriaInvalid_() {

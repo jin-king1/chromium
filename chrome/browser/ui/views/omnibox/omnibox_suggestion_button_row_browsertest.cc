@@ -3,31 +3,23 @@
 // found in the LICENSE file.
 
 #include "base/memory/scoped_refptr.h"
-#include "base/run_loop.h"
-#include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "base/test/scoped_feature_list.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/omnibox/omnibox_controller.h"
+#include "chrome/browser/ui/omnibox/omnibox_edit_model.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
-#include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_popup_view_views.h"
-#include "chrome/browser/ui/views/omnibox/omnibox_result_view.h"
 #include "chrome/browser/ui/views/omnibox/omnibox_view_views.h"
-#include "chrome/browser/ui/views/theme_copying_widget.h"
-#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
-#include "chrome/test/base/ui_test_utils.h"
-#include "chrome/test/permissions/permission_request_manager_test_api.h"
 #include "components/omnibox/browser/actions/omnibox_pedal.h"
 #include "components/omnibox/browser/actions/tab_switch_action.h"
 #include "components/omnibox/browser/autocomplete_match_classification.h"
-#include "components/omnibox/browser/omnibox_controller.h"
-#include "components/omnibox/browser/omnibox_edit_model.h"
 #include "components/omnibox/browser/omnibox_popup_selection.h"
-#include "components/omnibox/browser/test_scheme_classifier.h"
 #include "components/strings/grit/components_strings.h"
-#include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 
 // This test is used to verify UI of dedicated row with screenshots verification
@@ -36,7 +28,12 @@
 // screenshots.
 class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
  public:
-  OmniboxSuggestionButtonRowBrowserTest() = default;
+  OmniboxSuggestionButtonRowBrowserTest() {
+    scoped_feature_list_.InitWithFeatures(
+        /*enabled_features*/ {},
+        /*disabled_features*/ {omnibox::internal::kWebUIOmniboxPopup,
+                               omnibox::internal::kWebUIOmniboxAimPopup});
+  }
 
   OmniboxSuggestionButtonRowBrowserTest(
       const OmniboxSuggestionButtonRowBrowserTest&) = delete;
@@ -50,7 +47,7 @@ class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
 
     // Populate suggestions for the omnibox popup.
     AutocompleteController* autocomplete_controller =
-        omnibox_view->controller()->autocomplete_controller();
+        GetLocationBar()->GetOmniboxController()->autocomplete_controller();
     autocomplete_controller->Start({});
     AutocompleteResult& results = autocomplete_controller->internal_result_;
     ACMatches matches;
@@ -66,7 +63,7 @@ class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
         ACMatchClassification::MATCH | ACMatchClassification::URL,
         ACMatchClassification::URL);
     search_match.keyword = u"match";
-    search_match.associated_keyword = std::make_unique<AutocompleteMatch>();
+    search_match.associated_keyword = u"match";
 
     auto tab_switch_action = base::MakeRefCounted<TabSwitchAction>(GURL());
     AutocompleteMatch switch_to_tab_match(nullptr, 500, false,
@@ -107,8 +104,7 @@ class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
         ACMatchClassification::MATCH | ACMatchClassification::URL,
         ACMatchClassification::URL);
     multiple_actions_match.keyword = u"match";
-    multiple_actions_match.associated_keyword =
-        std::make_unique<AutocompleteMatch>();
+    multiple_actions_match.associated_keyword = u"match";
     multiple_actions_match.has_tab_match = true;
     multiple_actions_match.actions.push_back(tab_switch_action);
 
@@ -120,14 +116,20 @@ class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
     autocomplete_controller->NotifyChanged();
 
     // The omnibox popup should open with suggestions displayed.
-    omnibox_view->model()->OnPopupResultChanged();
-    EXPECT_TRUE(omnibox_view->model()->PopupIsOpen());
+    GetLocationBar()
+        ->GetOmniboxController()
+        ->edit_model()
+        ->OnPopupResultChanged();
+    EXPECT_TRUE(GetLocationBar()->GetOmniboxController()->IsPopupOpen());
   }
 
   bool VerifyUi() override {
     OmniboxPopupView* popup_view =
-        GetOmniboxViewViews()->GetPopupViewForTesting();
-    OmniboxEditModel* model = GetOmniboxViewViews()->model();
+        BrowserView::GetBrowserViewForBrowser(browser())
+            ->GetLocationBarView()
+            ->GetOmniboxPopupView();
+    OmniboxEditModel* model =
+        GetLocationBar()->GetOmniboxController()->edit_model();
 
     model->SetPopupSelection(
         OmniboxPopupSelection(0, OmniboxPopupSelection::KEYWORD_MODE));
@@ -166,9 +168,12 @@ class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
     return "RoundedOmniboxResultsFrameWindow";
   }
 
+  LocationBar* GetLocationBar() {
+    return BrowserWindow::FromBrowser(browser())->GetLocationBar();
+  }
+
   OmniboxViewViews* GetOmniboxViewViews() {
-    LocationBar* location_bar = browser()->window()->GetLocationBar();
-    return static_cast<OmniboxViewViews*>(location_bar->GetOmniboxView());
+    return static_cast<OmniboxViewViews*>(GetLocationBar()->GetOmniboxView());
   }
 
   bool VerifyActiveButtonText(OmniboxPopupView* popup_view,
@@ -179,6 +184,7 @@ class OmniboxSuggestionButtonRowBrowserTest : public DialogBrowserTest {
   }
 
  private:
+  base::test::ScopedFeatureList scoped_feature_list_;
   scoped_refptr<OmniboxAction> action_;
 };
 

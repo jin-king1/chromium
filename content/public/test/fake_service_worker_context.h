@@ -11,6 +11,7 @@
 
 #include "base/functional/callback_forward.h"
 #include "base/observer_list.h"
+#include "content/public/browser/console_message.h"
 #include "content/public/browser/service_worker_context.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
 
@@ -23,6 +24,7 @@ class StorageKey;
 namespace content {
 
 class ServiceWorkerContextObserver;
+struct GlobalRenderFrameHostId;
 
 // Fake implementation of ServiceWorkerContext.
 //
@@ -46,6 +48,7 @@ class FakeServiceWorkerContext : public ServiceWorkerContext {
       const GURL& script_url,
       const blink::StorageKey& key,
       const blink::mojom::ServiceWorkerRegistrationOptions& options,
+      GlobalRenderFrameHostId requesting_frame_id,
       StatusCodeCallback callback) override;
   void UnregisterServiceWorker(const GURL& scope,
                                const blink::StorageKey& key,
@@ -83,6 +86,9 @@ class FakeServiceWorkerContext : public ServiceWorkerContext {
   bool IsLiveRunningServiceWorker(int64_t service_worker_version_id) override;
   service_manager::InterfaceProvider& GetRemoteInterfaces(
       int64_t service_worker_version_id) override;
+  bool IsLiveServiceWorkerWithToken(
+      int64_t service_worker_version_id,
+      const blink::ServiceWorkerToken& token) override;
   blink::AssociatedInterfaceProvider& GetRemoteAssociatedInterfaces(
       int64_t service_worker_version_id) override;
   void SetForceUpdateOnPageLoadForTesting(
@@ -104,13 +110,21 @@ class FakeServiceWorkerContext : public ServiceWorkerContext {
   void StopAllServiceWorkers(base::OnceClosure callback) override;
   const base::flat_map<int64_t, ServiceWorkerRunningInfo>&
   GetRunningServiceWorkerInfos() override;
+  void AddMessageToConsole(int64_t service_worker_version_id,
+                           blink::mojom::ConsoleMessageLevel level,
+                           const std::string& message) override;
 
   // Explicitly notify ServiceWorkerContextObservers added to this context.
   void NotifyObserversOnVersionActivated(int64_t version_id, const GURL& scope);
   void NotifyObserversOnVersionRedundant(int64_t version_id, const GURL& scope);
   void NotifyObserversOnNoControllees(int64_t version_id, const GURL& scope);
+  void NotifyObserversOnReportConsoleMessage(
+      int64_t version_id,
+      const GURL& scope,
+      const content::ConsoleMessage& message);
 
-  // Inserts `key` into `registered_storage_keys_` if it doesn't already exist.
+  // Inserts `key` into `registered_storage_keys_` if it doesn't already
+  // exist.
   void AddRegistrationToRegisteredStorageKeys(const blink::StorageKey& key);
 
   bool start_service_worker_for_navigation_hint_called() {

@@ -4,15 +4,17 @@
 
 #include "chrome/browser/ui/views/apps/chrome_native_app_window_views_aura_ash.h"
 
+#include <optional>
 #include <utility>
 
 #include "apps/ui/views/app_window_frame_view.h"
-#include "ash/frame/non_client_frame_view_ash.h"
+#include "ash/frame/frame_view_ash.h"
 #include "ash/public/cpp/shell_window_ids.h"
 #include "ash/public/cpp/tablet_mode.h"
 #include "ash/public/cpp/window_backdrop.h"
 #include "ash/public/cpp/window_properties.h"
 #include "ash/utility/wm_util.h"
+#include "ash/wm/window_state.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/scoped_observation.h"
@@ -23,7 +25,8 @@
 #include "chrome/browser/ash/note_taking/note_taking_helper.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/ash/multi_user/multi_user_context_menu.h"
-#include "chrome/browser/ui/views/exclusive_access_bubble_views.h"
+#include "chrome/browser/ui/views/apps/chrome_native_app_window_views.h"
+#include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
 #include "chrome/common/extensions/extension_constants.h"
 #include "chromeos/components/mgs/managed_guest_session_utils.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -60,8 +63,8 @@
 using extensions::AppWindow;
 namespace {
 
-// NonClientFrameView implementation for frameless chrome apps (i.e apps that do
-// not use ash style NonClientFrameView).
+// FrameView implementation for frameless chrome apps (i.e apps that do
+// not use ash style FrameView).
 class NativeAppWindowFrameView : public apps::AppWindowFrameView,
                                  public aura::WindowObserver {
  public:
@@ -83,34 +86,37 @@ class NativeAppWindowFrameView : public apps::AppWindowFrameView,
 
   ~NativeAppWindowFrameView() override = default;
 
-  // views::NonClientFrameView
+  // views::FrameView
   void UpdateWindowRoundedCorners() override {
     DCHECK(GetWidget());
 
-    if (!chromeos::features::IsRoundedWindowsEnabled()) {
+    aura::Window* window = GetWidget()->GetNativeWindow();
+    auto* window_state = ash::WindowState::Get(window);
+
+    // For certain windows, we do not window state associated with them. (See
+    // `ash::WindowState::Get()` for details)
+    if (!window_state) {
       return;
     }
 
-    aura::Window* window = GetWidget()->GetNativeWindow();
-
-    const int corner_radius = chromeos::GetWindowCornerRadius(window);
-    window->SetProperty(aura::client::kWindowCornerRadiusKey, corner_radius);
+    const gfx::RoundedCornersF window_radii =
+        window_state->GetWindowRoundedCorners();
 
     if (draw_frame()) {
-      SetFrameCornerRadius(corner_radius);
+      SetFrameCornerRadius(window_radii.upper_left());
     }
 
-    GetWidget()->client_view()->UpdateWindowRoundedCorners(corner_radius);
+    GetWidget()->client_view()->UpdateWindowRoundedCorners(window_radii);
   }
 
   // aura::WindowObserver:
   void OnWindowPropertyChanged(aura::Window* window,
                                const void* key,
                                intptr_t old) override {
-    // Windows in ChromeOS are rounded for certain window states. If these
-    // states change, we need to update the rounded corners accordingly. See
-    // `chromeos::ShouldWindowHaveRoundedCorners()` for more details.
-    if (chromeos::CanPropertyEffectWindowRadius(key)) {
+    // ChromeOS has rounded windows for certain window states. If these states
+    // changes, we need to update the rounded corners of the frame associate
+    // with the `window`accordingly.
+    if (key == chromeos::kWindowHasRoundedCornersKey) {
       UpdateWindowRoundedCorners();
     }
   }
@@ -124,40 +130,42 @@ class NativeAppWindowFrameView : public apps::AppWindowFrameView,
       frame_window_observation_{this};
 };
 
-class ChromeNativeAppNonClientView : public views::ClientView {
+class ChromeNativeAppClientView : public views::ClientView {
  public:
-  ChromeNativeAppNonClientView(views::Widget* frame,
-                               ChromeNativeAppWindowViewsAuraAsh* app_window,
-                               bool has_non_standard_frame,
-                               bool draw_non_standard_frame)
-      : views::ClientView(frame, app_window),
+  ChromeNativeAppClientView(views::Widget* widget,
+                            ChromeNativeAppWindowViewsAuraAsh* app_window,
+                            bool has_non_standard_frame,
+                            bool draw_non_standard_frame)
+      : views::ClientView(widget, app_window),
         has_non_standard_frame_(has_non_standard_frame),
         draw_non_standard_frame_(draw_non_standard_frame) {}
 
-  ChromeNativeAppNonClientView(const ChromeNativeAppNonClientView&) = delete;
-  ChromeNativeAppNonClientView& operator=(const ChromeNativeAppNonClientView&) =
+  ChromeNativeAppClientView(const ChromeNativeAppClientView&) = delete;
+  ChromeNativeAppClientView& operator=(const ChromeNativeAppClientView&) =
       delete;
 
-  ~ChromeNativeAppNonClientView() override = default;
+  ~ChromeNativeAppClientView() override = default;
 
   // views::ClientView:
-  void UpdateWindowRoundedCorners(int corner_radius) override {
+  void UpdateWindowRoundedCorners(
+      const gfx::RoundedCornersF& window_radii) override {
     DCHECK(GetWidget());
 
-    gfx::RoundedCornersF radii(0, 0, corner_radius, corner_radius);
+    gfx::RoundedCornersF radii(0, 0, window_radii.lower_right(),
+                               window_radii.lower_left());
 
     // If the chrome app's non-standard frame is not drawn, then round all four
     // corners of the web contents to achieve a rounded window.
     // For an app with a standard frame, we always draw the frame.
     if (has_non_standard_frame_ && !draw_non_standard_frame_) {
-      radii.set_upper_right(corner_radius);
-      radii.set_upper_left(corner_radius);
+      radii.set_upper_right(window_radii.upper_right());
+      radii.set_upper_left(window_radii.upper_left());
     }
 
     static_cast<ChromeNativeAppWindowViewsAuraAsh*>(contents_view())
         ->web_view()
         ->holder()
-        ->SetCornerRadii(radii);
+        ->SetNativeViewCornerRadii(radii);
   }
 
  private:
@@ -197,11 +205,14 @@ void ChromeNativeAppWindowViewsAuraAsh::OnBeforeWidgetInit(
     views::Widget* widget) {
   ChromeNativeAppWindowViewsAura::OnBeforeWidgetInit(create_params, init_params,
                                                      widget);
+  init_params->rounded_corners = chromeos::GetWindowRoundedCorners();
+
   // Some windows need to be placed in special containers, for example to make
   // them visible at the login or lock screen.
   std::optional<int> container_id;
   if (create_params.is_ime_window) {
     container_id = ash::kShellWindowId_ImeWindowParentContainer;
+    init_params->rounded_corners = std::nullopt;
   }
 
   if (container_id.has_value()) {
@@ -209,7 +220,7 @@ void ChromeNativeAppWindowViewsAuraAsh::OnBeforeWidgetInit(
     if (!ash::IsActivatableShellWindowId(*container_id)) {
       // This ensures calls to Activate() don't attempt to activate the window
       // locally, which can have side effects that should be avoided (such as
-      // changing focus). See https://crbug.com/935274 for more details.
+      // changing focus). See https://crbug.com/40615356 for more details.
       init_params->activatable = views::Widget::InitParams::Activatable::kNo;
     }
   }
@@ -228,7 +239,25 @@ void ChromeNativeAppWindowViewsAuraAsh::OnBeforeWidgetInit(
   app_restore::ModifyWidgetParams(restore_window_id, init_params);
 }
 
-std::unique_ptr<views::NonClientFrameView>
+std::unique_ptr<views::FrameView>
+ChromeNativeAppWindowViewsAuraAsh::CreateStandardDesktopAppFrame() {
+  auto frame_view = std::make_unique<ash::FrameViewAsh>(widget());
+  window_state_observation_.Observe(ash::WindowState::Get(GetNativeWindow()));
+
+  frame_view->GetHeaderView()->set_context_menu_controller(this);
+
+  // Enter immersive mode if the app is opened in tablet mode with the hide
+  // titlebars feature enabled.
+  UpdateImmersiveMode();
+
+  if (HasFrameColor()) {
+    frame_view->SetFrameColors(ActiveFrameColor(), InactiveFrameColor());
+  }
+
+  return frame_view;
+}
+
+std::unique_ptr<views::FrameView>
 ChromeNativeAppWindowViewsAuraAsh::CreateNonStandardAppFrame() {
   auto frame = std::make_unique<NativeAppWindowFrameView>(
       widget(), this, HasFrameColor(), ActiveFrameColor(),
@@ -241,6 +270,11 @@ ChromeNativeAppWindowViewsAuraAsh::CreateNonStandardAppFrame() {
                         chromeos::kResizeOutsideBoundsSize,
                         chromeos::kResizeAreaCornerSize);
   return frame;
+}
+
+bool ChromeNativeAppWindowViewsAuraAsh::ShouldCreateNonStandardAppFrame()
+    const {
+  return IsFrameless();
 }
 
 ui::ImageModel ChromeNativeAppWindowViewsAuraAsh::GetWindowIcon() {
@@ -257,11 +291,7 @@ ui::ImageModel ChromeNativeAppWindowViewsAuraAsh::GetWindowIcon() {
 }
 
 bool ChromeNativeAppWindowViewsAuraAsh::ShouldRemoveStandardFrame() {
-  if (IsFrameless()) {
-    return true;
-  }
-
-  return HasFrameColor();
+  return false;
 }
 
 void ChromeNativeAppWindowViewsAuraAsh::EnsureAppIconCreated() {
@@ -270,13 +300,17 @@ void ChromeNativeAppWindowViewsAuraAsh::EnsureAppIconCreated() {
 }
 
 gfx::RoundedCornersF ChromeNativeAppWindowViewsAuraAsh::GetWindowRadii() const {
-  if (!GetNativeWindow() || !chromeos::features::IsRoundedWindowsEnabled()) {
+  if (!GetNativeWindow()) {
     return gfx::RoundedCornersF();
   }
 
-  const int corner_radius =
-      GetNativeWindow()->GetProperty(aura::client::kWindowCornerRadiusKey);
-  return gfx::RoundedCornersF(corner_radius);
+  auto* window_radii =
+      GetNativeWindow()->GetProperty(aura::client::kWindowRoundedCornersKey);
+  if (!window_radii) {
+    return gfx::RoundedCornersF();
+  }
+
+  return *window_radii;
 }
 
 gfx::Rect ChromeNativeAppWindowViewsAuraAsh::GetRestoredBounds() const {
@@ -360,33 +394,10 @@ void ChromeNativeAppWindowViewsAuraAsh::ShowContextMenuForViewImpl(
 
 ///////////////////////////////////////////////////////////////////////////////
 // WidgetDelegate implementation:
-std::unique_ptr<views::NonClientFrameView>
-ChromeNativeAppWindowViewsAuraAsh::CreateNonClientFrameView(
-    views::Widget* widget) {
-  if (IsFrameless()) {
-    return CreateNonStandardAppFrame();
-  }
-
-  window_state_observation_.Observe(ash::WindowState::Get(GetNativeWindow()));
-
-  auto custom_frame_view = std::make_unique<ash::NonClientFrameViewAsh>(widget);
-
-  custom_frame_view->GetHeaderView()->set_context_menu_controller(this);
-
-  // Enter immersive mode if the app is opened in tablet mode with the hide
-  // titlebars feature enabled.
-  UpdateImmersiveMode();
-
-  if (HasFrameColor()) {
-    custom_frame_view->SetFrameColors(ActiveFrameColor(), InactiveFrameColor());
-  }
-
-  return custom_frame_view;
-}
 
 views::ClientView* ChromeNativeAppWindowViewsAuraAsh::CreateClientView(
     views::Widget* widget) {
-  return new ChromeNativeAppNonClientView(
+  return new ChromeNativeAppClientView(
       widget, this,
       /*has_non_standard_frame=*/IsFrameless(),
       /*draw_non_standard_frame=*/HasFrameColor());
@@ -467,9 +478,9 @@ bool ChromeNativeAppWindowViewsAuraAsh::IsFullscreen() const {
 }
 
 void ChromeNativeAppWindowViewsAuraAsh::EnterFullscreen(
-    const GURL& url,
+    const url::Origin& origin,
     ExclusiveAccessBubbleType bubble_type,
-    const int64_t display_id) {
+    FullscreenTabParams fullscreen_tab_params) {
   // This codepath is never hit for Chrome Apps.
   NOTREACHED();
 }
@@ -652,7 +663,7 @@ bool ChromeNativeAppWindowViewsAuraAsh::ShouldEnableImmersiveMode() const {
   // is no need for immersive mode.
   // TODO(crbug.com/41364538): This adds a little extra animation
   // when minimizing or unminimizing window.
-  return display::Screen::GetScreen()->InTabletMode() && CanResize() &&
+  return display::Screen::Get()->InTabletMode() && CanResize() &&
          !IsMinimized() &&
          GetNativeWindow()->GetProperty(chromeos::kWindowStateTypeKey) !=
              chromeos::WindowStateType::kFloated;

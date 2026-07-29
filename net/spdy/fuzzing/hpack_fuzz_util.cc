@@ -2,17 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/spdy/fuzzing/hpack_fuzz_util.h"
 
 #include <algorithm>
 #include <cmath>
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/numerics/byte_conversions.h"
 #include "base/rand_util.h"
@@ -181,20 +177,6 @@ bool HpackFuzzUtil::RunHeaderBlockThroughFuzzerStages(
     return false;
   }
   return true;
-}
-
-// static
-void HpackFuzzUtil::FlipBits(uint8_t* buffer,
-                             size_t buffer_length,
-                             size_t flip_per_thousand) {
-  uint64_t buffer_bit_length = buffer_length * 8u;
-  uint64_t bits_to_flip = flip_per_thousand * (1 + buffer_bit_length / 1024);
-
-  // Iteratively identify & flip offsets in the buffer bit-sequence.
-  for (uint64_t i = 0; i != bits_to_flip; ++i) {
-    uint64_t bit_offset = base::RandUint64() % buffer_bit_length;
-    buffer[bit_offset / 8u] ^= (1 << (bit_offset % 8u));
-  }
 }
 
 }  // namespace spdy

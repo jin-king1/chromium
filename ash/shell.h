@@ -6,6 +6,7 @@
 #define ASH_SHELL_H_
 
 #include <memory>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -23,6 +24,7 @@
 #include "ash/system/input_device_settings/touchscreen_metrics_recorder.h"
 #include "ash/system/toast/system_nudge_pause_manager_impl.h"
 #include "ash/wm/system_modal_container_event_filter_delegate.h"
+#include "base/functional/callback_forward.h"
 #include "base/gtest_prod_util.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
@@ -44,7 +46,6 @@ class Window;
 }  // namespace aura
 
 namespace chromeos {
-class ImmersiveContext;
 class SnapController;
 }  // namespace chromeos
 
@@ -61,6 +62,7 @@ class NativeDisplayDelegate;
 }  // namespace display
 
 namespace gfx {
+class ImageSkia;
 class Point;
 }  // namespace gfx
 
@@ -75,7 +77,7 @@ class UserActivityPowerManagerNotifier;
 }  // namespace ui
 
 namespace views {
-class NonClientFrameView;
+class FrameView;
 class Widget;
 namespace corewm {
 class TooltipController;
@@ -114,7 +116,6 @@ class AshColorProvider;
 class AshDBusServices;
 class AshFocusRules;
 class AshTouchTransformController;
-class AssistantControllerImpl;
 class AudioEffectsController;
 class AutoclickController;
 class AutozoomControllerImpl;
@@ -135,9 +136,8 @@ class ColorPaletteController;
 class ControlVHistogramRecorder;
 class CoralController;
 class CoralDelegate;
-class CrosDisplayConfig;
+class CrosDisplayConfigImpl;
 class DarkLightModeControllerImpl;
-class DeskProfilesDelegate;
 class DesksController;
 class DetachableBaseHandler;
 class DetachableBaseNotificationController;
@@ -185,7 +185,6 @@ class KeyAccessibilityEnabler;
 class KeyboardBacklightColorController;
 class KeyboardBrightnessControlDelegate;
 class KeyboardControllerImpl;
-class KeyboardModifierMetricsRecorder;
 class LaserPointerController;
 class LobsterController;
 class LocalAuthenticationRequestController;
@@ -201,9 +200,9 @@ class MessageCenterController;
 class MouseCursorEventFilter;
 class MouseKeysController;
 class MruWindowTracker;
-class MultiCaptureService;
 class MultiDeviceNotificationPresenter;
 class MultiDisplayMetricsController;
+class MultiUserWindowManager;
 class NearbyShareControllerImpl;
 class NearbyShareDelegate;
 class NightLightControllerImpl;
@@ -268,6 +267,7 @@ class SystemTrayNotifier;
 class TabletModeController;
 class ToastManagerImpl;
 class ToplevelWindowEventHandler;
+class ClipboardImageModelFactory;
 class ClipboardHistoryControllerImpl;
 class TouchDevicesController;
 class UserEducationController;
@@ -279,7 +279,6 @@ class WindowCycleController;
 class WindowRestoreController;
 class WindowTilingController;
 class WindowTreeHostManager;
-class WmModeController;
 class ArcInputMethodBoundsTracker;
 
 enum class LoginStatus;
@@ -292,10 +291,6 @@ namespace diagnostics {
 class DiagnosticsLogController;
 }  // namespace diagnostics
 
-namespace federated {
-class FederatedServiceControllerImpl;
-}  // namespace federated
-
 namespace quick_pair {
 class Mediator;
 }  // namespace quick_pair
@@ -303,6 +298,22 @@ class Mediator;
 namespace curtain {
 class SecurityCurtainController;
 }  // namespace curtain
+
+// Configuration data required to register or update a tray icon in the status
+// area.
+// TODO(b:463430279): Maybe move it to `ash/public`?
+struct ASH_EXPORT TrayIconConfiguration {
+  TrayIconConfiguration();
+
+  TrayIconConfiguration(const TrayIconConfiguration&) = delete;
+  TrayIconConfiguration& operator=(const TrayIconConfiguration&) = delete;
+
+  ~TrayIconConfiguration();
+
+  int64_t id;
+  std::optional<gfx::ImageSkia> image;
+  std::optional<std::u16string> tool_tip;
+};
 
 // Shell is a singleton object that presents the Shell API and implements the
 // RootWindow's delegate interface.
@@ -385,9 +396,9 @@ class ASH_EXPORT Shell : public SessionObserver,
   void TrackInputMethodBounds(ArcInputMethodBoundsTracker* tracker);
   void UntrackTrackInputMethodBounds(ArcInputMethodBoundsTracker* tracker);
 
-  // Creates a default views::NonClientFrameView for use by windows in the
+  // Creates a default views::FrameView for use by windows in the
   // Ash environment.
-  std::unique_ptr<views::NonClientFrameView> CreateDefaultNonClientFrameView(
+  std::unique_ptr<views::FrameView> CreateDefaultFrameView(
       views::Widget* widget);
 
   // Called when a casting session is started or stopped.
@@ -404,12 +415,6 @@ class ASH_EXPORT Shell : public SessionObserver,
 
   // Called when dictation is ended.
   void OnDictationEnded();
-
-  // DEPRECATED. Use display::Screen::GetScreen()->InTabletMode() instead.
-  // TODO(crbug.com/40942452): Remove this.
-  //
-  // Returns whether the device is currently in tablet mode.
-  bool IsInTabletMode() const;
 
   // Tests if TabletModeWindowManager is not enabled, and if
   // TabletModeController is not currently setting a display rotation. Or if
@@ -451,9 +456,6 @@ class ASH_EXPORT Shell : public SessionObserver,
     return ash_accelerator_configuration_.get();
   }
   AcceleratorLookup* accelerator_lookup() { return accelerator_lookup_.get(); }
-  AssistantControllerImpl* assistant_controller() {
-    return assistant_controller_.get();
-  }
   AudioEffectsController* audio_effects_controller() {
     return audio_effects_controller_.get();
   }
@@ -491,7 +493,7 @@ class ASH_EXPORT Shell : public SessionObserver,
   ColorPaletteController* color_palette_controller() {
     return color_palette_controller_.get();
   }
-  CrosDisplayConfig* cros_display_config() {
+  CrosDisplayConfigImpl* cros_display_config() {
     return cros_display_config_.get();
   }
   ::wm::CursorManager* cursor_manager() { return cursor_manager_.get(); }
@@ -572,10 +574,6 @@ class ASH_EXPORT Shell : public SessionObserver,
     return event_transformation_handler_.get();
   }
 
-  federated::FederatedServiceControllerImpl* federated_service_controller() {
-    return federated_service_controller_.get();
-  }
-
   FirmwareUpdateNotificationController*
   firmware_update_notification_controller() {
     return firmware_update_notification_controller_.get();
@@ -634,9 +632,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   KeyboardControllerImpl* keyboard_controller() {
     return keyboard_controller_.get();
   }
-  KeyboardModifierMetricsRecorder* keyboard_modifier_metrics_recorder() {
-    return keyboard_modifier_metrics_recorder_.get();
-  }
   TouchscreenMetricsRecorder* touchscreen_metrics_recorder() {
     return touchscreen_metrics_recorder_.get();
   }
@@ -683,6 +678,9 @@ class ASH_EXPORT Shell : public SessionObserver,
   MultiDisplayMetricsController* multi_display_metrics_controller() {
     return multi_display_metrics_controller_.get();
   }
+  MultiUserWindowManager* multi_user_window_manager() {
+    return multi_user_window_manager_.get();
+  }
   NearbyShareControllerImpl* nearby_share_controller() {
     return nearby_share_controller_.get();
   }
@@ -725,9 +723,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   }
   quick_pair::Mediator* quick_pair_mediator() {
     return quick_pair_mediator_.get();
-  }
-  MultiCaptureService* multi_capture_service() {
-    return multi_capture_service_.get();
   }
   ResizeShadowController* resize_shadow_controller() {
     return resize_shadow_controller_.get();
@@ -898,6 +893,9 @@ class ASH_EXPORT Shell : public SessionObserver,
   // Sets a custom color for the cursor.
   void SetCursorColor(SkColor cursor_color);
 
+  // Sets whether the cursor should be inverted.
+  void SetCursorInverted(bool inverted);
+
   // Updates cursor compositing on/off. Native cursor is disabled when cursor
   // compositing is enabled, and vice versa.
   void UpdateCursorCompositingEnabled();
@@ -953,8 +951,29 @@ class ASH_EXPORT Shell : public SessionObserver,
     return login_unlock_throughput_recorder_.get();
   }
 
-  // Returns the DeskProfilesDelegate, or nullptr if it isn't available.
-  DeskProfilesDelegate* GetDeskProfilesDelegate();
+  // Adds a status tray icon with the specified `configuration` to the status
+  // area on the display identified by `display_id`. The `callback` will be run
+  // when the icon is clicked.
+  // Returns whether the icon was successfully added.
+  bool AddStatusTrayIcon(const TrayIconConfiguration& configuration,
+                         int64_t display_id,
+                         base::RepeatingClosure callback);
+
+  // Updates the visual properties (e.g. image, tooltip) of the status tray icon
+  // identified by |configuration| on the display identified by `display_id`.
+  // Returns whether the icon was found and updated.
+  bool UpdateStatusTrayIcon(const TrayIconConfiguration& configuration,
+                            int64_t display_id);
+
+  // Removes the status tray icon identified by `configuration` from the status
+  // area on the display identified by `display_id`.
+  // Returns whether the icon was found and removed.
+  bool RemoveStatusTrayIcon(const TrayIconConfiguration& configuration,
+                            int64_t display_id);
+
+  // Workaround for testing to simulat user sign-out without Chrome process
+  // termination, which conflicts with production behavior.
+  void RecreateMultiUserWindowManagerForTesting();
 
  private:
   FRIEND_TEST_ALL_PREFIXES(ExtendedDesktopTest, TestCursor);
@@ -984,6 +1003,9 @@ class ASH_EXPORT Shell : public SessionObserver,
 
   // Initializes the root window so that it can host browser windows.
   void InitRootWindow(aura::Window* root_window);
+
+  // Close All windows that are considered application windows.
+  void CloseAllAppWindows();
 
   // Destroys all child windows including widgets across all roots.
   void CloseAllRootWindowChildWindows();
@@ -1025,8 +1047,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<InputDeviceSettingsDispatcher>
       input_device_settings_dispatcher_;
   std::unique_ptr<InputDeviceTracker> input_device_tracker_;
-  std::unique_ptr<KeyboardModifierMetricsRecorder>
-      keyboard_modifier_metrics_recorder_;
   std::unique_ptr<TouchscreenMetricsRecorder> touchscreen_metrics_recorder_;
   std::unique_ptr<InputDeviceKeyAliasManager> input_device_key_alias_manager_;
   std::unique_ptr<ShortcutInputHandler> shortcut_input_handler_;
@@ -1050,7 +1070,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   // May be null in tests or when running on linux-chromeos.
   scoped_refptr<dbus::Bus> dbus_bus_;
   std::unique_ptr<AshDBusServices> ash_dbus_services_;
-  std::unique_ptr<AssistantControllerImpl> assistant_controller_;
   std::unique_ptr<AudioEffectsController> audio_effects_controller_;
   std::unique_ptr<AutozoomControllerImpl> autozoom_controller_;
   std::unique_ptr<BacklightsForcedOffSetter> backlights_forced_off_setter_;
@@ -1060,7 +1079,7 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<CalendarController> calendar_controller_;
   std::unique_ptr<CameraEffectsController> camera_effects_controller_;
   std::unique_ptr<ColorPaletteController> color_palette_controller_;
-  std::unique_ptr<CrosDisplayConfig> cros_display_config_;
+  std::unique_ptr<CrosDisplayConfigImpl> cros_display_config_;
   std::unique_ptr<curtain::SecurityCurtainController>
       security_curtain_controller_;
   std::unique_ptr<DarkLightModeControllerImpl> dark_light_mode_controller_;
@@ -1092,7 +1111,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<HumanPresenceOrientationController>
       human_presence_orientation_controller_;
   std::unique_ptr<ImeControllerImpl> ime_controller_;
-  std::unique_ptr<chromeos::ImmersiveContext> immersive_context_;
   std::unique_ptr<WebAuthNDialogControllerImpl> webauthn_dialog_controller_;
   std::unique_ptr<KeyboardBacklightColorController>
       keyboard_backlight_color_controller_;
@@ -1114,6 +1132,7 @@ class ASH_EXPORT Shell : public SessionObserver,
       multi_display_metrics_controller_;
   std::unique_ptr<MultiDeviceNotificationPresenter>
       multidevice_notification_presenter_;
+  std::unique_ptr<MultiUserWindowManager> multi_user_window_manager_;
   std::unique_ptr<chromeos::MultitaskMenuNudgeController::Delegate>
       multitask_menu_nudge_delegate_;
   std::unique_ptr<NearbyShareControllerImpl> nearby_share_controller_;
@@ -1142,8 +1161,6 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<PipController> pip_controller_;
   std::unique_ptr<PrivacyScreenController> privacy_screen_controller_;
   std::unique_ptr<PolicyRecommendationRestorer> policy_recommendation_restorer_;
-  // Must be after `session_controller_`.
-  std::unique_ptr<ScannerController> scanner_controller_;
   std::unique_ptr<ScreenSwitchCheckController> screen_switch_check_controller_;
   std::unique_ptr<ShelfConfig> shelf_config_;
   std::unique_ptr<ShelfController> shelf_controller_;
@@ -1163,6 +1180,7 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<SystemSoundsDelegate> system_sounds_delegate_;
   std::unique_ptr<api::TasksController> tasks_controller_;
   std::unique_ptr<ToastManagerImpl> toast_manager_;
+  std::unique_ptr<ClipboardImageModelFactory> clipboard_image_model_factory_;
   std::unique_ptr<ClipboardHistoryControllerImpl> clipboard_history_controller_;
   std::unique_ptr<TouchDevicesController> touch_devices_controller_;
   std::unique_ptr<UserEducationController> user_education_controller_;
@@ -1221,6 +1239,8 @@ class ASH_EXPORT Shell : public SessionObserver,
   std::unique_ptr<DisplayConfigurationObserver> display_configuration_observer_;
 
   std::unique_ptr<ScreenPinningController> screen_pinning_controller_;
+  // Must be after `session_controller_` and `screen_pinning_controller_`.
+  std::unique_ptr<ScannerController> scanner_controller_;
 
   std::unique_ptr<PeripheralBatteryListener> peripheral_battery_listener_;
   std::unique_ptr<PeripheralBatteryNotifier> peripheral_battery_notifier_;
@@ -1270,11 +1290,9 @@ class ASH_EXPORT Shell : public SessionObserver,
 
   std::unique_ptr<chromeos::SnapController> snap_controller_;
 
-  std::unique_ptr<WmModeController> wm_mode_controller_;
-
   // |native_cursor_manager_| is owned by |cursor_manager_|, but we keep a
   // pointer to vend to test code.
-  raw_ptr<NativeCursorManagerAsh, DanglingUntriaged> native_cursor_manager_;
+  raw_ptr<NativeCursorManagerAsh> native_cursor_manager_;
 
   // Cursor may be hidden on certain key events in Chrome OS, whereas we never
   // hide the cursor on Windows.
@@ -1305,17 +1323,14 @@ class ASH_EXPORT Shell : public SessionObserver,
 
   std::unique_ptr<OcclusionTrackerPauser> occlusion_tracker_pauser_;
 
-  std::unique_ptr<MultiCaptureService> multi_capture_service_;
-
-  std::unique_ptr<federated::FederatedServiceControllerImpl>
-      federated_service_controller_;
-
   std::unique_ptr<quick_pair::Mediator> quick_pair_mediator_;
 
   std::unique_ptr<display::NativeDisplayDelegate> native_display_delegate_;
 
   std::unique_ptr<CoralController> coral_controller_;
   std::unique_ptr<CoralDelegate> coral_delegate_;
+
+  bool shutting_down_ = false;
 
   base::WeakPtrFactory<Shell> weak_factory_{this};
 };

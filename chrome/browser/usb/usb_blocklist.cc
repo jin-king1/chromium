@@ -17,9 +17,6 @@
 
 namespace {
 
-static base::LazyInstance<UsbBlocklist>::Leaky g_singleton =
-    LAZY_INSTANCE_INITIALIZER;
-
 constexpr uint16_t kMaxVersion = 0xffff;
 
 // Returns true if the passed string is exactly 4 digits long and only contains
@@ -72,7 +69,7 @@ constexpr UsbBlocklist::Entry kStaticEntries[] = {
 
     {0x09c3, 0x0023, kMaxVersion},  // HID Global BlueTrust Token
 
-    // Yubikey devices. https://crbug.com/818807
+    // Yubikey devices. https://crbug.com/40090685
     {0x1050, 0x0010, kMaxVersion},
     {0x1050, 0x0018, kMaxVersion},
     {0x1050, 0x0030, kMaxVersion},
@@ -115,7 +112,8 @@ UsbBlocklist::~UsbBlocklist() = default;
 
 // static
 UsbBlocklist& UsbBlocklist::Get() {
-  return g_singleton.Get();
+  static base::NoDestructor<UsbBlocklist> singleton;
+  return *singleton;
 }
 
 bool UsbBlocklist::IsExcluded(const Entry& entry) const {

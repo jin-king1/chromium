@@ -117,8 +117,10 @@ TEST_F(ArchivableCredentialPasswordFormTest, PasswordFormFromCredential) {
                                    recordIdentifier:recordIdentifier
                                   serviceIdentifier:url
                                         serviceName:nil
+                           registryControlledDomain:nil
                                            username:username
-                                               note:nil];
+                                               note:nil
+                                       lastUsedTime:0];
   EXPECT_TRUE(credential);
 
   PasswordForm passwordForm = PasswordFormFromCredential(credential);

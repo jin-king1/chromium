@@ -18,49 +18,83 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 import static org.robolectric.Shadows.shadowOf;
 
-import android.content.Context;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.os.Build;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
+import org.robolectric.ParameterizedRobolectricTestRunner;
 import org.robolectric.RuntimeEnvironment;
 import org.robolectric.annotation.Config;
 import org.robolectric.shadows.ShadowPackageManager;
 import org.robolectric.util.ReflectionHelpers;
 
-import org.chromium.base.test.BaseRobolectricTestRunner;
+import org.chromium.base.ActivityState;
+import org.chromium.base.ApplicationStatus;
+import org.chromium.base.FeatureOverrides;
+import org.chromium.base.test.BaseRobolectricTestRule;
 import org.chromium.base.test.util.Feature;
+import org.chromium.chrome.browser.customtabs.CustomTabActivity;
 import org.chromium.chrome.browser.webapps.WebappRegistry;
-import org.chromium.components.content_settings.ContentSettingValues;
+import org.chromium.components.content_settings.ContentSetting;
 import org.chromium.components.content_settings.ContentSettingsType;
 import org.chromium.components.embedder_support.util.Origin;
+import org.chromium.components.permissions.PermissionsAndroidFeatureList;
+
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.Collections;
 
 /** Tests for {@link InstalledWebappPermissionManager}. */
-@RunWith(BaseRobolectricTestRunner.class)
+@RunWith(ParameterizedRobolectricTestRunner.class)
 @Config(manifest = Config.NONE)
 public class InstalledWebappPermissionManagerTest {
-    private static final Origin ORIGIN = Origin.create("https://www.website.com");
+
+    @ParameterizedRobolectricTestRunner.Parameters
+    public static Collection testCases() {
+        return Arrays.asList(
+                new Object[][] {
+                    {ContentSettingsType.GEOLOCATION},
+                    {ContentSettingsType.GEOLOCATION_WITH_OPTIONS},
+                });
+    }
+
+    private final Origin mOrigin = Origin.create("https://www.website.com");
     private static final String PACKAGE_NAME = "com.package.name";
+
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
+
+    @Rule(order = -2)
+    public BaseRobolectricTestRule mBaseRule = new BaseRobolectricTestRule();
 
     @Mock public InstalledWebappPermissionStore mStore;
 
     private ShadowPackageManager mShadowPackageManager;
 
+    private final @ContentSettingsType.EnumType int mType;
+
+    public InstalledWebappPermissionManagerTest(@ContentSettingsType.EnumType int type) {
+        mType = type;
+    }
+
     @Before
     public void setUp() throws PackageManager.NameNotFoundException {
-        MockitoAnnotations.initMocks(this);
+        FeatureOverrides.newBuilder()
+                .flag(
+                        PermissionsAndroidFeatureList.APPROXIMATE_GEOLOCATION_PERMISSION,
+                        mType == ContentSettingsType.GEOLOCATION_WITH_OPTIONS)
+                .apply();
 
         PackageManager pm = RuntimeEnvironment.application.getPackageManager();
         mShadowPackageManager = shadowOf(pm);
 
-        Context context = mock(Context.class);
-
-        when(mStore.getDelegatePackageName(eq(ORIGIN))).thenReturn(PACKAGE_NAME);
+        when(mStore.getDelegatePackageName(eq(mOrigin))).thenReturn(PACKAGE_NAME);
         WebappRegistry.getInstance().setPermissionStoreForTesting(mStore);
     }
 
@@ -70,9 +104,8 @@ public class InstalledWebappPermissionManagerTest {
         setNoPermissionRequested();
 
         assertEquals(
-                ContentSettingValues.DEFAULT,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.DEFAULT,
+                InstalledWebappPermissionManager.getPermission(mType, mOrigin));
         verifyPermissionNotUpdated();
     }
 
@@ -80,26 +113,29 @@ public class InstalledWebappPermissionManagerTest {
     @Feature("TrustedWebActivities")
     public void locationPermissionAllowed_whenClientAllowed() {
         setClientLocationPermission(true);
-        setStoredLocationPermission(ContentSettingValues.BLOCK);
+        setStoredLocationPermission(ContentSetting.BLOCK);
 
         assertEquals(
-                ContentSettingValues.ALLOW,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
-        verifyLocationPermissionUpdated(ContentSettingValues.ALLOW);
+                ContentSetting.ALLOW,
+                InstalledWebappPermissionManager.getPermission(mType, mOrigin));
+        verifyLocationPermissionUpdated(ContentSetting.ALLOW);
     }
 
     @Test
     @Feature("TrustedWebActivities")
     public void locationPermissionBlocked_whenClientBlocked() {
         setClientLocationPermission(false);
-        setStoredLocationPermission(ContentSettingValues.ALLOW);
+        setStoredLocationPermission(ContentSetting.ALLOW);
 
-        assertEquals(
-                ContentSettingValues.BLOCK,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
-        verifyLocationPermissionUpdated(ContentSettingValues.BLOCK);
+        // Android R+ returns ASK for blocked permissions to support one-time permissions.
+        boolean isAndroidRPlus = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R;
+        int expected = isAndroidRPlus ? ContentSetting.ASK : ContentSetting.BLOCK;
+        assertEquals(expected, InstalledWebappPermissionManager.getPermission(mType, mOrigin));
+        if (isAndroidRPlus) {
+            verifyPermissionNotUpdated();
+        } else {
+            verifyLocationPermissionUpdated(ContentSetting.BLOCK);
+        }
     }
 
     @Test
@@ -109,9 +145,7 @@ public class InstalledWebappPermissionManagerTest {
         setStoredLocationPermission(null);
 
         assertEquals(
-                ContentSettingValues.ASK,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ASK, InstalledWebappPermissionManager.getPermission(mType, mOrigin));
         verifyPermissionNotUpdated();
     }
 
@@ -124,25 +158,19 @@ public class InstalledWebappPermissionManagerTest {
         setStoredLocationPermission(null);
         setClientLocationPermission(false);
         assertEquals(
-                ContentSettingValues.ASK,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ASK, InstalledWebappPermissionManager.getPermission(mType, mOrigin));
         verifyPermissionNotUpdated();
 
-        setStoredLocationPermission(ContentSettingValues.ALLOW);
+        setStoredLocationPermission(ContentSetting.ALLOW);
         setClientLocationPermission(false);
         assertEquals(
-                ContentSettingValues.ASK,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ASK, InstalledWebappPermissionManager.getPermission(mType, mOrigin));
         verifyPermissionNotUpdated();
 
-        setStoredLocationPermission(ContentSettingValues.BLOCK);
+        setStoredLocationPermission(ContentSetting.BLOCK);
         setClientLocationPermission(false);
         assertEquals(
-                ContentSettingValues.ASK,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ASK, InstalledWebappPermissionManager.getPermission(mType, mOrigin));
         verifyPermissionNotUpdated();
     }
 
@@ -157,16 +185,14 @@ public class InstalledWebappPermissionManagerTest {
                 new int[] {PackageInfo.REQUESTED_PERMISSION_GRANTED};
         mShadowPackageManager.installPackage(packageInfo);
         assertEquals(
-                ContentSettingValues.ALLOW,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ALLOW,
+                InstalledWebappPermissionManager.getPermission(mType, mOrigin));
 
         packageInfo.requestedPermissions = new String[] {ACCESS_FINE_LOCATION};
         mShadowPackageManager.installPackage(packageInfo);
         assertEquals(
-                ContentSettingValues.ALLOW,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ALLOW,
+                InstalledWebappPermissionManager.getPermission(mType, mOrigin));
 
         // When one of the two location permission is granted, return ALLOW.
         packageInfo.requestedPermissions =
@@ -175,16 +201,14 @@ public class InstalledWebappPermissionManagerTest {
                 new int[] {0, PackageInfo.REQUESTED_PERMISSION_GRANTED};
         mShadowPackageManager.installPackage(packageInfo);
         assertEquals(
-                ContentSettingValues.ALLOW,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.ALLOW,
+                InstalledWebappPermissionManager.getPermission(mType, mOrigin));
 
         packageInfo.requestedPermissions = new String[] {};
         mShadowPackageManager.installPackage(packageInfo);
         assertEquals(
-                ContentSettingValues.DEFAULT,
-                InstalledWebappPermissionManager.getPermission(
-                        ContentSettingsType.GEOLOCATION, ORIGIN));
+                ContentSetting.DEFAULT,
+                InstalledWebappPermissionManager.getPermission(mType, mOrigin));
     }
 
     private void setNoPermissionRequested() {
@@ -204,9 +228,8 @@ public class InstalledWebappPermissionManagerTest {
         mShadowPackageManager.installPackage(packageInfo);
     }
 
-    private void setStoredLocationPermission(@ContentSettingValues Integer settingValue) {
-        when(mStore.getPermission(eq(ContentSettingsType.GEOLOCATION), eq(ORIGIN)))
-                .thenReturn(settingValue);
+    private void setStoredLocationPermission(@ContentSetting Integer settingValue) {
+        when(mStore.getPermission(eq(mType), eq(mOrigin))).thenReturn(settingValue);
     }
 
     private void verifyPermissionNotUpdated() {
@@ -214,13 +237,94 @@ public class InstalledWebappPermissionManagerTest {
                 .setStateForOrigin(any(), anyString(), anyString(), anyInt(), anyInt());
     }
 
-    private void verifyLocationPermissionUpdated(@ContentSettingValues int settingValue) {
+    private void verifyLocationPermissionUpdated(@ContentSetting int settingValue) {
         verify(mStore)
                 .setStateForOrigin(
-                        eq(ORIGIN),
-                        eq(PACKAGE_NAME),
-                        anyString(),
-                        eq(ContentSettingsType.GEOLOCATION),
-                        eq(settingValue));
+                        eq(mOrigin), eq(PACKAGE_NAME), anyString(), eq(mType), eq(settingValue));
+    }
+
+    @Test
+    @Feature("TrustedWebActivities")
+    public void getPermissions_distinguishesPreciseFromApproximate() {
+        if (mType != ContentSettingsType.GEOLOCATION_WITH_OPTIONS) {
+            return;
+        }
+
+        // Mock store to return our origin.
+        when(mStore.getStoredOrigins()).thenReturn(Collections.singleton(mOrigin.toString()));
+
+        // Mock CustomTabActivity.
+        CustomTabActivity activity = mock(CustomTabActivity.class);
+        when(activity.isInTwaMode()).thenReturn(true);
+
+        // Register activity with ApplicationStatus.
+        // We need to transition it to CREATED then RESUMED to mimic lifecycle.
+        ApplicationStatus.onStateChangeForTesting(activity, ActivityState.CREATED);
+        ApplicationStatus.onStateChangeForTesting(activity, ActivityState.RESUMED);
+
+        try {
+            // Scenario 1: Coarse only granted.
+            {
+                PackageInfo packageInfo = new PackageInfo();
+                packageInfo.packageName = PACKAGE_NAME;
+                packageInfo.requestedPermissions = new String[] {ACCESS_COARSE_LOCATION};
+                packageInfo.requestedPermissionsFlags =
+                        new int[] {PackageInfo.REQUESTED_PERMISSION_GRANTED};
+                mShadowPackageManager.installPackage(packageInfo);
+
+                setStoredLocationPermission(ContentSetting.ALLOW);
+
+                InstalledWebappBridge.Permission[] permissions =
+                        InstalledWebappPermissionManager.getPermissions(mType);
+                assertEquals(1, permissions.length);
+                assertEquals(mOrigin, permissions[0].origin);
+                assertEquals(ContentSetting.ALLOW, permissions[0].setting); // approximate
+                assertEquals(ContentSetting.BLOCK, permissions[0].preciseSetting); // precise
+            }
+
+            // Scenario 2: Both granted.
+            {
+                PackageInfo packageInfo = new PackageInfo();
+                packageInfo.packageName = PACKAGE_NAME;
+                packageInfo.requestedPermissions =
+                        new String[] {ACCESS_COARSE_LOCATION, ACCESS_FINE_LOCATION};
+                packageInfo.requestedPermissionsFlags =
+                        new int[] {
+                            PackageInfo.REQUESTED_PERMISSION_GRANTED,
+                            PackageInfo.REQUESTED_PERMISSION_GRANTED
+                        };
+                mShadowPackageManager.installPackage(packageInfo);
+
+                setStoredLocationPermission(ContentSetting.ALLOW);
+
+                InstalledWebappBridge.Permission[] permissions =
+                        InstalledWebappPermissionManager.getPermissions(mType);
+                assertEquals(1, permissions.length);
+                assertEquals(ContentSetting.ALLOW, permissions[0].setting); // approximate
+                assertEquals(ContentSetting.ALLOW, permissions[0].preciseSetting); // precise
+            }
+
+            // Scenario 3: Both requested, but only coarse granted.
+            {
+                PackageInfo packageInfo = new PackageInfo();
+                packageInfo.packageName = PACKAGE_NAME;
+                packageInfo.requestedPermissions =
+                        new String[] {ACCESS_COARSE_LOCATION, ACCESS_FINE_LOCATION};
+                packageInfo.requestedPermissionsFlags =
+                        new int[] {PackageInfo.REQUESTED_PERMISSION_GRANTED, 0};
+                mShadowPackageManager.installPackage(packageInfo);
+
+                setStoredLocationPermission(ContentSetting.ALLOW);
+
+                InstalledWebappBridge.Permission[] permissions =
+                        InstalledWebappPermissionManager.getPermissions(mType);
+                assertEquals(1, permissions.length);
+                assertEquals(ContentSetting.ALLOW, permissions[0].setting); // approximate
+                assertEquals(ContentSetting.BLOCK, permissions[0].preciseSetting); // precise
+            }
+        } finally {
+            // Clean up activity.
+            ApplicationStatus.onStateChangeForTesting(activity, ActivityState.DESTROYED);
+        }
     }
 }

@@ -16,6 +16,8 @@ import android.view.View;
 import android.widget.TextView;
 
 import org.chromium.base.ContextUtils;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.autofill.AutofillUiUtils;
 import org.chromium.chrome.browser.autofill.vcn.AutofillVcnEnrollBottomSheetProperties.Description;
@@ -29,6 +31,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 import java.util.function.Function;
 
 /** The view-binder of the autofill virtual card enrollment bottom sheet UI. */
+@NullMarked
 /*package*/ class AutofillVcnEnrollBottomSheetViewBinder {
     private AutofillVcnEnrollBottomSheetViewBinder() {}
 
@@ -50,7 +53,11 @@ import java.util.function.Function;
                     getDescriptionSpan(
                             model.get(AutofillVcnEnrollBottomSheetProperties.DESCRIPTION)));
             view.mVirtualCardDescription.setMovementMethod(LinkMovementMethod.getInstance());
-
+        } else if (AutofillVcnEnrollBottomSheetProperties.IS_GPAY_LOGO_VISIBLE == propertyKey) {
+            view.mGpayIcon.setVisibility(
+                    model.get(AutofillVcnEnrollBottomSheetProperties.IS_GPAY_LOGO_VISIBLE)
+                            ? View.VISIBLE
+                            : View.GONE);
         } else if (AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON == propertyKey
                 || AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON_FETCH_CALLBACK
                         == propertyKey) {
@@ -66,7 +73,6 @@ import java.util.function.Function;
                 view.mIssuerIcon.setImageBitmap(
                         scaleBitmap(model.get(AutofillVcnEnrollBottomSheetProperties.ISSUER_ICON)));
             }
-
         } else if (AutofillVcnEnrollBottomSheetProperties.CARD_LABEL == propertyKey) {
             view.mCardLabel.setText(model.get(AutofillVcnEnrollBottomSheetProperties.CARD_LABEL));
             view.mCardContainer.setContentDescription(
@@ -141,7 +147,7 @@ import java.util.function.Function;
     }
 
     // Returns a scaled bitmap.
-    private static Bitmap scaleBitmap(IssuerIcon issuerIcon) {
+    private static @Nullable Bitmap scaleBitmap(IssuerIcon issuerIcon) {
         return issuerIcon != null
                         && issuerIcon.mBitmap != null
                         && issuerIcon.mWidth > 0

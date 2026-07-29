@@ -4,25 +4,27 @@
 
 package org.chromium.chrome.browser.customtabs;
 
+import static org.chromium.build.NullUtil.assertNonNull;
+
 import android.content.Context;
-import android.content.Intent;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.Nullable;
 
 import org.chromium.base.Callback;
 import org.chromium.base.ContextUtils;
 import org.chromium.base.metrics.RecordHistogram;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
+import org.chromium.chrome.browser.customtabs.features.branding.MismatchNotificationSigninDelegate;
 import org.chromium.chrome.browser.customtabs.features.branding.proto.AccountMismatchData.CloseType;
 import org.chromium.chrome.browser.profiles.Profile;
-import org.chromium.chrome.browser.signin.SigninAndHistorySyncActivityLauncherImpl;
 import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.SigninManager;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.NoAccountSigninMode;
 import org.chromium.chrome.browser.ui.signin.BottomSheetSigninAndHistorySyncConfig.WithAccountSigninMode;
-import org.chromium.chrome.browser.ui.signin.SigninAndHistorySyncActivityLauncher;
 import org.chromium.chrome.browser.ui.signin.account_picker.AccountPickerBottomSheetStrings;
 import org.chromium.chrome.browser.ui.signin.history_sync.HistorySyncConfig;
 import org.chromium.components.messages.DismissReason;
@@ -35,15 +37,17 @@ import org.chromium.components.signin.AccountManagerFacade;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.AccountUtils;
 import org.chromium.components.signin.AccountsChangeObserver;
-import org.chromium.components.signin.base.CoreAccountId;
-import org.chromium.components.signin.base.CoreAccountInfo;
-import org.chromium.components.signin.metrics.SigninAccessPoint;
+import org.chromium.components.signin.base.AccountInfo;
+import org.chromium.components.signin.identitymanager.IdentityManager;
+import org.chromium.google_apis.gaia.CoreAccountId;
 import org.chromium.ui.base.WindowAndroid;
 import org.chromium.ui.modelutil.PropertyModel;
 
-import java.util.List;
+import java.lang.annotation.Retention;
+import java.lang.annotation.RetentionPolicy;
 
 /** A controller for the account mismatched notice message. */
+@NullMarked
 public class MismatchNotificationController
         implements SigninManager.SignInStateObserver, AccountsChangeObserver {
     // LINT.IfChange(SuppressedReason)
@@ -57,8 +61,13 @@ public class MismatchNotificationController
         SuppressedReason.NOTICE_DISPLAYED_RECENTLY,
         SuppressedReason.FRE_COMPLETED_RECENTLY,
         SuppressedReason.CCT_IS_OFF_THE_RECORD,
+        SuppressedReason.APP_IS_NOT_ALLOWED,
+        SuppressedReason.SIGNIN_NOT_ALLOWED,
+        SuppressedReason.WRONG_MISMATCH_TYPE,
+        SuppressedReason.NOT_SUPPRESSED,
         SuppressedReason.MAX
     })
+    @Retention(RetentionPolicy.SOURCE)
     public @interface SuppressedReason {
         int ACCOUNT_LIST_NOT_YET_AVAILABLE = 0;
         int NOTICE_DISPLAY_LIMIT_MET = 1;
@@ -66,7 +75,11 @@ public class MismatchNotificationController
         int NOTICE_DISPLAYED_RECENTLY = 3;
         int FRE_COMPLETED_RECENTLY = 4;
         int CCT_IS_OFF_THE_RECORD = 5;
-        int MAX = 6;
+        int APP_IS_NOT_ALLOWED = 6;
+        int SIGNIN_NOT_ALLOWED = 7;
+        int WRONG_MISMATCH_TYPE = 8;
+        int NOT_SUPPRESSED = 9;
+        int MAX = 10;
     }
 
     // LINT.ThenChange(//tools/metrics/histograms/metadata/signin/enums.xml:SuppressedReason)
@@ -76,32 +89,43 @@ public class MismatchNotificationController
     private final CoreAccountId mAppAccountId;
     private final AccountManagerFacade mAccountManagerFacade;
     private final SigninManager mSigninManager;
+    private final MismatchNotificationSigninDelegate mSigninDelegate;
 
     private PropertyModel mMessageProperties;
     private boolean mMessageReachedFullyVisible;
 
-    @Nullable
-    private static MismatchNotificationController sMismatchNotificationControllerForTesting;
+    private static @Nullable MismatchNotificationController
+            sMismatchNotificationControllerForTesting;
 
     public static MismatchNotificationController get(
-            WindowAndroid windowAndroid, Profile profile, String appAccountName) {
+            WindowAndroid windowAndroid,
+            Profile profile,
+            String appAccountName,
+            MismatchNotificationSigninDelegate signinDelegate) {
         if (sMismatchNotificationControllerForTesting != null) {
             return sMismatchNotificationControllerForTesting;
         }
-        return new MismatchNotificationController(windowAndroid, profile, appAccountName);
+        return new MismatchNotificationController(
+                windowAndroid, profile, appAccountName, signinDelegate);
     }
 
     private MismatchNotificationController(
-            WindowAndroid windowAndroid, Profile profile, String appAccountName) {
+            WindowAndroid windowAndroid,
+            Profile profile,
+            String appAccountName,
+            MismatchNotificationSigninDelegate signinDelegate) {
         mWindowAndroid = windowAndroid;
         mProfile = profile;
         mAppAccountEmail = appAccountName;
-        mAppAccountId =
-                IdentityServicesProvider.get()
-                        .getIdentityManager(profile)
-                        .findExtendedAccountInfoByEmailAddress(appAccountName)
-                        .getId();
-        mSigninManager = IdentityServicesProvider.get().getSigninManager(mProfile);
+        mSigninDelegate = signinDelegate;
+        IdentityManager identityManager =
+                IdentityServicesProvider.get().getIdentityManager(profile);
+        assert identityManager != null;
+        AccountInfo accountInfo =
+                identityManager.findExtendedAccountInfoByEmailAddress(appAccountName);
+        assert accountInfo != null;
+        mAppAccountId = accountInfo.getId();
+        mSigninManager = assertNonNull(IdentityServicesProvider.get().getSigninManager(mProfile));
         mSigninManager.addSignInStateObserver(this);
         mAccountManagerFacade = AccountManagerFacadeProvider.getInstance();
         mAccountManagerFacade.addObserver(this);
@@ -115,6 +139,7 @@ public class MismatchNotificationController
                 SuppressedReason.MAX);
     }
 
+    @Initializer
     public void showSignedOutMessage(Context context, Callback<Integer> onClose) {
         mMessageProperties =
                 new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
@@ -149,41 +174,33 @@ public class MismatchNotificationController
                         .build();
 
         MessageDispatcher dispatcher = MessageDispatcherProvider.from(mWindowAndroid);
+        assert dispatcher != null;
         dispatcher.enqueueWindowScopedMessage(mMessageProperties, /* highPriority= */ false);
     }
 
     private @PrimaryActionClickBehavior int handlePrimaryAction(Context context) {
-        SigninAndHistorySyncActivityLauncher signinAndHistorySyncActivityLauncher =
-                SigninAndHistorySyncActivityLauncherImpl.get();
-
         // TODO(crbug.com/369562441): Update these strings once specs are finalized.
         AccountPickerBottomSheetStrings bottomSheetStrings =
                 new AccountPickerBottomSheetStrings.Builder(
-                                org.chromium.chrome.browser.ui.signin.R.string
-                                        .signin_account_picker_bottom_sheet_title)
-                        .setSubtitleStringId(
-                                org.chromium.chrome.browser.ui.signin.R.string
-                                        .signin_account_picker_bottom_sheet_benefits_subtitle)
+                                context.getString(
+                                        R.string.signin_account_picker_bottom_sheet_title))
+                        .setSubtitleString(
+                                context.getString(
+                                        R.string
+                                                .signin_account_picker_bottom_sheet_benefits_subtitle))
                         .build();
         BottomSheetSigninAndHistorySyncConfig config =
                 new BottomSheetSigninAndHistorySyncConfig.Builder(
                                 bottomSheetStrings,
                                 NoAccountSigninMode.NO_SIGNIN,
                                 WithAccountSigninMode.DEFAULT_ACCOUNT_BOTTOM_SHEET,
-                                HistorySyncConfig.OptInMode.NONE)
+                                HistorySyncConfig.OptInMode.NONE,
+                                context.getString(R.string.history_sync_title),
+                                context.getString(R.string.history_sync_subtitle))
                         .selectedCoreAccountId(mAppAccountId)
                         .build();
 
-        @Nullable
-        Intent intent =
-                signinAndHistorySyncActivityLauncher.createBottomSheetSigninIntentOrShowError(
-                        context,
-                        mProfile,
-                        config,
-                        SigninAccessPoint.CCT_ACCOUNT_MISMATCH_NOTIFICATION);
-        if (intent != null) {
-            context.startActivity(intent);
-        }
+        mSigninDelegate.startSignin(config);
 
         return PrimaryActionClickBehavior.DISMISS_IMMEDIATELY;
     }
@@ -223,11 +240,11 @@ public class MismatchNotificationController
     }
 
     @Override
-    public void onCoreAccountInfosChanged() {
-        assert mAccountManagerFacade.getCoreAccountInfos().isFulfilled();
-        final List<CoreAccountInfo> coreAccountInfos =
-                mAccountManagerFacade.getCoreAccountInfos().getResult();
-        if (AccountUtils.findCoreAccountInfoByEmail(coreAccountInfos, mAppAccountEmail) == null) {
+    public void onAccountsChanged() {
+        var accountsPromise = mAccountManagerFacade.getAccounts();
+        assert accountsPromise.isFulfilled();
+        if (AccountUtils.findAccountByEmail(accountsPromise.getResult(), mAppAccountEmail)
+                == null) {
             dismissMessage();
         }
     }

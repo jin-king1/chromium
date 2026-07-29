@@ -33,9 +33,9 @@ base::LazyInstance<installer::InitialPreferences>::DestructorAtExit
     g_initial_preferences = LAZY_INSTANCE_INITIALIZER;
 
 std::vector<std::string> GetNamedList(const char* name,
-                                      const base::Value::Dict& prefs) {
+                                      const base::DictValue& prefs) {
   std::vector<std::string> list;
-  const base::Value::List* value_list = prefs.FindListByDottedPath(name);
+  const base::ListValue* value_list = prefs.FindListByDottedPath(name);
   if (!value_list)
     return list;
 
@@ -49,7 +49,7 @@ std::vector<std::string> GetNamedList(const char* name,
   return list;
 }
 
-std::optional<base::Value::Dict> ParseDistributionPreferences(
+std::optional<base::DictValue> ParseDistributionPreferences(
     const std::string& json_data) {
   JSONStringValueDeserializer json(json_data);
   std::string error;
@@ -99,7 +99,7 @@ InitialPreferences::InitialPreferences(const std::string& prefs) {
   InitializeFromString(prefs);
 }
 
-InitialPreferences::InitialPreferences(base::Value::Dict prefs)
+InitialPreferences::InitialPreferences(base::DictValue prefs)
     : initial_dictionary_(std::move(prefs)) {
   // Cache a pointer to the distribution dictionary.
   distribution_ = initial_dictionary_->FindDict(
@@ -139,8 +139,6 @@ void InitialPreferences::InitializeFromCommandLine(
        installer::initial_preferences::kDoNotRegisterForUpdateLaunch},
       {installer::switches::kDoNotLaunchChrome,
        installer::initial_preferences::kDoNotLaunchChrome},
-      {installer::switches::kMakeChromeDefault,
-       installer::initial_preferences::kMakeChromeDefault},
       {installer::switches::kSystemLevel,
        installer::initial_preferences::kSystemLevel},
       {installer::switches::kVerboseLogging,
@@ -169,8 +167,9 @@ void InitialPreferences::InitializeFromCommandLine(
   // the kGoogleUpdateIsMachineEnvVar environment variable.
   std::unique_ptr<base::Environment> env(base::Environment::Create());
   if (env) {
-    std::string is_machine_var;
-    env->GetVar(env_vars::kGoogleUpdateIsMachineEnvVar, &is_machine_var);
+    std::string is_machine_var =
+        env->GetVar(env_vars::kGoogleUpdateIsMachineEnvVar)
+            .value_or(std::string());
     if (is_machine_var == "1") {
       VLOG(1) << "Taking system-level from environment.";
       name.assign(installer::initial_preferences::kDistroDict);
@@ -313,15 +312,22 @@ std::vector<std::string> InitialPreferences::GetFirstRunTabs() const {
   return GetNamedList(kFirstRunTabs, *initial_dictionary_);
 }
 
-bool InitialPreferences::GetExtensionsBlock(
-    const base::Value::Dict*& extensions) const {
-  const base::Value::Dict* extensions_block =
-      initial_dictionary_->FindDictByDottedPath(
-          initial_preferences::kExtensionsBlock);
-  if (!extensions_block)
-    return false;
-  extensions = extensions_block;
-  return true;
+#if BUILDFLAG(ENABLE_EXTENSIONS)
+std::string InitialPreferences::GetInitialExtensionsProviderName() const {
+  const std::string* provider_name =
+      initial_dictionary_->FindStringByDottedPath(
+          initial_preferences::kInitialExtensionsProviderName);
+  return provider_name ? *provider_name : std::string();
+}
+
+const base::ListValue* InitialPreferences::GetInitialExtensionsList() const {
+  return initial_dictionary_->FindListByDottedPath(
+      initial_preferences::kInitialExtensionsList);
+}
+#endif  // BUILDFLAG(ENABLE_EXTENSIONS)
+
+const base::DictValue* InitialPreferences::GetBookmarksBlock() const {
+  return initial_dictionary_->FindDict(initial_preferences::kBookmarksBlock);
 }
 
 std::string InitialPreferences::GetCompressedVariationsSeed() {

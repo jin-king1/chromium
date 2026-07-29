@@ -24,6 +24,7 @@ import androidx.test.runner.AndroidJUnitRunner;
 
 import dalvik.system.DexFile;
 
+import org.junit.Test;
 import org.junit.runner.Request;
 import org.junit.runner.RunWith;
 
@@ -191,7 +192,7 @@ public class BaseChromiumAndroidJUnitRunner extends AndroidJUnitRunner {
                 "org.mockito.android.target",
                 sInMemorySharedPreferencesContext.getCacheDir().getPath());
         // Reduce the time Espresso waits before failing to be less than the Python test timeout.
-        IdlingPolicies.setMasterPolicyTimeout(20, TimeUnit.SECONDS);
+        IdlingPolicies.setMasterPolicyTimeout(5, TimeUnit.SECONDS);
         if (arguments.getString(IS_UNIT_TEST_FLAG) != null) {
             LibraryLoader.setBrowserProcessStartupBlockedForTesting();
         }
@@ -406,14 +407,14 @@ public class BaseChromiumAndroidJUnitRunner extends AndroidJUnitRunner {
     /**
      * ClassLoader that translates NoClassDefFoundError into ClassNotFoundException.
      *
-     * Required because Android's TestLoader class tries to load all classes, but catches only
+     * <p>Required because Android's TestLoader class tries to load all classes, but catches only
      * ClassNotFoundException.
      *
-     * One way NoClassDefFoundError is triggered is on Android L when a class extends a non-existent
-     * class. See https://crbug.com/912690.
+     * <p>One way NoClassDefFoundError is triggered is on Android L when a class extends a
+     * non-existent class. See https://crbug.com/912690.
      */
-    private static class ForgivingClassLoader extends ClassLoader {
-        private final ClassLoader mDelegateLoader = getClass().getClassLoader();
+    private class ForgivingClassLoader extends ClassLoader {
+        private final ClassLoader mDelegateLoader = getContext().getClassLoader();
 
         @Override
         public Class<?> loadClass(String name) throws ClassNotFoundException {
@@ -425,7 +426,7 @@ public class BaseChromiumAndroidJUnitRunner extends AndroidJUnitRunner {
                 // E.g.: https://chromium-review.googlesource.com/c/chromium/src/+/4738415/1
                 MinAndroidSdkLevel annotation = ret.getAnnotation(MinAndroidSdkLevel.class);
                 if (annotation != null && annotation.value() > VERSION.SDK_INT) {
-                    throw new ClassNotFoundException();
+                    throw new ClassNotFoundException("Skipping due to @MinAndroidSdkLevel");
                 }
                 return ret;
             } catch (NoClassDefFoundError e) {
@@ -464,7 +465,7 @@ public class BaseChromiumAndroidJUnitRunner extends AndroidJUnitRunner {
                 return true;
             }
             for (Method testMethod : loadedClass.getMethods()) {
-                if (testMethod.isAnnotationPresent(org.junit.Test.class)) {
+                if (testMethod.isAnnotationPresent(Test.class)) {
                     return true;
                 }
             }

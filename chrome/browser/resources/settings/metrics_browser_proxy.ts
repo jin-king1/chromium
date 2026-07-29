@@ -39,8 +39,8 @@ export enum PrivacyElementInteractions {
   THIRD_PARTY_COOKIES_BLOCK_IN_INCOGNITO = 21,
   THIRD_PARTY_COOKIES_BLOCK = 22,
   BLOCK_ALL_THIRD_PARTY_COOKIES = 23,
-  IP_PROTECTION = 24,
-  FINGERPRINTING_PROTECTION = 25,
+  // IP_PROTECTION = 24,
+  // FINGERPRINTING_PROTECTION = 25,
   // Max value should be updated whenever new entries are added.
   MAX_VALUE = 26,
 }
@@ -192,8 +192,8 @@ export enum PrivacyGuideInteractions {
   SWAA_COMPLETION_LINK = 8,
   PRIVACY_SANDBOX_COMPLETION_LINK = 9,
   SEARCH_SUGGESTIONS_NEXT_BUTTON = 10,
-  TRACKING_PROTECTION_COMPLETION_LINK = 11,
-  AD_TOPICS_NEXT_BUTTON = 12,
+  // TRACKING_PROTECTION_COMPLETION_LINK = 11, // OBSOLETE
+  // AD_TOPICS_NEXT_BUTTON = 12, // OBSOLETE
   AI_SETTINGS_COMPLETION_LINK = 13,
   // Max value should be updated whenever new entries are added.
   MAX_VALUE = 14,
@@ -232,10 +232,10 @@ export enum PrivacyGuideSettingsStates {
   SEARCH_SUGGESTIONS_ON_TO_OFF = 17,
   SEARCH_SUGGESTIONS_OFF_TO_ON = 18,
   SEARCH_SUGGESTIONS_OFF_TO_OFF = 19,
-  AD_TOPICS_ON_TO_ON = 20,
-  AD_TOPICS_ON_TO_OFF = 21,
-  AD_TOPICS_OFF_TO_ON = 22,
-  AD_TOPICS_OFF_TO_OFF = 23,
+  // AD_TOPICS_ON_TO_ON = 20, // OBSOLETE
+  // AD_TOPICS_ON_TO_OFF = 21, // OBSOLETE
+  // AD_TOPICS_OFF_TO_ON = 22, // OBSOLETE
+  // AD_TOPICS_OFF_TO_OFF = 23, // OBSOLETE
   // Max value should be updated whenever new entries are added.
   MAX_VALUE = 24,
 }
@@ -264,8 +264,8 @@ export enum PrivacyGuideStepsEligibleAndReached {
   COMPLETION_REACHED = 9,
   SEARCH_SUGGESTIONS_ELIGIBLE = 10,
   SEARCH_SUGGESTIONS_REACHED = 11,
-  AD_TOPICS_ELIGIBLE = 12,
-  AD_TOPICS_REACHED = 13,
+  // AD_TOPICS_ELIGIBLE = 12, // OBSOLETE
+  // AD_TOPICS_REACHED = 13, // OBSOLETE
   // Leave this at the end.
   COUNT = 14,
 }
@@ -331,13 +331,17 @@ export enum CardBenefitsUserAction {
 // LINT.IfChange(AiPageInteractions)
 export enum AiPageInteractions {
   HISTORY_SEARCH_CLICK = 0,
-  COMPARE_CLICK = 1,
+  // COMPARE_CLICK = 1, // DEPRECATED
   COMPOSE_CLICK = 2,
-  TAB_ORGANIZATION_CLICK = 3,
+  // TAB_ORGANIZATION_CLICK = 3, // DEPRECATED
   // WALLPAPER_SEARCH_CLICK = 4, // DEPRECATED
   AUTOFILL_AI_CLICK = 5,
   PASSWORD_CHANGE_CLICK = 6,
-  MAX_VALUE = 7,
+  AI_SUGGESTIONS_CLICK = 7,
+  SKILLS_CLICK = 8,
+  INDIGO_CLICK = 9,
+  GOOGLE_SEARCH_AI_MODE_WORKSPACE_CLICK = 10,
+  MAX_VALUE = 11,
 }
 // LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageInteractions)
 
@@ -361,23 +365,6 @@ export enum AiPageHistorySearchInteractions {
 // LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageHistorySearchInteractions)
 
 /**
- * Contains all recorded interactions in the AI Compare settings page.
- *
- * These values are persisted to logs. Entries should not be renumbered and
- * numeric values should never be reused.
- *
- * Must be kept in sync with the SettingsAiPageCompareInteractions enum in
- * histograms/metadata/settings/enums.xml
- */
-// LINT.IfChange(AiPageCompareInteractions)
-export enum AiPageCompareInteractions {
-  FEATURE_LINK_CLICKED = 0,
-  LEARN_MORE_LINK_CLICKED = 1,
-  MAX_VALUE = 2,
-}
-// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageCompareInteractions)
-
-/**
  * Contains all recorded interactions in the AI Compose settings page.
  *
  * These values are persisted to logs. Entries should not be renumbered and
@@ -396,20 +383,124 @@ export enum AiPageComposeInteractions {
 // LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageComposeInteractions)
 
 /**
- * Contains all recorded interactions in the AI Tab Organization settings page.
+ * Contains all recorded interactions in the AI Suggestions settings page.
  *
  * These values are persisted to logs. Entries should not be renumbered and
  * numeric values should never be reused.
  *
- * Must be kept in sync with the SettingsAiPageTabOrganizationInteractions enum
- * in histograms/metadata/settings/enums.xml
+ * Must be kept in sync with the SettingsAiPageSuggestionsInteractions enum in
+ * histograms/metadata/settings/enums.xml
  */
-// LINT.IfChange(AiPageTabOrganizationInteractions)
-export enum AiPageTabOrganizationInteractions {
-  LEARN_MORE_LINK_CLICKED = 0,
-  MAX_VALUE = 1,
+// LINT.IfChange(AiPageSuggestionsInteractions)
+export enum AiPageSuggestionsInteractions {
+  SUGGESTIONS_ENABLED = 0,
+  SUGGESTIONS_DISABLED = 1,
+  LEARN_MORE_LINK_CLICKED = 2,
+  SYNC_SETTINGS_LINK_CLICKED = 3,
+  MAX_VALUE = 4,
 }
-// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageTabOrganizationInteractions)
+// LINT.ThenChange(/tools/metrics/histograms/metadata/settings/enums.xml:SettingsAiPageSuggestionsInteractions)
+
+/**
+ * These values are persisted to logs. Entries should not be renumbered and
+ * numeric values should never be reused.
+ *
+ * Must be kept in sync with the AutofillSettingsReferrer enum in
+ * histograms/metadata/autofill/enums.xml
+ */
+// LINT.IfChange(AutofillSettingsReferrer)
+export enum AutofillSettingsReferrer {
+  // PROFILE_MENU = 0,
+  SETTINGS_MENU = 1,
+  AUTOFILL_AND_PASSWORDS_PAGE = 2,
+  // FILLING_FLOW_DROPDOWN = 3,
+  MAX_VALUE = 4,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:AutofillSettingsReferrer)
+
+/**
+ * These values are persisted to logs. Entries should not be renumbered and
+ * numeric values should never be reused.
+ *
+ * Must be kept in sync with the YourSavedInfoDataCategory enum in
+ * histograms/metadata/autofill/enums.xml
+ */
+// LINT.IfChange(YourSavedInfoDataCategory)
+export enum YourSavedInfoDataCategory {
+  PASSWORD_MANAGER = 0,
+  PAYMENTS = 1,
+  CONTACT_INFO = 2,
+  IDENTITY_DOCS = 3,
+  TRAVEL = 4,
+  SHOPPING = 5,
+  MAX_VALUE = 6,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:YourSavedInfoDataCategory)
+
+/**
+ * A specific kind of saved user's information.
+ *
+ * These values are persisted to logs. Entries should not be renumbered and
+ * numeric values should never be reused.
+ *
+ * Must be kept in sync with the YourSavedInfoDataChip enum in
+ * histograms/metadata/autofill/enums.xml
+ */
+// LINT.IfChange(YourSavedInfoDataChip)
+export enum YourSavedInfoDataChip {
+  PASSWORDS = 0,
+  PASSKEYS = 1,
+  CREDIT_CARDS = 2,
+  PAY_OVER_TIME = 3,
+  IBANS = 4,
+  LOYALTY_CARDS = 5,
+  ADDRESSES = 6,
+  DRIVERS_LICENSES = 7,
+  NATIONAL_ID_CARDS = 8,
+  PASSPORTS = 9,
+  FLIGHT_RESERVATIONS = 10,
+  TRAVEL_INFO = 11,
+  VEHICLES = 12,
+  SHIPMENTS = 13,
+  ORDERS = 14,
+  MAX_VALUE = 15,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:YourSavedInfoDataChip)
+
+/**
+ * These values are persisted to logs. Entries should not be renumbered and
+ * numeric values should never be reused.
+ *
+ * Must be kept in sync with the YourSavedInfoDataCategory enum in
+ * histograms/metadata/autofill/enums.xml
+ */
+// LINT.IfChange(YourSavedInfoRelatedService)
+export enum YourSavedInfoRelatedService {
+  GOOGLE_PASSWORD_MANAGER = 0,
+  GOOGLE_WALLET = 1,
+  GOOGLE_ACCOUNT = 2,
+  MAX_VALUE = 3,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:YourSavedInfoRelatedService)
+
+// LINT.IfChange(SuggestionsFromGeminiEntryPoint)
+export enum SuggestionsFromGeminiEntryPoint {
+  YOUR_SAVED_INFO = 0,
+  TRAVEL = 1,
+  SHOPPING = 2,
+  IDENTITY_DOCS = 3,
+  MAX_VALUE = 4,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:SuggestionsFromGeminiEntryPoint)
+
+// LINT.IfChange(SuggestionsFromGeminiAction)
+export enum SuggestionsFromGeminiAction {
+  MANAGE_CONNECTED_APPS_CLICK = 0,
+  TOGGLE_ON = 1,
+  TOGGLE_OFF = 2,
+  MAX_VALUE = 3,
+}
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:SuggestionsFromGeminiAction)
 
 export interface MetricsBrowserProxy {
   /**
@@ -504,11 +595,24 @@ export interface MetricsBrowserProxy {
       void;
 
   /**
+   * Records a click on the Suggestions from Gemini link across Your saved info
+   * and category subpages with a corresponding metric and user action.
+   */
+  recordSuggestionsFromGeminiEntryPointClick(
+      entryPoint: SuggestionsFromGeminiEntryPoint): void;
+
+  /**
+   * Records an action triggered inside the Suggestions from Gemini subpage
+   * with a corresponding metric and user action.
+   */
+  recordSuggestionsFromGeminiAction(action: SuggestionsFromGeminiAction): void;
+
+  /**
    * Helper function that calls recordHistogram for the
    * Settings.PrivacyGuide.NextNavigation histogram
    */
-  recordPrivacyGuideNextNavigationHistogram(interaction:
-                                                PrivacyGuideInteractions): void;
+  recordPrivacyGuideNextNavigationHistogram(
+      interaction: PrivacyGuideInteractions): void;
 
   /**
    * Helper function that calls recordHistogram for the
@@ -581,22 +685,41 @@ export interface MetricsBrowserProxy {
 
   /**
    * Helper function that calls recordHistogram for the
-   * Settings.AiPage.Compare.Interactions histogram
-   */
-  recordAiPageCompareInteractions(interaction: AiPageCompareInteractions): void;
-
-  /**
-   * Helper function that calls recordHistogram for the
    * Settings.AiPage.Compose.Interactions histogram
    */
   recordAiPageComposeInteractions(interaction: AiPageComposeInteractions): void;
 
   /**
    * Helper function that calls recordHistogram for the
-   * Settings.AiPage.TabOrganization.Interactions histogram
+   * Settings.AiPage.Suggestions.Interactions histogram
    */
-  recordAiPageTabOrganizationInteractions(
-      interaction: AiPageTabOrganizationInteractions): void;
+  recordAiPageSuggestionsInteractions(
+      interaction: AiPageSuggestionsInteractions): void;
+
+  /**
+   * Records a referrer to one of Autofill settings pages.
+   */
+  recordAutofillSettingsReferrer(
+      histogramName: string, referrer: AutofillSettingsReferrer): void;
+
+  /**
+   * Records a click on a category link on the Your saved info page with
+   * a corresponding metric and user action.
+   */
+  recordYourSavedInfoCategoryClick(category: YourSavedInfoDataCategory): void;
+
+  /**
+   * Records a click on a data chip on the Your saved info page with
+   * a corresponding metric and user action.
+   */
+  recordYourSavedInfoDataChipClick(chip: YourSavedInfoDataChip): void;
+
+  /**
+   * Records a click on a related service link on the Your saved info page with
+   * a corresponding metric and user action.
+   */
+  recordYourSavedInfoRelatedServiceClick(service: YourSavedInfoRelatedService):
+      void;
 }
 
 export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
@@ -658,8 +781,8 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordSafetyHubNotificationPermissionsModuleListCountHistogram(suggestions:
-                                                                     number) {
+  recordSafetyHubNotificationPermissionsModuleListCountHistogram(
+      suggestions: number) {
     chrome.send('metricsHandler:recordInHistogram', [
       'Settings.SafetyHub.NotificationPermissionsModule.ListCount',
       suggestions,
@@ -685,8 +808,8 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordSafetyHubUnusedSitePermissionsModuleListCountHistogram(suggestions:
-                                                                   number) {
+  recordSafetyHubUnusedSitePermissionsModuleListCountHistogram(
+      suggestions: number) {
     chrome.send('metricsHandler:recordInHistogram', [
       'Settings.SafetyHub.UnusedSitePermissionsModule.ListCount',
       suggestions,
@@ -702,8 +825,8 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordSafeBrowsingInteractionHistogram(interaction:
-                                             SafeBrowsingInteractions) {
+  recordSafeBrowsingInteractionHistogram(
+      interaction: SafeBrowsingInteractions) {
     // TODO(crbug.com/40717279): Set the correct suffix for
     // SafeBrowsing.Settings.UserAction. Use the .Default suffix for now.
     chrome.send('metricsHandler:recordInHistogram', [
@@ -713,8 +836,8 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordPrivacyGuideNextNavigationHistogram(interaction:
-                                                PrivacyGuideInteractions) {
+  recordPrivacyGuideNextNavigationHistogram(
+      interaction: PrivacyGuideInteractions) {
     chrome.send('metricsHandler:recordInHistogram', [
       'Settings.PrivacyGuide.NextNavigation',
       interaction,
@@ -802,15 +925,6 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordAiPageCompareInteractions(interaction: AiPageCompareInteractions):
-      void {
-    chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.AiPage.Compare.Interactions',
-      interaction,
-      AiPageCompareInteractions.MAX_VALUE,
-    ]);
-  }
-
   recordAiPageComposeInteractions(interaction: AiPageComposeInteractions):
       void {
     chrome.send('metricsHandler:recordInHistogram', [
@@ -820,13 +934,97 @@ export class MetricsBrowserProxyImpl implements MetricsBrowserProxy {
     ]);
   }
 
-  recordAiPageTabOrganizationInteractions(
-      interaction: AiPageTabOrganizationInteractions): void {
+  recordAiPageSuggestionsInteractions(
+      interaction: AiPageSuggestionsInteractions): void {
     chrome.send('metricsHandler:recordInHistogram', [
-      'Settings.AiPage.TabOrganization.Interactions',
+      'Settings.AiPage.Suggestions.Interactions',
       interaction,
-      AiPageTabOrganizationInteractions.MAX_VALUE,
+      AiPageSuggestionsInteractions.MAX_VALUE,
     ]);
+  }
+
+  recordAutofillSettingsReferrer(
+      histogramName: string, referrer: AutofillSettingsReferrer) {
+    chrome.send(
+        'metricsHandler:recordInHistogram',
+        [histogramName, referrer, AutofillSettingsReferrer.MAX_VALUE]);
+  }
+
+  recordYourSavedInfoCategoryClick(category: YourSavedInfoDataCategory) {
+    chrome.send('metricsHandler:recordInHistogram', [
+      'Autofill.YourSavedInfoSettingsPage.CategoryLinkClick',
+      category,
+      YourSavedInfoDataCategory.MAX_VALUE,
+    ]);
+    if (category !== YourSavedInfoDataCategory.MAX_VALUE) {
+      this.recordAction(`Settings.YourSavedInfo.CategoryClick.${
+          YourSavedInfoDataCategory[category]}`);
+    }
+  }
+
+  recordYourSavedInfoDataChipClick(chip: YourSavedInfoDataChip) {
+    chrome.send('metricsHandler:recordInHistogram', [
+      'Autofill.YourSavedInfoSettingsPage.DataChipClick',
+      chip,
+      YourSavedInfoDataChip.MAX_VALUE,
+    ]);
+    if (chip !== YourSavedInfoDataChip.MAX_VALUE) {
+      this.recordAction(
+          `Settings.YourSavedInfo.ChipClick.${YourSavedInfoDataChip[chip]}`);
+    }
+  }
+
+  recordYourSavedInfoRelatedServiceClick(service: YourSavedInfoRelatedService) {
+    chrome.send('metricsHandler:recordInHistogram', [
+      'Autofill.YourSavedInfoSettingsPage.RelatedServiceLinkClick',
+      service,
+      YourSavedInfoRelatedService.MAX_VALUE,
+    ]);
+    if (service !== YourSavedInfoRelatedService.MAX_VALUE) {
+      this.recordAction(`Settings.YourSavedInfo.RelatedServiceClick.${
+          YourSavedInfoRelatedService[service]}`);
+    }
+  }
+
+  recordSuggestionsFromGeminiEntryPointClick(
+      entryPoint: SuggestionsFromGeminiEntryPoint) {
+    chrome.send('metricsHandler:recordInHistogram', [
+      'Autofill.YourSavedInfoSettingsPage.SuggestionsFromGeminiLinkClick',
+      entryPoint,
+      SuggestionsFromGeminiEntryPoint.MAX_VALUE,
+    ]);
+    if (entryPoint !== SuggestionsFromGeminiEntryPoint.MAX_VALUE) {
+      const actionMap = {
+        [SuggestionsFromGeminiEntryPoint.YOUR_SAVED_INFO]:
+            'PersonalContext.Settings.EntryPoint.AutofillAndPasswordsSettings',
+        [SuggestionsFromGeminiEntryPoint.TRAVEL]:
+            'PersonalContext.Settings.EntryPoint.TravelSettings',
+        [SuggestionsFromGeminiEntryPoint.SHOPPING]:
+            'PersonalContext.Settings.EntryPoint.ShoppingSettings',
+        [SuggestionsFromGeminiEntryPoint.IDENTITY_DOCS]:
+            'PersonalContext.Settings.EntryPoint.IdentityDocsSettings',
+      };
+      this.recordAction(actionMap[entryPoint]);
+    }
+  }
+
+  recordSuggestionsFromGeminiAction(action: SuggestionsFromGeminiAction) {
+    chrome.send('metricsHandler:recordInHistogram', [
+      'Autofill.YourSavedInfoSettingsPage.SuggestionsFromGeminiAction',
+      action,
+      SuggestionsFromGeminiAction.MAX_VALUE,
+    ]);
+    if (action !== SuggestionsFromGeminiAction.MAX_VALUE) {
+      const actionMap = {
+        [SuggestionsFromGeminiAction.MANAGE_CONNECTED_APPS_CLICK]:
+            'PersonalContext.Settings.ManageConnectedAppsClick',
+        [SuggestionsFromGeminiAction.TOGGLE_ON]:
+            'PersonalContext.Settings.ToggledOn',
+        [SuggestionsFromGeminiAction.TOGGLE_OFF]:
+            'PersonalContext.Settings.ToggledOff',
+      };
+      this.recordAction(actionMap[action]);
+    }
   }
 
   static getInstance(): MetricsBrowserProxy {

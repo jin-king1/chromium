@@ -4,7 +4,6 @@
 
 #include "chrome/browser/ui/passwords/password_manager_navigation_throttle.h"
 
-#include "base/metrics/histogram_macros.h"
 #include "base/task/sequenced_task_runner.h"
 #include "components/password_manager/core/browser/manage_passwords_referrer.h"
 #include "components/password_manager/core/browser/password_manager_constants.h"
@@ -28,6 +27,7 @@ namespace {
 
 using content::NavigationHandle;
 using content::NavigationThrottle;
+using content::NavigationThrottleRegistry;
 using content::WebContents;
 
 bool IsTriggeredOnGoogleOwnedUI(NavigationHandle* handle) {
@@ -55,24 +55,23 @@ bool IsTriggeredOnGoogleOwnedUI(NavigationHandle* handle) {
 }  // namespace
 
 PasswordManagerNavigationThrottle::PasswordManagerNavigationThrottle(
-    NavigationHandle* handle)
-    : NavigationThrottle(handle) {}
+    NavigationThrottleRegistry& registry)
+    : NavigationThrottle(registry) {}
 
 PasswordManagerNavigationThrottle::~PasswordManagerNavigationThrottle() =
     default;
 
 // static
-std::unique_ptr<PasswordManagerNavigationThrottle>
-PasswordManagerNavigationThrottle::MaybeCreateThrottleFor(
-    NavigationHandle* handle) {
+void PasswordManagerNavigationThrottle::MaybeCreateAndAdd(
+    NavigationThrottleRegistry& registry) {
   // Don't handle navigations in subframes or main frames that are in a nested
   // frame tree (e.g. fenced frames)
-  if (!handle->GetParentFrameOrOuterDocument() &&
-      IsTriggeredOnGoogleOwnedUI(handle)) {
-    return std::make_unique<PasswordManagerNavigationThrottle>(handle);
+  auto& handle = registry.GetNavigationHandle();
+  if (!handle.GetParentFrameOrOuterDocument() &&
+      IsTriggeredOnGoogleOwnedUI(&handle)) {
+    registry.AddThrottle(
+        std::make_unique<PasswordManagerNavigationThrottle>(registry));
   }
-
-  return nullptr;
 }
 
 NavigationThrottle::ThrottleCheckResult

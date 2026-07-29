@@ -4,6 +4,7 @@
 
 #include "components/viz/common/resources/shared_image_format_utils.h"
 
+#include <limits>
 #include <vector>
 
 #include "testing/gtest/include/gtest/gtest.h"
@@ -28,7 +29,7 @@ class SharedImageFormatUtilsTest : public testing::Test {
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneNV12) {
   // 8-bit 4:2:0 Y_UV biplanar format (YUV_420_BIPLANAR)
   SharedImageFormat format = MultiPlaneFormat::kNV12;
-  std::vector<SkColorType> expected_types = {kAlpha_8_SkColorType,
+  std::vector<SkColorType> expected_types = {kR8_unorm_SkColorType,
                                              kR8G8_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
@@ -36,7 +37,7 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneNV12) {
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneNV16) {
   // 8-bit 4:2:2 Y_UV biplanar format (YUV_422_BIPLANAR)
   SharedImageFormat format = MultiPlaneFormat::kNV16;
-  std::vector<SkColorType> expected_types = {kAlpha_8_SkColorType,
+  std::vector<SkColorType> expected_types = {kR8_unorm_SkColorType,
                                              kR8G8_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
@@ -44,7 +45,7 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneNV16) {
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneNV24) {
   // 8-bit 4:4:4 Y_UV biplanar format (YUV_444_BIPLANAR)
   SharedImageFormat format = MultiPlaneFormat::kNV24;
-  std::vector<SkColorType> expected_types = {kAlpha_8_SkColorType,
+  std::vector<SkColorType> expected_types = {kR8_unorm_SkColorType,
                                              kR8G8_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
@@ -53,7 +54,7 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneYVU) {
   // 8-bit 4:2:0 Y_V_U format (YVU_420)
   SharedImageFormat format = MultiPlaneFormat::kYV12;
   std::vector<SkColorType> expected_types = {
-      kAlpha_8_SkColorType, kAlpha_8_SkColorType, kAlpha_8_SkColorType};
+      kR8_unorm_SkColorType, kR8_unorm_SkColorType, kR8_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
 
@@ -61,14 +62,14 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneI420) {
   // 8-bit 4:2:0 Y_U_V format (I420)
   SharedImageFormat format = MultiPlaneFormat::kI420;
   std::vector<SkColorType> expected_types = {
-      kAlpha_8_SkColorType, kAlpha_8_SkColorType, kAlpha_8_SkColorType};
+      kR8_unorm_SkColorType, kR8_unorm_SkColorType, kR8_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
 
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneP010) {
   // 10-bit 4:2:0 Y_UV biplanar format (P010)
   SharedImageFormat format = MultiPlaneFormat::kP010;
-  std::vector<SkColorType> expected_types = {kA16_unorm_SkColorType,
+  std::vector<SkColorType> expected_types = {kR16_unorm_SkColorType,
                                              kR16G16_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
@@ -76,7 +77,7 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneP010) {
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneP210) {
   // 10-bit 4:2:2 Y_UV biplanar format (P210)
   SharedImageFormat format = MultiPlaneFormat::kP210;
-  std::vector<SkColorType> expected_types = {kA16_unorm_SkColorType,
+  std::vector<SkColorType> expected_types = {kR16_unorm_SkColorType,
                                              kR16G16_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
@@ -84,7 +85,7 @@ TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneP210) {
 TEST_F(SharedImageFormatUtilsTest, ToClosestSkColorTypeMultiPlaneP410) {
   // 10-bit 4:4:4 Y_UV biplanar format (P410)
   SharedImageFormat format = MultiPlaneFormat::kP410;
-  std::vector<SkColorType> expected_types = {kA16_unorm_SkColorType,
+  std::vector<SkColorType> expected_types = {kR16_unorm_SkColorType,
                                              kR16G16_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }
@@ -96,7 +97,7 @@ TEST_F(SharedImageFormatUtilsTest,
       SharedImageFormat::MultiPlane(SharedImageFormat::PlaneConfig::kY_UV,
                                     SharedImageFormat::Subsampling::k420,
                                     SharedImageFormat::ChannelFormat::k16);
-  std::vector<SkColorType> expected_types = {kA16_unorm_SkColorType,
+  std::vector<SkColorType> expected_types = {kR16_unorm_SkColorType,
                                              kR16G16_unorm_SkColorType};
   TestToClosestSkColorType(expected_types, format);
 }

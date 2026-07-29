@@ -6,6 +6,7 @@
 
 #include "base/memory/raw_ptr.h"
 #include "base/test/task_environment.h"
+#include "components/persistent_cache/pending_backend.h"
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/blink/public/mojom/loader/code_cache.mojom-blink.h"
@@ -14,7 +15,7 @@
 #include "third_party/blink/renderer/platform/loader/fetch/code_cache_host.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_request.h"
 #include "third_party/blink/renderer/platform/loader/fetch/resource_response.h"
-#include "third_party/blink/renderer/platform/testing/testing_platform_support_with_mock_scheduler.h"
+#include "third_party/blink/renderer/platform/testing/testing_platform_support.h"
 #include "third_party/blink/renderer/platform/weborigin/kurl.h"
 #include "third_party/blink/renderer/platform/wtf/vector.h"
 
@@ -51,6 +52,10 @@ class CodeCacheHostMockImpl : public mojom::blink::CodeCacheHost {
 
  private:
   // CodeCacheHost implementation.
+  void GetPendingBackend(mojom::blink::CodeCacheType cache_type,
+                         GetPendingBackendCallback callback) override {
+    std::move(callback).Run(std::nullopt);
+  }
   void DidGenerateCacheableMetadata(mojom::blink::CodeCacheType cache_type,
                                     const KURL& url,
                                     base::Time expected_response_time,
@@ -58,7 +63,9 @@ class CodeCacheHostMockImpl : public mojom::blink::CodeCacheHost {
     sim_->CacheMetadata(cache_type, url, expected_response_time, data.data(),
                         data.size());
   }
-
+  void DidGenerateSourceKeyedCacheableMetadata(
+      const blink::Vector<uint8_t>& script_hash,
+      mojo_base::BigBuffer data) override {}
   void FetchCachedCode(mojom::blink::CodeCacheType cache_type,
                        const KURL& url,
                        FetchCachedCodeCallback) override {}
@@ -96,8 +103,8 @@ void SendDataFor(const ResourceResponse& response,
   mojo::Remote<mojom::blink::CodeCacheHost> remote;
   mojo::Receiver<mojom::blink::CodeCacheHost> receiver(
       mojo_code_cache_host.get(), remote.BindNewPipeAndPassReceiver());
-  CodeCacheHost code_cache_host(std::move(remote));
-  sender->Send(&code_cache_host, kTestData);
+  auto code_cache_host = CodeCacheHost::Create(std::move(remote));
+  sender->Send(code_cache_host.get(), kTestData);
 
   // Drain the task queue.
   task_environment.RunUntilIdle();

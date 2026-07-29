@@ -13,42 +13,115 @@
 #include "mojo/public/cpp/bindings/receiver.h"
 #include "services/on_device_model/public/mojom/on_device_model.mojom.h"
 
+#ifndef ML_INTERNAL_TEXT_SAFETY_SESSION_MIGRATION
+#define ML_INTERNAL_TEXT_SAFETY_SESSION_MIGRATION 1
+#endif
+
 namespace on_device_model {
+
+template <typename Responder>
+class BaseTestResponseHolder : public Responder {
+ public:
+  BaseTestResponseHolder() = default;
+  ~BaseTestResponseHolder() override = default;
+
+  // Returns a remote which can be used to stream a response to this object.
+  virtual mojo::PendingRemote<Responder> BindRemote() {
+    auto remote = receiver_.BindNewPipeAndPassRemote();
+    receiver_.set_disconnect_with_reason_handler(
+        base::BindOnce(&BaseTestResponseHolder<Responder>::OnDisconnect,
+                       base::Unretained(this)));
+    disconnected_ = false;
+    return remote;
+  }
+
+  void Disconnect() {
+    receiver_.reset();
+    OnCompleted();
+  }
+
+  bool disconnected() const { return disconnected_; }
+  std::optional<mojom::GenerateError> error() const { return error_; }
+
+  // Spins a RunLoop until this object observes completion of its response.
+  void WaitForCompletion() { run_loop_.Run(); }
+
+  void OnDisconnect(uint32_t custom_reason, const std::string& description) {
+    disconnected_ = true;
+    error_ = static_cast<mojom::GenerateError>(custom_reason);
+    run_loop_.Quit();
+  }
+
+ protected:
+  void OnCompleted() { run_loop_.Quit(); }
+  bool disconnected_ = false;
+
+ private:
+  base::RunLoop run_loop_;
+  mojo::Receiver<Responder> receiver_{this};
+  std::optional<mojom::GenerateError> error_;
+};
 
 // Helper to accumulate a streamed response from model execution. This is only
 // used by downstream clients, but is defined upstream to avoid downstream mojom
 // dependencies.
-class TestResponseHolder : public mojom::StreamingResponder {
+class TestResponseHolder
+    : public BaseTestResponseHolder<mojom::StreamingResponder> {
  public:
   TestResponseHolder();
   ~TestResponseHolder() override;
 
-  // Returns a remote which can be used to stream a response to this object.
-  mojo::PendingRemote<mojom::StreamingResponder> BindRemote();
-
   // Accumulated responses so far from whoever controls the remote
   // StreamingResponder endpoint.
   const std::vector<std::string>& responses() const { return responses_; }
-  bool complete() const { return complete_; }
-  bool disconnected() const { return disconnected_; }
-  bool terminated() const { return disconnected_ || complete_; }
   uint32_t output_token_count() const { return output_token_count_; }
-
-  // Spins a RunLoop until this object observes completion of its response.
-  void WaitForCompletion();
+  bool terminated() const { return disconnected_ || complete_; }
+  bool complete() const { return complete_; }
 
   // mojom::StreamingResponder:
   void OnResponse(mojom::ResponseChunkPtr chunk) override;
   void OnComplete(mojom::ResponseSummaryPtr summary) override;
-  void OnDisconnect();
+  void OnToolCalls(std::vector<mojom::ToolCallPtr> tool_calls) override;
+
+  void DisconnectOnMessage();
+
+  // Returns true if tool calls have been received.
+  bool has_tool_calls() const { return !tool_calls_.empty(); }
+  const std::vector<mojom::ToolCallPtr>& tool_calls() const {
+    return tool_calls_;
+  }
 
  private:
-  base::RunLoop run_loop_;
   std::vector<std::string> responses_;
-  bool complete_ = false;
-  bool disconnected_ = false;
+  std::vector<mojom::ToolCallPtr> tool_calls_;
   uint32_t output_token_count_ = 0;
-  mojo::Receiver<mojom::StreamingResponder> receiver_{this};
+  bool complete_ = false;
+  bool disconnect_on_message_ = false;
+};
+
+// Helper to accumulate a streamed response from model execution. This is only
+// used by downstream clients, but is defined upstream to avoid downstream mojom
+// dependencies.
+class TestAsrResponseHolder
+    : public BaseTestResponseHolder<mojom::AsrStreamResponder> {
+ public:
+  TestAsrResponseHolder();
+  ~TestAsrResponseHolder() override;
+
+  // mojom::AsrStreamResponder:
+  void OnResponse(
+      std::vector<mojom::SpeechRecognitionResultPtr> results) override;
+
+  void WaitForFirstResponse() {
+    wait_for_response_ = true;
+    WaitForCompletion();
+  }
+
+  std::vector<std::string> AllResponses() { return responses_; }
+
+ private:
+  std::vector<std::string> responses_;
+  bool wait_for_response_;
 };
 
 }  // namespace on_device_model

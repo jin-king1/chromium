@@ -8,6 +8,7 @@ import static org.junit.Assert.assertEquals;
 import static org.robolectric.Robolectric.buildActivity;
 
 import android.app.Activity;
+import android.graphics.Rect;
 import android.util.DisplayMetrics;
 import android.view.ContextThemeWrapper;
 import android.view.LayoutInflater;
@@ -21,13 +22,16 @@ import org.junit.runner.RunWith;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
 import org.robolectric.annotation.Config;
+import org.robolectric.shadows.ShadowSystemClock;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Features.EnableFeatures;
-import org.chromium.components.browser_ui.modaldialog.test.R;
+import org.chromium.ui.base.TestActivity;
 import org.chromium.ui.modaldialog.ModalDialogProperties;
 import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
+
+import java.time.Duration;
 
 /** Unit tests for {@link ModalDialogView}. */
 @RunWith(BaseRobolectricTestRunner.class)
@@ -36,7 +40,7 @@ import org.chromium.ui.modelutil.PropertyModelChangeProcessor;
 public class ModalDialogViewUnitTest {
     private static final int MIN_DIALOG_WIDTH = 280;
     private static final int MIN_DIALOG_HEIGHT = 500;
-    private static final int MAX_DIALOG_WIDTH_TABLET = 600;
+    private static final int MAX_DIALOG_WIDTH_TABLET = 560;
     private static final float MAX_DIALOG_WIDTH_PERCENT_PHONE = 0.65f;
 
     @Rule public MockitoRule mMockitoRule = MockitoJUnit.rule();
@@ -48,7 +52,7 @@ public class ModalDialogViewUnitTest {
 
     @Before
     public void setup() {
-        mActivity = buildActivity(Activity.class).setup().get();
+        mActivity = buildActivity(TestActivity.class).setup().get();
         mDialogView =
                 (ModalDialogView)
                         LayoutInflater.from(
@@ -198,8 +202,9 @@ public class ModalDialogViewUnitTest {
         var heightMeasureSpec = MeasureSpec.makeMeasureSpec(windowHeight, MeasureSpec.AT_MOST);
         mDialogView.measure(widthMeasureSpec, heightMeasureSpec);
 
-        // windowWidth - 2 * horizontalMargin = 600 - 2 * 16.
-        int expectedWidth = 568;
+        // windowWidth - 2 * horizontalMargin = 600 - 2 * 16 = 568. Capped at max tablet width
+        // (560).
+        int expectedWidth = MAX_DIALOG_WIDTH_TABLET;
         // windowHeight - 2 * verticalMargin = 600 - 2 * 40.
         int expectedHeight = 520;
         assertEquals("Width is incorrect.", expectedWidth, mDialogView.getMeasuredWidth());
@@ -287,5 +292,145 @@ public class ModalDialogViewUnitTest {
         view.setMinimumHeight(customViewHeight);
         var model = modelBuilder.with(ModalDialogProperties.CUSTOM_VIEW, view).build();
         PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+    }
+
+    @Test
+    public void testBottomSpacerVisibility_WithLargePadding() {
+        // Create model with no buttons but large bottom padding.
+        mModelBuilder.with(ModalDialogProperties.PADDING, new Rect(0, 0, 0, 20));
+        createModel(mModelBuilder, MIN_DIALOG_WIDTH, MIN_DIALOG_HEIGHT);
+
+        android.view.View spacer = mDialogView.findViewById(R.id.dialog_bottom_spacer);
+        assertEquals(
+                "Spacer should be gone when large padding is present.",
+                android.view.View.GONE,
+                spacer.getVisibility());
+    }
+
+    @Test
+    public void testBottomSpacerVisibility_ButtonsPresent() {
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE, "Title")
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, "OK")
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        android.view.View spacer = mDialogView.findViewById(R.id.dialog_bottom_spacer);
+        assertEquals(
+                "Spacer should be GONE when buttons are present.",
+                android.view.View.GONE,
+                spacer.getVisibility());
+    }
+
+    @Test
+    public void testBottomSpacerVisibility_CustomButtonBarPresent() {
+        var customButtonBar = new FrameLayout(mActivity);
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE, "Title")
+                        .with(ModalDialogProperties.CUSTOM_BUTTON_BAR_VIEW, customButtonBar)
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        android.view.View spacer = mDialogView.findViewById(R.id.dialog_bottom_spacer);
+        assertEquals(
+                "Spacer should be GONE when custom button bar is present.",
+                android.view.View.GONE,
+                spacer.getVisibility());
+    }
+
+    @Test
+    public void testBottomSpacerVisibility_CustomViewAtBottom() {
+        var customView = new FrameLayout(mActivity);
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE, "Title")
+                        .with(ModalDialogProperties.CUSTOM_VIEW, customView)
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        android.view.View spacer = mDialogView.findViewById(R.id.dialog_bottom_spacer);
+        assertEquals(
+                "Spacer should be GONE when custom view is at the bottom.",
+                android.view.View.GONE,
+                spacer.getVisibility());
+    }
+
+    @Test
+    public void testBottomSpacerVisibility_FooterVisible() {
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE, "Title")
+                        .with(ModalDialogProperties.FOOTER_MESSAGE, "Footer")
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        android.view.View spacer = mDialogView.findViewById(R.id.dialog_bottom_spacer);
+        assertEquals(
+                "Spacer should be GONE when footer is visible.",
+                android.view.View.GONE,
+                spacer.getVisibility());
+    }
+
+    @Test
+    public void testBottomSpacerVisibility_CheckboxBelowCustomView() {
+        var customView = new FrameLayout(mActivity);
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.TITLE, "Title")
+                        .with(ModalDialogProperties.CUSTOM_VIEW, customView)
+                        .with(ModalDialogProperties.CHECKBOX_TEXT, "Checkbox")
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        android.view.View spacer = mDialogView.findViewById(R.id.dialog_bottom_spacer);
+        assertEquals(
+                "Spacer should be VISIBLE when checkbox is below a custom view.",
+                android.view.View.VISIBLE,
+                spacer.getVisibility());
+    }
+
+    @Test
+    public void testButtonTapProtection_AttachedWithoutAnimation() {
+        class TestController implements ModalDialogProperties.Controller {
+            int mClickedButton = -1;
+
+            @Override
+            public void onClick(PropertyModel model, int buttonType) {
+                mClickedButton = buttonType;
+            }
+
+            @Override
+            public void onDismiss(PropertyModel model, int dismissalCause) {}
+        }
+        var controller = new TestController();
+
+        var model =
+                mModelBuilder
+                        .with(ModalDialogProperties.CONTROLLER, controller)
+                        .with(ModalDialogProperties.POSITIVE_BUTTON_TEXT, "OK")
+                        .with(ModalDialogProperties.BUTTON_TAP_PROTECTION_PERIOD_MS, 1000L)
+                        .build();
+        PropertyModelChangeProcessor.create(model, mDialogView, new ModalDialogViewBinder());
+
+        // Attach to window.
+        mActivity.setContentView(mDialogView);
+
+        var positiveButton = mDialogView.findViewById(R.id.positive_button);
+
+        // Click immediately - should be blocked.
+        positiveButton.performClick();
+        assertEquals(-1, controller.mClickedButton);
+
+        // Advance time by 500ms (less than 1000ms).
+        ShadowSystemClock.advanceBy(Duration.ofMillis(500));
+        positiveButton.performClick();
+        assertEquals(-1, controller.mClickedButton);
+
+        // Advance time by 1100ms (more than 1000ms since last click).
+        ShadowSystemClock.advanceBy(Duration.ofMillis(1100));
+        positiveButton.performClick();
+        assertEquals(ModalDialogProperties.ButtonType.POSITIVE, controller.mClickedButton);
     }
 }

@@ -5,12 +5,15 @@
 #include "components/memory_pressure/system_memory_pressure_evaluator_win.h"
 
 #include <windows.h>
+#include <winternl.h>
 
 #include <psapi.h>
 
 #include <algorithm>
 #include <memory>
 
+#include "base/byte_size.h"
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_functions.h"
 #include "base/numerics/safe_conversions.h"
@@ -19,6 +22,7 @@
 #include "base/task/single_thread_task_runner.h"
 #include "base/time/time.h"
 #include "base/win/object_watcher.h"
+#include "base/win/windows_types.h"
 #include "components/memory_pressure/multi_source_memory_pressure_monitor.h"
 
 namespace memory_pressure {
@@ -26,31 +30,26 @@ namespace win {
 
 namespace {
 
-// Whether to use available memory commit instead of available physical
-// memory for Windows memory pressure detection.
-BASE_FEATURE(kCommitAvailableMemoryPressure,
-             "UseAvailableMemoryThresholds",
-             base::FEATURE_DISABLED_BY_DEFAULT);
-
 // When enabled, allows setting custom thresholds for commit-based
 // memory pressure detection via the |kCommitAvailableCriticalThresholdMB|
 // and |kCommitAvailableModerateThresholdMB| parameters.
 BASE_FEATURE(kCommitAvailableMemoryPressureThresholds,
-             "CommitAvailableMemoryPressureThresholds",
              base::FEATURE_DISABLED_BY_DEFAULT);
 
 // Default thresholds for commit-based memory pressure detection.
-const int kDefaultCommitAvailableCriticalThresholdMb = 200;
-const int kDefaultCommitAvailableModerateThresholdMb = 500;
+constexpr base::ByteSize kDefaultCommitAvailableCriticalThreshold =
+    base::MiBU(200);
+constexpr base::ByteSize kDefaultCommitAvailableModerateThreshold =
+    base::MiBU(500);
 
-// The amount of commit available (in MB) below which the system is considered
-// to be under critical memory pressure. The default value is equal to
-// kSmallMemoryDefaultCriticalThresholdMb (200).
+// The amount of commit available below which the system is considered to be
+// under critical memory pressure. The default value is equal to
+// kSmallMemoryDefaultCriticalThreshold (200MiB).
 BASE_FEATURE_PARAM(int,
                    kCommitAvailableCriticalThresholdMB,
                    &kCommitAvailableMemoryPressureThresholds,
                    "CommitAvailableCriticalThresholdMB",
-                   kDefaultCommitAvailableCriticalThresholdMb);
+                   kDefaultCommitAvailableCriticalThreshold.InMiB());
 
 // The amount of commit available (in MB) below which the system is considered
 // to be under moderate memory pressure. The default value is equal to
@@ -59,9 +58,23 @@ BASE_FEATURE_PARAM(int,
                    kCommitAvailableModerateThresholdMB,
                    &kCommitAvailableMemoryPressureThresholds,
                    "CommitAvailableModerateThresholdMB",
-                   kDefaultCommitAvailableModerateThresholdMb);
+                   kDefaultCommitAvailableModerateThreshold.InMiB());
 
-static const DWORDLONG kMBBytes = 1024 * 1024;
+// Controls the frequency at which memory pressure is evaluated on Windows.
+BASE_FEATURE(kWindowsMemoryPressurePeriod,
+             "WinMemoryPressurePeriod",
+             base::FEATURE_DISABLED_BY_DEFAULT);
+BASE_FEATURE_PARAM(base::TimeDelta,
+                   kWinMemoryPressurePeriodParam,
+                   &kWindowsMemoryPressurePeriod,
+                   "period",
+                   SystemMemoryPressureEvaluator::kDefaultPeriod);
+
+// Constant for early exit commit threshold. Used for the initial pressure check
+// to avoid activating the feature study group for users with ample memory.
+// Value based on Memory.CommitAvailableMB UMA, aiming to capture a population
+// similar in size (~13%) to the existing physical memory signal.
+constexpr base::ByteSize kEarlyExitCommitThreshold = base::GiBU(2);
 
 // Implements ObjectWatcher::Delegate by forwarding to a provided callback.
 class MemoryPressureWatcherDelegate
@@ -92,7 +105,7 @@ MemoryPressureWatcherDelegate::MemoryPressureWatcherDelegate(
     base::win::ScopedHandle handle,
     base::OnceClosure callback)
     : handle_(std::move(handle)), callback_(std::move(callback)) {
-  DCHECK(handle_.IsValid());
+  DCHECK(handle_.is_valid());
   CHECK(watcher_.StartWatchingOnce(handle_.Get(), this));
 }
 
@@ -114,63 +127,22 @@ void MemoryPressureWatcherDelegate::OnObjectSignaled(HANDLE handle) {
 
 }  // namespace
 
-// Check the amount of RAM left every 5 seconds.
-const base::TimeDelta SystemMemoryPressureEvaluator::kMemorySamplingPeriod =
-    base::Seconds(5);
-
-// The following constants have been lifted from similar values in the ChromeOS
-// memory pressure monitor. The values were determined experimentally to ensure
-// sufficient responsiveness of the memory pressure subsystem, and minimal
-// overhead.
-const base::TimeDelta SystemMemoryPressureEvaluator::kModeratePressureCooldown =
-    base::Seconds(10);
-
-// TODO(chrisha): Explore the following constants further with an experiment.
-
-// A system is considered 'high memory' if it has more than 1.5GB of system
-// memory available for use by the memory manager (not reserved for hardware
-// and drivers). This is a fuzzy version of the ~2GB discussed below.
-const int SystemMemoryPressureEvaluator::kLargeMemoryThresholdMb = 1536;
-
-// These are the default thresholds used for systems with < ~2GB of physical
-// memory. Such systems have been observed to always maintain ~100MB of
-// available memory, paging until that is the case. To try to avoid paging a
-// threshold slightly above this is chosen. The moderate threshold is slightly
-// less grounded in reality and chosen as 2.5x critical.
-const int
-    SystemMemoryPressureEvaluator::kSmallMemoryDefaultModerateThresholdMb = 500;
-const int
-    SystemMemoryPressureEvaluator::kSmallMemoryDefaultCriticalThresholdMb = 200;
-
-// These are the default thresholds used for systems with >= ~2GB of physical
-// memory. Such systems have been observed to always maintain ~300MB of
-// available memory, paging until that is the case.
-const int
-    SystemMemoryPressureEvaluator::kLargeMemoryDefaultModerateThresholdMb =
-        1000;
-const int
-    SystemMemoryPressureEvaluator::kLargeMemoryDefaultCriticalThresholdMb = 400;
-
 SystemMemoryPressureEvaluator::SystemMemoryPressureEvaluator(
     std::unique_ptr<MemoryPressureVoter> voter)
-    : memory_pressure::SystemMemoryPressureEvaluator(std::move(voter)),
-      moderate_threshold_mb_(0),
-      critical_threshold_mb_(0),
-      moderate_pressure_repeat_count_(0) {
-  InferThresholds();
-  StartObserving();
-}
+    : SystemMemoryPressureEvaluator(kPhysicalMemoryDefaultModerateThreshold,
+                                    kPhysicalMemoryDefaultCriticalThreshold,
+                                    std::move(voter)) {}
 
 SystemMemoryPressureEvaluator::SystemMemoryPressureEvaluator(
-    int moderate_threshold_mb,
-    int critical_threshold_mb,
+    base::ByteSize moderate_threshold,
+    base::ByteSize critical_threshold,
     std::unique_ptr<MemoryPressureVoter> voter)
     : memory_pressure::SystemMemoryPressureEvaluator(std::move(voter)),
-      moderate_threshold_mb_(moderate_threshold_mb),
-      critical_threshold_mb_(critical_threshold_mb),
+      moderate_threshold_(moderate_threshold),
+      critical_threshold_(critical_threshold),
       moderate_pressure_repeat_count_(0) {
-  DCHECK_GE(moderate_threshold_mb_, critical_threshold_mb_);
-  DCHECK_LE(0, critical_threshold_mb_);
+  DCHECK_GE(moderate_threshold_, critical_threshold_);
+  DCHECK(critical_threshold_.is_positive());
   StartObserving();
 }
 
@@ -178,33 +150,15 @@ SystemMemoryPressureEvaluator::~SystemMemoryPressureEvaluator() {
   StopObserving();
 }
 
-void SystemMemoryPressureEvaluator::InferThresholds() {
-  // Default to a 'high' memory situation, which uses more conservative
-  // thresholds.
-  bool high_memory = true;
-  MEMORYSTATUSEX mem_status = {};
-  if (GetSystemMemoryStatus(&mem_status)) {
-    static const DWORDLONG kLargeMemoryThresholdBytes =
-        static_cast<DWORDLONG>(kLargeMemoryThresholdMb) * kMBBytes;
-    high_memory = mem_status.ullTotalPhys >= kLargeMemoryThresholdBytes;
-  }
-
-  if (high_memory) {
-    moderate_threshold_mb_ = kLargeMemoryDefaultModerateThresholdMb;
-    critical_threshold_mb_ = kLargeMemoryDefaultCriticalThresholdMb;
-  } else {
-    moderate_threshold_mb_ = kSmallMemoryDefaultModerateThresholdMb;
-    critical_threshold_mb_ = kSmallMemoryDefaultCriticalThresholdMb;
-  }
-}
-
 void SystemMemoryPressureEvaluator::StartObserving() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
+  // base::Unretained is safe in this case because this class owns the
+  // timer, and will cancel the timer on destruction.
   timer_.Start(
-      FROM_HERE, kMemorySamplingPeriod,
-      BindRepeating(&SystemMemoryPressureEvaluator::CheckMemoryPressure,
-                    weak_ptr_factory_.GetWeakPtr()));
+      FROM_HERE, kWinMemoryPressurePeriodParam.Get(),
+      base::BindRepeating(&SystemMemoryPressureEvaluator::CheckMemoryPressure,
+                          base::Unretained(this)));
 }
 
 void SystemMemoryPressureEvaluator::StopObserving() {
@@ -212,24 +166,28 @@ void SystemMemoryPressureEvaluator::StopObserving() {
 
   // If StartObserving failed, StopObserving will still get called.
   timer_.Stop();
-  weak_ptr_factory_.InvalidateWeakPtrs();
 }
 
 void SystemMemoryPressureEvaluator::CheckMemoryPressure() {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   // Get the previous pressure level and update the current one.
-  MemoryPressureLevel old_vote = current_vote();
+  base::MemoryPressureLevel old_vote = current_vote();
   SetCurrentVote(CalculateCurrentPressureLevel());
 
   // |notify| will be set to true if MemoryPressureListeners need to be
   // notified of a memory pressure level state change.
+
   bool notify = false;
   switch (current_vote()) {
-    case base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE:
+    case base::MEMORY_PRESSURE_LEVEL_NONE:
+      // Always notify if the state changed.
+      if (old_vote != current_vote()) {
+        notify = true;
+      }
       break;
 
-    case base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_MODERATE:
+    case base::MEMORY_PRESSURE_LEVEL_MODERATE:
       if (old_vote != current_vote()) {
         // This is a new transition to moderate pressure so notify.
         moderate_pressure_repeat_count_ = 0;
@@ -238,7 +196,7 @@ void SystemMemoryPressureEvaluator::CheckMemoryPressure() {
         // Already in moderate pressure, only notify if sustained over the
         // cooldown period.
         const int kModeratePressureCooldownCycles =
-            kModeratePressureCooldown / kMemorySamplingPeriod;
+            kModeratePressureCooldown / kWinMemoryPressurePeriodParam.Get();
         if (++moderate_pressure_repeat_count_ ==
             kModeratePressureCooldownCycles) {
           moderate_pressure_repeat_count_ = 0;
@@ -247,7 +205,7 @@ void SystemMemoryPressureEvaluator::CheckMemoryPressure() {
       }
       break;
 
-    case base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL:
+    case base::MEMORY_PRESSURE_LEVEL_CRITICAL:
       // Always notify of critical pressure levels.
       notify = true;
       break;
@@ -256,44 +214,42 @@ void SystemMemoryPressureEvaluator::CheckMemoryPressure() {
   SendCurrentVote(notify);
 }
 
-base::MemoryPressureListener::MemoryPressureLevel
+base::MemoryPressureLevel
 SystemMemoryPressureEvaluator::CalculateCurrentPressureLevel() {
   MEMORYSTATUSEX mem_status = {};
-  bool got_system_memory_status = GetSystemMemoryStatus(&mem_status);
-  // Report retrieval outcome before early returning on failure.
-  base::UmaHistogramBoolean("Memory.MemoryStatusRetrievalSuccess",
-                            got_system_memory_status);
+  bool got_system_memory_status = GetSystemMemoryStatus(mem_status);
 
   if (!got_system_memory_status) {
-    return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE;
+    return base::MEMORY_PRESSURE_LEVEL_NONE;
   }
   RecordCommitHistograms(mem_status);
 
-  // How much physical system memory is available for use right now, in MBs.
-  int phys_free_mb = static_cast<int>(mem_status.ullAvailPhys / kMBBytes);
+  // How much physical system memory is available for use right now.
+  base::ByteSize phys_free = base::ByteSize(mem_status.ullAvailPhys);
 
-  // The maximum amount of memory the current process can commit, in MBs.
-  int commit_available_mb =
-      static_cast<int>(mem_status.ullAvailPageFile / kMBBytes);
+  // The maximum amount of memory the current process can commit.
+  base::ByteSize commit_available = base::ByteSize(mem_status.ullAvailPageFile);
 
-  if (phys_free_mb > moderate_threshold_mb_ &&
-      commit_available_mb > kCommitAvailableModerateThresholdMB.Get()) {
+  if (phys_free > moderate_threshold_ &&
+      commit_available > kEarlyExitCommitThreshold) {
     // No memory pressure under any of the 2 detection systems. Return
     // early to avoid activating the experiment for clients who don't
     // have memory pressure.
-    return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE;
+    return base::MEMORY_PRESSURE_LEVEL_NONE;
   }
 
-  if (base::FeatureList::IsEnabled(kCommitAvailableMemoryPressure)) {
-    if (commit_available_mb < kCommitAvailableCriticalThresholdMB.Get()) {
-      return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL;
+  if (base::FeatureList::IsEnabled(kCommitAvailableMemoryPressureThresholds)) {
+    if (commit_available < base::MiBU(base::saturated_cast<uint64_t>(
+                               kCommitAvailableCriticalThresholdMB.Get()))) {
+      return base::MEMORY_PRESSURE_LEVEL_CRITICAL;
     }
 
-    if (commit_available_mb < kCommitAvailableModerateThresholdMB.Get()) {
-      return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_MODERATE;
+    if (commit_available < base::MiBU(base::saturated_cast<uint64_t>(
+                               kCommitAvailableModerateThresholdMB.Get()))) {
+      return base::MEMORY_PRESSURE_LEVEL_MODERATE;
     }
 
-    return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE;
+    return base::MEMORY_PRESSURE_LEVEL_NONE;
   }
 
   // TODO(chrisha): This should eventually care about address space pressure,
@@ -305,24 +261,23 @@ SystemMemoryPressureEvaluator::CalculateCurrentPressureLevel() {
   // system memory pressure.
 
   // Determine if the physical memory is under critical memory pressure.
-  if (phys_free_mb <= critical_threshold_mb_) {
-    return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_CRITICAL;
+  if (phys_free <= critical_threshold_) {
+    return base::MEMORY_PRESSURE_LEVEL_CRITICAL;
   }
 
   // Determine if the physical memory is under moderate memory pressure.
-  if (phys_free_mb <= moderate_threshold_mb_) {
-    return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_MODERATE;
+  if (phys_free <= moderate_threshold_) {
+    return base::MEMORY_PRESSURE_LEVEL_MODERATE;
   }
 
   // No memory pressure was detected.
-  return base::MemoryPressureListener::MEMORY_PRESSURE_LEVEL_NONE;
+  return base::MEMORY_PRESSURE_LEVEL_NONE;
 }
 
 bool SystemMemoryPressureEvaluator::GetSystemMemoryStatus(
-    MEMORYSTATUSEX* mem_status) {
-  DCHECK(mem_status);
-  mem_status->dwLength = sizeof(*mem_status);
-  if (!::GlobalMemoryStatusEx(mem_status)) {
+    MEMORYSTATUSEX& mem_status) {
+  mem_status.dwLength = sizeof(mem_status);
+  if (!::GlobalMemoryStatusEx(&mem_status)) {
     return false;
   }
   return true;
@@ -330,25 +285,26 @@ bool SystemMemoryPressureEvaluator::GetSystemMemoryStatus(
 
 void SystemMemoryPressureEvaluator::RecordCommitHistograms(
     const MEMORYSTATUSEX& mem_status) {
-  // Calculate commit limit in MB.
-  uint64_t commit_limit_mb = mem_status.ullTotalPageFile / kMBBytes;
+  // Calculate commit limit.
+  base::ByteSize commit_limit = base::ByteSize(mem_status.ullTotalPageFile);
 
-  // Calculate amount of available commit space in MB.
-  uint64_t commit_available_mb = mem_status.ullAvailPageFile / kMBBytes;
+  // Calculate amount of available commit space.
+  base::ByteSize commit_available = base::ByteSize(mem_status.ullAvailPageFile);
 
   base::UmaHistogramCounts10M("Memory.CommitLimitMB",
-                              base::saturated_cast<int>(commit_limit_mb));
-  base::UmaHistogramCounts10M("Memory.CommitAvailableMB",
-                              base::saturated_cast<int>(commit_available_mb));
+                              base::saturated_cast<int>(commit_limit.InMiB()));
+  base::UmaHistogramCounts10M(
+      "Memory.CommitAvailableMB",
+      base::saturated_cast<int>(commit_available.InMiB()));
 
   // Calculate percentage used
   int percentage_used;
-  if (commit_limit_mb == 0) {
+  if (commit_limit.is_zero()) {
     // Handle division by zero.
     percentage_used = 0;
   } else {
     uint64_t percentage_remaining =
-        (commit_available_mb * 100) / commit_limit_mb;
+        commit_available.InBytesF() * 100 / commit_limit.InBytesF();
     percentage_used = static_cast<int>(
         percentage_remaining > 100 ? 0u : 100 - percentage_remaining);
   }

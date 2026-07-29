@@ -10,6 +10,7 @@
 #include "cc/test/pixel_test_utils.h"
 #include "components/viz/common/resources/shared_image_format.h"
 #include "gpu/command_buffer/common/mailbox.h"
+#include "gpu/command_buffer/common/shared_image_info.h"
 #include "gpu/command_buffer/common/shared_image_usage.h"
 #include "gpu/command_buffer/service/feature_info.h"
 #include "gpu/command_buffer/service/shared_context_state.h"
@@ -74,14 +75,10 @@ class WrappedSkImageBackingFactoryTest
       GTEST_SKIP();
     }
 
-    // We don't support RGBA_4444 and RGB_565 formats with
-    // WrappedGraphiteTextureBacking.
-    if (gr_context_type == GrContextType::kGraphiteDawn) {
-      // Formats not supported with Dawn for now.
-      if (format == viz::SinglePlaneFormat::kRGBA_4444 ||
-          format == viz::SinglePlaneFormat::kRGB_565) {
-        GTEST_SKIP();
-      }
+    // We don't support RGBA_4444 as format is not supported with Dawn.
+    if (gr_context_type == GrContextType::kGraphiteDawn &&
+        format == viz::SinglePlaneFormat::kRGBA_4444) {
+      GTEST_SKIP();
     }
 
     backing_factory_ =
@@ -101,9 +98,10 @@ TEST_P(WrappedSkImageBackingFactoryTest, Basic) {
   ASSERT_TRUE(supported);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, gpu::kNullSurfaceHandle, size, kColorSpace,
-      kSurfaceOrigin, kAlphaType, kUsage, "TestLabel",
-      /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, kColorSpace, kSurfaceOrigin, kAlphaType, kUsage,
+       "TestLabel"},
+      gpu::kNullSurfaceHandle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
 
   std::unique_ptr<SharedImageRepresentationFactoryRef> shared_image =
@@ -157,7 +155,7 @@ TEST_P(WrappedSkImageBackingFactoryTest, Basic) {
       EXPECT_EQ(plane_size.height(), backend_texture.height());
     }
   } else {
-    ASSERT_TRUE(context_state_->graphite_context());
+    ASSERT_TRUE(context_state_->graphite_shared_context());
     for (int plane = 0; plane < format.NumberOfPlanes(); ++plane) {
       auto graphite_texture = scoped_read_access->graphite_texture(plane);
       EXPECT_TRUE(graphite_texture.isValid());
@@ -179,9 +177,10 @@ TEST_P(WrappedSkImageBackingFactoryTest, Upload) {
   gfx::Size size(100, 100);
 
   auto backing = backing_factory_->CreateSharedImage(
-      mailbox, format, gpu::kNullSurfaceHandle, size, kColorSpace,
-      kSurfaceOrigin, kAlphaType, kUsage, "TestLabel",
-      /*is_thread_safe=*/false);
+      mailbox,
+      {format, size, kColorSpace, kSurfaceOrigin, kAlphaType, kUsage,
+       "TestLabel"},
+      gpu::kNullSurfaceHandle, /*is_thread_safe=*/false);
   ASSERT_TRUE(backing);
 
   std::vector<SkBitmap> bitmaps = AllocateRedBitmaps(format, size);
@@ -194,6 +193,48 @@ TEST_P(WrappedSkImageBackingFactoryTest, Upload) {
       shared_image_manager_.Register(std::move(backing), &memory_type_tracker_);
 
   VerifyPixelsWithReadback(mailbox, bitmaps);
+}
+
+TEST_P(WrappedSkImageBackingFactoryTest, UploadAndReadback) {
+  auto format = GetFormat();
+  auto mailbox = Mailbox::Generate();
+  gfx::Size size(100, 100);
+
+  auto backing = backing_factory_->CreateSharedImage(
+      mailbox,
+      {format, size, kColorSpace, kSurfaceOrigin, kAlphaType, kUsage,
+       "TestLabel"},
+      gpu::kNullSurfaceHandle, /*is_thread_safe=*/false);
+  ASSERT_TRUE(backing);
+
+  std::vector<SkBitmap> upload_bitmaps = AllocateRedBitmaps(format, size);
+  std::vector<SkPixmap> upload_pixmaps = GetSkPixmaps(upload_bitmaps);
+
+  // Upload.
+  ASSERT_TRUE(backing->UploadFromMemory(upload_pixmaps));
+  backing->SetCleared();
+
+  // Allocate destination bitmaps.
+  int num_planes = format.NumberOfPlanes();
+  std::vector<SkBitmap> readback_bitmaps(num_planes);
+  for (int plane = 0; plane < num_planes; ++plane) {
+    SkColorType plane_color_type = viz::ToClosestSkColorType(format, plane);
+    gfx::Size plane_size = format.GetPlaneSize(plane, size);
+    readback_bitmaps[plane].allocPixels(SkImageInfo::Make(
+        plane_size.width(), plane_size.height(), plane_color_type, kAlphaType));
+  }
+  std::vector<SkPixmap> readback_pixmaps = GetSkPixmaps(readback_bitmaps);
+
+  // Readback.
+  ASSERT_TRUE(backing->ReadbackToMemory(readback_pixmaps));
+
+  // Verify.
+  for (int plane = 0; plane < num_planes; ++plane) {
+    EXPECT_TRUE(cc::MatchesBitmap(readback_bitmaps[plane],
+                                  upload_bitmaps[plane],
+                                  cc::ExactPixelComparator()))
+        << "plane=" << plane;
+  }
 }
 
 std::string TestParamToString(
@@ -213,7 +254,6 @@ const auto kFormats = ::testing::Values(viz::SinglePlaneFormat::kALPHA_8,
                                         viz::SinglePlaneFormat::kR_8,
                                         viz::SinglePlaneFormat::kRG_88,
                                         viz::SinglePlaneFormat::kRGBA_4444,
-                                        viz::SinglePlaneFormat::kRGB_565,
                                         viz::SinglePlaneFormat::kRGBA_8888,
                                         viz::SinglePlaneFormat::kBGRA_8888,
                                         viz::SinglePlaneFormat::kRGBX_8888,

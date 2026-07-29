@@ -24,13 +24,13 @@ std::ostream& operator<<(std::ostream& stream, WindowStateType state) {
     case WindowStateType::kFullscreen:
       return stream << "kFullscreen";
     case WindowStateType::kPrimarySnapped:
-      return stream << "kLeftSnapped";
+      return stream << "kPrimarySnapped";
     case WindowStateType::kSecondarySnapped:
-      return stream << "kRightSnapped";
+      return stream << "kSecondarySnapped";
     case WindowStateType::kPinned:
       return stream << "kPinned";
-    case WindowStateType::kTrustedPinned:
-      return stream << "kTrustedPinned";
+    case WindowStateType::kLockedFullscreen:
+      return stream << "kLockedFullscreen";
     case WindowStateType::kPip:
       return stream << "kPip";
     case WindowStateType::kFloated:
@@ -78,7 +78,7 @@ ui::mojom::WindowShowState ToWindowShowState(WindowStateType type) {
       return ui::mojom::WindowShowState::kInactive;
     case WindowStateType::kFullscreen:
     case WindowStateType::kPinned:
-    case WindowStateType::kTrustedPinned:
+    case WindowStateType::kLockedFullscreen:
       return ui::mojom::WindowShowState::kFullscreen;
   }
   NOTREACHED();
@@ -86,7 +86,7 @@ ui::mojom::WindowShowState ToWindowShowState(WindowStateType type) {
 
 bool IsPinnedWindowStateType(WindowStateType type) {
   return type == WindowStateType::kPinned ||
-         type == WindowStateType::kTrustedPinned;
+         type == WindowStateType::kLockedFullscreen;
 }
 
 bool IsFullscreenOrPinnedWindowStateType(WindowStateType type) {

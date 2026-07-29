@@ -6,9 +6,10 @@
 
 #include "base/metrics/field_trial_params.h"
 #include "components/commerce/core/commerce_feature_list.h"
+#include "components/prefs/pref_registry_simple.h"
+#include "components/prefs/pref_service.h"
 #include "components/segmentation_platform/embedder/home_modules/constants.h"
 #include "components/segmentation_platform/embedder/home_modules/ephemeral_module_utils.h"
-#include "components/segmentation_platform/embedder/home_modules/home_modules_card_registry.h"
 #include "components/segmentation_platform/public/features.h"
 #include "components/segmentation_platform/public/proto/model_metadata.pb.h"
 
@@ -18,11 +19,15 @@ namespace {
 // users.
 const int kTabCountLimit = 10;
 
-// The number of times the tab group promo card can be shown to the user in a
-// single day.
-const int kShownCountLimit = 3;
+// Impression counter for the Tab Group promo ephemeral module.
+const char kTabGroupPromoImpressionCounterPref[] =
+    "ephemeral_pref_counter.tab_group_promo_counter";
 
-const char kTabGroupPromoHistogramName[] =
+// Interaction counter for the Tab Group promo ephemeral module.
+const char kTabGroupPromoInteractedPref[] =
+    "ephemeral_pref_interacted.tab_group_promo_interacted";
+
+const char kEducationalTipModuleHistogramName[] =
     "MagicStack.Clank.NewTabPage.Module.TopImpressionV2";
 
 // TODO(crbug.com/382803396): The enum id of the tab group promo card. Could be
@@ -36,8 +41,19 @@ namespace segmentation_platform::home_modules {
 TabGroupPromo::TabGroupPromo(PrefService* profile_prefs)
     : CardSelectionInfo(kTabGroupPromo), profile_prefs_(profile_prefs) {}
 
+// static
+void TabGroupPromo::RegisterProfilePrefs(PrefRegistrySimple* registry) {
+  registry->RegisterIntegerPref(kTabGroupPromoImpressionCounterPref, 0);
+  registry->RegisterBooleanPref(kTabGroupPromoInteractedPref, false);
+}
+
 std::map<SignalKey, FeatureQuery> TabGroupPromo::GetInputs() {
   std::map<SignalKey, FeatureQuery> map = {
+      {kIsUserSignedIn,
+       FeatureQuery::FromCustomInput(MetadataWriter::CustomInput{
+           .tensor_length = 1,
+           .fill_policy = proto::CustomInput::FILL_FROM_INPUT_CONTEXT,
+           .name = kIsUserSignedIn})},
       {kNumberOfTabs,
        FeatureQuery::FromCustomInput(MetadataWriter::CustomInput{
            .tensor_length = 1,
@@ -50,10 +66,23 @@ std::map<SignalKey, FeatureQuery> TabGroupPromo::GetInputs() {
            .name = kTabGroupExists})},
   };
 
-  DEFINE_UMA_FEATURE_ENUM_COUNT(count, kTabGroupPromoHistogramName,
+  // Define signal for number of times all educational tip card has shown to the
+  // user in limited days.
+  DEFINE_UMA_FEATURE_ENUM_COUNT(countOfEducationalTipCardShownTimes,
+                                kEducationalTipModuleHistogramName,
+                                /* enum_id= */ nullptr, /* enum_size= */ 0,
+                                /* days= */ KDaysToShowEphemeralCardOnce);
+  map.emplace(kEducationalTipShownCount,
+              std::move(countOfEducationalTipCardShownTimes));
+
+  // Define signal for number of times tab group promo card has shown to the
+  // user in limited days.
+  DEFINE_UMA_FEATURE_ENUM_COUNT(countOfTabGroupPromoShownTimes,
+                                kEducationalTipModuleHistogramName,
                                 &kTabGroupPromoId, /* enum_size= */ 1,
-                                /* days= */ 1);
-  map.emplace(kTabGroupPromoShownCount, std::move(count));
+                                /* days= */ KDaysToShowEachEphemeralCardOnce);
+  map.emplace(kTabGroupPromoShownCount,
+              std::move(countOfTabGroupPromoShownTimes));
 
   return map;
 }
@@ -80,22 +109,32 @@ CardSelectionInfo::ShowResult TabGroupPromo::ComputeCardResult(
     return result;
   }
 
-  std::optional<float> resultForTabGroupExists =
+  std::optional<float> result_for_is_user_signed_in =
+      signals.GetSignal(kIsUserSignedIn);
+  std::optional<float> result_for_tab_group_exists =
       signals.GetSignal(kTabGroupExists);
-  std::optional<float> resultForNumberOfTabs = signals.GetSignal(kNumberOfTabs);
-  std::optional<float> resultForTabGroupPromoShownCount =
+  std::optional<float> result_for_number_of_tabs =
+      signals.GetSignal(kNumberOfTabs);
+  std::optional<float> result_for_tab_group_promo_shown_count =
       signals.GetSignal(kTabGroupPromoShownCount);
+  std::optional<float>
+      result_for_educational_tip_shown_count_for_tab_group_signal =
+          signals.GetSignal(kEducationalTipShownCount);
 
-  if (!resultForTabGroupExists.has_value() ||
-      !resultForNumberOfTabs.has_value() ||
-      !resultForTabGroupPromoShownCount.has_value()) {
+  if (!result_for_is_user_signed_in.has_value() ||
+      !result_for_tab_group_exists.has_value() ||
+      !result_for_number_of_tabs.has_value() ||
+      !result_for_tab_group_promo_shown_count.has_value() ||
+      !result_for_educational_tip_shown_count_for_tab_group_signal
+           .has_value()) {
     result.position = EphemeralHomeModuleRank::kNotShown;
     return result;
   }
 
-  if (!*resultForTabGroupExists &&
-      resultForNumberOfTabs.value() > kTabCountLimit &&
-      resultForTabGroupPromoShownCount.value() < kShownCountLimit) {
+  if (*result_for_is_user_signed_in && !*result_for_tab_group_exists &&
+      result_for_number_of_tabs.value() > kTabCountLimit &&
+      result_for_tab_group_promo_shown_count.value() < 1 &&
+      result_for_educational_tip_shown_count_for_tab_group_signal.value() < 1) {
     result.position = EphemeralHomeModuleRank::kLast;
     return result;
   }
@@ -104,7 +143,8 @@ CardSelectionInfo::ShowResult TabGroupPromo::ComputeCardResult(
   return result;
 }
 
-bool TabGroupPromo::IsEnabled(int impression_count) {
+// static
+bool TabGroupPromo::IsEnabled(PrefService* profile_prefs) {
   std::optional<CardSelectionInfo::ShowResult> forced_result =
       GetForcedEphemeralModuleShowResult();
 
@@ -114,15 +154,35 @@ bool TabGroupPromo::IsEnabled(int impression_count) {
     return true;
   }
 
-  if (!base::FeatureList::IsEnabled(features::kEducationalTipModule)) {
-    return false;
-  }
+  int impression_count =
+      profile_prefs->GetInteger(kTabGroupPromoImpressionCounterPref);
 
-  if (impression_count >= features::kMaxTabGroupCardImpressions.Get()) {
+  if (impression_count >= kSingleEphemeralCardMaxImpressions) {
     return false;
   }
 
   return true;
+}
+
+void TabGroupPromo::OnShow(PrefService* profile_prefs,
+                           PrefService* local_state) {
+  // Only record an impression once per session.
+  if (has_been_shown_this_session_) {
+    return;
+  }
+
+  has_been_shown_this_session_ = true;
+
+  int freshness_impression_count =
+      profile_prefs->GetInteger(kTabGroupPromoImpressionCounterPref);
+
+  profile_prefs->SetInteger(kTabGroupPromoImpressionCounterPref,
+                            freshness_impression_count + 1);
+}
+
+void TabGroupPromo::OnInteract(PrefService* profile_prefs,
+                               PrefService* local_state) {
+  profile_prefs->SetBoolean(kTabGroupPromoInteractedPref, true);
 }
 
 }  // namespace segmentation_platform::home_modules

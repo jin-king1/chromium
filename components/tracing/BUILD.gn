@@ -19,21 +19,32 @@ if (is_android) {
   }
 }
 
-component("startup_tracing") {
+component("tracing_config") {
   sources = [
     "common/background_tracing_state_manager.cc",
     "common/background_tracing_state_manager.h",
     "common/pref_names.cc",
     "common/pref_names.h",
-    "common/trace_to_console.cc",
-    "common/trace_to_console.h",
+    "common/tracing_scenarios_config.cc",
+    "common/tracing_scenarios_config.h",
     "common/tracing_switches.cc",
     "common/tracing_switches.h",
     "tracing_export.h",
   ]
 
-  if (is_win) {
-    sources += [
+  defines = [ "TRACING_IMPLEMENTATION" ]
+
+  deps = [
+    "//base",
+    "//components/prefs",
+    "//third_party/perfetto:libperfetto",
+    "//third_party/snappy",
+  ]
+}
+
+if (is_win) {
+  component("tracing_etw") {
+    sources = [
       "common/active_processes_win.cc",
       "common/active_processes_win.h",
       "common/etw_consumer_win.cc",
@@ -46,22 +57,26 @@ component("startup_tracing") {
       "common/inclusion_policy_win.h",
       "common/system_log_event_utils_win.cc",
       "common/system_log_event_utils_win.h",
+      "tracing_export.h",
+    ]
+
+    defines = [ "TRACING_IMPLEMENTATION" ]
+
+    deps = [
+      "//base",
+      "//crypto",
+      "//services/tracing/public/cpp:perfetto_interning_index",
+      "//third_party/perfetto:libperfetto",
     ]
   }
-
-  defines = [ "TRACING_IMPLEMENTATION" ]
-
-  deps = [
-    "//base",
-    "//components/prefs",
-    "//third_party/perfetto:libperfetto",
-  ]
 }
 
-component("background_tracing_metrics_provider") {
+component("tracing_metrics") {
   sources = [
     "common/background_tracing_metrics_provider.cc",
     "common/background_tracing_metrics_provider.h",
+    "common/system_profile_metadata_recorder.cc",
+    "common/system_profile_metadata_recorder.h",
     "tracing_export.h",
   ]
 
@@ -69,10 +84,16 @@ component("background_tracing_metrics_provider") {
 
   deps = [
     "//base",
-    "//components/metrics:content",
-    "//content/public/browser",
-    "//third_party/metrics_proto:metrics_proto",
+    "//build:blink_buildflags",
+    "//components/metrics",
+    "//services/tracing/public/cpp",
+    "//services/tracing/public/cpp/background_tracing",
+    "//third_party/metrics_proto",
   ]
+
+  if (use_blink) {
+    deps += [ "//components/metrics:content" ]
+  }
 }
 
 component("background_tracing_utils") {
@@ -84,9 +105,10 @@ component("background_tracing_utils") {
   defines = [ "IS_BACKGROUND_TRACING_UTILS_IMPL" ]
 
   deps = [
+    ":tracing_config",
     "//base",
-    "//content/public/browser",
-    "//third_party/snappy:snappy",
+    "//build:blink_buildflags",
+    "//services/tracing/public/cpp/background_tracing",
   ]
 }
 
@@ -95,15 +117,15 @@ source_set("unit_tests") {
 
   deps = [
     "//base/test:test_support",
-    "//testing/gmock:gmock",
+    "//testing/gmock",
     "//testing/gtest",
-    "//third_party/snappy:snappy",
+    "//third_party/snappy",
   ]
 
-  sources = [
-    "common/background_tracing_state_manager_unittest.cc",
-    "common/background_tracing_utils_unittest.cc",
-  ]
+  sources = [ "common/background_tracing_state_manager_unittest.cc" ]
+  if (!is_ios) {
+    sources += [ "common/background_tracing_utils_unittest.cc" ]
+  }
   if (is_android) {
     sources += [ "common/graphics_memory_dump_provider_android_unittest.cc" ]
     deps += [ ":graphics_provider" ]
@@ -122,19 +144,29 @@ source_set("unit_tests") {
       "common/system_log_event_utils_win_unittest.cc",
     ]
     deps += [
+      ":tracing_etw",
       "//base/version_info:generate_version_info",
       "//third_party/perfetto:libperfetto",
     ]
   }
   deps += [
-    ":background_tracing_utils",
-    ":startup_tracing",
+    ":tracing_config",
     "//base/test:proto_test_support",
-    "//components/metrics:metrics",
+    "//components/metrics",
     "//components/prefs:test_support",
-    "//content/public/browser",
-    "//content/test:test_support",
+    "//sql:test_support",
   ]
+
+  if (!is_ios) {
+    deps += [
+      ":background_tracing_utils",
+      "//content/public/browser",
+      "//content/test:test_support",
+      "//services/tracing:lib",
+      "//services/tracing:test_utils",
+      "//services/tracing/public/cpp/background_tracing",
+    ]
+  }
 }
 
 test("tracing_perftests") {
@@ -144,7 +176,7 @@ test("tracing_perftests") {
     "test/trace_event_perftest.cc",
   ]
   deps = [
-    "//base:base",
+    "//base",
     "//base/test:test_support",
     "//base/test:test_support_perf",
     "//testing/gtest",

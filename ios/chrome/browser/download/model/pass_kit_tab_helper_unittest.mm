@@ -9,6 +9,7 @@
 #import <memory>
 
 #import "base/functional/callback_helpers.h"
+#import "base/task/current_thread.h"
 #import "base/test/ios/wait_util.h"
 #import "base/test/metrics/histogram_tester.h"
 #import "base/test/task_environment.h"
@@ -16,7 +17,9 @@
 #import "ios/chrome/browser/shared/model/utils/mime_type_util.h"
 #import "ios/chrome/test/fakes/fake_web_content_handler.h"
 #import "ios/web/public/test/fakes/fake_download_task.h"
+#import "ios/web/public/test/fakes/fake_navigation_context.h"
 #import "ios/web/public/test/fakes/fake_web_state.h"
+#import "ios/web/public/test/web_task_environment.h"
 #import "net/base/io_buffer.h"
 #import "net/base/net_errors.h"
 #import "testing/gtest/include/gtest/gtest.h"
@@ -33,15 +36,17 @@ char kUrl[] = "https://test.test/";
 class PassKitTabHelperTest : public PlatformTest {
  protected:
   PassKitTabHelperTest() : handler_([[FakeWebContentHandler alloc] init]) {
-    PassKitTabHelper::GetOrCreateForWebState(&web_state_)
+    PassKitTabHelper::CreateForWebState(&web_state_);
+    web_state_.WasShown();
+    PassKitTabHelper::FromWebState(&web_state_)
         ->SetWebContentsHandler(handler_);
   }
 
   PassKitTabHelper* tab_helper() {
-    return PassKitTabHelper::GetOrCreateForWebState(&web_state_);
+    return PassKitTabHelper::FromWebState(&web_state_);
   }
 
-  base::test::TaskEnvironment task_environment_;
+  web::WebTaskEnvironment task_environment_;
   web::FakeWebState web_state_;
   FakeWebContentHandler* handler_;
   base::HistogramTester histogram_tester_;
@@ -54,6 +59,9 @@ TEST_F(PassKitTabHelperTest, EmptyBundledFile) {
   web::FakeDownloadTask* task_ptr = task.get();
   tab_helper()->Download(std::move(task));
   task_ptr->SetDone(true);
+
+  base::test::RunUntil([&]() { return handler_.called; });
+
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForJSCompletionTimeout, ^bool() {
         return handler_.called;
@@ -82,6 +90,9 @@ TEST_F(PassKitTabHelperTest, ValidBundledPassKitFile) {
                                 length:pass_data.size()];
   task_ptr->SetResponseData(data);
   task_ptr->SetDone(true);
+
+  base::test::RunUntil([&]() { return handler_.called; });
+
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForJSCompletionTimeout, ^bool() {
         return handler_.called;
@@ -121,6 +132,9 @@ TEST_F(PassKitTabHelperTest, SemiValidBundledPassKitFile) {
                                 length:pass_data.size()];
   task_ptr->SetResponseData(data);
   task_ptr->SetDone(true);
+
+  base::test::RunUntil([&]() { return handler_.called; });
+
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForJSCompletionTimeout, ^bool() {
         return handler_.called;
@@ -154,6 +168,9 @@ TEST_F(PassKitTabHelperTest, InvalidBundledPassKitFile) {
                                 length:pass_data.size()];
   task_ptr->SetResponseData(data);
   task_ptr->SetDone(true);
+
+  base::test::RunUntil([&]() { return handler_.called; });
+
   ASSERT_TRUE(base::test::ios::WaitUntilConditionOrTimeout(
       base::test::ios::kWaitForJSCompletionTimeout, ^bool() {
         return handler_.called;
@@ -307,4 +324,66 @@ TEST_F(PassKitTabHelperTest, ForbiddenHttpResponse) {
       static_cast<base::HistogramBase::Sample32>(
           DownloadPassKitResult::kUnauthorizedFailure),
       1);
+}
+
+// Tests deferring PassKit presentation when the tab is hidden.
+TEST_F(PassKitTabHelperTest, DeferPassKitPresentationWhenHidden) {
+  web_state_.WasHidden();
+
+  auto task =
+      std::make_unique<web::FakeDownloadTask>(GURL(kUrl), kPkPassMimeType);
+  web::FakeDownloadTask* task_ptr = task.get();
+  tab_helper()->Download(std::move(task));
+
+  std::string pass_data =
+      testing::GetTestFileContents(testing::kPkPassFilePath);
+  NSData* data = [NSData dataWithBytes:pass_data.data()
+                                length:pass_data.size()];
+  task_ptr->SetResponseData(data);
+  task_ptr->SetDone(true);
+
+  // The dialog should not be shown while the web state is hidden.
+  EXPECT_EQ(0U, handler_.passes.count);
+
+  // Show the web state. The dialog should be shown.
+  web_state_.WasShown();
+  EXPECT_EQ(1U, handler_.passes.count);
+  PKPass* pass = handler_.passes.firstObject;
+  EXPECT_TRUE([pass isKindOfClass:[PKPass class]]);
+  EXPECT_EQ(PKPassTypeBarcode, pass.passType);
+  EXPECT_NSEQ(@"pass.com.apple.devpubs.example", pass.passTypeIdentifier);
+  EXPECT_NSEQ(@"Toy Town", pass.organizationName);
+
+  histogram_tester_.ExpectUniqueSample(
+      kUmaDownloadPassKitResult,
+      static_cast<base::HistogramBase::Sample32>(
+          DownloadPassKitResult::kSuccessful),
+      1);
+}
+
+// Tests that PassKit dialog presentation deferred while the WebState was hidden
+// is dropped upon observing a cross-document navigation.
+TEST_F(PassKitTabHelperTest, DeferredPassKitDroppedOnNavigation) {
+  web_state_.WasHidden();
+
+  auto task =
+      std::make_unique<web::FakeDownloadTask>(GURL(kUrl), kPkPassMimeType);
+  web::FakeDownloadTask* task_ptr = task.get();
+  tab_helper()->Download(std::move(task));
+
+  std::string pass_data =
+      testing::GetTestFileContents(testing::kPkPassFilePath);
+  NSData* data = [NSData dataWithBytes:pass_data.data()
+                                length:pass_data.size()];
+  task_ptr->SetResponseData(data);
+  task_ptr->SetDone(true);
+
+  EXPECT_EQ(0U, handler_.passes.count);
+
+  web::FakeNavigationContext context;
+  context.SetIsSameDocument(false);
+  web_state_.OnNavigationStarted(&context);
+
+  web_state_.WasShown();
+  EXPECT_EQ(0U, handler_.passes.count);
 }

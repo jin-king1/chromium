@@ -8,13 +8,12 @@
 #include <memory>
 #include <string>
 
-#include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/time/time.h"
 #include "base/types/optional_ref.h"
-#include "components/optimization_guide/core/model_execution/feature_keys.h"
+#include "components/optimization_guide/optimization_guide_internals/webui/optimization_guide_internals.mojom.h"
 #include "components/optimization_guide/proto/model_quality_service.pb.h"
 #include "url/gurl.h"
 
@@ -28,6 +27,9 @@ namespace optimization_guide {
 
 class MqlsFeatureMetadata;
 class ModelQualityLogEntry;
+
+// Returns the URL endpoint for the model quality service.
+GURL GetModelQualityLogsUploaderServiceURL();
 
 class ModelQualityLogsUploaderService {
  public:
@@ -49,6 +51,9 @@ class ModelQualityLogsUploaderService {
   // Sets system metadata, including the UMA system profile.
   virtual void SetSystemMetadata(proto::LoggingMetadata* logging_metadata);
 
+  // Returns the performance class to include in logs.
+  virtual proto::PerformanceClass GetPerformanceClass();
+
   // Returns the WeakPtr for uploading logs during model qualtiy logs
   // destruction.
   base::WeakPtr<ModelQualityLogsUploaderService> GetWeakPtr() {
@@ -58,6 +63,13 @@ class ModelQualityLogsUploaderService {
   // Test-only setter. Pairs well with TestUrlLoaderFactory.
   void SetUrlLoaderFactoryForTesting(
       scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory);
+
+  // Sets an MQLS log to be displayed on WebUI page for debugging purposes.
+  void SetMqlsLogForWebUI(optimization_guide_internals::mojom::MqlsLogPtr log);
+
+  // Gets all MQLS logs to be displayed on WebUI page for debugging purposes.
+  std::vector<optimization_guide_internals::mojom::MqlsLogPtr>
+  GetMqlsLogsForWebUI();
 
  protected:
   virtual void UploadFinalizedLog(std::unique_ptr<proto::LogAiDataRequest> log,
@@ -78,6 +90,10 @@ class ModelQualityLogsUploaderService {
 
   // Used for creating an active_url_loader when needed for request.
   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory_;
+
+  // MQLS logs to be displayed on WebUI page for debugging purposes.
+  std::vector<optimization_guide_internals::mojom::MqlsLogPtr>
+      mqls_logs_for_web_ui_;
 
   SEQUENCE_CHECKER(sequence_checker_);
 

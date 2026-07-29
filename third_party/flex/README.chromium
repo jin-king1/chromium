@@ -2,7 +2,8 @@ Name: flex
 URL: https://github.com/westes/flex
 Version: v2.6.4
 Revision: ab49343
-License: BSD-2-Clause-Flex
+Update Mechanism: Manual
+License: BSD-3-Clause-flex
 License File: LICENSE
 Security Critical: no
 Shipped: no

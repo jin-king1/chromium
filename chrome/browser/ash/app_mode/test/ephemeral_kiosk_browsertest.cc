@@ -25,6 +25,7 @@ namespace ash {
 
 using kiosk::test::CachePolicy;
 using kiosk::test::TheKioskApp;
+using kiosk::test::WaitKioskLaunched;
 using KioskEphemeralMode = policy::DeviceLocalAccount::EphemeralMode;
 
 namespace {
@@ -142,10 +143,10 @@ std::string ParamName(const testing::TestParamInfo<TestParam>& info) {
 class EphemeralKioskTest : public MixinBasedInProcessBrowserTest,
                            public testing::WithParamInterface<TestParam> {
  public:
+  EphemeralKioskTest() = default;
   EphemeralKioskTest(const EphemeralKioskTest&) = delete;
   EphemeralKioskTest& operator=(const EphemeralKioskTest&) = delete;
-
-  EphemeralKioskTest() = default;
+  ~EphemeralKioskTest() override = default;
 
   DeviceEphemeralUsersPolicy DeviceEphemeralUsersParam() const {
     return std::get<DeviceEphemeralUsersPolicy>(GetParam());
@@ -173,7 +174,7 @@ class EphemeralKioskTest : public MixinBasedInProcessBrowserTest,
 
   void SetUpOnMainThread() override {
     MixinBasedInProcessBrowserTest::SetUpOnMainThread();
-    ASSERT_TRUE(kiosk_.WaitSessionLaunched());
+    ASSERT_TRUE(WaitKioskLaunched());
   }
 
   KioskMixin kiosk_{&mixin_host_,

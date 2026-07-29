@@ -5,9 +5,11 @@
 #ifndef CONTENT_BROWSER_MEDIA_CDM_REGISTRY_IMPL_H_
 #define CONTENT_BROWSER_MEDIA_CDM_REGISTRY_IMPL_H_
 
+#include <set>
 #include <vector>
 
 #include "base/callback_list.h"
+#include "base/containers/flat_map.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
 #include "base/thread_annotations.h"
@@ -18,7 +20,7 @@
 #include "content/public/common/cdm_info.h"
 #include "media/base/cdm_capability.h"
 #include "media/base/key_system_capability.h"
-#include "media/mojo/mojom/key_system_support.mojom.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 namespace content {
 
@@ -136,7 +138,7 @@ class CONTENT_EXPORT CdmRegistryImpl : public CdmRegistry,
   void UpdateAndNotifyKeySystemCapabilities();
 
   // Returns the set of all registered key systems.
-  std::set<std::string> GetSupportedKeySystems() const;
+  absl::flat_hash_set<std::string> GetSupportedKeySystems() const;
 
   // Returns the capabailities for all registered key systems.
   KeySystemCapabilities GetKeySystemCapabilities();

@@ -8,19 +8,18 @@ Also probably a good example of how to *not* write HTML.
 
 import collections
 import logging
+import re
 import sys
 import tempfile
 from typing import Any, Dict, IO, List, Optional, Set, Union
 
-# vpython-provided modules.
-import six
-
 # //testing imports.
 from unexpected_passes_common import data_types
 
-# //third_party/blink/tools imports.
-# Used for posting Buganizer comments.
+# //third_party/ imports.
+# Used for generating and posting Buganizer comments.
 from blinkpy.w3c import buganizer
+from typ import expectations_parser
 
 FULL_PASS = 'Fully passed in the following'
 PARTIAL_PASS = 'Partially passed in the following'
@@ -251,6 +250,9 @@ UnusedExpectation = Dict[str, List[data_types.Expectation]]
 
 RemovedUrlsType = Union[List[str], Set[str]]
 
+_BUG_PREFIX_PATTERN = re.compile(
+    expectations_parser.TaggedTestListParser.BUG_PREFIX_REGEX)
+
 
 def OutputResults(stale_dict: data_types.TestExpectationMap,
                   semi_stale_dict: data_types.TestExpectationMap,
@@ -354,7 +356,7 @@ def RecursivePrintToFile(element: ElementType, depth: int,
   """
   if element is None:
     element = str(element)
-  if isinstance(element, six.string_types):
+  if isinstance(element, str):
     file_handle.write(('  ' * depth) + element + '\n')
   elif isinstance(element, dict):
     for k, v in element.items():
@@ -379,7 +381,7 @@ def _RecursiveHtmlToFile(element: ElementType, file_handle: IO) -> None:
     element: A dict, list, or str/unicode to output.
     file_handle: An open file-like object to output to.
   """
-  if isinstance(element, six.string_types):
+  if isinstance(element, str):
     file_handle.write('<p>%s</p>\n' % _LinkifyString(element))
   elif isinstance(element, dict):
     for k, v in element.items():
@@ -676,7 +678,7 @@ def _OutputUrlsForClDescription(affected_urls: List[str],
 
     while len(urls):
       current_bug = urls.popleft()
-      current_bug = current_bug.split('crbug.com/', 1)[1]
+      current_bug = _BUG_PREFIX_PATTERN.split(current_bug, 1)[1]
       # Handles cases like crbug.com/angleproject/1234.
       current_bug = current_bug.replace('/', ':')
 

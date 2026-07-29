@@ -18,16 +18,12 @@
 #include "ui/android/resources/ui_resource_provider.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/gfx/presentation_feedback.h"
 
 namespace cc::slim {
 class Layer;
 }
-
-namespace gpu {
-struct SharedMemoryLimits;
-}  // namespace gpu
 
 namespace ui {
 class ResourceManager;
@@ -54,13 +50,16 @@ class CONTENT_EXPORT Compositor {
   using ContextProviderCallback =
       base::OnceCallback<void(scoped_refptr<viz::ContextProvider>)>;
   static void CreateContextProvider(
-      gpu::SharedMemoryLimits shared_memory_limits,
       ContextProviderCallback callback);
 
   // Creates and returns a compositor instance.  |root_window| needs to outlive
   // the compositor as it manages callbacks on the compositor.
   static Compositor* Create(CompositorClient* client,
                             gfx::NativeWindow root_window);
+
+  // Creates and returns an offscreen compositor instance.
+  static Compositor* CreateOffscreen(CompositorClient* client,
+                                     gfx::NativeWindow root_window);
 
   virtual void SetRootWindow(gfx::NativeWindow root_window) = 0;
 
@@ -74,6 +73,7 @@ class CONTENT_EXPORT Compositor {
   virtual const gfx::Size& GetWindowBounds() = 0;
 
   // Set the output surface which the compositor renders into.
+  // Banned for offscreen rendering.
   virtual std::optional<gpu::SurfaceHandle> SetSurface(
       const base::android::JavaRef<jobject>& surface,
       bool can_be_used_with_surface_control,
@@ -91,6 +91,9 @@ class CONTENT_EXPORT Compositor {
   // Composite *without* having modified the layer tree.
   virtual void SetNeedsComposite() = 0;
 
+  // Pauses frame drawing and swapping until resumed.
+  virtual void SetDrawPaused(bool paused) = 0;
+
   // Returns the UI resource provider associated with the compositor.
   virtual base::WeakPtr<ui::UIResourceProvider> GetUIResourceProvider() = 0;
 
@@ -100,13 +103,16 @@ class CONTENT_EXPORT Compositor {
   // Caches the back buffer associated with the current surface, if any. The
   // client is responsible for evicting this cache entry before destroying the
   // associated window.
+  // Banned for offscreen rendering.
   virtual void CacheBackBufferForCurrentSurface() = 0;
 
   // Evicts the cache entry created from the cached call above.
+  // Banned for offscreen rendering.
   virtual void EvictCachedBackBuffer() = 0;
 
   // Notifies associated Display to not detach child surface controls during
   // destruction.
+  // Banned for offscreen rendering.
   virtual void PreserveChildSurfaceControls() = 0;
 
   // Registers a callback that is run when the presentation feedback for the

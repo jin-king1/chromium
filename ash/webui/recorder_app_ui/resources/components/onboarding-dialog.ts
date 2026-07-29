@@ -8,21 +8,21 @@ import './language-dropdown.js';
 import './speaker-label-consent-dialog-content.js';
 import './unescapable-dialog.js';
 
+import type {PropertyDeclarations, PropertyValues} from 'chrome://resources/mwc/lit/index.js';
 import {
   createRef,
   css,
   html,
   keyed,
-  PropertyDeclarations,
-  PropertyValues,
   ref,
 } from 'chrome://resources/mwc/lit/index.js';
 
-import {i18n, NoArgStringName} from '../core/i18n.js';
+import type {NoArgStringName} from '../core/i18n.js';
+import {i18n} from '../core/i18n.js';
 import {usePlatformHandler} from '../core/lit/context.js';
 import {ReactiveLitElement} from '../core/reactive/lit.js';
 import {computed, signal} from '../core/reactive/signal.js';
-import {LanguageCode} from '../core/soda/language_info.js';
+import type {LanguageCode} from '../core/soda/language_info.js';
 import {settings, SpeakerLabelEnableState} from '../core/state/settings.js';
 import {
   disableTranscription,
@@ -66,14 +66,14 @@ export class OnboardingDialog extends ReactiveLitElement {
   `;
 
   static override properties: PropertyDeclarations = {
-    open: {type: Boolean},
+    onboarding: {type: Boolean},
     step: {state: true},
   };
 
   /**
-   * Whether the dialog is opened.
+   * Whether the onboarding flow is on-going.
    */
-  open = false;
+  onboarding = false;
 
   /**
    * The currently shown step index starting from 0.
@@ -86,6 +86,7 @@ export class OnboardingDialog extends ReactiveLitElement {
    * download language model.
    * Step 4: Speaker label consent dialog for users to turn on speaker label.
    *
+   * When transcription is not available, welcome page won't be displayed.
    * When there are multiple language options, skip step 1. Otherwise, skip step
    * 2 and step 3.
    */
@@ -95,7 +96,9 @@ export class OnboardingDialog extends ReactiveLitElement {
 
   private readonly autoFocusItem = createRef<ReactiveLitElement>();
 
-  private readonly selectedLanguage = signal<LanguageCode|null>(null);
+  private readonly selectedLanguage = signal<LanguageCode>(
+    this.platformHandler.getDefaultLanguage(),
+  );
 
   private readonly availableLanguages = computed(() => {
     const languageList = this.platformHandler.getLangPackList();
@@ -107,7 +110,7 @@ export class OnboardingDialog extends ReactiveLitElement {
   });
 
   override updated(changedProperties: PropertyValues<this>): void {
-    if (changedProperties.has('step') || changedProperties.has('open')) {
+    if (changedProperties.has('step') || changedProperties.has('onboarding')) {
       const autoFocusItem = this.autoFocusItem.value;
       if (autoFocusItem !== undefined) {
         autoFocusItem.updateComplete.then(() => {
@@ -126,8 +129,12 @@ export class OnboardingDialog extends ReactiveLitElement {
   }
 
   private close() {
+    this.finishOnboard(/* IsDialogShown= */ true);
+  }
+
+  private finishOnboard(isDialogShown: boolean) {
     this.sendOnboardEvent();
-    this.dispatchEvent(new Event('close'));
+    this.dispatchEvent(new CustomEvent('onboarded', {detail: isDialogShown}));
   }
 
   private renderDialog(
@@ -145,7 +152,7 @@ export class OnboardingDialog extends ReactiveLitElement {
         id="dialog"
         illustrationName=${imageName}
         header=${header}
-        ?open=${this.open}
+        ?open=${this.onboarding}
       >
         <div slot="description">${description}</div>
         <div id="buttons" slot="actions">${buttons}</div>
@@ -154,26 +161,29 @@ export class OnboardingDialog extends ReactiveLitElement {
   }
 
   override render(): RenderResult {
-    // Note that all the onboarding_ images are currently placeholders and
-    // don't use dynamic color tokens yet.
-    // TODO: b/344785475 - Change to final illustration when ready.
+    if (!this.platformHandler.isSodaAvailable()) {
+      // SODA isn't available on this platform. Don't display the welcome
+      // message, and only send the onboard event during onboarding.
+      if (!this.onboarding) {
+        return;
+      }
+      this.finishOnboard(/* IsDialogShown= */ false);
+      return;
+    }
     switch (this.step) {
       case 0: {
         const nextStep = () => {
-          if (!this.platformHandler.isSodaAvailable()) {
-            // SODA isn't available on this platform. Don't ask for enabling
-            // transcription or speaker label.
-            this.close();
-            return;
-          }
           this.step =
             this.platformHandler.isMultipleLanguageAvailable() ? 2 : 1;
         };
+        const welcomeDescription = this.platformHandler.isGenAiAvailable() ?
+          i18n.onboardingDialogWelcomeDescription :
+          i18n.onboardingDialogWelcomeDescriptionWithoutGenAiFeatures;
         return this.renderDialog(
           this.step,
           'onboarding_welcome',
           i18n.onboardingDialogWelcomeHeader,
-          i18n.onboardingDialogWelcomeDescription,
+          welcomeDescription,
           html`<cra-button
             .label=${i18n.onboardingDialogWelcomeNextButton}
             @click=${nextStep}
@@ -251,13 +261,14 @@ export class OnboardingDialog extends ReactiveLitElement {
         );
       }
       case 3: {
-        const onDropdownChange = (ev: CustomEvent<LanguageCode|null>) => {
+        const onDropdownChange = (ev: CustomEvent<LanguageCode>) => {
           this.selectedLanguage.value = ev.detail;
         };
 
         const dialogBody = html`
           ${i18n.onboardingDialogLanguageSelectionDescription}
           <language-dropdown
+            .defaultLanguage=${this.platformHandler.getDefaultLanguage()}
             .languageList=${this.availableLanguages.value}
             @dropdown-changed=${onDropdownChange}
             ${ref(this.autoFocusItem)}

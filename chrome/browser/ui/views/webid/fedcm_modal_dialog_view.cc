@@ -11,7 +11,7 @@
 #include "components/constrained_window/constrained_window_views.h"
 #include "components/url_formatter/elide_url.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
-#include "content/public/browser/identity_request_dialog_controller.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/border.h"
 #include "ui/views/controls/label.h"
@@ -56,32 +56,37 @@ content::WebContents* FedCmModalDialogView::ShowPopupWindow(
   }
 
   if (!url.is_valid() || !url.SchemeIsHTTPOrHTTPS()) {
-    UMA_HISTOGRAM_ENUMERATION(
-        "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult",
-        ShowPopupWindowResult::kFailedByInvalidUrl);
-
     return nullptr;
   }
 
-  content::OpenURLParams params(
-      url, content::Referrer(), WindowOpenDisposition::NEW_POPUP,
-      ui::PAGE_TRANSITION_AUTO_TOPLEVEL, /*is_renderer_initiated=*/false);
+  // We use `GetDisplayMode` instead of `source_window_->IsFullscreen()` because
+  // the latter only tracks tab fullscreen (e.g., a video playing in
+  // fullscreen), not browser fullscreen (e.g., pressing F11). `GetDisplayMode`
+  // returns `kFullscreen` in both cases.
+  bool is_fullscreen =
+      source_window_->GetDelegate() &&
+      source_window_->GetDelegate()->GetDisplayMode(source_window_) ==
+          blink::mojom::DisplayMode::kFullscreen;
+  WindowOpenDisposition disposition =
+      is_fullscreen ? WindowOpenDisposition::NEW_FOREGROUND_TAB
+                    : WindowOpenDisposition::NEW_POPUP;
+
+  content::OpenURLParams params(url, content::Referrer(), disposition,
+                                ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
+                                /*is_renderer_initiated=*/false);
   popup_window_ = source_window_->GetDelegate()->OpenURLFromTab(
       source_window_, params, /*navigation_handle_callback=*/{});
 
   if (!popup_window_) {
-    UMA_HISTOGRAM_ENUMERATION(
-        "Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult",
-        ShowPopupWindowResult::kFailedForOtherReasons);
-
     return nullptr;
   }
 
-  ResizeAndFocusPopupWindow();
+  // When `is_fullscreen` is true, the content will be automatically activated
+  // because we requested a `NEW_FOREGROUND_TAB` disposition.
+  if (!is_fullscreen) {
+    ResizeAndFocusPopupWindow();
+  }
   Observe(popup_window_);
-
-  UMA_HISTOGRAM_ENUMERATION("Blink.FedCm.IdpSigninStatus.ShowPopupWindowResult",
-                            ShowPopupWindowResult::kSuccess);
 
   return popup_window_;
 }
@@ -92,7 +97,7 @@ void FedCmModalDialogView::ClosePopupWindow() {
   }
 
   std::string histogram_name =
-      active_mode_sheet_type_ == AccountSelectionView::LOADING
+      active_mode_sheet_type_ == webid::SheetType::kLoading
           ? "Blink.FedCm.Button.LoadingStatePopupInteraction"
           : "Blink.FedCm.Button.UseOtherAccountPopupInteraction";
   PopupInteraction metric =
@@ -130,7 +135,7 @@ void FedCmModalDialogView::ResizeAndFocusPopupWindow() {
 
 void FedCmModalDialogView::WebContentsDestroyed() {
   std::string histogram_name =
-      active_mode_sheet_type_ == AccountSelectionView::LOADING
+      active_mode_sheet_type_ == webid::SheetType::kLoading
           ? "Blink.FedCm.Button.LoadingStatePopupInteraction"
           : "Blink.FedCm.Button.UseOtherAccountPopupInteraction";
   // Closing the window causes the focus to be lost so `num_lost_focus_` is at
@@ -163,8 +168,7 @@ void FedCmModalDialogView::SetCustomYPosition(int y) {
   custom_y_position_ = y;
 }
 
-void FedCmModalDialogView::SetActiveModeSheetType(
-    AccountSelectionView::SheetType sheet_type) {
+void FedCmModalDialogView::SetActiveModeSheetType(webid::SheetType sheet_type) {
   active_mode_sheet_type_ = sheet_type;
 }
 

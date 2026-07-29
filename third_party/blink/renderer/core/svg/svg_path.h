@@ -56,11 +56,10 @@ class CORE_EXPORT SVGPath final : public SVGPropertyBase {
 
   // SVGPropertyBase:
   SVGPath* Clone() const;
-  SVGPropertyBase* CloneForAnimation(const String&) const override;
   String ValueAsString() const override;
   SVGParsingError SetValueAsString(const String&);
 
-  void Add(const SVGPropertyBase*, const SVGElement*) override;
+  bool Add(const SVGPropertyBase*, const SVGElement*) override;
   void CalculateAnimatedValue(
       const SMILAnimationEffectParameters&,
       float percentage,

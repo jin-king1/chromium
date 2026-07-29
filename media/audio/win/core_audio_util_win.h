@@ -11,12 +11,14 @@
 #ifndef MEDIA_AUDIO_WIN_CORE_AUDIO_UTIL_WIN_H_
 #define MEDIA_AUDIO_WIN_CORE_AUDIO_UTIL_WIN_H_
 
-#include <audioclient.h>
 #include <mmdeviceapi.h>
+
+#include <audioclient.h>
 #include <stdint.h>
 #include <wrl/client.h>
 
 #include <string>
+#include <utility>
 
 #include "base/memory/raw_ptr.h"
 #include "base/time/time.h"
@@ -98,8 +100,19 @@ class MEDIA_EXPORT CoreAudioUtil {
   // Create an endpoint device specified by |device_id| or a default device
   // specified by data-flow direction and role if
   // AudioDeviceDescription::IsDefaultDevice(|device_id|).
+  //
+  // This version should be used when the caller does not need to inspect the
+  // detailed HRESULT failure code on failure.
   static Microsoft::WRL::ComPtr<IMMDevice>
   CreateDevice(const std::string& device_id, EDataFlow data_flow, ERole role);
+
+  // This version should be used when the caller needs to inspect the detailed
+  // HRESULT failure code on failure.
+  static Microsoft::WRL::ComPtr<IMMDevice> CreateDevice(
+      const std::string& device_id,
+      EDataFlow data_flow,
+      ERole role,
+      HRESULT& hr_out);
 
   // These functions return the device id of the default or communications
   // input/output device, or an empty string if no such device exists or if the
@@ -118,13 +131,7 @@ class MEDIA_EXPORT CoreAudioUtil {
   // |device| is connected to.  This ID will be the same for all devices from
   // the same controller so it is useful for doing things like determining
   // whether a set of output and input devices belong to the same controller.
-  // The device enumerator is required as well as the device itself since
-  // looking at the device topology is required and we need to open up
-  // associated devices to determine the controller id.
-  // If the ID could not be determined for some reason, an empty string is
-  // returned.
-  static std::string GetAudioControllerID(IMMDevice* device,
-      IMMDeviceEnumerator* enumerator);
+  static std::string GetAudioControllerID(IMMDevice* device);
 
   // Accepts an id of an input device and finds a matching output device id.
   // If the associated hardware does not have an audio output device (e.g.
@@ -147,10 +154,32 @@ class MEDIA_EXPORT CoreAudioUtil {
 
   // Create an IAudioClient instance for a specific device or the default
   // device if AudioDeviceDescription::IsDefaultDevice(device_id).
+  //
+  // This version should be used when the caller does not need to inspect the
+  // detailed HRESULT failure code on failure.
   static Microsoft::WRL::ComPtr<IAudioClient>
   CreateClient(const std::string& device_id, EDataFlow data_flow, ERole role);
+
+  // This version should be used when the caller needs to inspect the detailed
+  // HRESULT failure code on failure.
+  static Microsoft::WRL::ComPtr<IAudioClient> CreateClient(
+      const std::string& device_id,
+      EDataFlow data_flow,
+      ERole role,
+      HRESULT& hr_out);
+
+  // This version should be used when the caller does not need to inspect the
+  // detailed HRESULT failure code on failure.
   static Microsoft::WRL::ComPtr<IAudioClient3>
   CreateClient3(const std::string& device_id, EDataFlow data_flow, ERole role);
+
+  // This version should be used when the caller needs to inspect the detailed
+  // HRESULT failure code on failure.
+  static Microsoft::WRL::ComPtr<IAudioClient3> CreateClient3(
+      const std::string& device_id,
+      EDataFlow data_flow,
+      ERole role,
+      HRESULT& hr_out);
 
   // Get the mix format that the audio engine uses internally for processing
   // of shared-mode streams. This format is not necessarily a format that the
@@ -165,9 +194,19 @@ class MEDIA_EXPORT CoreAudioUtil {
 
   // Returns true if the specified |client| supports the format in |format|
   // for the given |share_mode| (shared or exclusive).
+  //
+  // This version should be used when the caller does not need to inspect the
+  // detailed HRESULT failure code on failure.
   static bool IsFormatSupported(IAudioClient* client,
                                 AUDCLNT_SHAREMODE share_mode,
                                 WaveFormatWrapper format);
+
+  // This version should be used when the caller needs to inspect the detailed
+  // HRESULT failure code on failure.
+  static bool IsFormatSupported(IAudioClient* client,
+                                AUDCLNT_SHAREMODE share_mode,
+                                WaveFormatWrapper format,
+                                HRESULT& hr_out);
 
   // Returns true if the specified |channel_layout| is supported for the
   // default IMMDevice where flow direction and role is define by |data_flow|
@@ -230,22 +269,45 @@ class MEDIA_EXPORT CoreAudioUtil {
                                       const GUID* session_guid,
                                       bool enable_audio_offload = false);
 
+  // Returns true if the client has been initialized and false otherwise.
+  static bool IsClientInitialized(IAudioClient* client);
+
   // Create an IAudioRenderClient client for an existing IAudioClient given by
   // |client|. The IAudioRenderClient interface enables a client to write
   // output data to a rendering endpoint buffer.
+  //
+  // This version should be used when the caller does not need to inspect the
+  // detailed HRESULT failure code on failure.
   static Microsoft::WRL::ComPtr<IAudioRenderClient> CreateRenderClient(
       IAudioClient* client);
+
+  // This version should be used when the caller needs to inspect the detailed
+  // HRESULT failure code on failure.
+  static Microsoft::WRL::ComPtr<IAudioRenderClient> CreateRenderClient(
+      IAudioClient* client,
+      HRESULT& hr_out);
 
   // Create an IAudioCaptureClient client for an existing IAudioClient given by
   // |client|. The IAudioCaptureClient interface enables a client to read
   // input data from a capture endpoint buffer.
+  //
+  // This version should be used when the caller does not need to inspect the
+  // detailed HRESULT failure code on failure.
   static Microsoft::WRL::ComPtr<IAudioCaptureClient> CreateCaptureClient(
       IAudioClient* client);
+
+  // This version should be used when the caller needs to inspect the detailed
+  // HRESULT failure code on failure.
+  static Microsoft::WRL::ComPtr<IAudioCaptureClient> CreateCaptureClient(
+      IAudioClient* client,
+      HRESULT& hr_out);
 
   // Fills up the endpoint rendering buffer with silence for an existing
   // IAudioClient given by |client| and a corresponding IAudioRenderClient
   // given by |render_client|.
-  static bool FillRenderEndpointBufferWithSilence(
+  //
+  // Returns S_OK on success, or a detailed HRESULT error code on failure.
+  static HRESULT FillRenderEndpointBufferWithSilence(
       IAudioClient* client,
       IAudioRenderClient* render_client);
 
@@ -258,6 +320,24 @@ class MEDIA_EXPORT CoreAudioUtil {
 
   // Check if audio offload can be enabled for client.
   static bool IsAudioOffloadSupported(IAudioClient* client);
+
+  // Set the category to AudioCategory_Communications which is intended for
+  // real-time communications, such as VoIP or chat clients. Also needed to
+  // enable support of audio effects such as echo cancellation.
+  static bool EnableCommunicationsAudioCategoryForClient(IAudioClient* client);
+
+  // Enumerates all supported audio effects and at the same time checks if the
+  // AEC effect is available and enabled for the selected device.
+  // Returns a pair. The first element is an integer representing the voice
+  // processing effects. This is a bitwise OR combination of effect flags (e.g.,
+  // `ECHO_CANCELLER`, `NOISE_SUPPRESSION`, `AUTOMATIC_GAIN_CONTROL`). The
+  // second element is true if AEC is available, false otherwise.
+  // Updates the "Media.Audio.Capture.Win.VoiceProcessingEffects" histogram.
+  // Requires the media::EnforceSystemEchoCancellation command-line flag.
+  // Example:
+  // std::make_pair(ECHO_CANCELLER | NOISE_SUPPRESSION, false)
+  static std::pair<int, bool> GetVoiceProcessingEffectsAndCheckForAEC(
+      IAudioClient* client);
 };
 
 // The special audio session identifier we use when opening up the default

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -16,6 +11,7 @@
 #include "base/logging.h"
 #include "base/pickle.h"
 #include "components/bookmarks/browser/bookmark_node_data.h"
+#include "testing/libfuzzer/libfuzzer_base_wrappers.h"
 
 class Environment {
  public:
@@ -26,11 +22,10 @@ class Environment {
   base::AtExitManager at_exit_manager;
 };
 
-extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
+DEFINE_LLVM_FUZZER_TEST_ONE_INPUT_SPAN(const base::span<const uint8_t> data) {
   static Environment env;
 
-  base::Pickle pickle = base::Pickle::WithUnownedBuffer(base::span(data, size));
   bookmarks::BookmarkNodeData bookmark_node_data;
-  bookmark_node_data.ReadFromPickle(&pickle);
+  bookmark_node_data.ReadFromPickle(base::PickleIterator::WithData(data));
   return 0;
 }

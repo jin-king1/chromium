@@ -451,6 +451,14 @@ public @interface EnumName {
         kTestVal,
         kCodecMPEG2
       };
+
+      // GENERATED_JAVA_ENUM_PACKAGE: test.namespace
+      // GENERATED_JAVA_PREFIX_TO_STRIP: k
+      enum Typos {
+        kValue = 1,
+        kUnknownValue = 2,
+        kMaxValue = kUnknownValue,
+      };
     """.split('\n')
     definitions = HeaderParser(test_data).ParseDefinitions()
     definition = definitions[0]
@@ -482,6 +490,12 @@ public @interface EnumName {
     definition = definitions[4]
     self.assertEqual(
         collections.OrderedDict([('TEST_VAL', 0), ('CODEC_MPEG2', 1)]),
+        definition.entries)
+
+    definition = definitions[5]
+    self.assertEqual(
+        collections.OrderedDict([('VALUE', '1'), ('UNKNOWN_VALUE', '2'),
+                                 ('MAX_VALUE', 'UNKNOWN_VALUE')]),
         definition.entries)
 
   def testParseThrowsOnUnknownDirective(self):
@@ -586,6 +600,29 @@ enum TerminationStatus {
 #if BUILDFLAG(IS_CHROMEOS) || BUILDFLAG(IS_ANDROID)
   TERMINATION_STATUS_TWELVE = 12,
 #endif
+
+  TERMINATION_STATUS_THIRTEEN = 13,
+
+#if BUILDFLAG(IS_POSIX)
+  TERMINATION_STATUS_FOURTEEN = 14,
+#endif
+
+#if !BUILDFLAG(IS_WIN)
+  // This should be included.
+  TERMINATION_STATUS_FIFTEEN = 15,
+#endif
+#if !BUILDFLAG(IS_ANDROID)
+  // This should NOT be included.
+  TERMINATION_STATUS_SIXTEEN = 16,
+#endif
+#if !BUILDFLAG(IS_POSIX)
+  // This should NOT be included.
+  TERMINATION_STATUS_SEVENTEEN = 17,
+#endif
+
+#if BUILDFLAG(IS_WIN)
+  TERMINATION_STATUS_LAST = 1000,
+#endif
 };
     """.split('\n')
     definitions = HeaderParser(test_data).ParseDefinitions()
@@ -606,6 +643,9 @@ enum TerminationStatus {
             # INTEGRITY_FAILURE value should not appear here.
             # TEN and ELEVEN should not appear here.
             ('TWELVE', '12'),
+            ('THIRTEEN', '13'),
+            ('FOURTEEN', '14'),
+            ('FIFTEEN', '15'),
         ]),
         definition.entries)
     self.assertEqual(
@@ -616,6 +656,7 @@ enum TerminationStatus {
              'On Android processes are spawned from the system Zygote and we ' +
              'do not get the termination status.'),
             ('OOM', 'Out of memory.'),
+            ('FIFTEEN', 'This should be included.'),
         ]), definition.comments)
 
   def testParseEnumStruct(self):
@@ -649,13 +690,13 @@ enum TerminationStatus {
     self.assertEqual(collections.OrderedDict([('A', 0)]),
                      definition.entries)
 
-  def testParseFixedTypeEnum(self):
+  def testParseFixedTypeEnumWithOverride(self):
     test_data = """
       // GENERATED_JAVA_ENUM_PACKAGE: org.chromium.components.signin.metrics
       // GENERATED_JAVA_CLASS_NAME_OVERRIDE: SigninAccessPoint
       enum class AccessPoint : int {
         ACCESS_POINT_DRIVE_FILE_PICKER_IOS = 0,
-        ACCESS_POINT_COLLABORATION_TAB_GROUP = 1,
+        ACCESS_POINT_COLLABORATION_SHARE_TAB_GROUP = 1,
         ACCESS_POINT_MAX,
       };
     """.split('\n')
@@ -668,8 +709,8 @@ enum TerminationStatus {
     self.assertEqual('int', definition.fixed_type)
     self.assertEqual(
         collections.OrderedDict([('DRIVE_FILE_PICKER_IOS', 0),
-                                 ('COLLABORATION_TAB_GROUP', 1), ('MAX', 2)]),
-        definition.entries)
+                                 ('COLLABORATION_SHARE_TAB_GROUP', 1),
+                                 ('MAX', 2)]), definition.entries)
 
   def testParseFixedTypeEnumWithMaxValue(self):
     test_data = """
@@ -677,8 +718,8 @@ enum TerminationStatus {
       // GENERATED_JAVA_CLASS_NAME_OVERRIDE: SigninAccessPoint
       enum class AccessPoint : int {
         ACCESS_POINT_DRIVE_FILE_PICKER_IOS = 0,
-        ACCESS_POINT_COLLABORATION_TAB_GROUP = 1,
-        kMaxValue = ACCESS_POINT_COLLABORATION_TAB_GROUP,
+        ACCESS_POINT_COLLABORATION_SHARE_TAB_GROUP = 1,
+        kMaxValue = ACCESS_POINT_COLLABORATION_SHARE_TAB_GROUP,
       };
     """.split('\n')
     definitions = HeaderParser(test_data).ParseDefinitions()
@@ -690,9 +731,9 @@ enum TerminationStatus {
     self.assertEqual('int', definition.fixed_type)
     self.assertEqual(
         collections.OrderedDict([('DRIVE_FILE_PICKER_IOS', '0'),
-                                 ('COLLABORATION_TAB_GROUP', '1'),
-                                 ('MAX_VALUE', 'COLLABORATION_TAB_GROUP')]),
-        definition.entries)
+                                 ('COLLABORATION_SHARE_TAB_GROUP', '1'),
+                                 ('MAX_VALUE', 'COLLABORATION_SHARE_TAB_GROUP')
+                                 ]), definition.entries)
 
   def testParseFixedTypeEnumClass(self):
     test_data = """

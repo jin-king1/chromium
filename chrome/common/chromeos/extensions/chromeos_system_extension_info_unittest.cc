@@ -19,7 +19,10 @@ TEST(ChromeOSSystemExtensionInfo, GoogleExtension) {
       chromeos::GetChromeOSExtensionInfoById(google_extension_id);
   EXPECT_THAT(extension_info.manufacturers,
               testing::UnorderedElementsAre("ASUS", "HP", "Acer", "Lenovo"));
-  EXPECT_EQ("*://googlechromelabs.github.io/*", extension_info.pwa_origin);
+  EXPECT_EQ(
+      "*://googlechromelabs.github.io/cros-sample-telemetry-extension/"
+      "test-page/*",
+      extension_info.pwa_origin);
   EXPECT_FALSE(extension_info.iwa_id);
 }
 
@@ -60,7 +63,7 @@ TEST(ChromeOSSystemExtensionInfo, AcerExtension) {
 }
 
 TEST(ChromeOSSystemExtensionInfo, LenovoExtension) {
-  const auto& lenovo_extension_id = "abpkjagfgndmbkendplbabnefkjkgdcf";
+  const auto& lenovo_extension_id = "mconamggkmbalafmibfjlcmimnlbgmlb";
   ASSERT_TRUE(chromeos::IsChromeOSSystemExtension(lenovo_extension_id));
 
   const auto& extension_info =
@@ -73,6 +76,18 @@ TEST(ChromeOSSystemExtensionInfo, LenovoExtension) {
   const auto& lenovo_iwa_id =
       "huhncggoe22ofjan6nylwijltmewmbevapiotudwgbyjbhrlphrqaaic";
   EXPECT_EQ(extension_info.iwa_id->id(), lenovo_iwa_id);
+}
+
+TEST(ChromeOSSystemExtensionInfo, ASUSCtpExtension) {
+  const auto& asus_test_extension_id = "hoalheabnfilagemmocodoambpgngdcd";
+  ASSERT_TRUE(chromeos::IsChromeOSSystemExtension(asus_test_extension_id));
+
+  const auto& extension_info =
+      chromeos::GetChromeOSExtensionInfoById(asus_test_extension_id);
+  EXPECT_THAT(extension_info.manufacturers,
+              testing::UnorderedElementsAre("ASUS"));
+  EXPECT_EQ("https://cscpwa.asus.com/*", extension_info.pwa_origin);
+  EXPECT_FALSE(extension_info.iwa_id);
 }
 
 TEST(ChromeOSSystemExtensionInfo, DevExtension) {
@@ -107,8 +122,10 @@ TEST(ChromeOSSystemExtensionInfo, ManufacturerOverride) {
 
   const auto& google_extension_info = chromeos::GetChromeOSExtensionInfoById(
       "gogonhoemckpdpadfnjnpgbjpbjnodgc");
-  EXPECT_EQ("*://googlechromelabs.github.io/*",
-            google_extension_info.pwa_origin);
+  EXPECT_EQ(
+      "*://googlechromelabs.github.io/cros-sample-telemetry-extension/"
+      "test-page/*",
+      google_extension_info.pwa_origin);
   EXPECT_THAT(google_extension_info.manufacturers,
               testing::UnorderedElementsAre(kManufacturerOverride));
   EXPECT_FALSE(google_extension_info.iwa_id);
@@ -160,8 +177,10 @@ TEST(ChromeOSSystemExtensionInfo, IwaIdOverride) {
 
   const auto& google_extension_info = chromeos::GetChromeOSExtensionInfoById(
       "gogonhoemckpdpadfnjnpgbjpbjnodgc");
-  EXPECT_EQ("*://googlechromelabs.github.io/*",
-            google_extension_info.pwa_origin);
+  EXPECT_EQ(
+      "*://googlechromelabs.github.io/cros-sample-telemetry-extension/"
+      "test-page/*",
+      google_extension_info.pwa_origin);
   EXPECT_THAT(google_extension_info.manufacturers,
               testing::UnorderedElementsAre("HP", "ASUS", "Acer", "Lenovo"));
   EXPECT_EQ(kIwaIdOverride, google_extension_info.iwa_id->id());

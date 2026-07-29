@@ -55,7 +55,7 @@ std::string GetVerifiedContents(const Extension& extension) {
 }
 
 void WriteManifest(TestExtensionDir* dir) {
-  dir->WriteManifest(base::Value::Dict()
+  dir->WriteManifest(base::DictValue()
                          .Set("manifest_version", 2)
                          .Set("name", "Test extension")
                          .Set("version", "1.0"));
@@ -64,7 +64,7 @@ void WriteManifest(TestExtensionDir* dir) {
 void WriteComputedHashes(
     const base::FilePath& extension_root,
     const std::map<base::FilePath, std::string>& contents) {
-  int block_size = extension_misc::kContentVerificationDefaultBlockSize;
+  size_t block_size = extension_misc::kContentVerificationDefaultBlockSize;
   ComputedHashes::Data computed_hashes_data;
 
   for (const auto& resource : contents) {
@@ -127,7 +127,7 @@ class ContentVerifyJobUnittest : public ExtensionsTest {
       ContentVerifyJobAsyncRunMode run_mode) {
     TestContentVerifySingleJobObserver observer(extension.id(), resource_path);
     auto verify_job = base::MakeRefCounted<ContentVerifyJob>(
-        extension.id(), extension.path(), resource_path);
+        extension.id(), extension.version(), extension.path(), resource_path);
 
     auto run_content_read_step = base::BindRepeating(
         [](std::optional<std::string_view> resource_contents,
@@ -179,7 +179,7 @@ class ContentVerifyJobUnittest : public ExtensionsTest {
       base::span<MojoResult> read_errors) {
     TestContentVerifySingleJobObserver observer(extension.id(), resource_path);
     auto verify_job = base::MakeRefCounted<ContentVerifyJob>(
-        extension.id(), extension.path(), resource_path);
+        extension.id(), extension.version(), extension.path(), resource_path);
 
     // Read hashes asynchronously.
     StartJob(verify_job, extension.version(), extension.manifest_version(),
@@ -196,7 +196,7 @@ class ContentVerifyJobUnittest : public ExtensionsTest {
   void StartContentVerifyJob(const Extension& extension,
                              const base::FilePath& resource_path) {
     auto verify_job = base::MakeRefCounted<ContentVerifyJob>(
-        extension.id(), extension.path(), resource_path);
+        extension.id(), extension.version(), extension.path(), resource_path);
     StartJob(verify_job, extension.version(), extension.manifest_version(),
              base::DoNothing());
   }
@@ -240,7 +240,7 @@ class ContentVerifyJobUnittest : public ExtensionsTest {
                           resources_for_hashes.value());
     }
 
-    std::string error;
+    std::u16string error;
     scoped_refptr<Extension> extension = file_util::LoadExtension(
         temp_dir->UnpackedPath(), mojom::ManifestLocation::kInternal,
         Extension::InitFromValueFlags::NO_FLAGS, &error);
@@ -342,7 +342,7 @@ TEST_F(ContentVerifyJobUnittest, DeletedAndMissingFiles) {
   {
     // Ask for the root path of the extension (i.e., chrome-extension://<id>/).
     // Verification should skip this request as if the resource were
-    // non-existent. See https://crbug.com/791929.
+    // non-existent. See https://crbug.com/41359344.
     base::FilePath empty_path_resource_path(FILE_PATH_LITERAL(""));
     EXPECT_EQ(ContentVerifyJob::NONE,
               RunContentVerifyJob(*extension.get(), empty_path_resource_path,
@@ -352,7 +352,7 @@ TEST_F(ContentVerifyJobUnittest, DeletedAndMissingFiles) {
   {
     // Ask for the path of one of the extension's folders which exists on disk.
     // Verification of the folder should skip the request as if the folder
-    // was non-existent. See https://crbug.com/791929.
+    // was non-existent. See https://crbug.com/41359344.
     const base::FilePath::CharType kUnexpectedFolder[] =
         FILE_PATH_LITERAL("bar/");
     base::FilePath unexpected_folder_path(kUnexpectedFolder);
@@ -397,7 +397,7 @@ void WriteIncorrectComputedHashes(const base::FilePath& extension_path,
 
   base::DeleteFile(file_util::GetComputedHashesPath(extension_path));
 
-  int block_size = extension_misc::kContentVerificationDefaultBlockSize;
+  size_t block_size = extension_misc::kContentVerificationDefaultBlockSize;
   ComputedHashes::Data incorrect_computed_hashes_data;
 
   // Write a valid computed_hashes.json with incorrect hash for |resource_path|.
@@ -515,7 +515,7 @@ TEST_F(ContentVerifyJobUnittest, LegitimateZeroByteFile) {
 }
 
 // Tests that extension resources of different interesting sizes work properly.
-// Regression test for https://crbug.com/720597, where content verification
+// Regression test for https://crbug.com/41318287, where content verification
 // always failed for sizes multiple of content hash's block size (4096 bytes).
 TEST_F(ContentVerifyJobUnittest, DifferentSizedFiles) {
   TestExtensionDir temp_dir;
@@ -596,9 +596,9 @@ TEST_F(ContentVerifyJobWithoutSignedHashesUnittest, ComputedHashesLoad) {
     TestContentVerifySingleJobObserver observer(extension->id(), kResourcePath);
     content_verifier()->ClearCacheForTesting();
     StartContentVerifyJob(*extension, kResourcePath);
-    ContentHashReader::InitStatus hashes_status =
+    std::optional<ContentHashReaderInitStatus> hashes_status =
         observer.WaitForOnHashesReady();
-    EXPECT_EQ(ContentHashReader::InitStatus::SUCCESS, hashes_status);
+    EXPECT_FALSE(hashes_status.has_value());
   }
 
   {
@@ -609,9 +609,9 @@ TEST_F(ContentVerifyJobWithoutSignedHashesUnittest, ComputedHashesLoad) {
     TestContentVerifySingleJobObserver observer(extension->id(), kResourcePath);
     content_verifier()->ClearCacheForTesting();
     StartContentVerifyJob(*extension, kResourcePath);
-    ContentHashReader::InitStatus hashes_status =
+    std::optional<ContentHashReaderInitStatus> hashes_status =
         observer.WaitForOnHashesReady();
-    EXPECT_EQ(ContentHashReader::InitStatus::HASHES_DAMAGED, hashes_status);
+    EXPECT_EQ(ContentHashReaderInitStatus::HASHES_DAMAGED, hashes_status);
   }
 
   {
@@ -621,9 +621,9 @@ TEST_F(ContentVerifyJobWithoutSignedHashesUnittest, ComputedHashesLoad) {
     TestContentVerifySingleJobObserver observer(extension->id(), kResourcePath);
     content_verifier()->ClearCacheForTesting();
     StartContentVerifyJob(*extension, kResourcePath);
-    ContentHashReader::InitStatus hashes_status =
+    std::optional<ContentHashReaderInitStatus> hashes_status =
         observer.WaitForOnHashesReady();
-    EXPECT_EQ(ContentHashReader::InitStatus::HASHES_MISSING, hashes_status);
+    EXPECT_EQ(ContentHashReaderInitStatus::HASHES_MISSING, hashes_status);
   }
 }
 
@@ -775,7 +775,7 @@ TEST_P(ContentMismatchUnittest, ContentMismatch) {
 }
 
 // Similar to ContentMismatch, but uses a file size > 4k.
-// Regression test for https://crbug.com/804630.
+// Regression test for https://crbug.com/40559301.
 TEST_P(ContentMismatchUnittest, ContentMismatchWithLargeFile) {
   std::string content_larger_than_block_size(
       extension_misc::kContentVerificationDefaultBlockSize + 1, ';');
@@ -843,7 +843,8 @@ class ContentVerifyJobWithHashFetchUnittest : public ContentVerifyJobUnittest {
       // Then ContentVerifyJob gets the read result.
       scoped_refptr<ContentVerifyJob> verify_job =
           base::MakeRefCounted<ContentVerifyJob>(
-              extension->id(), extension->path(), resource_path);
+              extension->id(), extension->version(), extension->path(),
+              resource_path);
       auto do_read_and_done =
           [](scoped_refptr<ContentVerifyJob> job,
              scoped_refptr<ContentVerifier> content_verifier,
@@ -876,7 +877,7 @@ class ContentVerifyJobWithHashFetchUnittest : public ContentVerifyJobUnittest {
  private:
   bool InterceptHashFetch(
       content::URLLoaderInterceptor::RequestParams* params) {
-    if (params->url_request.url.path_piece() != "/getsignature") {
+    if (params->url_request.url.path() != "/getsignature") {
       return false;
     }
 
@@ -897,7 +898,7 @@ class ContentVerifyJobWithHashFetchUnittest : public ContentVerifyJobUnittest {
   std::optional<std::string> verified_contents_;
 };
 
-// Regression test for https://crbug.com/995436.
+// Regression test for https://crbug.com/40641039.
 TEST_F(ContentVerifyJobWithHashFetchUnittest, ReadErrorBeforeHashReady) {
   TestExtensionDir temp_dir;
   scoped_refptr<Extension> extension = LoadTestExtensionFromZipPathToTempDir(

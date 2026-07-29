@@ -245,8 +245,9 @@ Response CSSAgent::getStyleSheetText(const protocol::String& style_sheet_id,
     return Response::ServerError("Node id not found");
 
   auto sources = ui_element->GetSources();
-  if (static_cast<int>(sources.size()) <= stylesheet_id)
+  if (static_cast<int>(sources.size()) <= stylesheet_id || stylesheet_id < 0) {
     return Response::ServerError("Stylesheet id not found");
+  }
 
   if (GetSourceCode(sources[stylesheet_id].path_, result))
     return Response::Success();
@@ -272,8 +273,9 @@ Response CSSAgent::setStyleTexts(
 
     if (!ui_element)
       return Response::ServerError("Node id not found");
-    // Handle setting properties from metadata for elements which use metadata.
-    if (!ui_element->SetPropertiesFromString(edit->getText())) {
+    if (stylesheet_id < 0 ||
+        !ui_element->SetPropertiesFromString(static_cast<size_t>(stylesheet_id),
+                                             edit->getText())) {
       gfx::Rect updated_bounds;
       bool visible = false;
       if (!GetPropertiesForUIElement(ui_element, &updated_bounds, &visible))

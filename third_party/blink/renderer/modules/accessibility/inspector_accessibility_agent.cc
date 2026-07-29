@@ -6,22 +6,24 @@
 
 #include <memory>
 
+#include "base/containers/adapters.h"
 #include "third_party/blink/renderer/core/accessibility/ax_object_cache.h"
 #include "third_party/blink/renderer/core/dom/dom_node_ids.h"
 #include "third_party/blink/renderer/core/dom/element.h"
 #include "third_party/blink/renderer/core/dom/flat_tree_traversal.h"
 #include "third_party/blink/renderer/core/dom/node.h"
-#include "third_party/blink/renderer/core/dom/node_list.h"
 #include "third_party/blink/renderer/core/frame/local_frame.h"
 #include "third_party/blink/renderer/core/html_names.h"
 #include "third_party/blink/renderer/core/inspector/identifiers_factory.h"
 #include "third_party/blink/renderer/core/inspector/inspected_frames.h"
 #include "third_party/blink/renderer/core/inspector/inspector_dom_agent.h"
-#include "third_party/blink/renderer/core/inspector/inspector_style_sheet.h"
+#include "third_party/blink/renderer/modules/accessibility/ax_object-inl.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object.h"
 #include "third_party/blink/renderer/modules/accessibility/ax_object_cache_impl.h"
 #include "third_party/blink/renderer/modules/accessibility/inspector_type_builder_helper.h"
+#include "third_party/blink/renderer/platform/heap/disallow_new_wrapper.h"
 #include "third_party/blink/renderer/platform/wtf/deque.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_to_number.h"
 #include "ui/accessibility/ax_enums.mojom-blink.h"
 #include "ui/accessibility/ax_mode.h"
 #include "ui/accessibility/ax_node_data.h"
@@ -41,9 +43,8 @@ void AddChildren(AXObject& ax_object,
                  bool follow_ignored,
                  std::unique_ptr<protocol::Array<AXNode>>& nodes,
                  AXObjectCacheImpl& cache) {
-  HeapVector<Member<AXObject>> reachable;
-  reachable.AppendRange(ax_object.ChildrenIncludingIgnored().rbegin(),
-                        ax_object.ChildrenIncludingIgnored().rend());
+  HeapVector<Member<AXObject>> reachable(
+      base::Reversed(ax_object.ChildrenIncludingIgnored()));
 
   while (!reachable.empty()) {
     AXObject* descendant = reachable.back();
@@ -56,8 +57,8 @@ void AddChildren(AXObject& ax_object,
     // another layer of children.
     if (follow_ignored &&
         (descendant->IsIgnoredButIncludedInTree() || !descendant->GetNode())) {
-      reachable.AppendRange(descendant->ChildrenIncludingIgnored().rbegin(),
-                            descendant->ChildrenIncludingIgnored().rend());
+      reachable.append_range(
+          base::Reversed(descendant->ChildrenIncludingIgnored()));
     }
     auto child_node = BuildProtocolAXNodeForAXObject(*descendant);
     nodes->emplace_back(std::move(child_node));
@@ -116,7 +117,7 @@ std::unique_ptr<protocol::Array<AXNode>> WalkAXNodesToDepth(
       continue;
     AddChildren(*ax_object, true, nodes, cache);
 
-    const AXObject::AXObjectVector& children = ax_object->UnignoredChildren();
+    const AXObject::AXObjectVector& children = ax_object->UnignoredChildrenSlow();
 
     for (auto& child_ax_object : children) {
       int depth = id_depth.second;
@@ -133,12 +134,13 @@ std::unique_ptr<protocol::Array<AXNode>> WalkAXNodesToDepth(
 
 using EnabledAgentsMultimap =
     HeapHashMap<WeakMember<LocalFrame>,
-                Member<HeapHashSet<Member<InspectorAccessibilityAgent>>>>;
+                Member<GCedHeapHashSet<Member<InspectorAccessibilityAgent>>>>;
 
 EnabledAgentsMultimap& EnabledAgents() {
-  DEFINE_STATIC_LOCAL(Persistent<EnabledAgentsMultimap>, enabled_agents,
-                      (MakeGarbageCollected<EnabledAgentsMultimap>()));
-  return *enabled_agents;
+  using EnabledAgentsMultimapHolder = DisallowNewWrapper<EnabledAgentsMultimap>;
+  DEFINE_STATIC_LOCAL(Persistent<EnabledAgentsMultimapHolder>, holder,
+                      (MakeGarbageCollected<EnabledAgentsMultimapHolder>()));
+  return holder->Value();
 }
 
 InspectorAccessibilityAgent::InspectorAccessibilityAgent(
@@ -352,7 +354,7 @@ protocol::Response InspectorAccessibilityAgent::getChildAXNodes(
 
   ScopedFreezeAXCache freeze(cache);
 
-  AXID ax_id = in_id.ToInt();
+  AXID ax_id = StringToIntLoose(in_id).value_or(0);
   AXObject* ax_object = cache.ObjectFromAXID(ax_id);
 
   if (!ax_object || ax_object->IsDetached())
@@ -363,8 +365,9 @@ protocol::Response InspectorAccessibilityAgent::getChildAXNodes(
 
   AddChildren(*ax_object, /* follow_ignored */ true, *out_nodes, cache);
 
-  for (const auto& child : **out_nodes)
-    nodes_requested_.insert(child->getNodeId().ToInt());
+  for (const auto& child : **out_nodes) {
+    nodes_requested_.insert(StringToIntLoose(child->getNodeId()).value_or(0));
+  }
 
   return protocol::Response::Success();
 }
@@ -400,40 +403,30 @@ void InspectorAccessibilityAgent::queryAXTree(
   auto& cache = AttachToAXObjectCache(&document);
   cache.UpdateAXForAllDocuments();
 
-  AXQuery query = {std::move(dom_node_id), std::move(backend_node_id),
-                   std::move(object_id),   std::move(accessible_name),
-                   std::move(role),        std::move(callback)};
-  auto it = queries_.find(&document);
-  if (it != queries_.end()) {
-    it->value.push_back(std::move(query));
-  } else {
-    Vector<AXQuery> vector;
-    vector.emplace_back(std::move(query));
-    queries_.insert(&document, std::move(vector));
-  }
-  // ScheduleAXUpdate() ensures the lifecycle doesn't get stalled,
-  // and therefore ensures we get the AXReadyCallback callback as soon as a11y
-  // is clean again.
-  cache.ScheduleAXUpdate();
+  // ScheduleAXUpdateWithCallback() ensures the lifecycle doesn't get stalled,
+  // and therefore ensures we get the callback as soon as a11y is clean again.
+  cache.ScheduleAXUpdateWithCallback(BindOnce(
+      &InspectorAccessibilityAgent::CompleteQuery, WrapWeakPersistent(this),
+      WrapWeakPersistent(root_dom_node), std::move(accessible_name),
+      std::move(role), std::move(callback)));
 }
 
-void InspectorAccessibilityAgent::CompleteQuery(AXQuery& query) {
-  Node* root_dom_node = nullptr;
-
-  protocol::Response response = dom_agent_->AssertNode(
-      query.dom_node_id, query.backend_node_id, query.object_id, root_dom_node);
-  if (!response.IsSuccess()) {
-    query.callback->sendFailure(response);
-    return;
+void InspectorAccessibilityAgent::CompleteQuery(
+    Node* root_dom_node,
+    std::optional<String> accessible_name,
+    std::optional<String> role,
+    std::unique_ptr<QueryAXTreeCallback> callback) {
+  if (!root_dom_node) {
+    return callback->sendFailure(protocol::Response::ServerError(
+        "Root DOM node was GC'ed while the query was in-flight."));
   }
-
   // Shadow roots are missing from a11y tree.
   // We start searching the host element instead as a11y tree does not
   // care about shadow roots.
   if (root_dom_node->IsShadowRoot())
     root_dom_node = root_dom_node->OwnerShadowHost();
   if (!root_dom_node) {
-    query.callback->sendFailure(
+    callback->sendFailure(
         protocol::Response::InvalidParams("Root DOM node could not be found"));
     return;
   }
@@ -461,30 +454,30 @@ void InspectorAccessibilityAgent::CompleteQuery(AXQuery& query) {
       continue;
     }
     ui::AXNodeData node_data;
-    ax_object->Serialize(&node_data, ui::kAXModeComplete);
+    ax_object->Serialize(&node_data, ui::kAXModeInspector);
     reachable.pop_back();
     const AXObject::AXObjectVector& children =
         ax_object->ChildrenIncludingIgnored();
-    reachable.AppendRange(children.rbegin(), children.rend());
+    reachable.append_range(base::Reversed(children));
 
     const bool ignored = ax_object->IsIgnored();
     // if querying by name: skip if name of current object does not match.
     // For now, we need to handle names of ignored nodes separately, since they
     // do not get a name assigned when serializing to AXNodeData.
-    if (ignored && query.accessible_name.has_value() &&
-        query.accessible_name.value() != ax_object->ComputedName()) {
+    if (ignored && accessible_name.has_value() &&
+        accessible_name.value() != ax_object->ComputedName()) {
       continue;
     }
-    if (!ignored && query.accessible_name.has_value() &&
-        query.accessible_name.value().Utf8() !=
+    if (!ignored && accessible_name.has_value() &&
+        accessible_name.value().Utf8() !=
             node_data.GetStringAttribute(
                 ax::mojom::blink::StringAttribute::kName)) {
       continue;
     }
 
     // if querying by role: skip if role of current object does not match.
-    if (query.role.has_value() &&
-        query.role.value() != AXObject::RoleName(node_data.role)) {
+    if (role.has_value() &&
+        role.value() != AXObject::RoleName(node_data.role)) {
       continue;
     }
 
@@ -493,11 +486,10 @@ void InspectorAccessibilityAgent::CompleteQuery(AXQuery& query) {
         *ax_object, /* force_name_and_role */ true));
   }
 
-  query.callback->sendSuccess(std::move(nodes));
+  callback->sendSuccess(std::move(nodes));
 }
 
 void InspectorAccessibilityAgent::AXReadyCallback(Document& document) {
-  ProcessPendingQueries(document);
   ProcessPendingDirtyNodes(document);
   if (load_complete_needs_processing_.Contains(&document) &&
       document.IsLoadCompleted()) {
@@ -512,15 +504,6 @@ void InspectorAccessibilityAgent::AXReadyCallback(Document& document) {
     ScopedFreezeAXCache freeze(*cache);
     GetFrontend()->loadComplete(BuildProtocolAXNodeForAXObject(*root));
   }
-}
-
-void InspectorAccessibilityAgent::ProcessPendingQueries(Document& document) {
-  auto it = queries_.find(&document);
-  if (it == queries_.end())
-    return;
-  for (auto& query : it->value)
-    CompleteQuery(query);
-  queries_.erase(&document);
 }
 
 void InspectorAccessibilityAgent::ProcessPendingDirtyNodes(Document& document) {
@@ -538,7 +521,7 @@ void InspectorAccessibilityAgent::ProcessPendingDirtyNodes(Document& document) {
   // Sometimes, computing properties for an object while serializing will
   // mark other objects dirty. This makes us re-enter this function.
   // To make this benign, we use a copy of dirty_nodes_ when iterating.
-  Member<HeapHashSet<WeakMember<AXObject>>> dirty_nodes =
+  Member<GCedHeapHashSet<WeakMember<AXObject>>> dirty_nodes =
       dirty_nodes_.Take(&document);
   auto nodes =
       std::make_unique<protocol::Array<protocol::Accessibility::AXNode>>();
@@ -608,7 +591,7 @@ bool InspectorAccessibilityAgent::MarkAXObjectDirty(AXObject* ax_object) {
   auto inserted = dirty_nodes_.insert(document, nullptr);
   if (inserted.is_new_entry) {
     inserted.stored_value->value =
-        MakeGarbageCollected<HeapHashSet<WeakMember<AXObject>>>();
+        MakeGarbageCollected<GCedHeapHashSet<WeakMember<AXObject>>>();
   }
   return inserted.stored_value->value->insert(ax_object).is_new_entry;
 }
@@ -629,7 +612,7 @@ void InspectorAccessibilityAgent::AXObjectModified(AXObject* ax_object,
         continue;
       const AXObject::AXObjectVector& children =
           descendant->ChildrenIncludingIgnored();
-      reachable.AppendRange(children.rbegin(), children.rend());
+      reachable.append_range(base::Reversed(children));
     }
   } else {
     MarkAXObjectDirty(ax_object);
@@ -643,7 +626,7 @@ void InspectorAccessibilityAgent::EnableAndReset() {
   if (!EnabledAgents().Contains(frame)) {
     EnabledAgents().Set(
         frame, MakeGarbageCollected<
-                   HeapHashSet<Member<InspectorAccessibilityAgent>>>());
+                   GCedHeapHashSet<Member<InspectorAccessibilityAgent>>>());
   }
   EnabledAgents().find(frame)->value->insert(this);
   for (auto& context : document_to_context_map_.Values()) {
@@ -721,7 +704,6 @@ void InspectorAccessibilityAgent::Trace(Visitor* visitor) const {
   visitor->Trace(document_to_context_map_);
   visitor->Trace(dirty_nodes_);
   visitor->Trace(timers_);
-  visitor->Trace(queries_);
   visitor->Trace(last_sync_times_);
   visitor->Trace(load_complete_needs_processing_);
   InspectorBaseAgent::Trace(visitor);

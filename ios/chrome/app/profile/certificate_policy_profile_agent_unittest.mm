@@ -73,6 +73,10 @@ class CertificatePolicyProfileStateAgentTest : public BlockCleanupTest {
     profile_agent_.profileState = profile_state_;
   }
 
+  ~CertificatePolicyProfileStateAgentTest() override {
+    profile_state_.profile = nullptr;
+  }
+
   // Adds a web state with `host` as the active URL to `browser`.
   void AddWebStateToBrowser(std::string host, Browser* browser) {
     auto test_web_state = std::make_unique<web::FakeWebStateWithPolicyCache>(
@@ -128,7 +132,7 @@ class CertificatePolicyProfileStateAgentTest : public BlockCleanupTest {
   // Triggers certificate cache updates in the app agent under test, and wait
   // for updates to complete.
   void TriggerCertCacheUpdate() {
-    SceneState* scene_state = [[SceneState alloc] initWithAppState:nil];
+    SceneState* scene_state = [[SceneState alloc] init];
 
     [profile_state_ sceneStateConnected:scene_state];
     scene_state.activationLevel = SceneActivationLevelForegroundInactive;

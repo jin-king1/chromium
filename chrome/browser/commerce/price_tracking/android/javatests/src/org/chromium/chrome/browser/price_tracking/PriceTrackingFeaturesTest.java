@@ -5,7 +5,6 @@
 package org.chromium.chrome.browser.price_tracking;
 
 import static org.mockito.ArgumentMatchers.any;
-import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.when;
 
 import androidx.test.annotation.UiThreadTest;
@@ -13,12 +12,12 @@ import androidx.test.filters.SmallTest;
 
 import org.junit.Assert;
 import org.junit.Before;
-import org.junit.ClassRule;
 import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.util.Batch;
@@ -29,8 +28,9 @@ import org.chromium.chrome.browser.signin.services.IdentityServicesProvider;
 import org.chromium.chrome.browser.signin.services.UnifiedConsentServiceBridge;
 import org.chromium.chrome.browser.sync.SyncServiceFactory;
 import org.chromium.chrome.test.ChromeJUnit4ClassRunner;
-import org.chromium.chrome.test.ChromeTabbedActivityTestRule;
-import org.chromium.chrome.test.batch.BlankCTATabInitialStateRule;
+import org.chromium.chrome.test.transit.ChromeTransitTestRules;
+import org.chromium.chrome.test.transit.ReusedCtaTransitTestRule;
+import org.chromium.chrome.test.transit.page.WebPageStation;
 import org.chromium.components.signin.identitymanager.IdentityManager;
 import org.chromium.components.sync.DataType;
 import org.chromium.components.sync.SyncService;
@@ -41,13 +41,11 @@ import java.util.Set;
 @RunWith(ChromeJUnit4ClassRunner.class)
 @Batch(Batch.PER_CLASS)
 public class PriceTrackingFeaturesTest {
-    @ClassRule
-    public static ChromeTabbedActivityTestRule sActivityTestRule =
-            new ChromeTabbedActivityTestRule();
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
 
     @Rule
-    public BlankCTATabInitialStateRule mInitialStateRule =
-            new BlankCTATabInitialStateRule(sActivityTestRule, false);
+    public ReusedCtaTransitTestRule<WebPageStation> mActivityTestRule =
+            ChromeTransitTestRules.blankPageStartReusedActivityRule();
 
     @Mock private IdentityManager mIdentityManagerMock;
 
@@ -57,7 +55,8 @@ public class PriceTrackingFeaturesTest {
 
     @Before
     public void setUp() throws Exception {
-        MockitoAnnotations.initMocks(this);
+        mActivityTestRule.start();
+
         IdentityServicesProvider.setInstanceForTests(mIdentityServicesProviderMock);
         when(mIdentityServicesProviderMock.getIdentityManager(any(Profile.class)))
                 .thenReturn(mIdentityManagerMock);
@@ -65,7 +64,7 @@ public class PriceTrackingFeaturesTest {
 
         setMbbStatus(true);
         setSignedInStatus(true);
-        setTabSyncStatus(true, true);
+        setTabSyncStatus(true);
         PriceTrackingFeatures.setPriceAnnotationsEnabledForTesting(true);
     }
 
@@ -125,7 +124,7 @@ public class PriceTrackingFeaturesTest {
     public void testIsPriceTrackingEligibleTestHook() {
         setMbbStatus(false);
         setSignedInStatus(false);
-        setTabSyncStatus(false, false);
+        setTabSyncStatus(false);
         PriceTrackingFeatures.setIsSignedInAndSyncEnabledForTesting(true);
 
         Assert.assertTrue(
@@ -141,11 +140,10 @@ public class PriceTrackingFeaturesTest {
     }
 
     private void setSignedInStatus(boolean isSignedIn) {
-        when(mIdentityManagerMock.hasPrimaryAccount(anyInt())).thenReturn(isSignedIn);
+        when(mIdentityManagerMock.hasPrimaryAccount()).thenReturn(isSignedIn);
     }
 
-    private void setTabSyncStatus(boolean isSyncFeatureEnabled, boolean hasSessions) {
-        when(mSyncServiceMock.isSyncFeatureEnabled()).thenReturn(isSyncFeatureEnabled);
+    private void setTabSyncStatus(boolean hasSessions) {
         when(mSyncServiceMock.getActiveDataTypes())
                 .thenReturn(hasSessions ? Set.of(DataType.SESSIONS) : Set.of(DataType.AUTOFILL));
     }

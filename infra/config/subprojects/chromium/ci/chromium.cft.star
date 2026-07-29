@@ -3,27 +3,32 @@
 # found in the LICENSE file.
 """Definitions for the chromium.cft (chrome for testing) builder group."""
 
-load("//lib/builder_config.star", "builder_config")
-load("//lib/builder_health_indicators.star", "health_spec")
-load("//lib/builders.star", "cpu", "gardener_rotations", "os", "siso")
-load("//lib/ci.star", "ci")
-load("//lib/consoles.star", "consoles")
-load("//lib/gn_args.star", "gn_args")
-load("//lib/targets.star", "targets")
+load("@chromium-luci//builder_config.star", "builder_config")
+load("@chromium-luci//builder_health_indicators.star", "health_spec")
+load("@chromium-luci//builders.star", "cpu", "os")
+load("@chromium-luci//ci.star", "ci")
+load("@chromium-luci//consoles.star", "consoles")
+load("@chromium-luci//gn_args.star", "gn_args")
+load("@chromium-luci//targets.star", "targets")
+load("//lib/ci_constants.star", "ci_constants")
+load("//lib/gardener_rotations.star", "gardener_rotations")
+load("//lib/siso.star", "siso")
 
 ci.defaults.set(
-    executable = ci.DEFAULT_EXECUTABLE,
+    executable = ci_constants.DEFAULT_EXECUTABLE,
     builder_group = "chromium.cft",
-    pool = ci.DEFAULT_POOL,
+    pool = ci_constants.DEFAULT_POOL,
     builderless = True,
     cores = 8,
     gardener_rotations = gardener_rotations.CFT,
     tree_closing = False,
-    execution_timeout = ci.DEFAULT_EXECUTION_TIMEOUT,
-    health_spec = health_spec.DEFAULT,
-    service_account = ci.DEFAULT_SERVICE_ACCOUNT,
-    shadow_service_account = ci.DEFAULT_SHADOW_SERVICE_ACCOUNT,
-    siso_enabled = True,
+    execution_timeout = ci_constants.DEFAULT_EXECUTION_TIMEOUT,
+    experiments = {
+        "chromium_tests.resultdb_module": 100,
+    },
+    health_spec = health_spec.default(),
+    service_account = ci_constants.DEFAULT_SERVICE_ACCOUNT,
+    shadow_service_account = ci_constants.DEFAULT_SHADOW_SERVICE_ACCOUNT,
     siso_project = siso.project.DEFAULT_TRUSTED,
     siso_remote_jobs = siso.remote_jobs.HIGH_JOBS_FOR_CI,
 )
@@ -67,6 +72,7 @@ ci.builder(
             # telemetry_perf_unittests suite.
             "chromium_with_telemetry_dependencies",
         ],
+        is_arm64 = True,
     ),
     gn_args = gn_args.config(
         configs = [
@@ -76,7 +82,7 @@ ci.builder(
             "chrome_for_testing",
             "chrome_with_codecs",
             "mac",
-            "x64",
+            "arm64",
         ],
     ),
     targets = targets.bundle(
@@ -84,6 +90,9 @@ ci.builder(
             "chromium_mac_gtests_no_nacl",
             "chromium_mac_rel_isolated_scripts",
             "chromium_mac_scripts",
+            # Serialized WebRtc content_browsertests; capture-device contention
+            # under parallel load times them out on this Intel bot.
+            "content_browsertests_webrtc_sequential",
         ],
         # TODO(crbug.com/40883191) - for some reason gcapi_example
         # is failing to build in this config. For now, just try
@@ -94,7 +103,7 @@ ci.builder(
         #     "all",
         # ],
         mixins = [
-            "mac_default_x64",
+            "mac_default_arm64",
             "isolate_profile_data",
         ],
         per_test_modifications = {
@@ -127,8 +136,19 @@ ci.builder(
                 ],
             ),
             "content_browsertests": targets.mixin(
+                # WebRtc* tests run in the serialized
+                # content_browsertests_webrtc_sequential step; exclude them from
+                # the parallel run so they don't time out under capture contention.
+                args = [
+                    "--gtest_filter=-WebRtc*",
+                ],
                 swarming = targets.swarming(
                     shards = 12,
+                ),
+            ),
+            "content_browsertests_webrtc_sequential": targets.mixin(
+                swarming = targets.swarming(
+                    shards = 2,
                 ),
             ),
             "interactive_ui_tests": targets.mixin(
@@ -301,11 +321,6 @@ ci.builder(
                 args = [
                     "--test-launcher-filter-file=../../testing/buildbot/filters/win.win-rel-cft.browser_tests.filter",
                 ],
-                swarming = targets.swarming(
-                    # This is for slow test execution that often becomes a critical path of
-                    # swarming jobs. crbug.com/868114
-                    shards = 15,
-                ),
             ),
             "browser_tests_no_field_trial": targets.remove(
                 reason = "crbug.com/40630866",

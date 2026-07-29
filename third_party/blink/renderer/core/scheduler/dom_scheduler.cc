@@ -4,7 +4,6 @@
 
 #include "third_party/blink/renderer/core/scheduler/dom_scheduler.h"
 
-#include "third_party/abseil-cpp/absl/types/variant.h"
 #include "third_party/blink/public/common/scheduler/task_attribution_id.h"
 #include "third_party/blink/renderer/bindings/core/v8/idl_types.h"
 #include "third_party/blink/renderer/bindings/core/v8/script_promise.h"
@@ -19,12 +18,11 @@
 #include "third_party/blink/renderer/core/scheduler/dom_task_continuation.h"
 #include "third_party/blink/renderer/core/scheduler/dom_task_signal.h"
 #include "third_party/blink/renderer/core/scheduler/scheduler_task_context.h"
-#include "third_party/blink/renderer/core/scheduler/script_wrappable_task_state.h"
 #include "third_party/blink/renderer/core/scheduler/task_attribution_info_impl.h"
+#include "third_party/blink/renderer/core/scheduler/task_attribution_task_state.h"
 #include "third_party/blink/renderer/platform/bindings/enumeration_base.h"
 #include "third_party/blink/renderer/platform/bindings/exception_code.h"
 #include "third_party/blink/renderer/platform/instrumentation/use_counter.h"
-#include "third_party/blink/renderer/platform/runtime_enabled_features.h"
 #include "third_party/blink/renderer/platform/scheduler/public/frame_or_worker_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/main_thread_scheduler.h"
 #include "third_party/blink/renderer/platform/scheduler/public/task_attribution_tracker.h"
@@ -167,17 +165,11 @@ ScriptPromise<IDLUndefined> DOMScheduler::yield(
                                   fixed_priority_continuation_queues_);
   }
 
-  AbortSignal* abort_source = nullptr;
-  DOMTaskSignal* priority_source = nullptr;
-  if (auto* inherited_state =
-          ScriptWrappableTaskState::GetCurrent(script_state->GetIsolate())) {
-    if (SchedulerTaskContext* task_context =
-            inherited_state->WrappedState()->GetSchedulerTaskContextFor(
-                *GetExecutionContext())) {
-      abort_source = task_context->AbortSource();
-      priority_source = task_context->PrioritySource();
-    }
-  }
+  SchedulerTaskContext* task_context = GetSchedulerTaskContextForYield();
+  AbortSignal* abort_source =
+      task_context ? task_context->AbortSource() : nullptr;
+  DOMTaskSignal* priority_source =
+      task_context ? task_context->PrioritySource() : nullptr;
 
   if (abort_source && abort_source->aborted()) {
     return ScriptPromise<IDLUndefined>::Reject(
@@ -199,43 +191,72 @@ ScriptPromise<IDLUndefined> DOMScheduler::yield(
   return resolver->Promise();
 }
 
-scheduler::TaskAttributionIdType DOMScheduler::taskId(
-    ScriptState* script_state) {
+SchedulerTaskContext* DOMScheduler::GetSchedulerTaskContextForYield() {
+  auto* inherited_state =
+      TaskAttributionTaskState::GetCurrent(GetExecutionContext()->GetIsolate());
+  if (!inherited_state) {
+    return nullptr;
+  }
+
+  SchedulerTaskContext* task_context =
+      inherited_state->GetSchedulerTaskContext();
+  if (!task_context) {
+    return nullptr;
+  }
+
+  bool can_use_context = task_context->CanPropagateTo(*GetExecutionContext());
+  // Record use counters for non-trival inheritance, i.e. cases where the
+  // inheritance can change the scheduling in a meaningful way.
+  AbortSignal* abort_source = task_context->AbortSource();
+  DOMTaskSignal* priority_source = task_context->PrioritySource();
+  if ((abort_source && abort_source->CanAbort()) ||
+      (priority_source && (!priority_source->HasFixedPriority() ||
+                           priority_source->priority().AsEnum() !=
+                               V8TaskPriority::Enum::kUserVisible))) {
+    UseCounter::Count(
+        GetExecutionContext(),
+        can_use_context
+            ? WebFeature::kSchedulerYieldNonTrivialInherit
+            : WebFeature::kSchedulerYieldNonTrivialInheritCrossFrameIgnored);
+  }
+  return can_use_context ? task_context : nullptr;
+}
+
+uint32_t DOMScheduler::asyncData(v8::Isolate* isolate) {
   // `tracker` will be null if TaskAttributionInfrastructureDisabledForTesting
   // is enabled.
-  if (auto* tracker =
-          scheduler::TaskAttributionTracker::From(script_state->GetIsolate())) {
+  if (auto* tracker = scheduler::TaskAttributionTracker::From(isolate)) {
     // `task_state` is null if there's nothing to propagate.
-    if (scheduler::TaskAttributionInfo* task_state = tracker->RunningTask()) {
-      return task_state->Id().value();
+    if (scheduler::TaskAttributionInfo* task_state =
+            tracker->CurrentTaskState()) {
+      return task_state->AsyncDataForTest();
     }
   }
   return 0;
 }
 
-void DOMScheduler::setTaskId(ScriptState* script_state,
-                             scheduler::TaskAttributionIdType task_id) {
-  if (!scheduler::TaskAttributionTracker::From(script_state->GetIsolate())) {
+void DOMScheduler::setAsyncData(v8::Isolate* isolate, uint32_t async_data) {
+  if (!scheduler::TaskAttributionTracker::From(isolate)) {
     // This will be null if TaskAttributionInfrastructureDisabledForTesting is
     // enabled.
     return;
   }
   auto* task_state = MakeGarbageCollected<TaskAttributionInfoImpl>(
-      scheduler::TaskAttributionId(task_id),
-      /*soft_navigation_context=*/nullptr);
-  ScriptWrappableTaskState::SetCurrent(
-      script_state, MakeGarbageCollected<ScriptWrappableTaskState>(task_state));
+      /*soft_navigation_context=*/nullptr,
+      /*resource_timing_context=*/nullptr,
+      /*script_tool_context=*/nullptr, async_data);
+  TaskAttributionTaskState::SetCurrent(isolate, task_state);
   auto* scheduler = ThreadScheduler::Current()->ToMainThreadScheduler();
   // This test API is only available on the main thread.
   CHECK(scheduler);
   // Clear `task_state` at the end of the current task since there might not be
   // a task scope on the stack to clear it.
   scheduler->ExecuteAfterCurrentTaskForTesting(
-      WTF::BindOnce(
-          [](ScriptState* script_state) {
-            ScriptWrappableTaskState::SetCurrent(script_state, nullptr);
+      BindOnce(
+          [](v8::Isolate* isolate) {
+            TaskAttributionTaskState::SetCurrent(isolate, nullptr);
           },
-          WrapPersistent(script_state)),
+          Unretained(isolate)),
       ExecuteAfterCurrentTaskRestricted{});
 }
 
@@ -265,7 +286,7 @@ DOMScheduler::DOMTaskQueue* DOMScheduler::CreateDynamicPriorityTaskQueue(
   CHECK(task_queue);
   auto* dom_task_queue =
       MakeGarbageCollected<DOMTaskQueue>(std::move(task_queue), priority);
-  auto* handle = signal->AddPriorityChangeAlgorithm(WTF::BindRepeating(
+  auto* handle = signal->AddPriorityChangeAlgorithm(BindRepeating(
       &DOMScheduler::OnPriorityChange, WrapWeakPersistent(this),
       WrapWeakPersistent(signal), WrapWeakPersistent(dom_task_queue)));
   dom_task_queue->SetPriorityChangeHandle(handle);

@@ -10,7 +10,6 @@
  */
 
 import './input_device_settings_shared.css.js';
-import '../icons.html.js';
 import '../settings_shared.css.js';
 import '../controls/settings_dropdown_menu.js';
 import 'chrome://resources/ash/common/cr_elements/cr_shared_vars.css.js';
@@ -144,10 +143,10 @@ export class KeyboardSixPackKeyRowElement extends PolymerElement {
     };
   }
 
-  key: SixPackKey;
-  modifier: SixPackShortcutModifier;
-  pref: chrome.settingsPrivate.PrefObject;
-  keyLabel: string;
+  declare key: SixPackKey;
+  declare modifier: SixPackShortcutModifier;
+  declare pref: chrome.settingsPrivate.PrefObject;
+  declare keyLabel: string;
 
   protected computeMenuOptions(): DropdownMenuOptionList {
     assert(this.key in sixPackKeyProperties);

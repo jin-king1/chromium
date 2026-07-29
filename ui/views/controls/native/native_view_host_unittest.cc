@@ -6,11 +6,13 @@
 
 #include <memory>
 
+#include "base/feature_list.h"
 #include "ui/aura/window.h"
 #include "ui/base/metadata/metadata_header_macros.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/controls/native/native_view_host_test_base.h"
 #include "ui/views/test/views_test_base.h"
+#include "ui/views/views_features.h"
 #include "ui/views/widget/widget.h"
 
 namespace views {
@@ -102,32 +104,38 @@ END_METADATA
 
 // Verifies NativeViewHierarchyChanged is sent.
 TEST_F(NativeViewHostTest, NativeViewHierarchyChanged) {
+  if (!base::FeatureList::IsEnabled(
+          views::features::kNativeViewHostManagesLayers)) {
+    GTEST_SKIP();
+  }
   // Create a child widget.
   NativeViewHierarchyChangedTestView* test_view =
       new NativeViewHierarchyChangedTestView;
   NativeViewHost* host = new NativeViewHost;
   std::unique_ptr<Widget> child = CreateChildForHost(
       toplevel()->GetNativeView(), toplevel()->GetRootView(), test_view, host);
-#if defined(USE_AURA)
-  // Two notifications are generated from inserting the native view into the
-  // clipping window and then inserting the clipping window into the root
-  // window.
-  EXPECT_EQ(2, test_view->notification_count());
-#else
-  EXPECT_EQ(0, test_view->notification_count());
-#endif
+  if (!base::FeatureList::IsEnabled(
+          views::features::kNativeViewHostManagesLayers)) {
+    // Two notifications are generated from inserting the native view into the
+    // clipping window and then inserting the clipping window into the root
+    // window.
+    EXPECT_EQ(2, test_view->notification_count());
+  } else {
+    EXPECT_EQ(0, test_view->notification_count());
+  }
   test_view->ResetCount();
 
   // Detaching should send a NativeViewHierarchyChanged() notification and
   // change the parent.
   host->Detach();
-#if defined(USE_AURA)
-  // Two notifications are generated from removing the native view from the
-  // clipping window and then reparenting it to the root window.
-  EXPECT_EQ(2, test_view->notification_count());
-#else
-  EXPECT_EQ(1, test_view->notification_count());
-#endif
+  if (!base::FeatureList::IsEnabled(
+          views::features::kNativeViewHostManagesLayers)) {
+    // Two notifications are generated from removing the native view from the
+    // clipping window and then reparenting it to the root window.
+    EXPECT_EQ(2, test_view->notification_count());
+  } else {
+    EXPECT_EQ(1, test_view->notification_count());
+  }
   EXPECT_NE(toplevel()->GetNativeView(),
             GetNativeParent(child->GetNativeView()));
   test_view->ResetCount();
@@ -135,17 +143,19 @@ TEST_F(NativeViewHostTest, NativeViewHierarchyChanged) {
   // Attaching should send a NativeViewHierarchyChanged() notification and
   // reset the parent.
   host->Attach(child->GetNativeView());
-#if defined(USE_AURA)
-  // There is a clipping window inserted above the native view that needs to be
-  // accounted for when looking at the relationship between the native views.
-  EXPECT_EQ(2, test_view->notification_count());
-  EXPECT_EQ(toplevel()->GetNativeView(),
-            GetNativeParent(GetNativeParent(child->GetNativeView())));
-#else
-  EXPECT_EQ(1, test_view->notification_count());
-  EXPECT_EQ(toplevel()->GetNativeView(),
-            GetNativeParent(child->GetNativeView()));
-#endif
+  if (!base::FeatureList::IsEnabled(
+          views::features::kNativeViewHostManagesLayers)) {
+    // There is a clipping window inserted above the native view that needs to
+    // be accounted for when looking at the relationship between the native
+    // views.
+    EXPECT_EQ(2, test_view->notification_count());
+    EXPECT_EQ(toplevel()->GetNativeView(),
+              GetNativeParent(GetNativeParent(child->GetNativeView())));
+  } else {
+    EXPECT_EQ(1, test_view->notification_count());
+    EXPECT_EQ(toplevel()->GetNativeView(),
+              GetNativeParent(child->GetNativeView()));
+  }
 }
 
 // Verifies ViewHierarchyChanged handles NativeViewHost remove, add and move
@@ -183,14 +193,14 @@ TEST_F(NativeViewHostTest, ViewHierarchyChangedForHost) {
   // Add test_host back to host0, expect 1 parent change.
   test_host->ResetParentChanges();
   EXPECT_EQ(0, test_host->num_parent_changes());
-  host0->AddChildView(test_host);
+  host0->AddChildViewRaw(test_host);
   EXPECT_EQ(1, test_host->num_parent_changes());
 
   // Reparent test_host to host1, expect no parent change because the old and
   // new parents, host0 and host1, belong to the same toplevel widget.
   test_host->ResetParentChanges();
   EXPECT_EQ(0, test_host->num_parent_changes());
-  host1->AddChildView(test_host);
+  host1->AddChildViewRaw(test_host);
   EXPECT_EQ(0, test_host->num_parent_changes());
 
   // Reparent test_host to contents view of child0, expect 2 parent changes
@@ -198,7 +208,7 @@ TEST_F(NativeViewHostTest, ViewHierarchyChangedForHost) {
   // parent belongs to the child0.
   test_host->ResetParentChanges();
   EXPECT_EQ(0, test_host->num_parent_changes());
-  child0->GetContentsView()->AddChildView(test_host);
+  child0->GetContentsView()->AddChildViewRaw(test_host);
   EXPECT_EQ(2, test_host->num_parent_changes());
 }
 

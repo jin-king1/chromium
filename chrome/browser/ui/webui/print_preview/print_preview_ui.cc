@@ -10,7 +10,6 @@
 
 #include "base/check.h"
 #include "base/containers/flat_map.h"
-#include "base/containers/id_map.h"
 #include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
@@ -23,6 +22,7 @@
 #include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/unguessable_token.h"
 #include "base/values.h"
 #include "build/build_config.h"
 #include "chrome/browser/browser_process.h"
@@ -30,7 +30,6 @@
 #include "chrome/browser/pdf/pdf_extension_util.h"
 #include "chrome/browser/printing/background_printing_manager.h"
 #include "chrome/browser/printing/pdf_nup_converter_client.h"
-#include "chrome/browser/printing/print_compositor_util.h"
 #include "chrome/browser/printing/print_job_manager.h"
 #include "chrome/browser/printing/print_preview_data_service.h"
 #include "chrome/browser/printing/print_preview_dialog_controller.h"
@@ -46,7 +45,6 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/grit/generated_resources.h"
-#include "chrome/grit/pdf_resources_map.h"
 #include "chrome/grit/print_preview_resources.h"
 #include "chrome/grit/print_preview_resources_map.h"
 #include "components/device_event_log/device_event_log.h"
@@ -66,6 +64,7 @@
 #include "printing/mojom/print.mojom.h"
 #include "printing/nup_parameters.h"
 #include "printing/print_job_constants.h"
+#include "printing/printing_features.h"
 #include "services/network/public/mojom/content_security_policy.mojom.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/webui/web_ui_util.h"
@@ -141,17 +140,12 @@ WebContents* GetInitiator(content::WebUI* web_ui) {
 }
 
 // Mapping from PrintPreviewUI ID to print preview request ID.
-using PrintPreviewRequestIdMap = base::flat_map<int, int>;
+using PrintPreviewRequestIdMap = base::flat_map<base::UnguessableToken, int>;
 
 PrintPreviewRequestIdMap& GetPrintPreviewRequestIdMap() {
   static base::NoDestructor<PrintPreviewRequestIdMap> map;
   return *map;
 }
-
-// PrintPreviewUI IDMap used to avoid exposing raw pointer addresses to WebUI.
-// Only accessed on the UI thread.
-base::LazyInstance<base::IDMap<PrintPreviewUI*>>::DestructorAtExit
-    g_print_preview_ui_id_map = LAZY_INSTANCE_INITIALIZER;
 
 void AddPrintPreviewStrings(content::WebUIDataSource* source) {
   static constexpr webui::LocalizedString kLocalizedStrings[] = {
@@ -161,7 +155,9 @@ void AddPrintPreviewStrings(content::WebUIDataSource* source) {
        IDS_PRINT_PREVIEW_ADVANCED_SETTINGS_DIALOG_TITLE},
       {"advancedSettingsSearchBoxPlaceholder",
        IDS_PRINT_PREVIEW_ADVANCED_SETTINGS_SEARCH_BOX_PLACEHOLDER},
+#if BUILDFLAG(IS_CHROMEOS)
       {"borderlessLabel", IDS_PRINT_PREVIEW_BORDERLESS_LABEL},
+#endif
       {"bottom", IDS_PRINT_PREVIEW_BOTTOM_MARGIN_LABEL},
       {"cancel", IDS_CANCEL},
       {"clearSearch", IDS_CLEAR_SEARCH},
@@ -189,7 +185,9 @@ void AddPrintPreviewStrings(content::WebUIDataSource* source) {
       {"managedSettings", IDS_PRINT_PREVIEW_MANAGED_SETTINGS_TEXT},
       {"marginsLabel", IDS_PRINT_PREVIEW_MARGINS_LABEL},
       {"mediaSizeLabel", IDS_PRINT_PREVIEW_MEDIA_SIZE_LABEL},
+#if BUILDFLAG(IS_CHROMEOS)
       {"mediaTypeLabel", IDS_PRINT_PREVIEW_MEDIA_TYPE_LABEL},
+#endif
       {"minimumMargins", IDS_PRINT_PREVIEW_MINIMUM_MARGINS},
       {"moreOptionsLabel", IDS_MORE_OPTIONS_LABEL},
       {"newShowAdvancedOptions", IDS_PRINT_PREVIEW_NEW_SHOW_ADVANCED_OPTIONS},
@@ -199,6 +197,7 @@ void AddPrintPreviewStrings(content::WebUIDataSource* source) {
       {"noMargins", IDS_PRINT_PREVIEW_NO_MARGINS},
       {"nonIsotropicDpiItemLabel",
        IDS_PRINT_PREVIEW_NON_ISOTROPIC_DPI_ITEM_LABEL},
+      {"optionActualSize", IDS_PRINT_PREVIEW_OPTION_ACTUAL_SIZE},
       {"optionAllPages", IDS_PRINT_PREVIEW_OPTION_ALL_PAGES},
       {"optionBackgroundColorsAndImages",
        IDS_PRINT_PREVIEW_OPTION_BACKGROUND_COLORS_AND_IMAGES},
@@ -316,9 +315,8 @@ void AddPrintPreviewStrings(content::WebUIDataSource* source) {
 #endif
 
   // Register strings for the PDF viewer, so that $i18n{} replacements work.
-  base::Value::Dict pdf_strings;
-  pdf_extension_util::AddStrings(
-      pdf_extension_util::PdfViewerContext::kPrintPreview, &pdf_strings);
+  base::DictValue pdf_strings = pdf_extension_util::GetStrings(
+      pdf_extension_util::PdfViewerContext::kPrintPreview);
   source->AddLocalizedStrings(pdf_strings);
 }
 
@@ -331,13 +329,17 @@ void AddPrintPreviewFlags(content::WebUIDataSource* source, Profile* profile) {
   source->AddBoolean("useSystemDefaultPrinter", system_default_printer);
 #endif
 
+  source->AddBoolean("alignPdfDefaultPrintSettingsWithHTML",
+                     base::FeatureList::IsEnabled(
+                         features::kAlignPdfDefaultPrintSettingsWithHTML));
+
   source->AddBoolean(
       "isEnterpriseManaged",
       policy::ManagementServiceFactory::GetForPlatform()->IsManaged());
 
-  source->AddBoolean("isBorderlessPrintingEnabled", BUILDFLAG(IS_CHROMEOS));
 
 #if BUILDFLAG(IS_CHROMEOS)
+  source->AddBoolean("isBorderlessPrintingEnabled", true);
   source->AddBoolean("isUseManagedPrintJobOptionsInPrintPreviewEnabled",
                      base::FeatureList::IsEnabled(
                          ::features::kUseManagedPrintJobOptionsInPrintPreview));
@@ -365,7 +367,8 @@ void CreateAndAddPrintPreviewUISource(Profile* profile) {
       base::StrCat({webui::kDefaultTrustedTypesPolicies,
                     " print-preview-plugin-loader;"}));
   AddPrintPreviewStrings(source);
-  source->AddResourcePaths(kPdfResources);
+  source->AddResourcePaths(pdf_extension_util::GetResources(
+      pdf_extension_util::PdfViewerContext::kPrintPreview));
   SetupPrintPreviewPlugin(source);
   AddPrintPreviewFlags(source, profile);
 }
@@ -408,7 +411,7 @@ bool PrintPreviewUIConfig::IsWebUIEnabled(
 }
 
 bool PrintPreviewUIConfig::ShouldHandleURL(const GURL& url) {
-  return url.path() == "/" || url.path() == "/test_loader.html";
+  return url.GetPath() == "/" || url.GetPath() == "/test_loader.html";
 }
 
 PrintPreviewUIConfig::~PrintPreviewUIConfig() = default;
@@ -483,32 +486,30 @@ bool PrintPreviewUI::IsBound() const {
 void PrintPreviewUI::ClearPreviewUIId() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  if (!id_) {
+  if (id_.is_empty()) {
     return;
   }
 
   receiver_.reset();
-  PrintPreviewDataService::GetInstance()->RemoveEntry(*id_);
-  GetPrintPreviewRequestIdMap().erase(*id_);
-  g_print_preview_ui_id_map.Get().Remove(*id_);
-  id_.reset();
+  PrintPreviewDataService::GetInstance()->RemoveEntry(id_);
+  GetPrintPreviewRequestIdMap().erase(id_);
+  id_ = base::UnguessableToken();
 }
 
-void PrintPreviewUI::GetPrintPreviewDataForIndex(
-    int index,
-    scoped_refptr<base::RefCountedMemory>* data) const {
-  PrintPreviewDataService::GetInstance()->GetDataEntry(*id_, index, data);
+scoped_refptr<base::RefCountedMemory>
+PrintPreviewUI::GetPrintPreviewDataForIndex(int index) const {
+  return PrintPreviewDataService::GetInstance()->GetDataEntry(id_, index);
 }
 
 void PrintPreviewUI::SetPrintPreviewDataForIndex(
     int index,
     scoped_refptr<base::RefCountedMemory> data) {
-  PrintPreviewDataService::GetInstance()->SetDataEntry(*id_, index,
+  PrintPreviewDataService::GetInstance()->SetDataEntry(id_, index,
                                                        std::move(data));
 }
 
 void PrintPreviewUI::ClearAllPreviewData() {
-  PrintPreviewDataService::GetInstance()->RemoveEntry(*id_);
+  PrintPreviewDataService::GetInstance()->RemoveEntry(id_);
 }
 
 void PrintPreviewUI::NotifyUIPreviewPageReady(
@@ -531,7 +532,7 @@ void PrintPreviewUI::NotifyUIPreviewPageReady(
   if (g_test_delegate) {
     g_test_delegate->DidRenderPreviewPage(web_ui()->GetWebContents());
   }
-  handler_->SendPagePreviewReady(base::checked_cast<int>(page_index), *id_,
+  handler_->SendPagePreviewReady(base::checked_cast<int>(page_index), id_,
                                  request_id);
 }
 
@@ -573,7 +574,7 @@ void PrintPreviewUI::NotifyUIPreviewDocumentReady(
 
   SetPrintPreviewDataForIndex(COMPLETE_PREVIEW_DOCUMENT_INDEX,
                               std::move(data_bytes));
-  handler_->OnPrintPreviewReady(*id_, request_id);
+  handler_->OnPrintPreviewReady(id_, request_id);
 }
 
 bool PrintPreviewUI::ShouldUseCompositor() const {
@@ -583,10 +584,10 @@ bool PrintPreviewUI::ShouldUseCompositor() const {
 
   auto* dialog_controller = PrintPreviewDialogController::GetInstance();
   CHECK(dialog_controller);
-  const mojom::RequestPrintPreviewParams* request_params =
-      dialog_controller->GetRequestParams(web_ui()->GetWebContents());
-  CHECK(request_params);
-  return request_params->is_modifiable;
+  std::optional<bool> maybe_is_pdf =
+      dialog_controller->IsPrintingPdf(web_ui()->GetWebContents());
+  CHECK(maybe_is_pdf.has_value());
+  return !maybe_is_pdf.value();
 }
 
 void PrintPreviewUI::OnCompositePdfPageDone(
@@ -778,20 +779,20 @@ void PrintPreviewUI::AddPdfPageForNupConversion(
 
 // static
 bool PrintPreviewUI::ShouldCancelRequest(
-    const std::optional<int32_t>& preview_ui_id,
+    const base::UnguessableToken& preview_ui_id,
     int request_id) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  if (!preview_ui_id) {
+  if (preview_ui_id.is_empty()) {
     return true;
   }
 
   auto& map = GetPrintPreviewRequestIdMap();
-  auto it = map.find(*preview_ui_id);
+  auto it = map.find(preview_ui_id);
   return it == map.end() || request_id != it->second;
 }
 
-std::optional<int32_t> PrintPreviewUI::GetIDForPrintPreviewUI() const {
+base::UnguessableToken PrintPreviewUI::GetIDForPrintPreviewUI() const {
   return id_;
 }
 
@@ -830,7 +831,7 @@ void PrintPreviewUI::OnPrintPreviewRequest(int request_id) {
         "PrintPreview.InitializationTime",
         base::TimeTicks::Now() - initial_preview_start_time_);
   }
-  GetPrintPreviewRequestIdMap()[*id_] = request_id;
+  GetPrintPreviewRequestIdMap()[id_] = request_id;
 }
 
 void PrintPreviewUI::DidStartPreview(mojom::DidStartPreviewParamsPtr params,
@@ -894,7 +895,7 @@ void PrintPreviewUI::DidGetDefaultPageLayout(
     return;
   }
 
-  base::Value::Dict layout;
+  base::DictValue layout;
   layout.Set(kSettingMarginTop, page_layout_in_points->margin_top);
   layout.Set(kSettingMarginLeft, page_layout_in_points->margin_left);
   layout.Set(kSettingMarginBottom, page_layout_in_points->margin_bottom);
@@ -922,8 +923,8 @@ bool PrintPreviewUI::OnPendingPreviewPage(uint32_t page_index) {
 void PrintPreviewUI::OnCancelPendingPreviewRequest() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
 
-  if (id_) {
-    GetPrintPreviewRequestIdMap()[*id_] = -1;
+  if (!id_.is_empty()) {
+    GetPrintPreviewRequestIdMap()[id_] = -1;
   }
 }
 
@@ -1005,10 +1006,9 @@ void PrintPreviewUI::DidPrepareDocumentForPreview(int32_t document_cookie,
     return;
   }
 
-  PRINTER_LOG(EVENT) << "Compositing for document type "
-                     << GetCompositorDocumentType();
+  PRINTER_LOG(EVENT) << "Compositing for PDF document type";
   client->PrepareToCompositeDocument(
-      document_cookie, render_frame_host, GetCompositorDocumentType(),
+      document_cookie, *render_frame_host,
       mojo::WrapCallbackWithDefaultInvokeIfNotRun(
           base::BindOnce(&PrintPreviewUI::OnPrepareForDocumentToPdfDone,
                          weak_ptr_factory_.GetWeakPtr(), request_id),
@@ -1051,7 +1051,7 @@ void PrintPreviewUI::DidPreviewPage(mojom::DidPreviewPageParamsPtr params,
       return;
     }
 
-    // Use utility process to convert Skia metafile to PDF or XPS.
+    // Use utility process to convert Skia metafile to PDF.
     client->CompositePage(
         params->document_cookie, render_frame_host, content,
         mojo::WrapCallbackWithDefaultInvokeIfNotRun(
@@ -1176,10 +1176,10 @@ void PrintPreviewUI::ClearAllPreviewDataForTest() {
 
 void PrintPreviewUI::SetPreviewUIId() {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-  DCHECK(!id_);
+  DCHECK(id_.is_empty());
 
-  id_ = g_print_preview_ui_id_map.Get().Add(this);
-  GetPrintPreviewRequestIdMap()[*id_] = -1;
+  id_ = base::UnguessableToken::Create();
+  GetPrintPreviewRequestIdMap()[id_] = -1;
 }
 
 }  // namespace printing

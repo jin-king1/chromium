@@ -66,7 +66,7 @@ class NativeAppWindowViews : public extensions::NativeAppWindow,
   void set_web_view_for_testing(views::WebView* view) { web_view_ = view; }
 
  protected:
-  // Initializes |widget_| for |app_window|.
+  // Initializes `widget_` for `app_window`.
   virtual void InitializeWindow(
       extensions::AppWindow* app_window,
       const extensions::AppWindow::CreateParams& create_params);
@@ -173,8 +173,7 @@ class NativeAppWindowViews : public extensions::NativeAppWindow,
 
   views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
 
-  base::ObserverList<web_modal::ModalDialogHostObserver>::Unchecked
-      observer_list_;
+  base::ObserverList<web_modal::ModalDialogHostObserver> observer_list_;
 };
 
 }  // namespace native_app_window

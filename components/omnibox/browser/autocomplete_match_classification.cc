@@ -4,9 +4,13 @@
 
 #include "autocomplete_match_classification.h"
 
+#include <string>
+#include <string_view>
+
 #include "base/i18n/case_conversion.h"
 #include "base/strings/string_util.h"
-#include "base/strings/utf_string_conversions.h"
+#include "components/omnibox/browser/autocomplete_match.h"
+#include "components/omnibox/browser/in_memory_url_index_types.h"
 #include "components/omnibox/browser/scored_history_match.h"
 #include "in_memory_url_index_types.h"
 
@@ -18,6 +22,28 @@ std::u16string clean(std::u16string_view text) {
 }
 
 }  // namespace
+
+ACMatchClassifications ClassifyFormattedString(
+    const omnibox::FormattedString& formatted_string) {
+  ACMatchClassifications classifications;
+  for (int i = 0; i < formatted_string.fragments_size(); ++i) {
+    const auto& fragment = formatted_string.fragments(i);
+    if (fragment.has_start_index()) {
+      int style = fragment.is_bolded() ? ACMatchClassification::MATCH
+                                       : ACMatchClassification::NONE;
+      // Fragment `start_index` is guaranteed to come sorted from the server.
+      if (classifications.empty()) {
+        if (fragment.start_index() > 0) {
+          classifications.emplace_back(0, ACMatchClassification::NONE);
+        }
+        classifications.emplace_back(fragment.start_index(), style);
+      } else if (classifications.back().offset < fragment.start_index()) {
+        classifications.emplace_back(fragment.start_index(), style);
+      }
+    }
+  }
+  return classifications;
+}
 
 ACMatchClassifications ClassifyAllMatchesInString(
     const std::u16string& find_text,
@@ -53,6 +79,20 @@ TermMatches FindTermMatches(std::u16string_view find_text,
                             bool allow_mid_word_matching) {
   std::u16string find_text_str = clean(find_text);
   std::u16string text_str = clean(text);
+
+  // Some international characters become multiple characters when converting
+  // case. E.g. Armenian և is 1 character lowercase, but 2 characters Եվ
+  // uppercased. Turkish has examples of the opposite, where the lowercasing can
+  // increase length. If the string length changes when lowercased, term match
+  // indexes will be off when being used to style the original-cased `text`.
+  // This will cause either `DCHECK` crashes if the incorrect index is out of
+  // bounds; or incorrect styling if the incorrect index remains in bounds or
+  // `DCHECK`s are disabled. E.g. input 'ou' would bold 'Yo[uT]ube' if lower
+  // case 'Y' is 2 characters.
+  if (find_text_str.size() != find_text.size() ||
+      text_str.size() != text.size()) {
+    return {};
+  }
 
   if (find_text_str.empty()) {
     return {};

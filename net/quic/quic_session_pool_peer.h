@@ -14,9 +14,11 @@
 #include "base/time/tick_clock.h"
 #include "net/base/host_port_pair.h"
 #include "net/base/network_anonymization_key.h"
+#include "net/base/network_handle.h"
 #include "net/base/privacy_mode.h"
 #include "net/base/session_usage.h"
 #include "net/quic/quic_session_key.h"
+#include "net/quic/quic_session_pool.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_packets.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_server_id.h"
 #include "net/third_party/quiche/src/quiche/quic/core/quic_time.h"
@@ -32,7 +34,6 @@ namespace net {
 class NetLogWithSource;
 class QuicChromiumClientSession;
 class QuicCryptoClientConfigHandle;
-class QuicSessionPool;
 
 namespace test {
 
@@ -45,7 +46,7 @@ class QuicSessionPoolPeer {
 
   static std::unique_ptr<QuicCryptoClientConfigHandle> GetCryptoConfig(
       QuicSessionPool* factory,
-      const NetworkAnonymizationKey& network_anonymization_key);
+      QuicSessionPool::QuicCryptoClientConfigKey key);
 
   static bool HasActiveSession(
       QuicSessionPool* factory,
@@ -54,7 +55,9 @@ class QuicSessionPoolPeer {
       const NetworkAnonymizationKey& network_anonymization_key,
       const ProxyChain& proxy_chain = ProxyChain::Direct(),
       SessionUsage session_usage = SessionUsage::kDestination,
-      bool require_dns_https_alpn = false);
+      bool require_dns_https_alpn = false,
+      bool disable_cert_verification_network_fetches = false,
+      handles::NetworkHandle target_network = handles::kInvalidNetworkHandle);
 
   static bool HasActiveJob(QuicSessionPool* factory,
                            const quic::QuicServerId& server_id,
@@ -62,47 +65,55 @@ class QuicSessionPoolPeer {
                            bool require_dns_https_alpn = false);
 
   static QuicChromiumClientSession* GetPendingSession(
-      QuicSessionPool* factory,
+      QuicSessionPool* pool,
       const quic::QuicServerId& server_id,
       PrivacyMode privacy_mode,
       url::SchemeHostPort destination);
 
   static QuicChromiumClientSession* GetActiveSession(
-      QuicSessionPool* factory,
+      QuicSessionPool* pool,
       const quic::QuicServerId& server_id,
       PrivacyMode privacy_mode,
       const NetworkAnonymizationKey& network_anonymization_key =
           NetworkAnonymizationKey(),
       const ProxyChain& proxy_chain = ProxyChain::Direct(),
       SessionUsage session_usage = SessionUsage::kDestination,
-      bool require_dns_https_alpn = false);
+      bool require_dns_https_alpn = false,
+      bool disable_cert_verification_network_fetches = false,
+      handles::NetworkHandle target_network = handles::kInvalidNetworkHandle);
 
-  static bool IsLiveSession(QuicSessionPool* factory,
+  static bool IsLiveSession(QuicSessionPool* pool,
                             QuicChromiumClientSession* session);
 
-  static void SetTickClock(QuicSessionPool* factory,
+  static void SetTickClock(QuicSessionPool* pool,
                            const base::TickClock* tick_clock);
 
-  static void SetTaskRunner(QuicSessionPool* factory,
+  static void SetClockForTesting(QuicSessionPool* pool, base::Clock* clock);
+
+  static void SetTaskRunner(QuicSessionPool* pool,
                             base::SequencedTaskRunner* task_runner);
 
-  static quic::QuicTime::Delta GetPingTimeout(QuicSessionPool* factory);
+  static quic::QuicTime::Delta GetPingTimeout(QuicSessionPool* pool);
 
-  static void SetYieldAfterPackets(QuicSessionPool* factory,
+  static void SetYieldAfterPackets(QuicSessionPool* pool,
                                    int yield_after_packets);
 
-  static void SetYieldAfterDuration(QuicSessionPool* factory,
+  static void SetYieldAfterDuration(QuicSessionPool* pool,
                                     quic::QuicTime::Delta yield_after_duration);
 
   static bool CryptoConfigCacheIsEmpty(
-      QuicSessionPool* factory,
+      QuicSessionPool* pool,
       const quic::QuicServerId& quic_server_id,
-      const NetworkAnonymizationKey& network_anonymization_key);
+      QuicSessionPool::QuicCryptoClientConfigKey key);
 
-  static size_t GetNumDegradingSessions(QuicSessionPool* factory);
+  static bool CryptoConfigSessionCacheIsEmpty(
+      QuicSessionPool* pool,
+      QuicSessionPool::QuicCryptoClientConfigKey key);
+
+  static size_t GetNumDegradingSessions(QuicSessionPool* pool);
 
   static void SetAlarmFactory(
-      QuicSessionPool* factory,
+      QuicSessionPool* pool,
       std::unique_ptr<quic::QuicAlarmFactory> alarm_factory);
 };
 

@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "net/dns/dns_config_service_linux.h"
 
 #include <netdb.h>
@@ -24,6 +19,7 @@
 #include <vector>
 
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/files/file_path.h"
 #include "base/files/file_path_watcher.h"
 #include "base/functional/bind.h"
@@ -32,7 +28,6 @@
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
 #include "base/sequence_checker.h"
 #include "base/threading/scoped_blocking_call.h"
 #include "base/time/time.h"
@@ -77,8 +72,8 @@ std::optional<DnsConfig> ConvertResStateToDnsConfig(
 
   dns_config.nameservers = std::move(nameservers.value());
   dns_config.search.clear();
-  for (int i = 0; (i < MAXDNSRCH) && res.dnsrch[i]; ++i) {
-    dns_config.search.emplace_back(res.dnsrch[i]);
+  for (int i = 0; (i < MAXDNSRCH) && UNSAFE_TODO(res.dnsrch[i]); ++i) {
+    dns_config.search.emplace_back(UNSAFE_TODO(res.dnsrch[i]));
   }
 
   dns_config.ndots = res.ndots;
@@ -137,11 +132,14 @@ bool SetActionBehavior(const NsswitchReader::ServiceAction& action,
       }
     }
   } else {
-    if (in_out_parsed_behavior.count(action.status) >= 1 &&
-        in_out_parsed_behavior[action.status] != action.action) {
-      return false;
+    if (auto it = in_out_parsed_behavior.find(action.status);
+        it != in_out_parsed_behavior.end()) {
+      if (it->second != action.action) {
+        return false;
+      }
+    } else {
+      in_out_parsed_behavior.emplace(action.status, action.action);
     }
-    in_out_parsed_behavior[action.status] = action.action;
   }
 
   return true;
@@ -217,7 +215,8 @@ void RecordIncompatibleNsswitchReason(
 }
 
 bool IsNsswitchConfigCompatible(
-    const std::vector<NsswitchReader::ServiceSpecification>& nsswitch_hosts) {
+    const std::vector<NsswitchReader::ServiceSpecification>& nsswitch_hosts,
+    ResolvReader& resolv_reader) {
   bool files_found = false;
   for (const NsswitchReader::ServiceSpecification& specification :
        nsswitch_hosts) {
@@ -253,6 +252,20 @@ bool IsNsswitchConfigCompatible(
         }
         break;
 
+      case NsswitchReader::Service::kResolve:
+        // If /etc/resolv.conf points to systemd-resolved then treat nss-resolve
+        // the same as nss-dns. If it's not then consider the nsswitch
+        // configuration incompatible.
+        if (!resolv_reader.IsLikelySystemdResolved()) {
+          RecordIncompatibleNsswitchReason(
+              IncompatibleNsswitchReason::kIncompatibleService,
+              specification.service);
+          return false;
+        }
+        // systemd-resolved also supports looking up records from /etc/hosts.
+        files_found = true;
+        [[fallthrough]];
+
       case NsswitchReader::Service::kDns:
         if (!files_found) {
           RecordIncompatibleNsswitchReason(
@@ -280,7 +293,6 @@ bool IsNsswitchConfigCompatible(
       case NsswitchReader::Service::kMdns:
       case NsswitchReader::Service::kMdns4:
       case NsswitchReader::Service::kMdns6:
-      case NsswitchReader::Service::kResolve:
       case NsswitchReader::Service::kNis:
         RecordIncompatibleNsswitchReason(
             IncompatibleNsswitchReason::kIncompatibleService,
@@ -468,7 +480,7 @@ class DnsConfigServiceLinux::ConfigReader : public SerialWorker {
         std::vector<NsswitchReader::ServiceSpecification> nsswitch_hosts =
             nsswitch_reader_->ReadAndParseHosts();
         dns_config_->unhandled_options =
-            !IsNsswitchConfigCompatible(nsswitch_hosts);
+            !IsNsswitchConfigCompatible(nsswitch_hosts, *resolv_reader_);
         base::UmaHistogramBoolean("Net.DNS.DnsConfig.Nsswitch.Compatible",
                                   !dns_config_->unhandled_options);
       }

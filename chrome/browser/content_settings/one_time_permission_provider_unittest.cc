@@ -5,6 +5,7 @@
 #include "chrome/browser/content_settings/one_time_permission_provider.h"
 
 #include <memory>
+#include <optional>
 
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
@@ -14,13 +15,14 @@
 #include "chrome/browser/permissions/one_time_permissions_tracker_observer.h"
 #include "components/content_settings/core/browser/content_settings_mock_observer.h"
 #include "components/content_settings/core/browser/content_settings_registry.h"
+#include "components/content_settings/core/browser/permission_settings_registry.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_constraints.h"
-#include "components/content_settings/core/common/content_settings_partition_key.h"
+#include "components/content_settings/core/common/content_settings_utils.h"
 #include "components/content_settings/core/common/features.h"
 #include "components/content_settings/core/test/content_settings_test_utils.h"
-#include "components/permissions/features.h"
-#include "components/permissions/permission_context_base.h"
+#include "components/permissions/content_setting_permission_context_base.h"
+#include "components/permissions/permission_uma_util.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "url/gurl.h"
@@ -35,8 +37,6 @@ class OneTimePermissionProviderTest : public testing::Test {
       : task_environment_(base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
     // Ensure all content settings are initialized.
     ContentSettingsRegistry::GetInstance();
-    feature_list_.InitAndEnableFeature(
-        permissions::features::kOneTimePermission);
   }
 
   void SetUp() override {
@@ -91,8 +91,7 @@ TEST_F(OneTimePermissionProviderTest, SetAndGetContentSetting) {
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 
   EXPECT_EQ(CONTENT_SETTING_ALLOW,
             TestUtils::GetContentSetting(
@@ -107,6 +106,75 @@ TEST_F(OneTimePermissionProviderTest, SetAndGetContentSetting) {
       1);
 }
 
+TEST_F(OneTimePermissionProviderTest, SetAndGetGeolocationSetting) {
+  base::HistogramTester histograms;
+  auto* info = PermissionSettingsRegistry::GetInstance()->Get(
+      mojom::ContentSettingsType::GEOLOCATION_WITH_OPTIONS);
+
+  EXPECT_EQ(std::nullopt,
+            TestUtils::GetPermissionSetting(
+                one_time_permission_provider_.get(), primary_url, secondary_url,
+                ContentSettingsType::GEOLOCATION, false));
+
+  GeolocationSetting allow_setting{PermissionOption::kAllowed,
+                                   PermissionOption::kAllowed};
+
+  // Set setting.
+  one_time_permission_provider_->SetWebsiteSetting(
+      primary_pattern, ContentSettingsPattern::Wildcard(),
+      ContentSettingsType::GEOLOCATION_WITH_OPTIONS,
+      info->delegate().ToValue(allow_setting), one_time_constraints());
+
+  auto setting = TestUtils::GetPermissionSetting(
+      one_time_permission_provider_.get(), primary_url, secondary_url,
+      ContentSettingsType::GEOLOCATION_WITH_OPTIONS, false);
+  ASSERT_TRUE(setting.has_value());
+  EXPECT_EQ(PermissionSetting(allow_setting), *setting);
+
+  histograms.ExpectUniqueSample(
+      permissions::PermissionUmaUtil::GetOneTimePermissionEventHistogram(
+          ContentSettingsType::GEOLOCATION_WITH_OPTIONS),
+      static_cast<base::HistogramBase::Sample32>(
+          permissions::OneTimePermissionEvent::GRANTED_ONE_TIME),
+      1);
+
+  // Reset setting.
+  one_time_permission_provider_->SetWebsiteSetting(
+      primary_pattern, ContentSettingsPattern::Wildcard(),
+      ContentSettingsType::GEOLOCATION_WITH_OPTIONS, base::Value(),
+      one_time_constraints());
+
+  EXPECT_EQ(std::nullopt,
+            TestUtils::GetPermissionSetting(
+                one_time_permission_provider_.get(), primary_url, secondary_url,
+                ContentSettingsType::GEOLOCATION, false));
+}
+
+TEST_F(OneTimePermissionProviderTest, ClearAll) {
+  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
+            TestUtils::GetContentSetting(
+                one_time_permission_provider_.get(), primary_url, secondary_url,
+                ContentSettingsType::GEOLOCATION, false));
+
+  one_time_permission_provider_->SetWebsiteSetting(
+      primary_pattern, ContentSettingsPattern::Wildcard(),
+      ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW),
+      one_time_constraints());
+
+  EXPECT_EQ(CONTENT_SETTING_ALLOW,
+            TestUtils::GetContentSetting(
+                one_time_permission_provider_.get(), primary_url, secondary_url,
+                ContentSettingsType::GEOLOCATION, false));
+
+  one_time_permission_provider_->ClearAllContentSettingsRules(
+      ContentSettingsType::GEOLOCATION);
+
+  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
+            TestUtils::GetContentSetting(
+                one_time_permission_provider_.get(), primary_url, secondary_url,
+                ContentSettingsType::GEOLOCATION, false));
+}
+
 TEST_F(OneTimePermissionProviderTest,
        SetAndGetContentSettingWithoutOneTimeCapabilityDoesNotAllow) {
   EXPECT_EQ(CONTENT_SETTING_DEFAULT,
@@ -117,8 +185,7 @@ TEST_F(OneTimePermissionProviderTest,
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::NOTIFICATIONS, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 
   EXPECT_EQ(CONTENT_SETTING_DEFAULT,
             TestUtils::GetContentSetting(
@@ -135,8 +202,7 @@ TEST_F(OneTimePermissionProviderTest,
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
-      ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW), {},
-      content_settings::PartitionKey::GetDefaultForTesting());
+      ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW), {});
 
   EXPECT_EQ(CONTENT_SETTING_DEFAULT,
             TestUtils::GetContentSetting(
@@ -147,41 +213,46 @@ TEST_F(OneTimePermissionProviderTest,
 TEST_F(OneTimePermissionProviderTest,
        AllTabsInBackgroundExpiryRevokesGeolocation) {
   base::HistogramTester histograms;
-  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
-            TestUtils::GetContentSetting(
+  EXPECT_EQ(std::nullopt,
+            TestUtils::GetPermissionSetting(
                 one_time_permission_provider_.get(), primary_url, secondary_url,
-                ContentSettingsType::GEOLOCATION, false));
+                content_settings::GeolocationContentSettingsType(), false));
+
+  const PermissionSettingsInfo* info =
+      PermissionSettingsRegistry::GetInstance()->Get(
+          content_settings::GeolocationContentSettingsType());
+  PermissionSetting allow_setting =
+      info->delegate().ToPermissionSetting(CONTENT_SETTING_ALLOW);
+  base::Value allow_value = info->delegate().ToValue(allow_setting);
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
-      ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      content_settings::GeolocationContentSettingsType(), allow_value.Clone(),
+      one_time_constraints());
 
   one_time_permission_provider_->SetWebsiteSetting(
       other_pattern, ContentSettingsPattern::Wildcard(),
-      ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      content_settings::GeolocationContentSettingsType(), allow_value.Clone(),
+      one_time_constraints());
 
   one_time_permission_provider_->OnAllTabsInBackgroundTimerExpired(
       url::Origin::Create(primary_url),
       OneTimePermissionsTrackerObserver::BackgroundExpiryType::kTimeout);
 
-  EXPECT_EQ(CONTENT_SETTING_DEFAULT,
-            TestUtils::GetContentSetting(
+  EXPECT_EQ(std::nullopt,
+            TestUtils::GetPermissionSetting(
                 one_time_permission_provider_.get(), primary_url, secondary_url,
-                ContentSettingsType::GEOLOCATION, false));
+                content_settings::GeolocationContentSettingsType(), false));
 
-  EXPECT_EQ(CONTENT_SETTING_ALLOW,
-            TestUtils::GetContentSetting(
+  EXPECT_EQ(allow_setting,
+            TestUtils::GetPermissionSetting(
                 one_time_permission_provider_.get(), other_url, secondary_url,
-                ContentSettingsType::GEOLOCATION, false));
+                content_settings::GeolocationContentSettingsType(), false));
 
   // We granted to two distinct origins
   histograms.ExpectBucketCount(
       permissions::PermissionUmaUtil::GetOneTimePermissionEventHistogram(
-          ContentSettingsType::GEOLOCATION),
+          content_settings::GeolocationContentSettingsType()),
       static_cast<base::HistogramBase::Sample32>(
           permissions::OneTimePermissionEvent::GRANTED_ONE_TIME),
       2);
@@ -200,14 +271,12 @@ TEST_F(OneTimePermissionProviderTest, CaptureExpiryRevokesPermissions) {
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::MEDIASTREAM_CAMERA,
-      base::Value(CONTENT_SETTING_ALLOW), one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      base::Value(CONTENT_SETTING_ALLOW), one_time_constraints());
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::MEDIASTREAM_MIC, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 
   one_time_permission_provider_->OnCapturingVideoExpired(
       url::Origin::Create(primary_url));
@@ -272,14 +341,12 @@ TEST_F(OneTimePermissionProviderTest,
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::MEDIASTREAM_CAMERA,
-      base::Value(CONTENT_SETTING_ALLOW), one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      base::Value(CONTENT_SETTING_ALLOW), one_time_constraints());
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::MEDIASTREAM_MIC, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 
   one_time_permission_provider_->OnAllTabsInBackgroundTimerExpired(
       url::Origin::Create(primary_url),
@@ -306,13 +373,11 @@ TEST_F(OneTimePermissionProviderTest, ManualRevocationUmaTest) {
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
-      ContentSettingsType::GEOLOCATION, base::Value(), one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      ContentSettingsType::GEOLOCATION, base::Value(), one_time_constraints());
 
   histograms.ExpectTotalCount(
       permissions::PermissionUmaUtil::GetOneTimePermissionEventHistogram(
@@ -344,8 +409,7 @@ TEST_F(OneTimePermissionProviderTest, VerifyPermissionObserversNotified) {
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::GEOLOCATION, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 }
 
 class OneTimePermissionProviderExpiryTest
@@ -375,14 +439,12 @@ TEST_F(OneTimePermissionProviderTest, SuspendExpiresAllGrants) {
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::MEDIASTREAM_CAMERA,
-      base::Value(CONTENT_SETTING_ALLOW), one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      base::Value(CONTENT_SETTING_ALLOW), one_time_constraints());
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, ContentSettingsPattern::Wildcard(),
       ContentSettingsType::MEDIASTREAM_MIC, base::Value(CONTENT_SETTING_ALLOW),
-      one_time_constraints(),
-      content_settings::PartitionKey::GetDefaultForTesting());
+      one_time_constraints());
 
   one_time_permission_provider_->OnSuspend();
 
@@ -448,8 +510,7 @@ TEST_P(OneTimePermissionProviderExpiryTest, RenewContentSetting_Noop) {
 
   one_time_permission_provider_->SetWebsiteSetting(
       primary_pattern, primary_pattern, ContentSettingsType::GEOLOCATION,
-      base::Value(CONTENT_SETTING_ALLOW), constraints,
-      content_settings::PartitionKey::GetDefaultForTesting());
+      base::Value(CONTENT_SETTING_ALLOW), constraints);
 
   RuleMetaData metadata;
   EXPECT_EQ(CONTENT_SETTING_ALLOW,
@@ -468,8 +529,8 @@ TEST_P(OneTimePermissionProviderExpiryTest, RenewContentSetting_Noop) {
   base::Time original_expiration = metadata.expiration();
 
   EXPECT_FALSE(one_time_permission_provider_->RenewContentSetting(
-      primary_url, primary_url, ContentSettingsType::GEOLOCATION, std::nullopt,
-      content_settings::PartitionKey::GetDefaultForTesting()));
+      primary_url, primary_url, ContentSettingsType::GEOLOCATION,
+      std::nullopt));
 
   EXPECT_EQ(CONTENT_SETTING_ALLOW,
             TestUtils::GetContentSetting(

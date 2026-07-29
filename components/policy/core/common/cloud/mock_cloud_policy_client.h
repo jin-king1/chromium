@@ -97,7 +97,7 @@ class MockCloudPolicyClient : public CloudPolicyClient {
                const enterprise_management::ChildStatusReportRequest*,
                ResultCallback),
               (override));
-  MOCK_METHOD(void, CancelAppInstallReportUpload, (), (override));
+
   MOCK_METHOD(void,
               UpdateGcmId,
               (const std::string&, StatusCallback),
@@ -134,7 +134,8 @@ class MockCloudPolicyClient : public CloudPolicyClient {
   MOCK_METHOD(
       void,
       UploadChromeProfileReport,
-      (std::unique_ptr<enterprise_management::ChromeProfileReportRequest>,
+      (bool,
+       std::unique_ptr<enterprise_management::ChromeProfileReportRequest>,
        ResultCallback),
       (override));
   MOCK_METHOD(void,
@@ -144,7 +145,7 @@ class MockCloudPolicyClient : public CloudPolicyClient {
               (override));
   MOCK_METHOD(void,
               UploadSecurityEventReport,
-              (bool, base::Value::Dict, ResultCallback),
+              (bool, base::DictValue, ResultCallback),
               (override));
   MOCK_METHOD(void,
               UploadSecurityEvent,
@@ -152,10 +153,7 @@ class MockCloudPolicyClient : public CloudPolicyClient {
                ::chrome::cros::reporting::proto::UploadEventsRequest request,
                ResultCallback),
               (override));
-  MOCK_METHOD(void,
-              UploadAppInstallReport,
-              (base::Value::Dict value, ResultCallback callback),
-              (override));
+
   MOCK_METHOD(void,
               ClientCertProvisioningRequest,
               (enterprise_management::ClientCertificateProvisioningRequest,
@@ -170,9 +168,16 @@ class MockCloudPolicyClient : public CloudPolicyClient {
               DeterminePromotionEligibility,
               (PromotionEligibilityCallback callback),
               (override));
+  MOCK_METHOD(void,
+              GenerateChromeProfileChallenge,
+              (GenerateChromeProfileChallengeCallback callback),
+              (override));
 
   // Sets the DMToken.
   void SetDMToken(const std::string& token);
+
+  // Sets the client id.
+  void SetClientId(const std::string& client_id);
 
   // Injects policy.
   void SetPolicy(const std::string& policy_type,
@@ -185,6 +190,9 @@ class MockCloudPolicyClient : public CloudPolicyClient {
   // Sets the status field.
   void SetStatus(DeviceManagementStatus status);
 
+  // Get the OAuth token from client
+  std::string GetOAuthToken();
+
   // Make the notification helpers public.
   using CloudPolicyClient::NotifyClientError;
   using CloudPolicyClient::NotifyPolicyFetched;
@@ -192,6 +200,7 @@ class MockCloudPolicyClient : public CloudPolicyClient {
 
   using CloudPolicyClient::client_id_;
   using CloudPolicyClient::dm_token_;
+  using CloudPolicyClient::oauth_token_;
   using CloudPolicyClient::fetched_invalidation_version_;
   using CloudPolicyClient::invalidation_payload_;
   using CloudPolicyClient::invalidation_version_;

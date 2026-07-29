@@ -5,6 +5,7 @@
 #ifndef CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_CONTEXT_MENU_MANAGER_H_
 #define CHROME_BROWSER_UI_AUTOFILL_AUTOFILL_CONTEXT_MENU_MANAGER_H_
 
+#include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
 #include "base/types/strong_alias.h"
 #include "components/autofill/core/common/unique_ids.h"
@@ -20,7 +21,6 @@ class ContentPasswordManagerDriver;
 
 namespace autofill {
 
-class AutofillAiDelegate;
 class AutofillDriver;
 class AutofillManager;
 class ContentAutofillDriver;
@@ -66,21 +66,19 @@ class AutofillContextMenuManager : public RenderViewContextMenuObserver {
   // available for the field.
   void MaybeAddAutofillFeedbackItem();
 
-  // Conditionally adds the item to trigger filling with Autofill AI.
-  void MaybeAddAutofillAiItem();
-
   // Conditionally adds the address, payments and / or passwords Autofill manual
   // fallbacks to the context menu model depending on whether there's data to
   // suggest.
   void MaybeAddAutofillManualFallbackItems();
 
+  // Adds the AtMemory manual fallback item if the feature is enabled. Returns
+  // true if the item was added, false otherwise.
+  bool MaybeAddAtMemoryItem();
+
   // Checks if the plus address context menu entry can be shown for the
   // currently focused field.
   bool ShouldAddPlusAddressManualFallbackItem(
       ContentAutofillDriver& autofill_driver);
-
-  // Returns if the item to trigger Autofill AI should be added.
-  bool ShouldAddAutofillAiItem(AutofillAiDelegate* delegate, const GURL& url);
 
   // Checks if the currently focused field is a password field and whether
   // password filling is enabled.
@@ -101,7 +99,8 @@ class AutofillContextMenuManager : public RenderViewContextMenuObserver {
   // Not all 4 entries have to be displayed. If an entry does not meet its
   // criterion to be displayed, the entry will be skipped.
   void AddPasswordsManualFallbackItems(
-      password_manager::ContentPasswordManagerDriver& password_manager_driver);
+      password_manager::ContentPasswordManagerDriver& password_manager_driver,
+      bool add_select_password_option);
 
   // Out of all password entries, this method is only interested in the "select
   // password" entry, because the rest of them don't trigger suggestions and are
@@ -111,17 +110,13 @@ class AutofillContextMenuManager : public RenderViewContextMenuObserver {
 
   void LogSelectPasswordManualFallbackContextMenuEntryAccepted();
 
-  // Triggers the filling with Autofill AI data.
-  void ExecuteAutofillAiCommand(const LocalFrameToken& frame_token,
-                                ContentAutofillDriver& autofill_driver);
-
   // Triggers the feedback flow for Autofill command.
   void ExecuteAutofillFeedbackCommand(const LocalFrameToken& frame_token,
                                       AutofillManager& manager);
 
-  // Triggers Plus Address suggestions on the field that the context menu was
+  // Triggers @memory search popup on the field that the context menu was
   // opened on.
-  void ExecuteFallbackForPlusAddressesCommand(AutofillDriver& driver);
+  void ExecuteFallbackForAtMemoryCommand(AutofillDriver& driver);
 
   // Triggers passwords suggestions on the field that the context menu was
   // opened on.

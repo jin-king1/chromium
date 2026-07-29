@@ -8,18 +8,18 @@
 #include <memory>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "base/files/file_path.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/sequenced_task_runner.h"
-#include "components/keyed_service/ios/browser_state_keyed_service_factory.h"
-#include "components/keyed_service/ios/refcounted_browser_state_keyed_service_factory.h"
 #include "ios/chrome/browser/net/model/net_types.h"
 #include "ios/chrome/browser/policy/model/profile_policy_connector.h"
 #include "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#include "ios/chrome/browser/shared/model/profile/profile_keyed_service_factory_ios.h"
+#include "ios/chrome/browser/shared/model/profile/refcounted_profile_keyed_service_factory_ios.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
 
 namespace sync_preferences {
 class PrefServiceSyncable;
@@ -33,15 +33,15 @@ class UserCloudPolicyManager;
 // This class is the implementation of ProfileIOS used for testing.
 class TestProfileIOS final : public ProfileIOS {
  public:
-  // Wrapper over absl::variant to help type deduction when calling
+  // Wrapper over std::variant to help type deduction when calling
   // AddTestingFactories(). See example call in the method's comment.
   struct TestingFactory {
     TestingFactory(
-        BrowserStateKeyedServiceFactory* service_factory,
-        BrowserStateKeyedServiceFactory::TestingFactory testing_factory);
+        ProfileKeyedServiceFactoryIOS* service_factory,
+        ProfileKeyedServiceFactoryIOS::TestingFactory testing_factory);
 
-    TestingFactory(RefcountedBrowserStateKeyedServiceFactory* service_factory,
-                   RefcountedBrowserStateKeyedServiceFactory::TestingFactory
+    TestingFactory(RefcountedProfileKeyedServiceFactoryIOS* service_factory,
+                   RefcountedProfileKeyedServiceFactoryIOS::TestingFactory
                        testing_factory);
 
     TestingFactory(TestingFactory&&);
@@ -49,16 +49,16 @@ class TestProfileIOS final : public ProfileIOS {
 
     ~TestingFactory();
 
-    absl::variant<
-        std::pair<BrowserStateKeyedServiceFactory*,
-                  BrowserStateKeyedServiceFactory::TestingFactory>,
-        std::pair<RefcountedBrowserStateKeyedServiceFactory*,
-                  RefcountedBrowserStateKeyedServiceFactory::TestingFactory>>
+    std::variant<
+        std::pair<ProfileKeyedServiceFactoryIOS*,
+                  ProfileKeyedServiceFactoryIOS::TestingFactory>,
+        std::pair<RefcountedProfileKeyedServiceFactoryIOS*,
+                  RefcountedProfileKeyedServiceFactoryIOS::TestingFactory>>
         service_factory_and_testing_factory;
   };
 
   // Wrapper around std::vector to simplify the migration to OnceCallback
-  // for *BrowserStateKeyedServiceFactory::TestingFactory.
+  // for *ProfileKeyedServiceFactoryIOS::*TestingFactory.
   class TestingFactories {
    public:
     TestingFactories();
@@ -128,21 +128,6 @@ class TestProfileIOS final : public ProfileIOS {
   // This method will be called without factories if the
   // method `GetOffTheRecordProfile()` is called on
   // this object.
-  // TODO(crbug.com/358299863): Remove this function once fully migrated.
-  TestProfileIOS* CreateOffTheRecordBrowserStateWithTestingFactories(
-      TestingFactories testing_factories = {});
-
-  // Creates an off-the-record TestProfileIOS for
-  // the current object, installing `testing_factories`
-  // first.
-  //
-  // This is an error to call this method if the current
-  // TestProfileIOS already has a off-the-record
-  // object, or is itself off-the-record.
-  //
-  // This method will be called without factories if the
-  // method `GetOffTheRecordProfile()` is called on
-  // this object.
   TestProfileIOS* CreateOffTheRecordProfileWithTestingFactories(
       TestingFactories testing_factories = {});
 
@@ -169,18 +154,18 @@ class TestProfileIOS final : public ProfileIOS {
 
     ~Builder();
 
-    // Adds a testing factory to the TestProfileIOS. These testing
-    // factories are installed before the BrowserStateKeyedServices are created.
+    // Adds a testing factory to the TestProfileIOS. These testing factories
+    // are installed before the Profile's KeyedServices are created.
     Builder& AddTestingFactory(
-        BrowserStateKeyedServiceFactory* service_factory,
-        BrowserStateKeyedServiceFactory::TestingFactory testing_factory);
+        ProfileKeyedServiceFactoryIOS* service_factory,
+        ProfileKeyedServiceFactoryIOS::TestingFactory testing_factory);
     Builder& AddTestingFactory(
-        RefcountedBrowserStateKeyedServiceFactory* service_factory,
-        RefcountedBrowserStateKeyedServiceFactory::TestingFactory
+        RefcountedProfileKeyedServiceFactoryIOS* service_factory,
+        RefcountedProfileKeyedServiceFactoryIOS::TestingFactory
             testing_factory);
 
     // Adds multiple testing factories to TestProfileIOS. These testing
-    // factories are installed before the BrowserStateKeyedServices are created.
+    // factories are installed before the Profile's KeyedServices are created.
     // Example use:
     //
     // AddTestingFactories(
@@ -262,7 +247,8 @@ class TestProfileIOS final : public ProfileIOS {
   // If non-null, `testing_prefs_` points to `prefs_`. It is there to avoid
   // casting as `prefs_` may not be a TestingPrefServiceSyncable.
   std::unique_ptr<sync_preferences::PrefServiceSyncable> prefs_;
-  raw_ptr<sync_preferences::TestingPrefServiceSyncable> testing_prefs_;
+  raw_ptr<sync_preferences::TestingPrefServiceSyncable, DanglingUntriaged>
+      testing_prefs_;
 
   // The WebKit storage identifier. May be invalid.
   const base::Uuid webkit_storage_id_;

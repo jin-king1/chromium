@@ -7,22 +7,27 @@
 
 #include <memory>
 
+#include "base/callback_list.h"
 #include "base/feature_list.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
-#include "base/task/cancelable_task_tracker.h"
 #include "chrome/browser/ash/external_metrics/external_metrics.h"
-#include "chrome/browser/ash/pcie_peripheral/ash_usb_detector.h"
 #include "chrome/browser/ash/performance/doze_mode_power_status_scheduler.h"
 #include "chrome/browser/chrome_browser_main_linux.h"
 #include "chrome/browser/memory/memory_kills_monitor.h"
+#include "chromeos/ash/components/pcie_peripheral/ash_usb_detector.h"
+#include "chromeos/ash/experiences/arc/arc_platform_support_impl.h"
+#include "printing/buildflags/buildflags.h"  // USE_CUPS
 
 class AmbientClientImpl;
 class AssistantBrowserDelegateImpl;
-class AssistantStateClient;
 class ChromeKeyboardControllerClient;
 class ImageDownloaderImpl;
 class LobsterClientFactoryImpl;
+
+namespace apps {
+class AppServiceRegistry;
+}  // namespace apps
 
 namespace arc {
 class ArcServiceLauncher;
@@ -38,17 +43,13 @@ class ExternalLoader;
 
 }  // namespace chromeos
 
-namespace crosapi {
-class BrowserManager;
-class CrosapiManager;
-}  // namespace crosapi
-
 namespace crostini {
 class CrostiniUnsupportedActionNotifier;
 }  // namespace crostini
 
 namespace policy {
 class LockToSingleUserManager;
+class QuirksPolicyController;
 }  // namespace policy
 
 namespace video_conference {
@@ -60,13 +61,16 @@ namespace ash {
 class AccessibilityEventRewriterDelegateImpl;
 class ApnMigrator;
 class AudioSurveyHandler;
+class AuthEventsRecorder;
 class BluetoothLogController;
 class BluetoothPrefStateObserver;
+class BrowserControllerImpl;
 class BulkPrintersCalculatorFactory;
 class CameraGeneralSurveyHandler;
 class ChromeAuthParts;
 class CrosUsbDetector;
 class DebugdNotificationHandler;
+class DozeModePowerStatusScheduler;
 class EventRewriterDelegateImpl;
 class FastTransitionObserver;
 class FwupdDownloadClientImpl;
@@ -76,13 +80,11 @@ class IdleActionWarningObserver;
 class KioskController;
 class LoginScreenExtensionsStorageCleaner;
 class LowDiskNotification;
-class AuthEventsRecorder;
-class MagicBoostControllerAsh;
-class MultiCaptureNotifications;
+class MagicBoostControllerImpl;
+class MisconfiguredUserCleaner;
 class NetworkChangeManagerClient;
 class NetworkPrefStateObserver;
 class NetworkThrottlingObserver;
-class MisconfiguredUserCleaner;
 class PowerMetricsReporter;
 class RendererFreezer;
 class ReportControllerInitializer;
@@ -92,10 +94,14 @@ class ShutdownPolicyForwarder;
 class SigninProfileHandler;
 class SuspendPerfReporter;
 class SystemTokenCertDBInitializer;
+class TokenHandleStoreFactory;
+class UserLoginPermissionTracker;
 class VideoConferenceAppServiceClient;
 class VideoConferenceAshFeatureClient;
-class DozeModePowerStatusScheduler;
-class UserLoginPermissionTracker;
+
+#if BUILDFLAG(USE_CUPS)
+class LocalPrinter;
+#endif
 
 namespace carrier_lock {
 class CarrierLockManager;
@@ -105,12 +111,12 @@ namespace cros_healthd::internal {
 class DataCollector;
 }
 
-namespace file_manager {
-class FileIndexServiceRegistry;
-}
-
 namespace internal {
 class DBusServices;
+}
+
+namespace parent_access {
+class ParentAccessService;
 }
 
 namespace platform_keys {
@@ -154,6 +160,7 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   int PreEarlyInitialization() override;
   void PreCreateMainMessageLoop() override;
   void PostCreateMainMessageLoop() override;
+  int PreCreateThreads() override;
   int PreMainMessageLoopRun() override;
 
   // Stages called from PreMainMessageLoopRun.
@@ -183,9 +190,6 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   std::unique_ptr<HatsBluetoothRevampTriggerImpl>
       hats_bluetooth_revamp_trigger_;
 
-  std::unique_ptr<::ash::file_manager::FileIndexServiceRegistry>
-      file_index_service_registry_;
-
   std::unique_ptr<internal::DBusServices> dbus_services_;
 
   base::ScopedClosureRunner mojo_service_manager_closer_;
@@ -211,25 +215,22 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   std::unique_ptr<DozeModePowerStatusScheduler>
       doze_mode_power_status_scheduler_;
 
+  std::unique_ptr<apps::AppServiceRegistry> app_service_registry_;
+
   std::unique_ptr<arc::ArcServiceLauncher> arc_service_launcher_;
+  std::unique_ptr<arc::ArcPlatformSupportImpl> arc_platform_support_;
 
   std::unique_ptr<ImageDownloaderImpl> image_downloader_;
-
-  std::unique_ptr<AssistantStateClient> assistant_state_client_;
 
   std::unique_ptr<AssistantBrowserDelegateImpl> assistant_delegate_;
 
   std::unique_ptr<LowDiskNotification> low_disk_notification_;
   std::unique_ptr<KioskController> kiosk_controller_;
   std::unique_ptr<AmbientClientImpl> ambient_client_;
-  std::unique_ptr<MultiCaptureNotifications> multi_capture_notifications_;
 
   std::unique_ptr<ShortcutMappingPrefService> shortcut_mapping_pref_service_;
   std::unique_ptr<ChromeKeyboardControllerClient>
       chrome_keyboard_controller_client_;
-
-  std::unique_ptr<crosapi::CrosapiManager> crosapi_manager_;
-  std::unique_ptr<crosapi::BrowserManager> browser_manager_;
 
   std::unique_ptr<VideoConferenceAppServiceClient> vc_app_service_client_;
   std::unique_ptr<VideoConferenceAshFeatureClient> vc_ash_feature_client_;
@@ -258,9 +259,12 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   std::unique_ptr<FwupdDownloadClientImpl> fwupd_download_client_;
 
   std::unique_ptr<SessionTerminationManager> session_termination_manager_;
+  base::CallbackListSubscription app_terminating_subscription_;
 
   std::unique_ptr<cros_healthd::internal::DataCollector>
       cros_healthd_data_collector_;
+
+  std::unique_ptr<ash::BrowserControllerImpl> browser_controller_;
 
   std::unique_ptr<chromeos::MahiWebContentsManager> mahi_web_contents_manager_;
 
@@ -273,6 +277,8 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
   std::unique_ptr<policy::LockToSingleUserManager> lock_to_single_user_manager_;
   std::unique_ptr<LoginScreenExtensionsStorageCleaner>
       login_screen_extensions_storage_cleaner_;
+
+  std::unique_ptr<policy::QuirksPolicyController> quirks_policy_controller_;
 
   std::unique_ptr<GnubbyNotification> gnubby_notification_;
 
@@ -303,7 +309,17 @@ class ChromeBrowserMainPartsAsh : public ChromeBrowserMainPartsLinux {
 
   std::unique_ptr<MisconfiguredUserCleaner> misconfigured_user_cleaner_;
 
-  std::unique_ptr<ash::MagicBoostControllerAsh> magic_boost_controller_ash_;
+  std::unique_ptr<ash::MagicBoostControllerImpl> magic_boost_controller_;
+
+  std::unique_ptr<parent_access::ParentAccessService> parent_access_service_;
+
+  std::unique_ptr<UserSessionManager> user_session_manager_;
+
+  std::unique_ptr<TokenHandleStoreFactory> token_handle_store_factory_;
+
+#if BUILDFLAG(USE_CUPS)
+  std::unique_ptr<ash::LocalPrinter> local_printer_;
+#endif
 
   base::WeakPtrFactory<ChromeBrowserMainPartsAsh> weak_ptr_factory_{this};
 };

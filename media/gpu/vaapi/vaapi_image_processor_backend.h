@@ -7,11 +7,11 @@
 
 #include <memory>
 
+#include "base/containers/flat_map.h"
 #include "base/containers/id_map.h"
 #include "base/task/sequenced_task_runner.h"
 #include "media/gpu/chromeos/image_processor_backend.h"
 #include "media/gpu/media_gpu_export.h"
-#include "ui/gfx/gpu_memory_buffer.h"
 
 namespace media {
 
@@ -19,7 +19,7 @@ class VaapiWrapper;
 class ScopedVASurface;
 
 // ImageProcessor that is hardware accelerated with VA-API. This ImageProcessor
-// supports only dma-buf and GpuMemoryBuffer VideoFrames for both input and
+// supports only dma-buf and MappableSharedImage VideoFrames for both input and
 // output.
 class VaapiImageProcessorBackend : public ImageProcessorBackend {
  public:

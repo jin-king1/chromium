@@ -8,7 +8,6 @@
 #include <tuple>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/test/bind.h"
@@ -55,8 +54,8 @@ class AppPreloadAlmanacEndpointTest : public testing::Test {
   base::test::ScopedFeatureList feature_list_;
 
  private:
-  content::BrowserTaskEnvironment task_environment_;
   ash::system::ScopedFakeStatisticsProvider fake_statistics_provider_;
+  content::BrowserTaskEnvironment task_environment_;
   std::unique_ptr<TestingProfile> profile_;
 };
 
@@ -85,7 +84,6 @@ TEST_F(AppPreloadAlmanacEndpointTest, GetAppsForFirstLoginRequest) {
 TEST_F(AppPreloadAlmanacEndpointTest, GetAppsForFirstLoginSuccessfulResponse) {
   PackageId chrome_app =
       *PackageId::FromString("chromeapp:mgndgikekgjfcpckkfioiadnlibdjbkf");
-  PackageId lacros_app = *PackageId::FromString("system:lacros-chrome");
   PackageId web_app1 = *PackageId::FromString("web:http://example.com/app1");
   PackageId android_app1 = *PackageId::FromString("android:com.example.app1");
   PackageId web_app2 = *PackageId::FromString("web:http://example.com/app2");
@@ -167,11 +165,9 @@ TEST_F(AppPreloadAlmanacEndpointTest, GetAppsForFirstLoginSuccessfulResponse) {
   auto launcher_ordering = std::get<1>(test_callback.Get());
   EXPECT_EQ(launcher_ordering.size(), 2u);
   auto root_folder = launcher_ordering[""];
-  EXPECT_EQ(root_folder.size(), 5u);
+  EXPECT_EQ(root_folder.size(), 4u);
   EXPECT_EQ(root_folder[chrome_app].type, type_chrome);
   EXPECT_EQ(root_folder[chrome_app].order, 1u);
-  EXPECT_EQ(root_folder[lacros_app].type, type_chrome);
-  EXPECT_EQ(root_folder[lacros_app].order, 1u);
   EXPECT_EQ(root_folder[web_app1].type, type_app);
   EXPECT_EQ(root_folder[web_app1].order, 2u);
   EXPECT_EQ(root_folder[android_app1].type, type_app);

@@ -16,10 +16,12 @@ import static org.mockito.Mockito.doNothing;
 import static org.mockito.Mockito.when;
 
 import org.junit.Before;
+import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.Mock;
-import org.mockito.MockitoAnnotations;
+import org.mockito.junit.MockitoJUnit;
+import org.mockito.junit.MockitoRule;
 
 import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.base.test.util.Feature;
@@ -33,6 +35,7 @@ public class ContextualSearchContextTest {
     private static final String HOME_COUNTRY = "unused";
     private static final long NATIVE_PTR = 1;
 
+    @Rule public final MockitoRule mMockitoRule = MockitoJUnit.rule();
     private ContextualSearchContext mContext;
     private boolean mDidSelectionChange;
 
@@ -47,7 +50,6 @@ public class ContextualSearchContextTest {
 
     @Before
     public void setup() {
-        MockitoAnnotations.initMocks(this);
         ContextualSearchContextJni.setInstanceForTesting(mContextJniMock);
         when(mContextJniMock.init(any())).thenReturn(NATIVE_PTR);
         mDidSelectionChange = false;
@@ -193,23 +195,23 @@ public class ContextualSearchContextTest {
         // Most common to least common
         doNothing()
                 .when(mContextJniMock)
-                .setTranslationLanguages(anyLong(), eq(mContext), eq(""), eq(""), eq(""));
+                .setTranslationLanguages(anyLong(), eq(""), eq(""), eq(""));
         mContext.setTranslationLanguages("en", "en", "en");
         doNothing()
                 .when(mContextJniMock)
-                .setTranslationLanguages(anyLong(), eq(mContext), eq(""), eq(""), eq(""));
+                .setTranslationLanguages(anyLong(), eq(""), eq(""), eq(""));
         mContext.setTranslationLanguages("", "en", "en");
         doNothing()
                 .when(mContextJniMock)
-                .setTranslationLanguages(anyLong(), eq(mContext), eq("en"), eq("de"), eq(""));
+                .setTranslationLanguages(anyLong(), eq("en"), eq("de"), eq(""));
         mContext.setTranslationLanguages("en", "de", "de");
         doNothing()
                 .when(mContextJniMock)
-                .setTranslationLanguages(anyLong(), eq(mContext), eq("en"), eq("de"), eq("de,en"));
+                .setTranslationLanguages(anyLong(), eq("en"), eq("de"), eq("de,en"));
         mContext.setTranslationLanguages("en", "de", "de,en");
         doNothing()
                 .when(mContextJniMock)
-                .setTranslationLanguages(anyLong(), eq(mContext), eq(""), eq(""), eq("de,en"));
+                .setTranslationLanguages(anyLong(), eq(""), eq(""), eq("de,en"));
         mContext.setTranslationLanguages("de", "de", "de,en");
     }
 }

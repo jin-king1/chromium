@@ -2,9 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include <algorithm>
 #include <utility>
 
 #include "base/callback_list.h"
+#include "base/memory_coordinator/utils.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_amount_of_physical_memory_override.h"
 #include "base/test/scoped_feature_list.h"
@@ -20,6 +22,7 @@
 #include "content/public/test/content_browser_test.h"
 #include "content/public/test/content_browser_test_content_browser_client.h"
 #include "content/public/test/content_browser_test_utils.h"
+#include "content/public/test/memory_coordinator_browsertest_util.h"
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/test_service.mojom.h"
 #include "content/public/test/test_utils.h"
@@ -145,6 +148,17 @@ MATCHER(RenderProcessHostIsReady, "") {
   return arg->IsReady();
 }
 
+// The test verifies that HasSpareRenderer() correctly returns
+// whether there is an available spare renderer.
+IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest, HasSpareRenderer) {
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  EXPECT_FALSE(spare_manager.HasSpareRenderer());
+  spare_manager.WarmupSpare(browser_context());
+  EXPECT_TRUE(spare_manager.HasSpareRenderer());
+  spare_manager.CleanupSparesForTesting();
+  EXPECT_FALSE(spare_manager.HasSpareRenderer());
+}
+
 // This test verifies the creation of a deferred spare renderer. It checks two
 // conditions:
 //  1. A spare renderer is created successfully under standard conditions.
@@ -172,8 +186,13 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
   spare_started_observer.WaitForSpareRenderProcessStarted();
 
   // There might be another spare starting, but only 1 is ready.
-  EXPECT_THAT(spare_manager.GetSpares(),
-              Contains(RenderProcessHostIsReady()).Times(1));
+  int ready_count = 0;
+  for (content::RenderProcessHost* host : spare_manager.GetSpares()) {
+    if (host->IsReady()) {
+      ready_count++;
+    }
+  }
+  EXPECT_EQ(1, ready_count);
 
   histogram_tester.ExpectTotalCount(
       "BrowserRenderProcessHost.SpareProcessStartupTime", 1);
@@ -315,7 +334,8 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
           ProcessAllocationSource::kNavigationRequest,
           NavigationProcessAllocationContext{
               ProcessAllocationNavigationStage::kBeforeNetworkRequest,
-              false}}));
+              /*navigation_id=*/0, RequiresNewProcessForCoop(false),
+              IsOutermostMainFrame(true)}}));
   histogram_tester.ExpectUniqueSample(
       "BrowserRenderProcessHost.NoSparePresentReason2",
       NoSpareRendererReason::kTimeout, 1);
@@ -484,8 +504,14 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
   }
 
   // The initial spare is gone from the list of spares.
-  EXPECT_THAT(spare_manager.GetSpares(),
-              Not(Contains(Property(&RenderProcessHost::GetID, spare_rph_id))));
+  bool spare_found = false;
+  for (content::RenderProcessHost* host : spare_manager.GetSpares()) {
+    if (host->GetID() == spare_rph_id) {
+      spare_found = true;
+      break;
+    }
+  }
+  EXPECT_FALSE(spare_found);
 }
 
 // A mock ContentBrowserClient that only considers a spare renderer to be a
@@ -494,10 +520,10 @@ class SpareRendererContentBrowserClient
     : public ContentBrowserTestContentBrowserClient {
  public:
   bool IsSuitableHost(RenderProcessHost* process_host,
-                      const GURL& site_url) override {
+                      const SecurityPrincipal& security_principal) override {
     const auto& spares = SpareRenderProcessHostManagerImpl::Get().GetSpares();
     if (!spares.empty()) {
-      return base::Contains(spares, process_host);
+      return std::ranges::contains(spares, process_host);
     }
     return true;
   }
@@ -516,7 +542,7 @@ class NonSpareRendererContentBrowserClient
       const NonSpareRendererContentBrowserClient&) = delete;
 
   bool IsSuitableHost(RenderProcessHost* process_host,
-                      const GURL& site_url) override {
+                      const SecurityPrincipal& security_principal) override {
     return !process_host->IsSpare();
   }
 
@@ -525,10 +551,13 @@ class NonSpareRendererContentBrowserClient
     return true;
   }
 
-  std::optional<SpareProcessRefusedByEmbedderReason>
-  ShouldUseSpareRenderProcessHost(BrowserContext* browser_context,
-                                  const GURL& site_url) override {
-    return SpareProcessRefusedByEmbedderReason::DefaultDisabled;
+  bool ShouldUseSpareRenderProcessHost(
+      BrowserContext* browser_context,
+      const GURL& site_url,
+      std::optional<SpareProcessRefusedByEmbedderReason>& refused_reason)
+      override {
+    refused_reason = std::nullopt;
+    return false;
   }
 };
 
@@ -854,8 +883,9 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
       ProcessAllocationContext{
           ProcessAllocationSource::kNavigationRequest,
           NavigationProcessAllocationContext{
-              ProcessAllocationNavigationStage::kBeforeNetworkRequest, 0,
-              false}}));
+              ProcessAllocationNavigationStage::kBeforeNetworkRequest,
+              /*navigation_id=*/0, RequiresNewProcessForCoop(false),
+              IsOutermostMainFrame(true)}}));
 
   // The spare renderer shall be taken and no spare renderer will be present.
   EXPECT_TRUE(spare_manager.GetSpares().empty());
@@ -865,7 +895,9 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
       ProcessAllocationContext{
           ProcessAllocationSource::kNavigationRequest,
           NavigationProcessAllocationContext{
-              ProcessAllocationNavigationStage::kAfterResponse, 0, true}}));
+              ProcessAllocationNavigationStage::kAfterResponse,
+              /*navigation_id=*/0, RequiresNewProcessForCoop(true),
+              IsOutermostMainFrame(true)}}));
   histogram_tester.ExpectUniqueSample(
       "BrowserRenderProcessHost.NoSparePresentReason2",
       NoSpareRendererReason::kTakenByPreviousNavigation, 1);
@@ -905,6 +937,147 @@ IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerTest,
       true, 1);
 }
 
+#if BUILDFLAG(IS_ANDROID)
+
+class SpareRenderProcessHostManagerMemoryThresholdBrowserTest
+    : public SpareRenderProcessHostManagerTestBase {
+ public:
+  SpareRenderProcessHostManagerMemoryThresholdBrowserTest() {
+    scoped_feature_list_.InitAndEnableFeatureWithParameters(
+        features::kAndroidWarmUpSpareRendererWithTimeout,
+        {{"spare_renderer_available_memory_threshold_enabled", "true"},
+         {"large_memory_device_threshold_mb", "4200"},
+         {"limited_memory_device_available_memory_threshold_mb", "100"},
+         {"large_memory_device_available_memory_threshold_mb", "150"}});
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(SpareRenderProcessHostManagerMemoryThresholdBrowserTest,
+                       CorrectThresholdLogic) {
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+
+  {
+    base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+        base::MiBU(2048));
+    EXPECT_FALSE(
+        spare_manager.ShouldCreateSpareRendererWithAvailableMemory(50));
+    EXPECT_TRUE(
+        spare_manager.ShouldCreateSpareRendererWithAvailableMemory(120));
+  }
+
+  {
+    base::test::ScopedAmountOfPhysicalMemoryOverride memory_override(
+        base::MiBU(8192));
+    EXPECT_FALSE(
+        spare_manager.ShouldCreateSpareRendererWithAvailableMemory(120));
+    EXPECT_TRUE(
+        spare_manager.ShouldCreateSpareRendererWithAvailableMemory(180));
+  }
+}
+
+class AndroidSpareRendererProcessHostManagerTest
+    : public SpareRenderProcessHostManagerTest {
+ public:
+  AndroidSpareRendererProcessHostManagerTest() {
+    scoped_feature_list_.InitAndEnableFeatureWithParameters(
+        features::kAndroidWarmUpSpareRendererWithTimeout,
+        {
+            {"spare_renderer_available_memory_threshold_enabled", "false"},
+            {features::kAndroidSpareRendererKillWhenBackgrounded.name, "true"},
+            {features::kAndroidSpareRendererOnlyForNavigation.name, "true"},
+            {features::kAndroidSpareRendererAddNavigationThrottle.name, "true"},
+        });
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+};
+
+IN_PROC_BROWSER_TEST_F(AndroidSpareRendererProcessHostManagerTest,
+                       KillSpareRendererWhenAppBackgrounded) {
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  // Notify a foreground state to start the test as foreground.
+  base::android::ApplicationStatusListener::NotifyApplicationStateChange(
+      base::android::ApplicationState::
+          APPLICATION_STATE_HAS_RUNNING_ACTIVITIES);
+  BrowserContext* browser_context =
+      ShellContentBrowserClient::Get()->browser_context();
+  spare_manager.WarmupSpare(browser_context);
+  EXPECT_EQ(spare_manager.GetSpares().size(), 1u);
+  RenderProcessHost* rph = spare_manager.GetSpares().back();
+
+  // Send backgrounded event
+  base::android::ApplicationStatusListener::NotifyApplicationStateChange(
+      base::android::ApplicationState::
+          APPLICATION_STATE_HAS_STOPPED_ACTIVITIES);
+  RenderProcessHostWatcher process_watcher(
+      rph, RenderProcessHostWatcher::WATCH_FOR_HOST_DESTRUCTION);
+  process_watcher.Wait();
+  EXPECT_TRUE(spare_manager.GetSpares().empty());
+}
+
+IN_PROC_BROWSER_TEST_F(AndroidSpareRendererProcessHostManagerTest,
+                       OnlyForNavigationWithThrottle) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  BrowserContext* browser_context =
+      ShellContentBrowserClient::Get()->browser_context();
+  spare_manager.WarmupSpare(browser_context);
+  EXPECT_EQ(spare_manager.GetSpares().size(), 1u);
+
+  GURL test_url = embedded_test_server()->GetURL("/simple_page.html");
+  scoped_refptr<SiteInstance> test_site_instance =
+      SiteInstance::CreateForURL(browser_context, test_url);
+  base::HistogramTester histogram_tester;
+
+  // Emulate a non-navigation process allocation. The
+  // kServiceWorkerProcessManager source is only used for testing.
+  // Since the feature AndroidSpareRendererOnlyForNavigation is enabled,
+  // the allocation will not get a spare renderer.
+  EXPECT_FALSE(spare_manager.MaybeTakeSpare(
+      browser_context, static_cast<SiteInstanceImpl*>(test_site_instance.get()),
+      ProcessAllocationContext{
+          ProcessAllocationSource::kServiceWorkerProcessManager}));
+  // Also verify that the SpareProcessMaybeTakeAction UMA correctly records the
+  // reason.
+  histogram_tester.ExpectBucketCount(
+      "BrowserRenderProcessHost.SpareProcessMaybeTakeAction",
+      content::RenderProcessHostImpl::SpareProcessMaybeTakeAction::
+          kRefusedNonNavigation,
+      1);
+
+  // Navigation request after network response cannot allocate a spare renderer.
+  EXPECT_FALSE(spare_manager.MaybeTakeSpare(
+      browser_context, static_cast<SiteInstanceImpl*>(test_site_instance.get()),
+      ProcessAllocationContext{
+          ProcessAllocationSource::kNavigationRequest,
+          NavigationProcessAllocationContext{
+              ProcessAllocationNavigationStage::kAfterResponse,
+              /*navigation_id=*/0, RequiresNewProcessForCoop(false),
+              IsOutermostMainFrame(true)}}));
+  histogram_tester.ExpectBucketCount(
+      "BrowserRenderProcessHost.SpareProcessMaybeTakeAction",
+      content::RenderProcessHostImpl::SpareProcessMaybeTakeAction::
+          kCannotAddThrottle,
+      1);
+
+  // Navigation request before network response can still allocate a spare
+  // renderer.
+  EXPECT_TRUE(spare_manager.MaybeTakeSpare(
+      browser_context, static_cast<SiteInstanceImpl*>(test_site_instance.get()),
+      ProcessAllocationContext{
+          ProcessAllocationSource::kNavigationRequest,
+          NavigationProcessAllocationContext{
+              ProcessAllocationNavigationStage::kBeforeNetworkRequest,
+              /*navigation_id=*/0, RequiresNewProcessForCoop(false),
+              IsOutermostMainFrame(true)}}));
+}
+#endif
+
 class ExtraSpareRenderProcessHostManagerTest
     : public SpareRenderProcessHostManagerTest {
  public:
@@ -932,7 +1105,7 @@ class ExtraSpareRenderProcessHostManagerTest
   base::test::ScopedFeatureList scoped_feature_list_;
 
   base::test::ScopedAmountOfPhysicalMemoryOverride
-      scoped_amount_of_physical_memory_override_{8 * 1024};
+      scoped_amount_of_physical_memory_override_{base::GiBU(8)};
 };
 
 IN_PROC_BROWSER_TEST_F(ExtraSpareRenderProcessHostManagerTest, ExtraSpares) {
@@ -974,6 +1147,40 @@ IN_PROC_BROWSER_TEST_F(ExtraSpareRenderProcessHostManagerTest, BrowserNotIdle) {
   ASSERT_EQ(spare_manager.GetSpares().size(), 2u);
 }
 
+IN_PROC_BROWSER_TEST_F(ExtraSpareRenderProcessHostManagerTest,
+                       CleanupExtraSpares) {
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+
+  // Initially zero spares.
+  ASSERT_EQ(spare_manager.GetSpares().size(), 0u);
+
+  // Create the first spare manually. Keep the browser non-idle so the first
+  // spare becoming ready cannot trigger automatic extra-spare creation before
+  // the one-spare CleanupExtraSpares() check below.
+  spare_manager.SetIsBrowserIdleForTesting(false);
+  spare_manager.WarmupSpare(browser_context());
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  RenderProcessHost* first_spare = spare_manager.GetSpares()[0];
+
+  // CleanupExtraSpares() should be a no-op when there are no extra spares.
+  spare_manager.CleanupExtraSpares(std::nullopt);
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  ASSERT_EQ(spare_manager.GetSpares()[0], first_spare);
+
+  // A second spare is started automatically after the first one is ready, if
+  // the browser is idle.
+  spare_manager.SetIsBrowserIdleForTesting(true);
+  WaitForNextSpareReady();
+  ASSERT_EQ(spare_manager.GetSpares().size(), 2u);
+  WaitForNextSpareReady();
+  ASSERT_EQ(spare_manager.GetSpares().size(), 2u);
+
+  spare_manager.CleanupExtraSpares(std::nullopt);
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+  ASSERT_EQ(spare_manager.GetSpares()[0], first_spare);
+  EXPECT_TRUE(spare_manager.GetSpares()[0]->IsReady());
+}
+
 class LowMemoryExtraSpareRenderProcessHostManagerTest
     : public ExtraSpareRenderProcessHostManagerTest {
  public:
@@ -991,7 +1198,7 @@ class LowMemoryExtraSpareRenderProcessHostManagerTest
 
  private:
   base::test::ScopedAmountOfPhysicalMemoryOverride
-      scoped_amount_of_physical_memory_override_{2 * 1024};
+      scoped_amount_of_physical_memory_override_{base::GiBU(2)};
 };
 
 IN_PROC_BROWSER_TEST_F(LowMemoryExtraSpareRenderProcessHostManagerTest,
@@ -1010,5 +1217,127 @@ IN_PROC_BROWSER_TEST_F(LowMemoryExtraSpareRenderProcessHostManagerTest,
   // ready.
   ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
 }
+
+struct MemoryPressureTestParams {
+  bool enable_multiple_spares;
+  bool keep_one_alive;
+  bool use_critical_memory_pressure_threshold;
+  int memory_limit;
+  size_t expected_spares_after_pressure;
+};
+
+class SpareRenderProcessHostManagerMemoryPressureParamTest
+    : public SpareRenderProcessHostManagerTest,
+      public testing::WithParamInterface<MemoryPressureTestParams> {
+ public:
+  SpareRenderProcessHostManagerMemoryPressureParamTest() {
+    std::vector<base::test::FeatureRefAndParams> enabled_features;
+    std::vector<base::test::FeatureRef> disabled_features;
+
+    enabled_features.push_back({kKillSpareRenderOnMemoryPressure, {}});
+
+    if (GetParam().keep_one_alive) {
+      enabled_features.push_back({kSpareRPHKeepOneAliveOnMemoryPressure, {}});
+    } else {
+      disabled_features.push_back(kSpareRPHKeepOneAliveOnMemoryPressure);
+    }
+
+    if (GetParam().use_critical_memory_pressure_threshold) {
+      enabled_features.push_back({kSpareRPHUseCriticalMemoryPressure, {}});
+    } else {
+      disabled_features.push_back(kSpareRPHUseCriticalMemoryPressure);
+    }
+
+    if (GetParam().enable_multiple_spares) {
+      enabled_features.push_back(
+          {features::kMultipleSpareRPHs,
+           {{features::kMultipleSpareRPHsCount.name, "2"}}});
+      memory_override_.emplace(base::GiBU(8));
+    } else {
+      disabled_features.push_back(features::kMultipleSpareRPHs);
+    }
+
+    scoped_feature_list_.InitWithFeaturesAndParameters(enabled_features,
+                                                       disabled_features);
+  }
+
+  void WaitForNextSpareReady() {
+    auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+    auto& spares = spare_manager.GetSpares();
+    ASSERT_FALSE(spares.empty());
+    RenderProcessHost* next_spare_rph = spares.back();
+    ASSERT_FALSE(next_spare_rph->IsReady());
+
+    RenderProcessHostWatcher watcher(
+        next_spare_rph, RenderProcessHostWatcher::WATCH_FOR_PROCESS_READY);
+    watcher.Wait();
+  }
+
+ private:
+  base::test::ScopedFeatureList scoped_feature_list_;
+  // Simulates sufficient physical memory (8GB) to allow extra spares
+  // allocation.
+  std::optional<base::test::ScopedAmountOfPhysicalMemoryOverride>
+      memory_override_;
+};
+
+// Verifies that memory pressure destroys spare renderers based on parameters.
+IN_PROC_BROWSER_TEST_P(SpareRenderProcessHostManagerMemoryPressureParamTest,
+                       PressureResponse) {
+  auto& spare_manager = SpareRenderProcessHostManagerImpl::Get();
+  spare_manager.WarmupSpare(browser_context());
+  ASSERT_EQ(spare_manager.GetSpares().size(), 1u);
+
+  if (GetParam().enable_multiple_spares) {
+    WaitForNextSpareReady();
+    ASSERT_EQ(spare_manager.GetSpares().size(), 2u);
+    WaitForNextSpareReady();
+  }
+
+  // Trigger memory pressure.
+  content::test::ScopedMemoryLimitOverride memory_override(
+      "SpareRenderProcessHostManagerImpl");
+  memory_override.SetLimit(GetParam().memory_limit);
+  memory_override.NotifyReleaseMemory();
+
+  EXPECT_EQ(spare_manager.GetSpares().size(),
+            GetParam().expected_spares_after_pressure);
+  if (GetParam().expected_spares_after_pressure > 0) {
+    EXPECT_TRUE(spare_manager.GetSpares()[0]->IsReady());
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    All,
+    SpareRenderProcessHostManagerMemoryPressureParamTest,
+    testing::Values(
+        MemoryPressureTestParams{/*enable_multiple_spares=*/false,
+                                 /*keep_one_alive=*/false,
+                                 /*use_critical_memory_pressure_threshold=*/
+                                 false,
+                                 /*memory_limit=*/
+                                 base::kModerateMemoryPressureThreshold,
+                                 /*expected_spares_after_pressure=*/0u},
+        MemoryPressureTestParams{/*enable_multiple_spares=*/true,
+                                 /*keep_one_alive=*/true,
+                                 /*use_critical_memory_pressure_threshold=*/
+                                 false,
+                                 /*memory_limit=*/
+                                 base::kModerateMemoryPressureThreshold,
+                                 /*expected_spares_after_pressure=*/1u},
+        MemoryPressureTestParams{/*enable_multiple_spares=*/true,
+                                 /*keep_one_alive=*/true,
+                                 /*use_critical_memory_pressure_threshold=*/
+                                 true,
+                                 /*memory_limit=*/
+                                 base::kModerateMemoryPressureThreshold,
+                                 /*expected_spares_after_pressure=*/2u},
+        MemoryPressureTestParams{/*enable_multiple_spares=*/false,
+                                 /*keep_one_alive=*/false,
+                                 /*use_critical_memory_pressure_threshold=*/
+                                 true,
+                                 /*memory_limit=*/
+                                 base::kCriticalMemoryPressureThreshold,
+                                 /*expected_spares_after_pressure=*/0u}));
 
 }  // namespace content

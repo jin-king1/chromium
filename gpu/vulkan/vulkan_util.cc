@@ -2,18 +2,15 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "gpu/vulkan/vulkan_util.h"
 
 #include <algorithm>
 #include <string_view>
 
+#include "base/compiler_specific.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_macros.h"
+#include "base/rand_util.h"
 #include "base/strings/pattern.h"
 #include "base/strings/string_split.h"
 #include "base/strings/string_util.h"
@@ -21,18 +18,18 @@
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "gpu/config/gpu_info.h"  //nogncheck
-#include "gpu/config/vulkan_info.h"
 #include "gpu/vulkan/vulkan_function_pointers.h"
+#include "gpu/vulkan/vulkan_info.h"
 #include "third_party/abseil-cpp/absl/cleanup/cleanup.h"
+#include "third_party/re2/src/re2/re2.h"
 #include "ui/gl/gl_switches.h"
 
 #if BUILDFLAG(IS_ANDROID)
-#include "base/android/build_info.h"
-#include "build/android_buildflags.h"
+#include "base/android/android_info.h"
+#include "base/android/device_info.h"
 #endif
 
 #if BUILDFLAG(IS_CHROMEOS)
-#include "ui/gfx/buffer_format_util.h"
 #include "ui/gfx/linux/drm_util_linux.h"  //nogncheck
 #endif
 
@@ -65,18 +62,19 @@ bool IsDeviceBlocked(std::string_view field, std::string_view block_list) {
 }
 
 int GetEMUIVersion() {
-  const auto* build_info = base::android::BuildInfo::GetInstance();
-  std::string_view manufacturer(build_info->manufacturer());
-
   // TODO(crbug.com/40136096): check Honor devices as well.
-  if (manufacturer != "HUAWEI")
+  if (base::android::android_info::manufacturer() != "HUAWEI") {
     return -1;
+  }
 
   // Huawei puts EMUI version in the build version incremental.
   // Example: 11.0.0.130C00
   int version = 0;
-  if (sscanf(build_info->version_incremental(), "%d.", &version) != 1)
+  if (UNSAFE_TODO(
+          sscanf(base::android::android_info::version_incremental().c_str(),
+                 "%d.", &version)) != 1) {
     return -1;
+  }
 
   return version;
 }
@@ -88,229 +86,36 @@ bool IsBlockedByBuildInfo() {
   const char* kBlockListByBoard =
       "RM67*|RM68*|k68*|mt6*|oppo67*|oppo68*|QM215|rk30sdk";
 
-  const auto* build_info = base::android::BuildInfo::GetInstance();
-  if (IsDeviceBlocked(build_info->hardware(), kBlockListByHardware)) {
+  if (IsDeviceBlocked(base::android::android_info::hardware(),
+                      kBlockListByHardware)) {
     return true;
   }
-  if (IsDeviceBlocked(build_info->brand(), kBlockListByBrand)) {
+  if (IsDeviceBlocked(base::android::android_info::brand(),
+                      kBlockListByBrand)) {
     return true;
   }
-  if (IsDeviceBlocked(build_info->device(), kBlockListByDevice)) {
+  if (IsDeviceBlocked(base::android::android_info::device(),
+                      kBlockListByDevice)) {
     return true;
   }
-  if (IsDeviceBlocked(build_info->board(), kBlockListByBoard)) {
-    return true;
-  }
-
-  return false;
-}
-
-BASE_FEATURE(kVulkanV2, "VulkanV2", base::FEATURE_DISABLED_BY_DEFAULT);
-BASE_FEATURE(kVulkanV3, "VulkanV3", base::FEATURE_DISABLED_BY_DEFAULT);
-
-bool IsDeviceBlockedByFeatureParams(const GPUInfo& gpu_info,
-                                    const base::Feature* feature) {
-  const auto* build_info = base::android::BuildInfo::GetInstance();
-
-  const base::FeatureParam<std::string> kBlockListByHardware{
-      feature, "BlockListByHardware", ""};
-
-  const base::FeatureParam<std::string> kBlockListByBrand{
-      feature, "BlockListByBrand", ""};
-
-  const base::FeatureParam<std::string> kBlockListByDevice{
-      feature, "BlockListByDevice", ""};
-
-  const base::FeatureParam<std::string> kBlockListByAndroidBuildId{
-      feature, "BlockListByAndroidBuildId", ""};
-
-  const base::FeatureParam<std::string> kBlockListByManufacturer{
-      feature, "BlockListByManufacturer", ""};
-
-  const base::FeatureParam<std::string> kBlockListByModel{
-      feature, "BlockListByModel", ""};
-
-  const base::FeatureParam<std::string> kBlockListByBoard{
-      feature, "BlockListByBoard", ""};
-
-  const base::FeatureParam<std::string> kBlockListByAndroidBuildFP{
-      feature, "BlockListByAndroidBuildFP", ""};
-
-  const base::FeatureParam<std::string> kBlockListByGLDriver{
-      feature, "BlockListByGLDriver", ""};
-
-  const base::FeatureParam<std::string> kBlockListByGLRenderer{
-      feature, "BlockListByGLRenderer", ""};
-
-  // Check block list against build info.
-  if (IsDeviceBlocked(build_info->hardware(), kBlockListByHardware.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->brand(), kBlockListByBrand.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->device(), kBlockListByDevice.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->android_build_id(),
-                      kBlockListByAndroidBuildId.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->manufacturer(),
-                      kBlockListByManufacturer.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->model(), kBlockListByModel.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->board(), kBlockListByBoard.Get())) {
-    return true;
-  }
-  if (IsDeviceBlocked(build_info->android_build_fp(),
-                      kBlockListByAndroidBuildFP.Get())) {
-    return true;
-  }
-
-  if (IsDeviceBlocked(gpu_info.gl_renderer, kBlockListByGLRenderer.Get())) {
-    return true;
-  }
-
-  if (IsDeviceBlocked(gpu_info.gpu.driver_version,
-                      kBlockListByGLDriver.Get())) {
+  if (IsDeviceBlocked(base::android::android_info::board(),
+                      kBlockListByBoard)) {
     return true;
   }
 
   return false;
-}
-
-bool IsVulkanV2Allowed() {
-  const auto* build_info = base::android::BuildInfo::GetInstance();
-  // We require at least android T deqp test to pass for v2.
-  constexpr int32_t kVulkanDEQPAndroidT = 0x07E60301;
-  if (build_info->vulkan_deqp_level() < kVulkanDEQPAndroidT) {
-    return false;
-  }
-
-  return true;
-}
-
-bool IsVulkanV2Enabled(const GPUInfo& gpu_info,
-                       std::string_view experiment_arm) {
-  if (!IsVulkanV2Allowed()) {
-    return false;
-  }
-
-  if (!base::FeatureList::IsEnabled(kVulkanV2)) {
-    return false;
-  }
-
-  if (IsDeviceBlockedByFeatureParams(gpu_info, &kVulkanV2)) {
-    return false;
-  }
-
-  const base::FeatureParam<std::string> kBlockListByExperimentArm{
-      &kVulkanV2, "BlockListByExperimentArm", ""};
-
-  if (IsDeviceBlocked(experiment_arm, kBlockListByExperimentArm.Get())) {
-    return false;
-  }
-
-  return true;
-}
-
-bool ShouldBypassMediatekBlock(const GPUInfo& gpu_info) {
-  return IsVulkanV2Enabled(gpu_info, "Mediatek");
-}
-
-bool IsVulkanV2EnabledForImagination(const GPUInfo& gpu_info) {
-  // Imagination shows regression even with 2022 deQP tests.
-  return false;
-}
-
-// Everything except MediaTek.
-bool IsVulkanV1EnabledForMali(const GPUInfo& gpu_info) {
-  // https://crbug.com/1183702
-  if (IsDeviceBlocked(gpu_info.gl_renderer, "*Mali-G?? M*")) {
-    return false;
-  }
-  return true;
 }
 
 // Everything that passed 2022 deQP tests.
-bool IsVulkanV2EnabledForMali(const GPUInfo& gpu_info) {
-  // For V2 we MediaTek is allowed.
-  return ShouldBypassMediatekBlock(gpu_info);
-}
-
-// Only Adreno 630 with drivers newer than 444.0
-bool IsVulkanV1EnabledForAdreno(
-    const GPUInfo& gpu_info,
-    const VulkanPhysicalDeviceProperties& device_properties) {
-  // https://crbug.com/1246857
-  if (IsDeviceBlocked(gpu_info.gpu.driver_version,
-                      "324.0|331.0|334.0|378.0|415.0|420.0|444.0")) {
-    return false;
-  }
-
-  // https:://crbug.com/1165783: Performance is not yet as good as GL.
-  return device_properties.device_name == std::string_view("Adreno (TM) 630");
-}
-
-bool IsVulkanV2EnabledForAdreno(
-    const GPUInfo& gpu_info,
-    const VulkanPhysicalDeviceProperties& device_properties) {
-  // Adreno shows regression even with 2022 deQP tests.
-  return false;
-}
-
-// Adreno 610+ and drivers 502+.
-bool IsVulkanV3EnabledForAdreno(
-    const GPUInfo& gpu_info,
-    const VulkanPhysicalDeviceProperties& device_properties) {
-  // If IsVulkanV2Allowed(), this device is part of VulkanV2 finch and we should
-  // not make decision again. This is to prevent VulkanV2 control group to get
-  // Vulkan enabled by getting into VulkanV3 enabled group.
-  if (IsVulkanV2Allowed()) {
-    return false;
-  }
-
-  std::vector<const char*> slow_gpus_for_v3 = {
-      "Adreno (TM) 2??",
-      "Adreno (TM) 3??",
-      "Adreno (TM) 4??",
-      "Adreno (TM) 5??",
-  };
-
-  const bool is_slow_gpu_for_v3 =
-      std::ranges::any_of(slow_gpus_for_v3, [&](const char* pattern) {
-        return base::MatchPattern(device_properties.device_name, pattern);
-      });
-
-  if (is_slow_gpu_for_v3) {
-    return false;
-  }
-
-  constexpr uint32_t kMinVersion = 0x801F6000;  // 502.0
-  if (device_properties.driver_version < kMinVersion) {
-    return false;
-  }
-
-  if (!base::FeatureList::IsEnabled(kVulkanV3)) {
-    return false;
-  }
-
-  if (IsDeviceBlockedByFeatureParams(gpu_info, &kVulkanV3)) {
+bool HasMinDeqpLevelForMediaTek() {
+  // We require at least android V deqp test to pass for v2.
+  constexpr int32_t kVulkanDEQPAndroidV = 0x7e80301;
+  if (base::android::device_info::vulkan_deqp_level() < kVulkanDEQPAndroidV) {
     return false;
   }
 
   return true;
 }
-
-bool SkipVulkanBlocklist() {
-  // Expectation is for all desktop android devices to use vulkan
-  return BUILDFLAG(IS_DESKTOP_ANDROID);
-}
-
 #endif
 }  // namespace
 
@@ -341,7 +146,8 @@ bool SubmitSignalVkSemaphore(VkQueue vk_queue,
                              VkSemaphore vk_semaphore,
                              VkFence vk_fence) {
   return SubmitSignalVkSemaphores(
-      vk_queue, base::span<VkSemaphore>(&vk_semaphore, 1u), vk_fence);
+      vk_queue, UNSAFE_TODO(base::span<VkSemaphore>(&vk_semaphore, 1u)),
+      vk_fence);
 }
 
 bool SubmitWaitVkSemaphores(VkQueue vk_queue,
@@ -365,7 +171,8 @@ bool SubmitWaitVkSemaphore(VkQueue vk_queue,
                            VkSemaphore vk_semaphore,
                            VkFence vk_fence) {
   return SubmitWaitVkSemaphores(
-      vk_queue, base::span<VkSemaphore>(&vk_semaphore, 1u), vk_fence);
+      vk_queue, UNSAFE_TODO(base::span<VkSemaphore>(&vk_semaphore, 1u)),
+      vk_fence);
 }
 
 VkSemaphore CreateExternalVkSemaphore(
@@ -407,10 +214,9 @@ VkResult CreateGraphicsPipelinesHook(
     const VkAllocationCallbacks* pAllocator,
     VkPipeline* pPipelines) {
   absl::Cleanup uma_runner = [start_time = base::TimeTicks::Now()] {
-    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
-        "GPU.Vulkan.PipelineCache.vkCreateGraphicsPipelines",
-        base::TimeTicks::Now() - start_time, base::Microseconds(100),
-        base::Microseconds(50000), 50);
+    base::TimeDelta elapsed = base::TimeTicks::Now() - start_time;
+    // Also emitted from DawnPlatform.
+    EmitVkCreateGraphicsPipelinesUMA(elapsed);
   };
   TRACE_EVENT0("gpu", "VulkanCreateGraphicsPipelines");
   return vkCreateGraphicsPipelines(device, pipelineCache, createInfoCount,
@@ -421,6 +227,11 @@ VkResult VulkanQueueSubmitHook(VkQueue queue,
                                uint32_t submitCount,
                                const VkSubmitInfo* pSubmits,
                                VkFence fence) {
+  absl::Cleanup uma_runner = [start_time = base::TimeTicks::Now()] {
+    base::TimeDelta elapsed = base::TimeTicks::Now() - start_time;
+    // Also emitted from DawnPlatform.
+    EmitVkQueueSubmitUMA(elapsed);
+  };
   TRACE_EVENT0("gpu", "VulkanQueueSubmitHook");
   return vkQueueSubmit(queue, submitCount, pSubmits, fence);
 }
@@ -474,11 +285,11 @@ bool CheckVulkanCompatibilities(
   return true;
 #endif
 #else   // BUILDFLAG(IS_ANDROID)
-   if (SkipVulkanBlocklist()) {
+  if (base::FeatureList::IsEnabled(features::kSkipVulkanBlocklist)) {
     return true;
   }
 
-  if (IsBlockedByBuildInfo() && !ShouldBypassMediatekBlock(gpu_info)) {
+  if (IsBlockedByBuildInfo() && !HasMinDeqpLevelForMediaTek()) {
     return false;
   }
 
@@ -522,30 +333,48 @@ bool CheckVulkanCompatibilities(
       return false;
     }
 
-    return IsVulkanV1EnabledForMali(gpu_info) ||
-           IsVulkanV2EnabledForMali(gpu_info);
+    // Allow remaining Mali GPUs that aren't MediaTek. https://crbug.com/1183702
+    if (!IsDeviceBlocked(gpu_info.gl_renderer, "*Mali-G?? M*")) {
+      return true;
+    }
+
+    // MediaTek Mali-G57 has problems initializing Vulkan even with 2022 deQP
+    // tests passed, devices that init successfully show performance regression.
+    if (device_name == "G57") {
+      return false;
+    }
+
+    // For MediaTek allow everything that passed 2022 deQP tests.
+    return HasMinDeqpLevelForMediaTek();
   }
 
   if (device_properties.vendor_id == kVendorQualcomm) {
-    return IsVulkanV1EnabledForAdreno(gpu_info, device_properties) ||
-           IsVulkanV2EnabledForAdreno(gpu_info, device_properties) ||
-           IsVulkanV3EnabledForAdreno(gpu_info, device_properties);
+    // Only Adreno 630 with drivers newer than 444.0. This was launched for
+    // Pixel 3 in the original Vulkan launch but otherwise Vulkan hasn't
+    // performan as well as GL. https:://crbug.com/1165783
+    return device_properties.device_name ==
+               std::string_view("Adreno (TM) 630") &&
+           !IsDeviceBlocked(gpu_info.gpu.driver_version,
+                            "324.0|331.0|334.0|378.0|415.0|420.0|444.0");
   }
 
-  // https://crbug.com/1122650: Poor performance and untriaged crashes with
-  // Imagination GPUs.
   if (device_properties.vendor_id == kVendorImagination) {
-    // Only PowerVR D series allowed in V1.
-    if (base::StartsWith(device_properties.device_name, "PowerVR D")) {
-      return true;
-    }
-    return IsVulkanV2EnabledForImagination(gpu_info);
+    // Only newer PowerVR GPU series allowed. Older PowerVR GPUs showed poor
+    // performance and stability problems, see https://crbug.com/1122650.
+    return RE2::FullMatch(device_properties.device_name,
+                          "PowerVR ([CDE]-Series)? [CDE]X.*");
   }
 
   // Some devices implement Vulkan using Swiftshader. We do not want those,
   // because of performance, and stability (crbug.com/1479335).
   if (device_properties.vendor_id == kVendorGoogle &&
       device_properties.device_id == kDeviceSwiftShader) {
+    return false;
+  }
+
+  // Some android x86 devices (e.g older gpu on auto devices) don't report
+  // format support correctly. See crbug.com/379205391
+  if (device_properties.vendor_id == kVendorIntel) {
     return false;
   }
 
@@ -723,34 +552,20 @@ QueryVkDrmFormatModifierPropertiesEXT(VkPhysicalDevice physical_device,
   return modifier_props;
 }
 
-void PopulateVkDrmFormatsAndModifiers(
-    VulkanDeviceQueue* device_queue,
-    base::flat_map<uint32_t, std::vector<uint64_t>>&
-        drm_formats_and_modifiers) {
-#if BUILDFLAG(IS_CHROMEOS)
-  for (int i = 0; i <= static_cast<int>(gfx::BufferFormat::LAST); i++) {
-    gfx::BufferFormat buffer_format = static_cast<gfx::BufferFormat>(i);
-    VkFormat vk_format = gfx::ToVkFormat(buffer_format);
-    int fourcc_format = ui::GetFourCCFormatFromBufferFormat(buffer_format);
-    if (vk_format == VK_FORMAT_UNDEFINED || fourcc_format == 0) {
-      continue;
-    }
+void EmitVkCreateGraphicsPipelinesUMA(base::TimeDelta sample) {
+  UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
+      "GPU.Vulkan.SkiaContext.vkCreateGraphicsPipelinesUS", sample,
+      base::Microseconds(50), base::Microseconds(1'000'000), 50);
+}
 
-    std::vector<VkDrmFormatModifierPropertiesEXT> modifier_props =
-        QueryVkDrmFormatModifierPropertiesEXT(
-            device_queue->GetVulkanPhysicalDevice(), vk_format);
-    if (modifier_props.empty()) {
-      continue;
-    }
-
-    std::vector<uint64_t> modifiers;
-    modifiers.reserve(modifier_props.size());
-    for (const auto& props : modifier_props) {
-      modifiers.push_back(props.drmFormatModifier);
-    }
-    drm_formats_and_modifiers.emplace(fourcc_format, std::move(modifiers));
+void EmitVkQueueSubmitUMA(base::TimeDelta sample) {
+  // Subsample this metric as it is on critical path and can be called a lot per
+  // frame.
+  if (base::ShouldRecordSubsampledMetric(0.01)) {
+    UMA_HISTOGRAM_CUSTOM_MICROSECONDS_TIMES(
+        "GPU.Vulkan.SkiaContext.vkQueueSubmitUS", sample,
+        base::Microseconds(50), base::Microseconds(1'000'000), 50);
   }
-#endif
 }
 
 }  // namespace gpu

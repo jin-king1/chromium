@@ -34,6 +34,7 @@ void LogReadResult(connections::mojom::Medium medium, bool success) {
     case connections::mojom::Medium::kBleL2Cap:
     case connections::mojom::Medium::kUsb:
     case connections::mojom::Medium::kWebRtcNonCellular:
+    case connections::mojom::Medium::kAwdl:
       break;
   }
 }
@@ -104,7 +105,7 @@ ExceptionOr<ByteArray> InputStreamImpl::Read(std::int64_t size) {
 }
 
 Exception InputStreamImpl::Close() {
-  // NOTE(http://crbug.com/1247876): Close() might be called from multiple
+  // NOTE(http://crbug.com/40197037): Close() might be called from multiple
   // threads at the same time; sequence calls and check if stream is already
   // closed inside task. Also, must cancel |receive_stream_watcher_| on the
   // same sequence it was initialized on.

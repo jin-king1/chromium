@@ -13,27 +13,24 @@
 // The "GGLA" brand is used to test the normal code flow of the code, and the
 // "TEST" brand is used to test the supplementary brand code code flow.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
+#include "rlz/lib/rlz_lib.h"
 
 #include <stddef.h>
 
 #include <algorithm>
 #include <memory>
+#include <string_view>
 
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/message_loop/message_pump_type.h"
 #include "base/posix/eintr_wrapper.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/task_environment.h"
 #include "build/build_config.h"
-#include "build/chromeos_buildflags.h"
 #include "rlz/lib/financial_ping.h"
 #include "rlz/lib/lib_values.h"
 #include "rlz/lib/net_response_check.h"
-#include "rlz/lib/rlz_lib.h"
 #include "rlz/lib/rlz_lib_clear.h"
 #include "rlz/lib/rlz_value_store.h"
 #include "rlz/test/rlz_test_helpers.h"
@@ -53,7 +50,7 @@
 #include "services/network/public/mojom/url_loader_factory.mojom.h"
 #include "services/network/test/test_url_loader_factory.h"
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 #include "base/files/important_file_writer.h"
 #include "chromeos/ash/components/dbus/dbus_thread_manager.h"
 #include "chromeos/ash/components/dbus/debug_daemon/debug_daemon_client.h"
@@ -62,6 +59,9 @@
 #endif
 
 namespace {
+
+using ::testing::HasSubstr;
+
 const char kProductSignature[] = "swg";
 const char kProductBrand[] = "GGLA";
 const char kProductId[] = "SwgProductId1234";
@@ -171,6 +171,30 @@ TEST_F(RlzLibTest, RecordProductEvent) {
   EXPECT_TRUE(rlz_lib::GetProductEventsAsCgi(rlz_lib::TOOLBAR_NOTIFIER,
                                              cgi_50, 50));
   EXPECT_STREQ("events=I7S,W1I", cgi_50);
+
+  EXPECT_TRUE(rlz_lib::ClearAllProductEvents(rlz_lib::CHROME));
+  EXPECT_TRUE(rlz_lib::RecordProductEvent(
+      rlz_lib::CHROME, rlz_lib::CHROME_OMNIBOX, rlz_lib::ENTERPRISE_ENROLLMENT));
+  EXPECT_TRUE(rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi_50, 50));
+  EXPECT_STREQ("events=C1X", cgi_50);
+
+  EXPECT_TRUE(rlz_lib::RecordProductEvent(rlz_lib::CHROME,
+                                          rlz_lib::CHROME_OMNIBOX,
+                                          rlz_lib::ENTERPRISE_UNENROLLMENT));
+  EXPECT_TRUE(rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi_50, 50));
+  EXPECT_STREQ("events=C1X,C1Y", cgi_50);
+
+  ASSERT_TRUE(rlz_lib::RecordProductEvent(
+      rlz_lib::CHROME, rlz_lib::CHROME_OMNIBOX,
+      rlz_lib::ENTERPRISE_ENROLLED_ACTIVATE));
+  EXPECT_TRUE(rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi_50, 50));
+  EXPECT_STREQ("events=C1X,C1Y,C1Z", cgi_50);
+
+  ASSERT_TRUE(rlz_lib::RecordProductEvent(
+      rlz_lib::CHROME, rlz_lib::CHROME_OMNIBOX,
+      rlz_lib::ENTERPRISE_ENROLLED_FIRST_SEARCH));
+  EXPECT_TRUE(rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi_50, 50));
+  EXPECT_STREQ("events=C1W,C1X,C1Y,C1Z", cgi_50);
 }
 
 TEST_F(RlzLibTest, ClearProductEvent) {
@@ -259,7 +283,7 @@ TEST_F(RlzLibTest, SetAccessPointRlz) {
   EXPECT_STREQ("IeTbRlz", rlz_50);
 }
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 TEST_F(RlzLibTest, SetAccessPointRlzOnlyOnce) {
   // On Chrome OS, and RLZ string can ne set only once.
   char rlz_50[50];
@@ -273,6 +297,16 @@ TEST_F(RlzLibTest, SetAccessPointRlzOnlyOnce) {
 }
 
 TEST_F(RlzLibTest, UpdateExistingAccessPointRlz) {
+  // This test writes directly to disk to simulate store state and expects the
+  // store to reload it. However, under a global branding lock (active when
+  // SupplementaryBranding is not empty), the in-memory store is reused and
+  // does not reload from disk. Additionally, the production
+  // UpdateExistingAccessPointRlz() has a DCHECK asserting no supplementary
+  // brand is active. Thus, we must skip this test when branding is active.
+  if (!rlz_lib::SupplementaryBranding::GetBrand().empty()) {
+    return;
+  }
+
   const std::string json_data = R"({
    "access_points": {
       "CA": {
@@ -404,78 +438,79 @@ TEST_F(RlzLibTest, GetPingParams) {
 
 TEST_F(RlzLibTest, IsPingResponseValid) {
   const char* kBadPingResponses[] = {
-    // No checksum.
-    "version: 3.0.914.7250\r\n"
-    "url: http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
-    "launch-action: custom-action\r\n"
-    "launch-target: SearchWithGoogleUpdate.exe\r\n"
-    "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
-    "rlz: 1R1_____en__252\r\n"
-    "rlzXX: 1R1_____en__250\r\n",
+      // No checksum.
+      "version: 3.0.914.7250\r\n"
+      "url: "
+      "http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
+      "launch-action: custom-action\r\n"
+      "launch-target: SearchWithGoogleUpdate.exe\r\n"
+      "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
+      "rlz: 1R1_____en__252\r\n"
+      "rlzXX: 1R1_____en__250\r\n",
 
-    // Invalid checksum.
-    "version: 3.0.914.7250\r\n"
-    "url: http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
-    "launch-action: custom-action\r\n"
-    "launch-target: SearchWithGoogleUpdate.exe\r\n"
-    "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
-    "rlz: 1R1_____en__252\r\n"
-    "rlzXX: 1R1_____en__250\r\n"
-    "rlzT4  1T4_____en__251\r\n"
-    "rlzT4: 1T4_____en__252\r\n"
-    "rlz\r\n"
-    "crc32: B12CC79A",
+      // Invalid checksum.
+      "version: 3.0.914.7250\r\n"
+      "url: "
+      "http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
+      "launch-action: custom-action\r\n"
+      "launch-target: SearchWithGoogleUpdate.exe\r\n"
+      "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
+      "rlz: 1R1_____en__252\r\n"
+      "rlzXX: 1R1_____en__250\r\n"
+      "rlzT4  1T4_____en__251\r\n"
+      "rlzT4: 1T4_____en__252\r\n"
+      "rlz\r\n"
+      "crc32: B12CC79A",
 
-    // Misplaced checksum.
-    "version: 3.0.914.7250\r\n"
-    "url: http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
-    "launch-action: custom-action\r\n"
-    "launch-target: SearchWithGoogleUpdate.exe\r\n"
-    "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
-    "rlz: 1R1_____en__252\r\n"
-    "rlzXX: 1R1_____en__250\r\n"
-    "crc32: B12CC79C\r\n"
-    "rlzT4  1T4_____en__251\r\n"
-    "rlzT4: 1T4_____en__252\r\n"
-    "rlz\r\n",
-
-    NULL
-  };
+      // Misplaced checksum.
+      "version: 3.0.914.7250\r\n"
+      "url: "
+      "http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
+      "launch-action: custom-action\r\n"
+      "launch-target: SearchWithGoogleUpdate.exe\r\n"
+      "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
+      "rlz: 1R1_____en__252\r\n"
+      "rlzXX: 1R1_____en__250\r\n"
+      "crc32: B12CC79C\r\n"
+      "rlzT4  1T4_____en__251\r\n"
+      "rlzT4: 1T4_____en__252\r\n"
+      "rlz\r\n"};
 
   const char* kGoodPingResponses[] = {
-    "version: 3.0.914.7250\r\n"
-    "url: http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
-    "launch-action: custom-action\r\n"
-    "launch-target: SearchWithGoogleUpdate.exe\r\n"
-    "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
-    "rlz: 1R1_____en__252\r\n"
-    "rlzXX: 1R1_____en__250\r\n"
-    "rlzT4  1T4_____en__251\r\n"
-    "rlzT4: 1T4_____en__252\r\n"
-    "rlz\r\n"
-    "crc32: D6FD55A3",
+      "version: 3.0.914.7250\r\n"
+      "url: "
+      "http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
+      "launch-action: custom-action\r\n"
+      "launch-target: SearchWithGoogleUpdate.exe\r\n"
+      "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
+      "rlz: 1R1_____en__252\r\n"
+      "rlzXX: 1R1_____en__250\r\n"
+      "rlzT4  1T4_____en__251\r\n"
+      "rlzT4: 1T4_____en__252\r\n"
+      "rlz\r\n"
+      "crc32: D6FD55A3",
 
-    "version: 3.0.914.7250\r\n"
-    "url: http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
-    "launch-action: custom-action\r\n"
-    "launch-target: SearchWithGoogleUpdate.exe\r\n"
-    "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
-    "rlz: 1R1_____en__252\r\n"
-    "rlzXX: 1R1_____en__250\r\n"
-    "rlzT4  1T4_____en__251\r\n"
-    "rlzT4: 1T4_____en__252\r\n"
-    "rlz\r\n"
-    "crc32: D6FD55A3\r\n"
-    "extradata: not checksummed",
+      "version: 3.0.914.7250\r\n"
+      "url: "
+      "http://www.corp.google.com/~av/45/opt/SearchWithGoogleUpdate.exe\r\n"
+      "launch-action: custom-action\r\n"
+      "launch-target: SearchWithGoogleUpdate.exe\r\n"
+      "signature: c08a3f4438e1442c4fe5678ee147cf6c5516e5d62bb64e\r\n"
+      "rlz: 1R1_____en__252\r\n"
+      "rlzXX: 1R1_____en__250\r\n"
+      "rlzT4  1T4_____en__251\r\n"
+      "rlzT4: 1T4_____en__252\r\n"
+      "rlz\r\n"
+      "crc32: D6FD55A3\r\n"
+      "extradata: not checksummed"};
 
-    NULL
-  };
+  for (const char* response : kBadPingResponses) {
+    EXPECT_FALSE(rlz_lib::IsPingResponseValid(response, nullptr));
+  }
 
-  for (int i = 0; kBadPingResponses[i]; i++)
-    EXPECT_FALSE(rlz_lib::IsPingResponseValid(kBadPingResponses[i], NULL));
-
-  for (int i = 0; kGoodPingResponses[i]; i++)
-    EXPECT_TRUE(rlz_lib::IsPingResponseValid(kGoodPingResponses[i], NULL));
+  for (const char* response : kGoodPingResponses) {
+    EXPECT_TRUE(rlz_lib::IsPingResponseValid(response, nullptr));
+  }
 }
 
 TEST_F(RlzLibTest, ParsePingResponse) {
@@ -523,7 +558,7 @@ TEST_F(RlzLibTest, ParsePingResponse) {
   EXPECT_TRUE(rlz_lib::ParsePingResponse(rlz_lib::TOOLBAR_NOTIFIER,
                                          kPingResponse2));
   EXPECT_TRUE(rlz_lib::GetAccessPointRlz(rlz_lib::IETB_SEARCH_BOX, value, 50));
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   // On Chrome OS, the RLZ string is not modified by response once set.
   EXPECT_STREQ("1T4_____en__252", value);
 #else
@@ -534,7 +569,7 @@ TEST_F(RlzLibTest, ParsePingResponse) {
     "crc32: 0\r\n";  // Good RLZ - empty response.
   EXPECT_TRUE(rlz_lib::ParsePingResponse(rlz_lib::TOOLBAR_NOTIFIER,
                                          kPingResponse3));
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
   // On Chrome OS, the RLZ string is not modified by response once set.
   EXPECT_STREQ("1T4_____en__252", value);
 #else
@@ -715,8 +750,7 @@ TEST_F(RlzLibTest, ClearProductState) {
   EXPECT_TRUE(rlz_lib::SetAccessPointRlz(rlz_lib::GD_DESKBAND,
       "GdbRlzValue"));
 
-  rlz_lib::AccessPoint points[] =
-      { rlz_lib::IETB_SEARCH_BOX, rlz_lib::NO_ACCESS_POINT };
+  rlz_lib::AccessPoint points[] = {rlz_lib::IETB_SEARCH_BOX};
 
   EXPECT_TRUE(rlz_lib::RecordProductEvent(rlz_lib::TOOLBAR_NOTIFIER,
       rlz_lib::IE_DEFAULT_SEARCH, rlz_lib::SET_TO_GOOGLE));
@@ -1128,7 +1162,7 @@ TEST_F(RlzLibTest, LockAcquistionSucceedsButStoreFileCannotBeCreated) {
 
 #endif
 
-#if BUILDFLAG(IS_CHROMEOS_ASH)
+#if BUILDFLAG(IS_CHROMEOS)
 class ScopedTestDebugDaemonClient : public ash::FakeDebugDaemonClient {
  public:
   ScopedTestDebugDaemonClient() {
@@ -1198,7 +1232,7 @@ TEST_F(RlzLibTest, NoRecordCAFEvent) {
   char cgi[256];
   EXPECT_TRUE(
       rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi, std::size(cgi)));
-  EXPECT_NE(nullptr, strstr(cgi, "CAF"));
+  EXPECT_THAT(cgi, HasSubstr("CAF"));
 
   // Simulate another user on the machine sending the RLZ ping, so "should send
   // RLZ" is now false.
@@ -1234,8 +1268,8 @@ TEST_F(RlzLibTest, NoRecordCAFEvent2) {
   char cgi[256];
   EXPECT_TRUE(
       rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi, std::size(cgi)));
-  EXPECT_NE(nullptr, strstr(cgi, "CAF"));
-  EXPECT_NE(nullptr, strstr(cgi, "CAI"));
+  EXPECT_THAT(cgi, HasSubstr("CAF"));
+  EXPECT_THAT(cgi, HasSubstr("CAI"));
 
   // Simulate another user on the machine sending the RLZ ping, so "should send
   // RLZ" is now false.
@@ -1246,7 +1280,7 @@ TEST_F(RlzLibTest, NoRecordCAFEvent2) {
   // Only the "CAI" event should appear.
   EXPECT_TRUE(
       rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi, std::size(cgi)));
-  EXPECT_NE(nullptr, strstr(cgi, "CAI"));
+  EXPECT_THAT(cgi, HasSubstr("CAI"));
 
   // The event should be permanently deleted, so setting the flag back to
   // true should still not return the "CAF" event.
@@ -1255,6 +1289,6 @@ TEST_F(RlzLibTest, NoRecordCAFEvent2) {
       ash::system::kShouldSendRlzPingValueTrue);
   EXPECT_TRUE(
       rlz_lib::GetProductEventsAsCgi(rlz_lib::CHROME, cgi, std::size(cgi)));
-  EXPECT_NE(nullptr, strstr(cgi, "CAI"));
+  EXPECT_THAT(cgi, HasSubstr("CAI"));
 }
 #endif

@@ -2,16 +2,13 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "remoting/host/linux/x_server_clipboard.h"
 
+#include <array>
 #include <limits>
 
-#include "base/containers/contains.h"
+#include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/callback.h"
 #include "base/memory/ref_counted_memory.h"
@@ -51,18 +48,22 @@ void XServerClipboard::Init(x11::Connection* connection,
 
   // TODO(lambroslambrou): Use ui::X11AtomCache for this, either by adding a
   // dependency on ui/ or by moving X11AtomCache to base/.
-  static const char* const kAtomNames[] = {"CLIPBOARD",        "INCR",
-                                           "SELECTION_STRING", "TARGETS",
-                                           "TIMESTAMP",        "UTF8_STRING"};
+  static const auto kAtomNames = std::to_array<const char*>({
+      "CLIPBOARD",
+      "INCR",
+      "SELECTION_STRING",
+      "TARGETS",
+      "TIMESTAMP",
+      "UTF8_STRING",
+  });
   static const int kNumAtomNames = std::size(kAtomNames);
 
-  x11::Future<x11::InternAtomReply> futures[kNumAtomNames];
+  std::array<x11::Future<x11::InternAtomReply>, kNumAtomNames> futures;
   for (size_t i = 0; i < kNumAtomNames; i++) {
     futures[i] = connection_->InternAtom({false, kAtomNames[i]});
   }
   connection_->Flush();
-  x11::Atom atoms[kNumAtomNames];
-  memset(atoms, 0, sizeof(atoms));
+  std::array<x11::Atom, kNumAtomNames> atoms = {};
   for (size_t i = 0; i < kNumAtomNames; i++) {
     if (auto reply = futures[i].Sync()) {
       atoms[i] = reply->atom;
@@ -352,7 +353,8 @@ bool XServerClipboard::HandleSelectionTargetsEvent(
     if (data && format == 32) {
       const uint32_t* targets = static_cast<const uint32_t*>(data);
       for (int i = 0; i < item_count; i++) {
-        if (targets[i] == static_cast<uint32_t>(utf8_string_atom_)) {
+        if (UNSAFE_TODO(targets[i]) ==
+            static_cast<uint32_t>(utf8_string_atom_)) {
           RequestSelectionString(selection, utf8_string_atom_);
           return false;
         }
@@ -415,7 +417,7 @@ void XServerClipboard::AssertSelectionOwnership(x11::Atom selection) {
 }
 
 bool XServerClipboard::IsSelectionOwner(x11::Atom selection) {
-  return base::Contains(selections_owned_, selection);
+  return selections_owned_.contains(selection);
 }
 
 }  // namespace remoting

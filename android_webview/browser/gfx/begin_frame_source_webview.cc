@@ -8,6 +8,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
 #include "base/trace_event/trace_event.h"
+#include "third_party/perfetto/include/perfetto/tracing/track.h"
 
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/RootBeginFrameSourceWebView_jni.h"
@@ -86,12 +87,13 @@ void BeginFrameSourceWebView::ObserveBeginFrameSource(
 }
 
 void BeginFrameSourceWebView::OnNeedsBeginFrames(bool needs_begin_frames) {
+  auto track = perfetto::NamedTrack::FromPointer("NeedsBeginFrames", this);
   if (needs_begin_frames) {
-    TRACE_EVENT_NESTABLE_ASYNC_BEGIN0("cc,benchmark", "NeedsBeginFrames", this);
+    TRACE_EVENT_BEGIN("cc,benchmark", "NeedsBeginFrames", track);
     if (observed_begin_frame_source_)
       observed_begin_frame_source_->AddObserver(parent_observer_.get());
   } else {
-    TRACE_EVENT_NESTABLE_ASYNC_END0("cc,benchmark", "NeedsBeginFrames", this);
+    TRACE_EVENT_END("cc,benchmark", track);
     if (observed_begin_frame_source_)
       observed_begin_frame_source_->RemoveObserver(parent_observer_.get());
   }
@@ -128,7 +130,7 @@ RootBeginFrameSourceWebView::RootBeginFrameSourceWebView()
                           /*requires_align_with_java=*/true),
       j_object_(Java_RootBeginFrameSourceWebView_Constructor(
           jni_zero::AttachCurrentThread(),
-          reinterpret_cast<jlong>(this))) {
+          reinterpret_cast<int64_t>(this))) {
   ObserveBeginFrameSource(&begin_frame_source_);
 }
 
@@ -136,7 +138,6 @@ RootBeginFrameSourceWebView::~RootBeginFrameSourceWebView() = default;
 
 void RootBeginFrameSourceWebView::OnUpdateRefreshRate(
     JNIEnv* env,
-    const base::android::JavaParamRef<jobject>& obj,
     float refresh_rate) {
   begin_frame_source_.UpdateRefreshRate(refresh_rate);
 }
@@ -154,3 +155,5 @@ void RootBeginFrameSourceWebView::AddBeginFrameCompletionCallback(
 }
 
 }  // namespace android_webview
+
+DEFINE_JNI(RootBeginFrameSourceWebView)

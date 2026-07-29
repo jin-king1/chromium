@@ -14,12 +14,14 @@
 #include "base/memory/weak_ptr.h"
 #include "base/values.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_data_base.h"
-#include "chrome/browser/extensions/cws_item_service.pb.h"
-#include "chrome/browser/extensions/webstore_data_fetcher_delegate.h"
 #include "components/account_id/account_id.h"
+#include "extensions/browser/cws_item_service.pb.h"
+#include "extensions/browser/webstore_data_fetcher_delegate.h"
+#include "extensions/browser/webstore_install_helper.h"
 #include "ui/gfx/image/image_skia.h"
 #include "url/gurl.h"
 
+class PrefService;
 class Profile;
 
 namespace extensions {
@@ -31,9 +33,9 @@ namespace gfx {
 class Image;
 }
 
-namespace network::mojom {
-class URLLoaderFactory;
-}  // namespace network::mojom
+namespace network {
+class SharedURLLoaderFactory;
+}  // namespace network
 
 namespace ash {
 
@@ -51,11 +53,15 @@ class KioskAppData : public KioskAppDataBase,
     kError,    // Failed to load data.
   };
 
-  KioskAppData(KioskAppDataDelegate& delegate,
-               const std::string& app_id,
-               const AccountId& account_id,
-               const GURL& update_url,
-               const base::FilePath& cached_crx);
+  // `local_state` must be non-null, and must outlive `this`.
+  KioskAppData(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      KioskAppDataDelegate& delegate,
+      const std::string& app_id,
+      const AccountId& account_id,
+      const GURL& update_url,
+      const base::FilePath& cached_crx);
   KioskAppData(const KioskAppData&) = delete;
   KioskAppData& operator=(const KioskAppData&) = delete;
   ~KioskAppData() override;
@@ -85,7 +91,10 @@ class KioskAppData : public KioskAppDataBase,
 
   void SetStatusForTest(Status status);
 
+  // `local_state` must be non-null, and must outlive the returned object.
   static std::unique_ptr<KioskAppData> CreateForTest(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
       KioskAppDataDelegate& delegate,
       const std::string& app_id,
       const AccountId& account_id,
@@ -94,12 +103,8 @@ class KioskAppData : public KioskAppDataBase,
 
  private:
   class CrxLoader;
-  class WebstoreDataParser;
 
   void SetStatus(Status status);
-
-  // Returns URLLoaderFactory to use for fetching web store data.
-  network::mojom::URLLoaderFactory* GetURLLoaderFactory();
 
   // Loads the locally cached data. Return false if there is none.
   bool LoadFromCache();
@@ -112,19 +117,13 @@ class KioskAppData : public KioskAppDataBase,
   // Callback for extensions::ImageLoader.
   void OnExtensionIconLoaded(const gfx::Image& icon);
 
-  // Callbacks for WebstoreDataParser
-  void OnWebstoreParseSuccess(const SkBitmap& icon,
-                              const std::string& required_platform_version);
-  void OnWebstoreParseFailure();
+  void OnWebstoreParseFinished(extensions::WebstoreParseResult result);
 
   // Starts to fetch data from web store.
   void StartFetch();
 
   // extensions::WebstoreDataFetcherDelegate overrides:
   void OnWebstoreRequestFailure(const std::string& extension_id) override;
-  void OnWebstoreItemJSONAPIResponseParseSuccess(
-      const std::string& extension_id,
-      const base::Value::Dict& webstore_data) override;
   void OnFetchItemSnippetParseSuccess(
       const std::string& extension_id,
       extensions::FetchItemSnippetResponse item_snippet) override;
@@ -135,7 +134,7 @@ class KioskAppData : public KioskAppDataBase,
   // `response`. Passes `key`'s content via `value` and returns
   // true when `key` is present.
   bool CheckResponseKeyValue(const std::string& extension_id,
-                             const base::Value::Dict& response,
+                             const base::DictValue& response,
                              const char* key,
                              std::string* value);
 
@@ -146,6 +145,9 @@ class KioskAppData : public KioskAppDataBase,
   void OnCrxLoadFinished(const CrxLoader* crx_loader);
 
   void OnIconLoadDone(std::optional<gfx::ImageSkia> icon);
+
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
 
   const raw_ref<KioskAppDataDelegate> delegate_;
   Status status_;

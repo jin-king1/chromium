@@ -6,10 +6,12 @@
 #define COMPONENTS_SIGNIN_PUBLIC_WEBDATA_TOKEN_SERVICE_TABLE_H_
 
 #include <map>
+#include <optional>
 #include <string>
+#include <vector>
 
-#include "base/compiler_specific.h"
 #include "components/webdata/common/web_database_table.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 class WebDatabase;
 
@@ -22,21 +24,23 @@ class TokenServiceTable : public WebDatabaseTable {
     TOKEN_DB_RESULT_SUCCESS
   };
 
-  struct TokenWithBindingKey {
+  struct TokenWithBindingInfo {
     std::string token;
     std::vector<uint8_t> wrapped_binding_key;
+    bool mtls_token_binding = false;
 
-    TokenWithBindingKey();
-    explicit TokenWithBindingKey(std::string token,
-                                 std::vector<uint8_t> wrapped_binding_key = {});
+    TokenWithBindingInfo();
+    explicit TokenWithBindingInfo(std::string token,
+                                  std::vector<uint8_t> wrapped_binding_key = {},
+                                  bool mtls_token_binding = false);
 
-    TokenWithBindingKey(const TokenWithBindingKey&);
-    TokenWithBindingKey& operator=(const TokenWithBindingKey&);
+    TokenWithBindingInfo(const TokenWithBindingInfo&);
+    TokenWithBindingInfo& operator=(const TokenWithBindingInfo&);
 
-    ~TokenWithBindingKey();
+    ~TokenWithBindingInfo();
 
-    friend bool operator==(const TokenWithBindingKey&,
-                           const TokenWithBindingKey&) = default;
+    friend bool operator==(const TokenWithBindingInfo&,
+                           const TokenWithBindingInfo&) = default;
   };
 
   TokenServiceTable();
@@ -59,23 +63,34 @@ class TokenServiceTable : public WebDatabaseTable {
   // Removes a token related to the service from the token_service table.
   bool RemoveTokenForService(const std::string& service);
 
+  // Removes all tokens stored in the web database except for those whose
+  // service is present in `services_to_keep`.
+  bool RemoveOtherTokens(const std::vector<std::string>& services_to_keep);
+
   // Retrieves all tokens previously set with SetTokenForService.
   // Returns true if there were tokens and we decrypted them,
   // false if there was a failure somehow. If `should_reencrypt` is set to true,
   // then `SetTokenForService` should be called to write newly encrypted values
   // to storage.
-  Result GetAllTokens(std::map<std::string, TokenWithBindingKey>* tokens,
+  Result GetAllTokens(std::map<std::string, TokenWithBindingInfo>* tokens,
                       bool& should_reencrypt);
+
+  // Retrieves all wrapped binding keys previously set with
+  // `SetTokenForService`. Returns nullopt if there was a failure somehow.
+  std::optional<absl::flat_hash_set<std::vector<uint8_t>>>
+  GetAllWrappedBindingKeys();
 
   // Stores a token with an optional binding key in the token_service table.
   // Token is stored encrypted. May cause a mac keychain popup.
   // Returns true if we encrypted a token and stored it, false otherwise.
   bool SetTokenForService(const std::string& service,
                           const std::string& token,
-                          const std::vector<uint8_t>& wrapped_binding_key);
+                          const std::vector<uint8_t>& wrapped_binding_key,
+                          bool mtls_token_binding);
 
  private:
   bool MigrateToVersion130AddBindingKeyColumn();
+  bool MigrateToVersion150AddMtlsTokenBindingColumn();
 };
 
 #endif  // COMPONENTS_SIGNIN_PUBLIC_WEBDATA_TOKEN_SERVICE_TABLE_H_

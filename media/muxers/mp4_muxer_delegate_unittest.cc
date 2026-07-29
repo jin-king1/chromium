@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "media/muxers/mp4_muxer_delegate.h"
 
 #include <algorithm>
@@ -113,7 +108,7 @@ class Mp4MuxerDelegateTest : public ::testing::TestWithParam<TestParam> {
         0x0,   // numOfSequanceParameterSetExt = 0
     };
     mp4::AVCDecoderConfigurationRecord avc_config;
-    ASSERT_TRUE(avc_config.Parse(test_data.data(), test_data.size()));
+    ASSERT_TRUE(avc_config.Parse(test_data));
     ASSERT_TRUE(avc_config.Serialize(video_codec_description));
   }
 
@@ -257,8 +252,8 @@ TEST_P(Mp4MuxerDelegateTest, AddVideoFrame) {
   {
     // `moov` validation.
     std::unique_ptr<mp4::BoxReader> reader;
-    mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        moov_written_data.data(), moov_written_data.size(), nullptr, &reader);
+    mp4::ParseResult result =
+        mp4::BoxReader::ReadTopLevelBox(moov_written_data, nullptr, &reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(reader);
@@ -302,6 +297,16 @@ TEST_P(Mp4MuxerDelegateTest, AddVideoFrame) {
     EXPECT_EQ(track_boxes[0].header.width, kWidth);
     EXPECT_EQ(track_boxes[0].header.height, kHeight);
 
+    // Track header display_matrix validation. Use
+    // VideoTransformation.GetMatrix() to create the matrix for
+    // no-rotation-no-mirroring display matrix.
+    std::array<int32_t, 4> mat =
+        VideoTransformation(VIDEO_ROTATION_0, false).GetMatrix();
+    EXPECT_EQ(track_boxes[0].header.display_matrix[0], mat[0]);
+    EXPECT_EQ(track_boxes[0].header.display_matrix[1], mat[1]);
+    EXPECT_EQ(track_boxes[0].header.display_matrix[3], mat[2]);
+    EXPECT_EQ(track_boxes[0].header.display_matrix[4], mat[3]);
+
     // Media Header validation.
     EXPECT_NE(track_boxes[0].media.header.creation_time, 0u);
     EXPECT_NE(track_boxes[0].media.header.modification_time, 0u);
@@ -319,8 +324,7 @@ TEST_P(Mp4MuxerDelegateTest, AddVideoFrame) {
     // The first `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        first_moof_written_data.data(), first_moof_written_data.size(), nullptr,
-        &moof_reader);
+        first_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(moof_reader);
@@ -373,10 +377,8 @@ TEST_P(Mp4MuxerDelegateTest, AddVideoFrame) {
     std::unique_ptr<mp4::BoxReader> mdat_reader;
     // first_moof_written_data.data() is `moof` box start address.
     mp4::ParseResult result1 = mp4::BoxReader::ReadTopLevelBox(
-        first_moof_written_data.data() + mdat_video_data_offset -
-            kBoxHeaderSize,
-        first_moof_written_data.size() - mdat_video_data_offset +
-            kBoxHeaderSize,
+        base::span(first_moof_written_data)
+            .subspan(mdat_video_data_offset - kBoxHeaderSize),
         nullptr, &mdat_reader);
 
     EXPECT_EQ(result1, mp4::ParseResult::kOk);
@@ -388,8 +390,7 @@ TEST_P(Mp4MuxerDelegateTest, AddVideoFrame) {
     // The second `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        second_moof_written_data.data(), second_moof_written_data.size(),
-        nullptr, &moof_reader);
+        second_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(moof_reader);
@@ -444,10 +445,8 @@ TEST_P(Mp4MuxerDelegateTest, AddVideoFrame) {
     std::unique_ptr<mp4::BoxReader> mdat_reader;
     // second_moof_written_data.data() is `moof` box start address.
     mp4::ParseResult result1 = mp4::BoxReader::ReadTopLevelBox(
-        second_moof_written_data.data() + mdat_video_data_offset -
-            kBoxHeaderSize,
-        second_moof_written_data.size() - mdat_video_data_offset +
-            kBoxHeaderSize,
+        base::span(second_moof_written_data)
+            .subspan(mdat_video_data_offset - kBoxHeaderSize),
         nullptr, &mdat_reader);
 
     EXPECT_EQ(result1, mp4::ParseResult::kOk);
@@ -555,8 +554,8 @@ TEST_P(Mp4MuxerDelegateTest, AddAudioFrame) {
   {
     // `moov` validation.
     std::unique_ptr<mp4::BoxReader> reader;
-    mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        moov_written_data.data(), moov_written_data.size(), nullptr, &reader);
+    mp4::ParseResult result =
+        mp4::BoxReader::ReadTopLevelBox(moov_written_data, nullptr, &reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(reader);
@@ -617,8 +616,7 @@ TEST_P(Mp4MuxerDelegateTest, AddAudioFrame) {
     // The first `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        first_moof_written_data.data(), first_moof_written_data.size(), nullptr,
-        &moof_reader);
+        first_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(moof_reader);
@@ -672,10 +670,8 @@ TEST_P(Mp4MuxerDelegateTest, AddAudioFrame) {
     std::unique_ptr<mp4::BoxReader> mdat_reader;
     // first_moof_written_data.data() is `moof` box start address.
     mp4::ParseResult result1 = mp4::BoxReader::ReadTopLevelBox(
-        first_moof_written_data.data() + mdat_audio_data_offset -
-            kBoxHeaderSize,
-        first_moof_written_data.size() - mdat_audio_data_offset +
-            kBoxHeaderSize,
+        base::span(first_moof_written_data)
+            .subspan(mdat_audio_data_offset - kBoxHeaderSize),
         nullptr, &mdat_reader);
 
     EXPECT_EQ(result1, mp4::ParseResult::kOk);
@@ -749,8 +745,7 @@ TEST_P(Mp4MuxerDelegateTest, AudioOnlyNewFragmentCreation) {
     // The third `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        third_moof_written_data.data(), third_moof_written_data.size(), nullptr,
-        &moof_reader);
+        third_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(moof_reader);
@@ -789,10 +784,8 @@ TEST_P(Mp4MuxerDelegateTest, AudioOnlyNewFragmentCreation) {
     // `mdat` test.
     std::unique_ptr<mp4::BoxReader> mdat_reader;
     mp4::ParseResult result1 = mp4::BoxReader::ReadTopLevelBox(
-        third_moof_written_data.data() + mdat_audio_data_offset -
-            kBoxHeaderSize,
-        third_moof_written_data.size() - mdat_audio_data_offset +
-            kBoxHeaderSize,
+        base::span(third_moof_written_data)
+            .subspan(mdat_audio_data_offset - kBoxHeaderSize),
         nullptr, &mdat_reader);
 
     EXPECT_EQ(result1, mp4::ParseResult::kOk);
@@ -901,8 +894,7 @@ TEST_P(Mp4MuxerDelegateTest, AudioAndVideoAddition) {
     // The third `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        third_moof_written_data.data(), third_moof_written_data.size(), nullptr,
-        &moof_reader);
+        third_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(moof_reader);
@@ -963,8 +955,7 @@ TEST_P(Mp4MuxerDelegateTest, AudioAndVideoAddition) {
     // The fourth `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        fourth_moof_written_data.data(), fourth_moof_written_data.size(),
-        nullptr, &moof_reader);
+        fourth_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     EXPECT_TRUE(moof_reader);
@@ -1296,8 +1287,7 @@ TEST_P(Mp4MuxerDelegateTest, VideoAndAudioAddition) {
     // The first `moof` and `mdat` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        first_moof_written_data.data(), first_moof_written_data.size(), nullptr,
-        &moof_reader);
+        first_moof_written_data, nullptr, &moof_reader);
 
     EXPECT_EQ(result, mp4::ParseResult::kOk);
 
@@ -1449,8 +1439,7 @@ TEST_P(Mp4MuxerDelegateTest, AudioVideoAndAudioVideoFragment) {
     // The first `moof`validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        first_moof_written_data.data(), first_moof_written_data.size(), nullptr,
-        &moof_reader);
+        first_moof_written_data, nullptr, &moof_reader);
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     // `moof` test.
     EXPECT_EQ(mp4::FOURCC_MOOF, moof_reader->type());
@@ -1470,8 +1459,7 @@ TEST_P(Mp4MuxerDelegateTest, AudioVideoAndAudioVideoFragment) {
     // The second `moof` validation.
     std::unique_ptr<mp4::BoxReader> moof_reader;
     mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-        second_moof_written_data.data(), second_moof_written_data.size(),
-        nullptr, &moof_reader);
+        second_moof_written_data, nullptr, &moof_reader);
     EXPECT_EQ(result, mp4::ParseResult::kOk);
     // `moof` test.
     EXPECT_EQ(mp4::FOURCC_MOOF, moof_reader->type());
@@ -1562,8 +1550,7 @@ TEST_P(Mp4MuxerDelegateTest, ConvertedEncodedDataOnAvc) {
 
   std::unique_ptr<mp4::BoxReader> moof_reader;
   mp4::ParseResult result = mp4::BoxReader::ReadTopLevelBox(
-      moof_and_mdat_written_data.data(), moof_and_mdat_written_data.size(),
-      nullptr, &moof_reader);
+      moof_and_mdat_written_data, nullptr, &moof_reader);
   EXPECT_EQ(result, mp4::ParseResult::kOk);
 
   // `moof` box read.
@@ -1665,8 +1652,7 @@ TEST_P(Mp4MuxerDelegateTest, VideoFrameResolutionChanged) {
        {first_moof_and_mdat_written_data, second_moof_and_mdat_written_data}) {
     // Parse `moof` + `mdat`.
     std::unique_ptr<mp4::BoxReader> moof_reader;
-    EXPECT_EQ(mp4::BoxReader::ReadTopLevelBox(moof_and_mdat_written_data.data(),
-                                              moof_and_mdat_written_data.size(),
+    EXPECT_EQ(mp4::BoxReader::ReadTopLevelBox(moof_and_mdat_written_data,
                                               nullptr, &moof_reader),
               mp4::ParseResult::kOk);
 
@@ -1690,7 +1676,7 @@ TEST_P(Mp4MuxerDelegateTest, VideoFrameResolutionChanged) {
         mp4::AVC::ConvertAVCToAnnexBInPlaceForLengthSize4(&mdat_written_data));
 
     H264Parser parser;
-    parser.SetStream(mdat_written_data.data(), mdat_written_data.size());
+    parser.SetStream(mdat_written_data);
     std::vector<H264NALU> nalus;
     while (true) {
       H264NALU nalu;

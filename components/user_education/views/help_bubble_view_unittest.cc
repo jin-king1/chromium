@@ -8,16 +8,15 @@
 #include <vector>
 
 #include "base/functional/bind.h"
-#include "base/functional/callback_forward.h"
 #include "base/functional/callback_helpers.h"
 #include "base/memory/raw_ptr.h"
 #include "base/test/mock_callback.h"
 #include "components/user_education/common/feature_promo/feature_promo_specification.h"
 #include "components/user_education/common/help_bubble/help_bubble.h"
 #include "components/user_education/common/help_bubble/help_bubble_params.h"
-#include "components/user_education/common/user_education_events.h"
 #include "components/user_education/views/help_bubble_delegate.h"
 #include "components/user_education/views/help_bubble_factory_views.h"
+#include "components/user_education/views/help_bubble_view_info.h"
 #include "components/user_education/views/help_bubble_views.h"
 #include "components/user_education/views/help_bubble_views_test_util.h"
 #include "testing/gmock/include/gmock/gmock.h"
@@ -32,8 +31,10 @@
 #include "ui/views/accessibility/view_accessibility.h"
 #include "ui/views/controls/scroll_view.h"
 #include "ui/views/interaction/interaction_test_util_views.h"
+#include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/layout/flex_layout_view.h"
 #include "ui/views/layout/layout_types.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/test/views_test_base.h"
 #include "ui/views/test/views_test_utils.h"
 #include "ui/views/test/widget_test.h"
@@ -44,7 +45,8 @@ namespace user_education {
 
 namespace {
 DEFINE_LOCAL_ELEMENT_IDENTIFIER_VALUE(kTestElementId);
-const ui::ElementContext kTestElementContext{1};
+constexpr ui::ElementContext kTestElementContext =
+    ui::ElementContext::CreateFakeContextForTesting(1);
 constexpr gfx::Rect kWidgetBounds{400, 200, 200, 200};
 }  // namespace
 
@@ -79,18 +81,19 @@ class HelpBubbleViewTest : public views::ViewsTestBase {
     return widget_->GetClientAreaBoundsInScreen();
   }
 
-  HelpBubbleView* CreateHelpBubbleView(
+  HelpBubbleViewInfo CreateHelpBubbleView(
       HelpBubbleParams params,
       std::optional<gfx::Rect> bounds = std::nullopt,
       std::optional<views::View*> view = std::nullopt) {
     internal::HelpBubbleAnchorParams anchor_params;
     anchor_params.view = view.value_or(view_);
     anchor_params.rect = bounds;
-    return new HelpBubbleView(&test_delegate_, anchor_params,
-                              std::move(params));
+    return HelpBubbleView::Create(&test_delegate_, anchor_params,
+                                  std::move(params));
   }
 
-  HelpBubbleView* CreateHelpBubbleView(base::RepeatingClosure button_callback) {
+  HelpBubbleViewInfo CreateHelpBubbleView(
+      base::RepeatingClosure button_callback) {
     HelpBubbleParams params;
     params.body_text = u"To X, do Y";
     params.arrow = HelpBubbleArrow::kTopRight;
@@ -104,6 +107,10 @@ class HelpBubbleViewTest : public views::ViewsTestBase {
     }
 
     return CreateHelpBubbleView(std::move(params));
+  }
+
+  static HelpBubbleView* GetBubbleView(const HelpBubbleViewInfo& info) {
+    return views::AsViewClass<HelpBubbleView>(info.bubble_view);
   }
 
   test::TestHelpBubbleDelegate test_delegate_;
@@ -126,9 +133,9 @@ TEST_F(HelpBubbleViewTest, DefaultMaxWidth) {
   button2.text = u"button2";
   params.buttons.emplace_back(std::move(button2));
 
-  HelpBubbleView* const bubble = CreateHelpBubbleView(std::move(params));
-  EXPECT_EQ(HelpBubbleView::kMaxWidthDip, bubble->GetPreferredSize().width());
-  bubble->GetWidget()->Close();
+  const auto info = CreateHelpBubbleView(std::move(params));
+  EXPECT_EQ(HelpBubbleView::kMaxWidthDip,
+            info.bubble_view->GetPreferredSize().width());
 }
 
 TEST_F(HelpBubbleViewTest, ExpandedMaxWidth) {
@@ -146,39 +153,35 @@ TEST_F(HelpBubbleViewTest, ExpandedMaxWidth) {
   button2.text = u"button2";
   params.buttons.emplace_back(std::move(button2));
 
-  HelpBubbleView* const bubble = CreateHelpBubbleView(std::move(params));
-  EXPECT_GT(bubble->GetPreferredSize().width(), HelpBubbleView::kMaxWidthDip);
-  bubble->GetWidget()->Close();
+  const auto info = CreateHelpBubbleView(std::move(params));
+  EXPECT_GT(info.bubble_view->GetPreferredSize().width(),
+            HelpBubbleView::kMaxWidthDip);
 }
 
 TEST_F(HelpBubbleViewTest, CallButtonCallback_Mouse) {
   UNCALLED_MOCK_CALLBACK(base::RepeatingClosure, mock_callback);
 
-  HelpBubbleView* const bubble = CreateHelpBubbleView(mock_callback.Get());
+  const auto info = CreateHelpBubbleView(mock_callback.Get());
 
   // Simulate clicks on dismiss button.
   EXPECT_CALL_IN_SCOPE(
       mock_callback, Run,
       views::test::InteractionTestUtilSimulatorViews::PressButton(
-          bubble->GetDefaultButtonForTesting(),
+          GetBubbleView(info)->GetDefaultButtonForTesting(),
           ui::test::InteractionTestUtil::InputType::kMouse));
-
-  bubble->GetWidget()->Close();
 }
 
 TEST_F(HelpBubbleViewTest, CallButtonCallback_Keyboard) {
   UNCALLED_MOCK_CALLBACK(base::RepeatingClosure, mock_callback);
 
-  HelpBubbleView* const bubble = CreateHelpBubbleView(mock_callback.Get());
+  const auto info = CreateHelpBubbleView(mock_callback.Get());
 
   // Simulate clicks on dismiss button.
   EXPECT_CALL_IN_SCOPE(
       mock_callback, Run,
       views::test::InteractionTestUtilSimulatorViews::PressButton(
-          bubble->GetDefaultButtonForTesting(),
+          GetBubbleView(info)->GetDefaultButtonForTesting(),
           ui::test::InteractionTestUtil::InputType::kKeyboard));
-
-  bubble->GetWidget()->Close();
 }
 
 TEST_F(HelpBubbleViewTest, StableButtonOrder) {
@@ -205,9 +208,10 @@ TEST_F(HelpBubbleViewTest, StableButtonOrder) {
   button3.is_default = false;
   params.buttons.push_back(std::move(button3));
 
-  auto* bubble = new HelpBubbleView(
+  const auto info = HelpBubbleView::Create(
       &test_delegate_, internal::HelpBubbleAnchorParams{view_.get()},
       std::move(params));
+  auto* const bubble = GetBubbleView(info);
   EXPECT_EQ(kButton1Text, bubble->GetNonDefaultButtonForTesting(0)->GetText());
   EXPECT_EQ(kButton2Text, bubble->GetDefaultButtonForTesting()->GetText());
   EXPECT_EQ(kButton3Text, bubble->GetNonDefaultButtonForTesting(1)->GetText());
@@ -222,8 +226,8 @@ TEST_F(HelpBubbleViewTest, AnchorToRect) {
   gfx::Rect anchor_bounds = widget_bounds;
   anchor_bounds.Inset(50);
 
-  HelpBubbleView* const bubble =
-      CreateHelpBubbleView(std::move(params), anchor_bounds);
+  const auto info = CreateHelpBubbleView(std::move(params), anchor_bounds);
+  auto* const bubble = GetBubbleView(info);
 
   // CreateHelpBubbleView() will trigger an asynchronous autosize task.
   views::test::RunScheduledLayout(bubble->GetWidget());
@@ -249,8 +253,8 @@ TEST_F(HelpBubbleViewTest, AnchorRectUpdated) {
   gfx::Rect anchor_bounds = widget_bounds;
   anchor_bounds.Inset(50);
 
-  HelpBubbleView* const bubble =
-      CreateHelpBubbleView(std::move(params), anchor_bounds);
+  const auto info = CreateHelpBubbleView(std::move(params), anchor_bounds);
+  auto* const bubble = GetBubbleView(info);
 
   // CreateHelpBubbleView() will trigger an asynchronous autosize task.
   views::test::RunScheduledLayout(bubble->GetWidget());
@@ -327,9 +331,9 @@ class HelpBubbleViewsTest : public HelpBubbleViewTest {
   std::unique_ptr<HelpBubbleViews> CreateHelpBubble(
       HelpBubbleParams params,
       ui::TrackedElement* element) {
-    HelpBubbleView* const bubble_view =
-        CreateHelpBubbleView(std::move(params), element->GetScreenBounds());
-    return base::WrapUnique(new HelpBubbleViews(bubble_view, element));
+    return base::WrapUnique(new HelpBubbleViews(
+        CreateHelpBubbleView(std::move(params), element->GetScreenBounds()),
+        element));
   }
 
   void SetUp() override {
@@ -350,7 +354,7 @@ class HelpBubbleViewsTest : public HelpBubbleViewTest {
     help_bubble_ = CreateHelpBubble(std::move(params), test_element_.get());
 
     // CreateHelpBubble() will trigger an asynchronous autosize task.
-    views::test::RunScheduledLayout(help_bubble_->bubble_view());
+    views::test::RunScheduledLayout(help_bubble_->bubble_view_for_testing());
   }
 
   void TearDown() override {
@@ -360,7 +364,7 @@ class HelpBubbleViewsTest : public HelpBubbleViewTest {
 
  protected:
   gfx::Rect GetHelpBubbleAnchorRect() const {
-    return help_bubble_->bubble_view()->GetAnchorRect();
+    return help_bubble_->bubble_view_for_testing()->GetAnchorRect();
   }
 
   std::unique_ptr<ui::test::TestElement> test_element_;
@@ -394,7 +398,8 @@ TEST_F(HelpBubbleViewsTest, AnchorRectUpdated) {
   new_bounds.Offset(kAnchorOffset);
   test_element_->SetScreenBounds(new_bounds);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
-      test_element_.get(), kHelpBubbleAnchorBoundsChangedEvent);
+      test_element_.get(),
+      views::ViewSubregionAnchor::kAnchorBoundsChangedEvent);
 
   // Verify that the help bubble has moved by a similar amount.
   gfx::Rect expected = old_bounds;
@@ -413,7 +418,8 @@ TEST_F(HelpBubbleViewsTest, AnchorRectOverlapsEdge) {
   new_bounds.Offset(-100, -100);
   test_element_->SetScreenBounds(new_bounds);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
-      test_element_.get(), kHelpBubbleAnchorBoundsChangedEvent);
+      test_element_.get(),
+      views::ViewSubregionAnchor::kAnchorBoundsChangedEvent);
 
   // Verify that the help bubble has moved.
   constexpr gfx::Rect kNewAnchorBounds{kWidgetBounds.x(), kWidgetBounds.y(), 50,
@@ -426,7 +432,9 @@ TEST_F(HelpBubbleViewsTest, AnchorRectOverlapsEdge) {
 
   // Bubble may have mirrored horizontally. Check which orientation it's in and
   // verify the position is appropriate to the new anchor region.
-  switch (help_bubble_->bubble_view()->GetBubbleFrameView()->GetArrow()) {
+  switch (help_bubble_->bubble_view_for_testing()
+              ->GetBubbleFrameView()
+              ->GetArrow()) {
     case views::BubbleBorder::RIGHT_CENTER:
       EXPECT_LT(help_bubble_bounds.x(), old_bounds.x());
       EXPECT_LT(help_bubble_bounds.right(), kNewAnchorBounds.x());
@@ -451,7 +459,8 @@ TEST_F(HelpBubbleViewsTest, AnchorOutsideBoundsHorizontal) {
   new_bounds.Offset(200, 0);
   test_element_->SetScreenBounds(new_bounds);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
-      test_element_.get(), kHelpBubbleAnchorBoundsChangedEvent);
+      test_element_.get(),
+      views::ViewSubregionAnchor::kAnchorBoundsChangedEvent);
 
   // Verify that the help bubble has moved. It might be mirrored, however.
   constexpr gfx::Rect kNewAnchorBounds{kWidgetBounds.right() - 1,
@@ -474,7 +483,8 @@ TEST_F(HelpBubbleViewsTest, AnchorOutsideBoundsVertical) {
   new_bounds.Offset(0, 200);
   test_element_->SetScreenBounds(new_bounds);
   ui::ElementTracker::GetFrameworkDelegate()->NotifyCustomEvent(
-      test_element_.get(), kHelpBubbleAnchorBoundsChangedEvent);
+      test_element_.get(),
+      views::ViewSubregionAnchor::kAnchorBoundsChangedEvent);
 
   // Verify that the help bubble has moved. It might be mirrored, however.
   constexpr gfx::Rect kNewAnchorBounds{kWidgetBounds.x() + 50,
@@ -503,20 +513,20 @@ TEST_F(HelpBubbleViewsTest, MoveAnchorWidget) {
 
 TEST_F(HelpBubbleViewsTest, RootViewAccessibleName) {
   ui::AXNodeData root_view_data;
-  help_bubble_->bubble_view()
+  help_bubble_->bubble_view_for_testing()
       ->GetWidget()
       ->GetRootView()
       ->GetViewAccessibility()
       .GetAccessibleNodeData(&root_view_data);
   EXPECT_EQ(
       root_view_data.GetString16Attribute(ax::mojom::StringAttribute::kName),
-      help_bubble_->bubble_view()->GetAccessibleWindowTitle());
+      help_bubble_->bubble_view_for_testing()->GetAccessibleWindowTitle());
 }
 
 #if BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_MAC)
 TEST_F(HelpBubbleViewsTest, MinimizeAnchorWidget) {
   views::test::WidgetDestroyedWaiter waiter(
-      help_bubble_->bubble_view()->GetWidget());
+      help_bubble_->bubble_view_for_testing()->GetWidget());
   widget_->Minimize();
   waiter.Wait();
 }

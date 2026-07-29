@@ -5,22 +5,23 @@
 #include "chrome/browser/ash/locale/locale_change_guard.h"
 
 #include <algorithm>
+#include <string_view>
 
-#include "base/containers/contains.h"
+#include "ash/constants/ash_pref_names.h"
+#include "base/check_deref.h"
+#include "base/containers/fixed_flat_set.h"
+#include "base/containers/span.h"
 #include "base/functional/bind.h"
 #include "base/metrics/user_metrics.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ash/base/locale_util.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser.h"
-#include "chrome/browser/ui/browser_commands.h"
-#include "chrome/common/pref_names.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/language/core/browser/pref_names.h"
 #include "components/language/core/common/locale_util.h"
 #include "components/prefs/pref_service.h"
+#include "components/session_manager/core/session_manager.h"
 #include "content/public/browser/web_contents.h"
 #include "ui/base/l10n/l10n_util.h"
 
@@ -31,18 +32,23 @@ namespace {
 using ::base::UserMetricsAction;
 using ::content::WebContents;
 
-// This is the list of languages that do not require user notification when
-// locale is switched automatically between regions within the same language.
+// These are the languages that do not require user notification when locale is
+// switched automatically between regions within the same language.
 //
 // New language in kAcceptLanguageList should be added either here or to
 // to the exception list in unit test.
-const char* const kSkipShowNotificationLanguages[4] = {"en", "de", "fr", "it"};
+constexpr auto kSkipShowNotificationLanguages =
+    base::MakeFixedFlatSet<std::string_view>({"en", "de", "fr", "it"});
 
 }  // anonymous namespace
 
-LocaleChangeGuard::LocaleChangeGuard(Profile* profile, PrefService* local_state)
-    : profile_(profile), local_state_(local_state) {
-  DCHECK(profile_);
+LocaleChangeGuard::LocaleChangeGuard(
+    PrefService* local_state,
+    ApplicationLocaleStorage* application_locale_storage,
+    Profile* profile)
+    : local_state_(CHECK_DEREF(local_state)),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
+      profile_(CHECK_DEREF(profile)) {
   DeviceSettingsService::Get()->AddObserver(this);
 }
 
@@ -74,7 +80,7 @@ void LocaleChangeGuard::RevertLocaleChange() {
   base::RecordAction(UserMetricsAction("LanguageChange_Revert"));
   profile_->ChangeAppLocale(from_locale_,
                             Profile::APP_LOCALE_CHANGED_VIA_REVERT);
-  chrome::AttemptUserExit();
+  session_manager::SessionManager::Get()->RequestSignOut();
 }
 
 void LocaleChangeGuard::OnUserSessionStarted(bool is_primary_user) {
@@ -87,22 +93,18 @@ void LocaleChangeGuard::OwnershipStatusChanged() {
     return;
   }
 
-  if (!local_state_) {
-    return;
-  }
-
   PrefService* prefs = profile_->GetPrefs();
   DCHECK(prefs);
   std::string owner_locale =
       prefs->GetString(language::prefs::kApplicationLocale);
   language::ConvertToActualUILocale(&owner_locale);
   if (!owner_locale.empty()) {
-    local_state_->SetString(prefs::kOwnerLocale, owner_locale);
+    local_state_->SetString(ash::prefs::kOwnerLocale, owner_locale);
   }
 }
 
 void LocaleChangeGuard::Check() {
-  std::string cur_locale = g_browser_process->GetApplicationLocale();
+  std::string cur_locale = application_locale_storage_->Get();
   if (cur_locale.empty()) {
     NOTREACHED();
   }
@@ -127,7 +129,8 @@ void LocaleChangeGuard::Check() {
     return;
   }
 
-  std::string from_locale = prefs->GetString(prefs::kApplicationLocaleBackup);
+  std::string from_locale =
+      prefs->GetString(ash::prefs::kApplicationLocaleBackup);
 
   if (!RequiresUserConfirmation(from_locale, to_locale)) {
     // If the locale changed during login (e.g. from the owner's locale), just
@@ -180,28 +183,27 @@ void LocaleChangeGuard::AcceptLocaleChange() {
   if (prefs->GetString(language::prefs::kApplicationLocale) != to_locale_)
     return;
   base::RecordAction(UserMetricsAction("LanguageChange_Accept"));
-  prefs->SetString(prefs::kApplicationLocaleBackup, to_locale_);
-  prefs->SetString(prefs::kApplicationLocaleAccepted, to_locale_);
+  prefs->SetString(ash::prefs::kApplicationLocaleBackup, to_locale_);
+  prefs->SetString(ash::prefs::kApplicationLocaleAccepted, to_locale_);
 }
 
-void LocaleChangeGuard::PrepareChangingLocale(const std::string& from_locale,
-                                              const std::string& to_locale) {
-  std::string cur_locale = g_browser_process->GetApplicationLocale();
+void LocaleChangeGuard::PrepareChangingLocale(std::string_view from_locale,
+                                              std::string_view to_locale) {
   if (!from_locale.empty())
-    from_locale_ = from_locale;
+    from_locale_ = std::string(from_locale);
   if (!to_locale.empty())
-    to_locale_ = to_locale;
+    to_locale_ = std::string(to_locale);
 }
 
 bool LocaleChangeGuard::RequiresUserConfirmation(
-    const std::string& from_locale,
-    const std::string& to_locale) const {
+    std::string_view from_locale,
+    std::string_view to_locale) const {
   // No locale change was detected for the user.
   if (from_locale.empty() || from_locale == to_locale)
     return false;
 
   // The target locale is already accepted.
-  if (profile_->GetPrefs()->GetString(prefs::kApplicationLocaleAccepted) ==
+  if (profile_->GetPrefs()->GetString(ash::prefs::kApplicationLocaleAccepted) ==
       to_locale) {
     return false;
   }
@@ -211,10 +213,10 @@ bool LocaleChangeGuard::RequiresUserConfirmation(
 
 // static
 bool LocaleChangeGuard::ShouldShowLocaleChangeNotification(
-    const std::string& from_locale,
-    const std::string& to_locale) {
-  const std::string from_lang = l10n_util::GetLanguage(from_locale);
-  const std::string to_lang = l10n_util::GetLanguage(to_locale);
+    std::string_view from_locale,
+    std::string_view to_locale) {
+  const std::string_view from_lang = l10n_util::GetLanguage(from_locale);
+  const std::string_view to_lang = l10n_util::GetLanguage(to_locale);
 
   if (from_locale == to_locale)
     return false;
@@ -222,18 +224,13 @@ bool LocaleChangeGuard::ShouldShowLocaleChangeNotification(
   if (from_lang != to_lang)
     return true;
 
-  return !base::Contains(kSkipShowNotificationLanguages, from_lang);
+  return !kSkipShowNotificationLanguages.contains(from_lang);
 }
 
 // static
-const char* const*
+base::span<const std::string_view>
 LocaleChangeGuard::GetSkipShowNotificationLanguagesForTesting() {
   return kSkipShowNotificationLanguages;
-}
-
-// static
-size_t LocaleChangeGuard::GetSkipShowNotificationLanguagesSizeForTesting() {
-  return std::size(kSkipShowNotificationLanguages);
 }
 
 }  // namespace ash

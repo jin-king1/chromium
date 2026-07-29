@@ -5,17 +5,15 @@
 #include <string>
 
 #include "base/i18n/number_formatting.h"
+#include "base/strings/to_string.h"
 #include "chrome/browser/profiles/batch_upload/batch_upload_service.h"
 #include "chrome/browser/signin/identity_manager_factory.h"
 #include "chrome/browser/ui/test/test_browser_dialog.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/profiles/batch_upload_dialog_view.h"
 #include "chrome/common/webui_url_constants.h"
-#include "chrome/grit/generated_resources.h"
-#include "components/signin/public/base/signin_switches.h"
 #include "components/signin/public/identity_manager/identity_manager.h"
 #include "components/signin/public/identity_manager/identity_test_utils.h"
-#include "components/signin/public/identity_manager/signin_constants.h"
 #include "components/sync/base/data_type.h"
 #include "components/sync/service/local_data_description.h"
 #include "content/public/test/browser_test.h"
@@ -23,8 +21,6 @@
 #include "ui/base/ui_base_switches.h"
 #include "ui/gfx/image/image_unittest_util.h"
 #include "ui/views/widget/any_widget_observer.h"
-
-using signin::constants::kNoHostedDomainFound;
 
 namespace {
 
@@ -200,16 +196,18 @@ class BatchUploadDialogViewPixelTest
 
   void SigninWithFullInfo() {
     signin::IdentityManager* identity_manager =
-        IdentityManagerFactory::GetForProfile(browser()->profile());
+        IdentityManagerFactory::GetForProfile(browser()->GetProfile());
     AccountInfo account_info = signin::MakePrimaryAccountAvailable(
         identity_manager, "test@gmail.com", signin::ConsentLevel::kSignin);
     ASSERT_FALSE(account_info.IsEmpty());
 
-    account_info.full_name = "Joe Testing";
-    account_info.given_name = "Joe";
-    account_info.picture_url = "SOME_FAKE_URL";
-    account_info.hosted_domain = kNoHostedDomainFound;
-    account_info.locale = "en";
+    account_info = AccountInfo::Builder(account_info)
+                       .SetFullName("Joe Testing")
+                       .SetGivenName("Joe")
+                       .SetHostedDomain(std::string())
+                       .SetAvatarUrl("SOME_FAKE_URL")
+                       .SetLocale("en")
+                       .Build();
     ASSERT_TRUE(account_info.IsValid());
     signin::UpdateAccountInfoForAccount(identity_manager, account_info);
 
@@ -237,9 +235,6 @@ class BatchUploadDialogViewPixelTest
 
  private:
   std::vector<syncer::LocalDataDescription> fake_descriptions_;
-
-  base::test::ScopedFeatureList scoped_feature_list_{
-      switches::kBatchUploadDesktop};
 };
 
 IN_PROC_BROWSER_TEST_P(BatchUploadDialogViewPixelTest, InvokeUi_default) {

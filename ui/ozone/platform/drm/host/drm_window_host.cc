@@ -6,6 +6,7 @@
 
 #include "base/functional/bind.h"
 #include "base/memory/scoped_refptr.h"
+#include "base/notimplemented.h"
 #include "ui/base/cursor/platform_cursor.h"
 #include "ui/display/display.h"
 #include "ui/events/devices/device_data_manager.h"
@@ -146,6 +147,11 @@ void DrmWindowHost::MoveCursorTo(const gfx::Point& location) {
   event_factory_->WarpCursorTo(widget_, gfx::PointF(location));
 }
 
+void DrmWindowHost::SynthesizeMouseMove(const gfx::PointF& location) {
+  window_manager_->ForceCursorUpdateOnNextMouseMove();
+  event_factory_->SynthesizeMouseMove(location);
+}
+
 void DrmWindowHost::ConfineCursorToBounds(const gfx::Rect& bounds) {
   if (cursor_confined_bounds_ == bounds)
     return;
@@ -171,8 +177,8 @@ void DrmWindowHost::SizeConstraintsChanged() {
   NOTREACHED();
 }
 
-void DrmWindowHost::OnMouseEnter() {
-  delegate_->OnMouseEnter();
+void DrmWindowHost::OnCursorUpdate() {
+  delegate_->OnCursorUpdate();
 }
 
 bool DrmWindowHost::CanDispatchEvent(const PlatformEvent& event) {

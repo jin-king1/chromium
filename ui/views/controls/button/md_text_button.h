@@ -17,7 +17,7 @@
 #include "ui/gfx/geometry/rounded_corners_f.h"
 #include "ui/views/controls/button/label_button.h"
 #include "ui/views/controls/button/label_button_image_container.h"
-#include "ui/views/controls/focus_ring.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/style/typography.h"
 
 namespace actions {
@@ -25,6 +25,8 @@ class ActionItem;
 }
 
 namespace views {
+
+enum class PropertyEffects;
 
 // A button class that implements the Material Design text button spec.
 class VIEWS_EXPORT MdTextButton : public LabelButton {
@@ -97,13 +99,16 @@ class VIEWS_EXPORT MdTextButton : public LabelButton {
   void OnBlur() override;
   void OnBoundsChanged(const gfx::Rect& previous_bounds) override;
 
+  // Derived classes may have additional colors they need to calculate based on
+  // button state.
+  virtual void UpdateColors();
+
  private:
   void UpdatePadding();
   gfx::Insets CalculateDefaultPadding() const;
 
   void UpdateTextColor();
   void UpdateBackgroundColor() override;
-  void UpdateColors();
   void UpdateIconColor();
 
   // Returns the hover color depending on the button style.

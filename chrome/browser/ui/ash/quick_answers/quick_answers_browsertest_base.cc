@@ -48,10 +48,9 @@ void RightClick(content::WebContents* web_contents,
 }  // namespace
 
 QuickAnswersBrowserTestBase::QuickAnswersBrowserTestBase() {
-  // Note that `kMahi` is associated with the Magic Boost feature.
+  // Note that the Mahi feature is associated with the Magic Boost feature.
   scoped_feature_list_.InitWithFeatureStates(
-      {{chromeos::features::kMahi, IsMagicBoostEnabled()},
-       {chromeos::features::kFeatureManagementMahi, IsMagicBoostEnabled()}});
+      {{chromeos::features::kFeatureManagementMahi, IsMagicBoostEnabled()}});
 
   if (IsMagicBoostEnabled()) {
     base::CommandLine::ForCurrentProcess()->AppendSwitch(
@@ -84,6 +83,10 @@ void QuickAnswersBrowserTestBase::ShowMenuAndWait(
       chrome_test_utils::GetActiveWebContents(this);
 
   NavigateToDataUrl(web_contents, params);
+
+  // Before sending a right-click, end paint-holding to enable input event
+  // processing in web_contents.
+  content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(web_contents);
 
   content::ContextMenuInterceptor context_menu_interceptor(
       web_contents->GetPrimaryMainFrame());

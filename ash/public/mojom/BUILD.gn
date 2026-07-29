@@ -9,10 +9,7 @@ assert(is_chromeos)
 mojom("mojom") {
   disable_variants = true
 
-  sources = [
-    "assistant_volume_control.mojom",
-    "wallpaper.mojom",
-  ]
+  sources = [ "wallpaper.mojom" ]
 
   public_deps = [
     ":accelerator_actions",
@@ -22,7 +19,6 @@ mojom("mojom") {
     ":input_device_settings",
     "//chromeos/ash/components/proximity_auth/public/mojom",
     "//components/account_id/mojom",
-    "//components/sync/mojom",
     "//mojo/public/mojom/base",
     "//services/preferences/public/mojom",
     "//skia/public/mojom",

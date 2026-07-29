@@ -8,6 +8,7 @@
 
 #include "base/numerics/checked_math.h"
 #include "base/numerics/clamped_math.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/strings/to_string.h"
 #include "base/system/sys_info.h"
@@ -72,6 +73,42 @@ int GetNumberOfThreadsForSoftwareEncoding(gfx::Size frame_size) {
       std::min(desired_threads, base::SysInfo::NumberOfProcessors());
 
   return desired_threads;
+}
+
+uint8_t QIndexToQuantizer(VideoCodec codec, uint8_t q_index) {
+  if (codec == VideoCodec::kAV1 || codec == VideoCodec::kVP9) {
+    // The following computation is based on the table in
+    // //third_party/libvpx/source/libvpx/vp9/encoder/vp9_quantize.c.
+    // //third_party/libaom/source/libaom/av1/encoder/av1_quantize.c
+    // {
+    //   0,   4,   8,   12,  16,  20,  24,  28,  32,  36,  40,  44,  48,
+    //   52,  56,  60,  64,  68,  72,  76,  80,  84,  88,  92,  96,  100,
+    //   104, 108, 112, 116, 120, 124, 128, 132, 136, 140, 144, 148, 152,
+    //   156, 160, 164, 168, 172, 176, 180, 184, 188, 192, 196, 200, 204,
+    //   208, 212, 216, 220, 224, 228, 232, 236, 240, 244, 249, 255,
+    // };
+    if (q_index <= 244) {
+      return (q_index + 3) / 4;
+    }
+    if (q_index <= 249) {
+      return 62;
+    }
+    return 63;
+  }
+  return q_index;
+}
+
+uint8_t QuantizerToQIndex(VideoCodec codec, uint8_t quantizer) {
+  if (codec == VideoCodec::kAV1 || codec == VideoCodec::kVP9) {
+    if (quantizer == 62) {
+      return 249;
+    }
+    if (quantizer == 63) {
+      return 255;
+    }
+    return quantizer * 4;
+  }
+  return quantizer;
 }
 
 VideoEncoderOutput::VideoEncoderOutput() = default;

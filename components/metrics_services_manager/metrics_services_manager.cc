@@ -8,8 +8,9 @@
 #include <utility>
 
 #include "base/check.h"
+#include "base/check_is_test.h"
 #include "base/functional/bind.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/notreached.h"
 #include "components/metrics/dwa/dwa_recorder.h"
 #include "components/metrics/dwa/dwa_service.h"
 #include "components/metrics/enabled_state_provider.h"
@@ -17,6 +18,8 @@
 #include "components/metrics/metrics_service_client.h"
 #include "components/metrics/metrics_state_manager.h"
 #include "components/metrics/metrics_switches.h"
+#include "components/metrics/private_metrics/puma_service.h"
+#include "components/metrics/reporting_service.h"
 #include "components/metrics/structured/structured_metrics_service.h"  // nogncheck
 #include "components/metrics_services_manager/metrics_services_manager_client.h"
 #include "components/ukm/ukm_service.h"
@@ -58,12 +61,6 @@ ukm::UkmService* MetricsServicesManager::GetUkmService() {
   return GetMetricsServiceClient()->GetUkmService();
 }
 
-IdentifiabilityStudyState*
-MetricsServicesManager::GetIdentifiabilityStudyState() {
-  DCHECK(thread_checker_.CalledOnValidThread());
-  return GetMetricsServiceClient()->GetIdentifiabilityStudyState();
-}
-
 metrics::structured::StructuredMetricsService*
 MetricsServicesManager::GetStructuredMetricsService() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -75,11 +72,42 @@ metrics::dwa::DwaService* MetricsServicesManager::GetDwaService() {
   return GetMetricsServiceClient()->GetDwaService();
 }
 
+metrics::private_metrics::PumaService*
+MetricsServicesManager::GetPumaService() {
+  DCHECK(thread_checker_.CalledOnValidThread());
+  return GetMetricsServiceClient()->GetPumaService();
+}
+
+metrics::ReportingService* MetricsServicesManager::GetReportingService(
+    metrics::MetricsLogUploader::MetricServiceType service_type) {
+  switch (service_type) {
+    case metrics::MetricsLogUploader::MetricServiceType::UMA: {
+      auto* service = GetMetricsService();
+      return service ? service->reporting_service() : nullptr;
+    }
+    case metrics::MetricsLogUploader::MetricServiceType::UKM: {
+      auto* service = GetUkmService();
+      return service ? service->reporting_service() : nullptr;
+    }
+    case metrics::MetricsLogUploader::MetricServiceType::DWA: {
+      auto* service = GetDwaService();
+      return service ? service->reporting_service() : nullptr;
+    }
+    case metrics::MetricsLogUploader::MetricServiceType::PRIVATE_METRICS: {
+      auto* service = GetPumaService();
+      return service ? service->reporting_service() : nullptr;
+    }
+    case metrics::MetricsLogUploader::MetricServiceType::STRUCTURED_METRICS: {
+      auto* service = GetStructuredMetricsService();
+      return service ? service->reporting_service() : nullptr;
+    }
+  }
+}
+
 variations::VariationsService* MetricsServicesManager::GetVariationsService() {
   DCHECK(thread_checker_.CalledOnValidThread());
   if (!variations_service_) {
-    variations_service_ =
-        client_->CreateVariationsService(GetSyntheticTrialRegistry());
+    variations_service_ = client_->CreateVariationsService();
   }
   return variations_service_.get();
 }
@@ -111,6 +139,18 @@ MetricsServicesManager::CreateEntropyProvidersForTesting() {
       /*enable_limited_entropy_mode=*/true);
 }
 
+metrics::ClonedInstallDetector*
+MetricsServicesManager::GetClonedInstallDetectorForTesting() {
+  CHECK_IS_TEST();
+  return client_->GetMetricsStateManager()
+      ->cloned_install_detector_for_testing();  // IN-TEST
+}
+
+const metrics::ClonedInstallDetector&
+MetricsServicesManager::GetClonedInstallDetector() const {
+  return client_->GetMetricsStateManager()->GetClonedInstallDetector();
+}
+
 metrics::MetricsServiceClient*
 MetricsServicesManager::GetMetricsServiceClient() {
   DCHECK(thread_checker_.CalledOnValidThread());
@@ -129,9 +169,15 @@ void MetricsServicesManager::UpdatePermissions(bool current_may_record,
                                                bool current_consent_given,
                                                bool current_may_upload) {
   DCHECK(thread_checker_.CalledOnValidThread());
-  // If the user has opted out of metrics, delete local UKM and DWA states.
-  // TODO(crbug.com/40267999): Investigate if UMA needs purging logic.
+  // If the user has opted out of metrics, delete local UMA, UKM and DWA states.
+  // TODO(crbug.com/40267999): The purges clean up the logs in the local state
+  // but there is an additional last log that is created and stored right after
+  // this in UpdateRunningServices() and is not cleaned up. Fix this.
   if (consent_given_ && !current_consent_given) {
+    metrics::MetricsService* metrics = GetMetricsService();
+    if (metrics) {
+      metrics->Purge();
+    }
     ukm::UkmService* ukm = GetUkmService();
     if (ukm) {
       ukm->Purge();
@@ -198,6 +244,7 @@ void MetricsServicesManager::LoadingStateChanged(bool is_loading) {
   }
 }
 
+
 void MetricsServicesManager::OnRendererUnresponsive() {
   DCHECK(thread_checker_.CalledOnValidThread());
   GetMetricsService()->OnApplicationNotIdle();
@@ -228,6 +275,7 @@ void MetricsServicesManager::UpdateRunningServices() {
   UpdateUkmService();
   UpdateStructuredMetricsService();
   UpdateDwaService();
+  UpdatePumaService();
 }
 
 void MetricsServicesManager::UpdateUkmService() {
@@ -303,6 +351,20 @@ void MetricsServicesManager::UpdateDwaService() {
     if (is_incognito) {
       metrics::dwa::DwaRecorder::Get()->Purge();
     }
+  }
+}
+
+void MetricsServicesManager::UpdatePumaService() {
+  metrics::private_metrics::PumaService* puma_service = GetPumaService();
+  if (!puma_service) {
+    return;
+  }
+
+  // PUMA is currently affected by the UMA setting.
+  if (may_record_ && may_upload_ && consent_given_) {
+    puma_service->EnableReporting();
+  } else {
+    puma_service->DisableReporting();
   }
 }
 

@@ -4,7 +4,12 @@
 
 package org.chromium.chrome.browser.share.link_to_text;
 
-import org.chromium.base.supplier.ObservableSupplier;
+import static org.chromium.build.NullUtil.assumeNonNull;
+
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.NullableObservableSupplier;
+import org.chromium.build.annotations.MonotonicNonNull;
+import org.chromium.build.annotations.NullMarked;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.feature_engagement.TrackerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
@@ -27,24 +32,25 @@ import org.chromium.ui.modelutil.PropertyModel;
 import org.chromium.url.GURL;
 
 /** This class is responsible for rendering an IPH, when receiving a link-to-text. */
+@NullMarked
 public class LinkToTextIphController {
     private static final String FEATURE_NAME =
             FeatureConstants.SHARED_HIGHLIGHTING_RECEIVER_FEATURE;
 
     private final TabModelSelector mTabModelSelector;
-    private Tracker mTracker;
+    private @MonotonicNonNull Tracker mTracker; // Set when page load finishes.
 
     /**
      * Creates an {@link LinkToTextIphController}.
      *
-     * @param tabSupplier An {@link ObservableSupplier} for {@link Tab} where the IPH will be
+     * @param tabSupplier An {@link MonotonicObservableSupplier} for {@link Tab} where the IPH will be
      *     rendered.
      * @param tabModelSelector The {@link TabModelSelector} to open a new tab.
      */
     public LinkToTextIphController(
-            ObservableSupplier<Tab> tabSupplier,
+            NullableObservableSupplier<Tab> tabSupplier,
             TabModelSelector tabModelSelector,
-            ObservableSupplier<Profile> profileSupplier) {
+            MonotonicObservableSupplier<Profile> profileSupplier) {
         mTabModelSelector = tabModelSelector;
         new CurrentTabObserver(
                 tabSupplier,
@@ -76,8 +82,9 @@ public class LinkToTextIphController {
     }
 
     private void showMessageIph(Tab tab) {
-        MessageDispatcher mMessageDispatcher =
+        MessageDispatcher messageDispatcher =
                 MessageDispatcherProvider.from(tab.getWindowAndroid());
+        if (messageDispatcher == null) return;
         PropertyModel model =
                 new PropertyModel.Builder(MessageBannerProperties.ALL_KEYS)
                         .with(
@@ -102,18 +109,22 @@ public class LinkToTextIphController {
                                 MessageBannerProperties.ON_PRIMARY_ACTION,
                                 this::onMessageButtonClicked)
                         .build();
-        mMessageDispatcher.enqueueMessage(
-                model, tab.getWebContents(), MessageScopeType.NAVIGATION, false);
+        messageDispatcher.enqueueMessage(
+                model, assumeNonNull(tab.getWebContents()), MessageScopeType.NAVIGATION, false);
     }
 
     private @PrimaryActionClickBehavior int onMessageButtonClicked() {
         onOpenInChrome(LinkToTextHelper.SHARED_HIGHLIGHTING_SUPPORT_URL);
-        mTracker.dismissed(FEATURE_NAME);
+        trackDismissal();
         return PrimaryActionClickBehavior.DISMISS_IMMEDIATELY;
     }
 
     private void onMessageDismissed(Integer dismissReason) {
-        mTracker.dismissed(FEATURE_NAME);
+        trackDismissal();
+    }
+
+    private void trackDismissal() {
+        if (mTracker != null) mTracker.dismissed(FEATURE_NAME);
     }
 
     private void onOpenInChrome(String linkUrl) {

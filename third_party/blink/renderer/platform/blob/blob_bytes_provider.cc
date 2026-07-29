@@ -37,10 +37,10 @@ class BlobBytesStreamer {
       : data_(std::move(data)),
         pipe_(std::move(pipe)),
         watcher_(FROM_HERE, mojo::SimpleWatcher::ArmingPolicy::AUTOMATIC) {
-    watcher_.Watch(pipe_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
-                   MOJO_WATCH_CONDITION_SATISFIED,
-                   WTF::BindRepeating(&BlobBytesStreamer::OnWritable,
-                                      WTF::Unretained(this)));
+    watcher_.Watch(
+        pipe_.get(), MOJO_HANDLE_SIGNAL_WRITABLE,
+        MOJO_WATCH_CONDITION_SATISFIED,
+        BindRepeating(&BlobBytesStreamer::OnWritable, Unretained(this)));
   }
 
   void OnWritable(MojoResult result, const mojo::HandleSignalsState& state) {
@@ -122,14 +122,14 @@ void BlobBytesProvider::AppendData(scoped_refptr<RawData> data) {
   data_.push_back(std::move(data));
 }
 
-void BlobBytesProvider::AppendData(base::span<const char> data) {
+void BlobBytesProvider::AppendData(base::span<const uint8_t> data) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   if (data_.empty() ||
       data_.back()->size() + data.size() > kMaxConsolidatedItemSizeInBytes) {
     AppendData(RawData::Create());
   }
-  data_.back()->MutableData()->AppendSpan(data);
+  data_.back()->MutableData().append_range(data);
 }
 
 // static
@@ -162,7 +162,7 @@ void BlobBytesProvider::RequestAsReply(RequestAsReplyCallback callback) {
   // to reduce the number of copies of data that are made here.
   Vector<uint8_t> result;
   for (const auto& d : data_)
-    result.AppendSpan(base::span(*d));
+    result.append_range(*d);
   std::move(callback).Run(result);
 }
 
@@ -246,25 +246,25 @@ void BlobBytesProvider::RequestAsFile(uint64_t source_offset,
 
 // This keeps the process alive while blobs are being transferred.
 void BlobBytesProvider::IncreaseChildProcessRefCount() {
-  if (!WTF::IsMainThread()) {
+  if (!IsMainThread()) {
     PostCrossThreadTask(
         *Thread::MainThread()->GetTaskRunner(MainThreadTaskRunnerRestricted()),
         FROM_HERE,
         CrossThreadBindOnce(&BlobBytesProvider::IncreaseChildProcessRefCount));
     return;
   }
-  Platform::Current()->SuddenTerminationChanged(false);
+  Platform::Current()->SetSuddenTerminationAllowed(/*allowed=*/false);
 }
 
 void BlobBytesProvider::DecreaseChildProcessRefCount() {
-  if (!WTF::IsMainThread()) {
+  if (!IsMainThread()) {
     PostCrossThreadTask(
         *Thread::MainThread()->GetTaskRunner(MainThreadTaskRunnerRestricted()),
         FROM_HERE,
         CrossThreadBindOnce(&BlobBytesProvider::DecreaseChildProcessRefCount));
     return;
   }
-  Platform::Current()->SuddenTerminationChanged(true);
+  Platform::Current()->SetSuddenTerminationAllowed(/*allowed=*/true);
 }
 
 }  // namespace blink

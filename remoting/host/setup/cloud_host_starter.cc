@@ -14,6 +14,7 @@
 #include "base/memory/scoped_refptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/sequence_checker.h"
+#include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "remoting/base/cloud_service_client.h"
 #include "remoting/base/compute_engine_service_client.h"
@@ -55,7 +56,7 @@ class CloudHostStarter : public HostStarterBase {
   void RetrieveApiAccessToken() override;
   void RegisterNewHost(std::optional<std::string> access_token) override;
   void RemoveOldHostFromDirectory(base::OnceClosure on_host_removed) override;
-  void ApplyConfigValues(base::Value::Dict& config) override;
+  void ApplyConfigValues(base::DictValue& config) override;
 
   // CloudServiceClient callback.
   void OnProvisionGceInstanceResponse(
@@ -138,7 +139,8 @@ void CloudHostStarter::OnApiAccessTokenRetrieved(const HttpStatus& status) {
     HandleError("Token response is empty.", Result::OAUTH_ERROR);
     return;
   }
-  auto token_payload = base::JSONReader::Read(status.response_body());
+  auto token_payload = base::JSONReader::Read(
+      status.response_body(), base::JSON_PARSE_CHROMIUM_EXTENSIONS);
   if (!token_payload.has_value()) {
     HandleError("Token response was not valid JSON.", Result::OAUTH_ERROR);
     return;
@@ -204,7 +206,7 @@ void CloudHostStarter::RemoveOldHostFromDirectory(
   std::move(on_host_removed).Run();
 }
 
-void CloudHostStarter::ApplyConfigValues(base::Value::Dict& config) {
+void CloudHostStarter::ApplyConfigValues(base::DictValue& config) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
   config.Set(kHostTypeHintPath, kCloudHostTypeHint);

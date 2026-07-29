@@ -70,56 +70,20 @@ WebAnnotationPolicyValue GetPolicyForType(PrefService* prefs,
   return WebAnnotationPolicyValue::kEnabled;
 }
 
-bool IsAddressDetectionEnabled() {
-  if (@available(iOS 16.4, *)) {
-    return base::FeatureList::IsEnabled(web::features::kOneTapForMaps);
-  }
-  return false;
-}
-
 bool IsAddressAutomaticDetectionEnabled(PrefService* prefs) {
-  return IsAddressDetectionEnabled() &&
-         prefs->GetBoolean(prefs::kDetectAddressesEnabled);
+  return prefs->GetBoolean(prefs::kDetectAddressesEnabled);
 }
 
 bool IsAddressAutomaticDetectionAccepted(PrefService* prefs) {
-  return IsAddressDetectionEnabled() &&
-         prefs->GetBoolean(prefs::kDetectAddressesAccepted);
+  return prefs->GetBoolean(prefs::kDetectAddressesAccepted);
 }
 
 bool ShouldPresentConsentIPH(PrefService* prefs) {
-  std::string param = base::GetFieldTrialParamValueByFeature(
-      web::features::kOneTapForMaps,
-      web::features::kOneTapForMapsConsentModeParamTitle);
-  if (param == web::features::kOneTapForMapsConsentModeIPHForcedParam) {
-    return true;
-  }
-  if (param == web::features::kOneTapForMapsConsentModeIPHParam ||
-      param == "") {
-    return !IsAddressAutomaticDetectionAccepted(prefs);
-  }
-  return false;
-}
-
-bool ShouldPresentConsentScreen(PrefService* prefs) {
-  std::string param = base::GetFieldTrialParamValueByFeature(
-      web::features::kOneTapForMaps,
-      web::features::kOneTapForMapsConsentModeParamTitle);
-  if (param == web::features::kOneTapForMapsConsentModeForcedParam) {
-    return true;
-  }
-  if (param == web::features::kOneTapForMapsConsentModeDisabledParam ||
-      param == web::features::kOneTapForMapsConsentModeIPHParam ||
-      param == web::features::kOneTapForMapsConsentModeIPHForcedParam ||
-      param == "") {
-    return false;
-  }
   return !IsAddressAutomaticDetectionAccepted(prefs);
 }
 
 bool IsAddressLongPressDetectionEnabled(PrefService* prefs) {
-  return !IsAddressDetectionEnabled() ||
-         prefs->GetBoolean(prefs::kDetectAddressesEnabled);
+  return prefs->GetBoolean(prefs::kDetectAddressesEnabled);
 }
 
 bool IsUnitAutomaticDetectionEnabled(PrefService* prefs) {

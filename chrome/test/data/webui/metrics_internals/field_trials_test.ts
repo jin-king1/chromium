@@ -5,9 +5,10 @@
 import 'chrome://metrics-internals/app.js';
 
 import {MetricsInternalsBrowserProxyImpl} from 'chrome://metrics-internals/browser_proxy.js';
-import type {FieldTrialState, HashNameMap, KeyValue, MetricsInternalsBrowserProxy, Trial} from 'chrome://metrics-internals/browser_proxy.js';
+import type {FieldTrialState, HashNameMap, KeyValue, MetricsInternalsBrowserProxy, RuntimeMutableFeature, SeedType, Trial} from 'chrome://metrics-internals/browser_proxy.js';
 import type {FieldTrialsAppElement} from 'chrome://metrics-internals/field_trials.js';
-import {assertDeepEquals, assertEquals, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
+import type {CwtKeyInfo} from 'chrome://metrics-internals/private_metrics.js';
+import {assertDeepEquals, assertEquals, assertFalse, assertNotEquals, assertTrue} from 'chrome://webui-test/chai_assert.js';
 import {TestBrowserProxy} from 'chrome://webui-test/test_browser_proxy.js';
 
 function wait(): Promise<void> {
@@ -30,12 +31,21 @@ class FakeBrowser extends TestBrowserProxy implements
     super([
       'getUmaLogData',
       'fetchVariationsSummary',
+      'fetchStoredSeedInfo',
       'fetchUmaSummary',
       'isUsingMetricsServiceObserver',
       'setTrialEnrollState',
       'fetchTrialState',
       'lookupTrialOrGroupName',
+      'fetchEncryptionPublicKey',
+      'fetchRuntimeMutableFeatures',
+      'isSeedFetchingPaused',
+      'setSeedFetchingPaused',
+      'uploadSeed',
       'restart',
+      'fetchUkmSummary',
+      'getUkmLogData',
+      'isUsingUkmServiceObserver',
     ]);
   }
 
@@ -51,6 +61,12 @@ class FakeBrowser extends TestBrowserProxy implements
 
   async fetchVariationsSummary(): Promise<KeyValue[]> {
     this.methodCalled('fetchVariationsSummary');
+    await wait();
+    return [];
+  }
+
+  async fetchStoredSeedInfo(seedType: SeedType): Promise<KeyValue[]> {
+    this.methodCalled(`fetchStored${seedType}SeedInfo`);
     await wait();
     return [];
   }
@@ -87,9 +103,57 @@ class FakeBrowser extends TestBrowserProxy implements
     return this.lookupTrialOrGroupNameResult;
   }
 
+  async fetchEncryptionPublicKey(): Promise<CwtKeyInfo> {
+    this.methodCalled('fetchEncryptionPublicKey');
+    await wait();
+    return {};
+  }
+
+  async fetchRuntimeMutableFeatures(): Promise<RuntimeMutableFeature[]> {
+    this.methodCalled('fetchRuntimeMutableFeatures');
+    await wait();
+    return [];
+  }
+
+  // Returns the default unpaused state. This stub does not support pausing
+  // and resuming seed fetching.
+  async isSeedFetchingPaused(): Promise<boolean> {
+    this.methodCalled('isSeedFetchingPaused');
+    await wait();
+    return false;
+  }
+
+  async setSeedFetchingPaused(paused: boolean): Promise<void> {
+    this.methodCalled('setSeedFetchingPaused', paused);
+    await wait();
+  }
+
+  async uploadSeed(seed: Uint8Array): Promise<void> {
+    this.methodCalled('uploadSeed', seed);
+    await wait();
+  }
+
   async restart(): Promise<void> {
     this.methodCalled('restart');
     await wait();
+  }
+
+  async fetchUkmSummary(): Promise<KeyValue[]> {
+    this.methodCalled('fetchUkmSummary');
+    await wait();
+    return [];
+  }
+
+  async getUkmLogData(): Promise<string> {
+    this.methodCalled('getUkmLogData');
+    await wait();
+    return '';
+  }
+
+  async isUsingUkmServiceObserver(): Promise<boolean> {
+    this.methodCalled('isUsingUkmServiceObserver');
+    await wait();
+    return false;
   }
 }
 
@@ -143,7 +207,7 @@ suite('FieldTrialsTest', function() {
           Array.from(trialDiv.querySelectorAll<HTMLElement>('.experiment-row'))
               .map(experimentRow => ({
                      title: experimentRow.querySelector('.experiment-name')!
-                                .textContent!.trim(),
+                                .textContent.trim(),
                      enrolled: experimentRow.dataset['enrolled'] === '1',
                      overridden: experimentRow
                                      .querySelector<HTMLInputElement>(
@@ -151,7 +215,7 @@ suite('FieldTrialsTest', function() {
                    }));
       if (groups.length) {
         displayedTrials.push({
-          title: trialDiv.querySelector('.trial-header')!.textContent!.trim(),
+          title: trialDiv.querySelector('.trial-header')!.textContent.trim(),
           groups,
         });
       }
@@ -301,8 +365,8 @@ suite('FieldTrialsTest', function() {
         await fakeBrowser.whenCalled('setTrialEnrollState'),
         'after clicking second box');
 
-    assertEquals(checkboxes[0]!.checked, false);
-    assertEquals(checkboxes[1]!.checked, true);
+    assertFalse(checkboxes[0]!.checked);
+    assertTrue(checkboxes[1]!.checked);
   });
 
   test('filter by trial name matches', async function() {

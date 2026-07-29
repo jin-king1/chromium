@@ -10,7 +10,8 @@
 #include <string_view>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
+#include "base/containers/to_vector.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/strings/utf_string_conversions.h"
 #include "net/base/filename_util.h"
@@ -19,6 +20,7 @@
 #include "ui/base/data_transfer_policy/data_transfer_endpoint.h"
 #include "ui/base/dragdrop/os_exchange_data.h"
 #include "ui/base/dragdrop/os_exchange_data_provider.h"
+#include "ui/base/ui_base_features.h"
 #include "url/gurl.h"
 
 namespace ui {
@@ -69,13 +71,17 @@ void OSExchangeDataProviderNonBacked::SetString(std::u16string_view data) {
   formats_ |= OSExchangeData::STRING;
 }
 
-void OSExchangeDataProviderNonBacked::SetURL(const GURL& url,
-                                             std::u16string_view title) {
-  url_ = url;
-  title_ = title;
+void OSExchangeDataProviderNonBacked::SetURLs(
+    base::span<const ClipboardUrlInfo> url_infos) {
+  if (url_infos.empty()) {
+    return;
+  }
+  const auto& url_info = url_infos.front();
+  url_ = url_info.url;
+  title_ = url_info.title;
   formats_ |= OSExchangeData::URL;
 
-  SetString(base::UTF8ToUTF16(url.spec()));
+  SetString(base::UTF8ToUTF16(url_.spec()));
 }
 
 void OSExchangeDataProviderNonBacked::SetFilename(const base::FilePath& path) {
@@ -113,50 +119,33 @@ std::optional<std::u16string> OSExchangeDataProviderNonBacked::GetString()
   return string_;
 }
 
-std::optional<OSExchangeDataProvider::UrlInfo>
-OSExchangeDataProviderNonBacked::GetURLAndTitle(
+std::vector<ClipboardUrlInfo> OSExchangeDataProviderNonBacked::GetURLs(
     FilenameToURLPolicy policy) const {
+  std::vector<ClipboardUrlInfo> url_infos;
   if ((formats_ & OSExchangeData::URL) == 0) {
-    GURL url;
-    if (GetPlainTextURL(&url) ||
-        (policy == FilenameToURLPolicy::CONVERT_FILENAMES &&
-         GetFileURL(&url))) {
-      DCHECK(url.is_valid());
-      return UrlInfo{std::move(url), std::u16string()};
+    if (std::optional<GURL> plaintext_url = GetPlainTextURL();
+        plaintext_url.has_value()) {
+      DCHECK(plaintext_url->is_valid());
+      url_infos.push_back(
+          ClipboardUrlInfo{plaintext_url.value(), std::u16string()});
     }
-    return std::nullopt;
-  }
-
-  if (!url_.is_valid()) {
-    return std::nullopt;
-  }
-
-  return UrlInfo{url_, title_};
-}
-
-std::optional<std::vector<GURL>> OSExchangeDataProviderNonBacked::GetURLs(
-    FilenameToURLPolicy policy) const {
-  std::vector<GURL> local_urls;
-
-  if (std::optional<UrlInfo> url_info =
-          GetURLAndTitle(FilenameToURLPolicy::DO_NOT_CONVERT_FILENAMES);
-      url_info.has_value()) {
-    local_urls.push_back(url_info->url);
+  } else {
+    if (url_.is_valid()) {
+      url_infos.push_back(ClipboardUrlInfo{url_, title_});
+    }
   }
 
   if (policy == FilenameToURLPolicy::CONVERT_FILENAMES) {
     if (std::optional<std::vector<FileInfo>> fileinfos = GetFilenames();
         fileinfos.has_value()) {
       for (const auto& fileinfo : fileinfos.value()) {
-        local_urls.push_back(net::FilePathToFileURL(fileinfo.path));
+        url_infos.push_back(
+            ClipboardUrlInfo{net::FilePathToFileURL(fileinfo.path), u""});
       }
     }
   }
 
-  if (local_urls.size()) {
-    return local_urls;
-  }
-  return std::nullopt;
+  return url_infos;
 }
 
 std::optional<std::vector<FileInfo>>
@@ -186,7 +175,7 @@ bool OSExchangeDataProviderNonBacked::HasURL(FilenameToURLPolicy policy) const {
     return true;
   }
   // No URL, see if we have plain text that can be parsed as a URL.
-  return GetPlainTextURL(nullptr) ||
+  return GetPlainTextURL().has_value() ||
          (policy == FilenameToURLPolicy::CONVERT_FILENAMES &&
           GetFileURL(nullptr));
 }
@@ -197,14 +186,14 @@ bool OSExchangeDataProviderNonBacked::HasFile() const {
 
 bool OSExchangeDataProviderNonBacked::HasCustomFormat(
     const ClipboardFormatType& format) const {
-  return base::Contains(pickle_data_, format);
+  return pickle_data_.contains(format);
 }
 
 void OSExchangeDataProviderNonBacked::SetFileContents(
     const base::FilePath& filename,
-    const std::string& file_contents) {
+    base::span<const uint8_t> file_contents) {
   file_contents_filename_ = filename;
-  file_contents_ = file_contents;
+  file_contents_ = base::ToVector(file_contents);
 }
 
 std::optional<OSExchangeDataProvider::FileContentsInfo>
@@ -274,18 +263,22 @@ bool OSExchangeDataProviderNonBacked::GetFileURL(GURL* url) const {
   return true;
 }
 
-bool OSExchangeDataProviderNonBacked::GetPlainTextURL(GURL* url) const {
+std::optional<GURL> OSExchangeDataProviderNonBacked::GetPlainTextURL() const {
   if ((formats_ & OSExchangeData::STRING) == 0)
-    return false;
+    return std::nullopt;
 
   GURL test_url(string_);
   if (!test_url.is_valid()) {
-    return false;
+    return std::nullopt;
   }
-  if (url) {
-    *url = std::move(test_url);
+
+  if (base::FeatureList::IsEnabled(
+          features::kDragDropOnlySynthesizeHttpOrHttpsUrlsFromText) &&
+      IsRendererTainted() && !test_url.SchemeIsHTTPOrHTTPS()) {
+    return std::nullopt;
   }
-  return true;
+
+  return test_url;
 }
 
 void OSExchangeDataProviderNonBacked::SetSource(
@@ -315,6 +308,8 @@ void OSExchangeDataProviderNonBacked::CopyData(
               : nullptr;
   provider->tainted_by_renderer_origin_ = tainted_by_renderer_origin_;
   provider->is_from_privileged_ = is_from_privileged_;
+  provider->drag_image_ = drag_image_;
+  provider->drag_image_offset_ = drag_image_offset_;
 }
 
 }  // namespace ui

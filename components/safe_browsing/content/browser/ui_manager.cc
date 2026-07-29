@@ -6,10 +6,9 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/observer_list.h"
 #include "base/threading/thread.h"
 #include "base/threading/thread_restrictions.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "components/no_state_prefetch/browser/no_state_prefetch_contents.h"
 #include "components/prefs/pref_service.h"
@@ -22,6 +21,7 @@
 #include "components/safe_browsing/core/browser/ping_manager.h"
 #include "components/safe_browsing/core/common/features.h"
 #include "components/safe_browsing/core/common/safe_browsing_prefs.h"
+#include "components/safe_browsing/core/common/utils.h"
 #include "components/security_interstitials/content/security_interstitial_tab_helper.h"
 #include "components/security_interstitials/core/unsafe_resource.h"
 #include "content/public/browser/browser_context.h"
@@ -31,14 +31,12 @@
 #include "content/public/browser/global_routing_id.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
-#include "ipc/ipc_message.h"
 #include "url/gurl.h"
 
 using content::BrowserThread;
 using content::NavigationEntry;
 using content::WebContents;
 using safe_browsing::ClientSafeBrowsingReportRequest;
-using safe_browsing::HitReport;
 using safe_browsing::SBThreatType;
 
 namespace safe_browsing {
@@ -61,47 +59,6 @@ void SafeBrowsingUIManager::Stop(bool shutdown) {
   if (shutdown) {
     shut_down_ = true;
   }
-}
-
-void SafeBrowsingUIManager::CreateAndSendHitReport(
-    const UnsafeResource& resource) {
-  WebContents* web_contents =
-      unsafe_resource_util::GetWebContentsForResource(resource);
-  DCHECK(web_contents);
-  std::unique_ptr<HitReport> hit_report = std::make_unique<HitReport>();
-  hit_report->malicious_url = resource.url;
-  hit_report->is_subresource = false;
-  hit_report->threat_type = resource.threat_type;
-  hit_report->threat_source = resource.threat_source;
-
-  NavigationEntry* entry =
-      unsafe_resource_util::GetNavigationEntryForResource(resource);
-  if (entry) {
-    hit_report->page_url = entry->GetURL();
-    hit_report->referrer_url = entry->GetReferrer().url;
-  }
-
-  // When resource.original_url is not the same as the resource.url, that means
-  // we have a redirect from resource.original_url to resource.url. Also, at
-  // this point, page_url points to the _previous_ page that we were on. We
-  // replace page_url with resource.original_url and referrer with page_url.
-  if (!resource.original_url.is_empty() &&
-      resource.original_url != resource.url) {
-    hit_report->referrer_url = hit_report->page_url;
-    hit_report->page_url = resource.original_url;
-  }
-
-  const auto& prefs = *delegate_->GetPrefs(web_contents->GetBrowserContext());
-
-  hit_report->extended_reporting_level = GetExtendedReportingLevel(prefs);
-  hit_report->is_enhanced_protection = IsEnhancedProtectionEnabled(prefs);
-  hit_report->is_metrics_reporting_active =
-      delegate_->IsMetricsAndCrashReportingEnabled();
-
-  MaybeReportSafeBrowsingHit(std::move(hit_report), web_contents);
-
-  for (Observer& observer : observer_list_)
-    observer.OnSafeBrowsingHit(resource);
 }
 
 void SafeBrowsingUIManager::CreateAndSendClientSafeBrowsingWarningShownReport(
@@ -237,14 +194,6 @@ void SafeBrowsingUIManager::StartDisplayingBlockingPage(
   DisplayBlockingPage(resource);
 }
 
-bool SafeBrowsingUIManager::ShouldSendHitReport(HitReport* hit_report,
-                                                WebContents* web_contents) {
-  return web_contents &&
-         hit_report->extended_reporting_level != SBER_LEVEL_OFF &&
-         !web_contents->GetBrowserContext()->IsOffTheRecord() &&
-         delegate_->IsSendingOfHitReportsEnabled();
-}
-
 bool SafeBrowsingUIManager::ShouldSendClientSafeBrowsingWarningShownReport(
     WebContents* web_contents) {
   if (!web_contents || !web_contents->GetBrowserContext()) {
@@ -253,31 +202,6 @@ bool SafeBrowsingUIManager::ShouldSendClientSafeBrowsingWarningShownReport(
   const auto& prefs = *delegate_->GetPrefs(web_contents->GetBrowserContext());
   return GetExtendedReportingLevel(prefs) != SBER_LEVEL_OFF &&
          !web_contents->GetBrowserContext()->IsOffTheRecord();
-}
-
-// A SafeBrowsing hit is sent after a blocking page for malware/phishing
-// or after the warning dialog for download urls, only for
-// extended-reporting users.
-void SafeBrowsingUIManager::MaybeReportSafeBrowsingHit(
-    std::unique_ptr<HitReport> hit_report,
-    WebContents* web_contents) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-
-  // Send report if user opted-in to extended reporting and is not in
-  //  incognito mode.
-  if (!ShouldSendHitReport(hit_report.get(), web_contents)) {
-    return;
-  }
-
-  if (shut_down_)
-    return;
-
-  DVLOG(1) << "ReportSafeBrowsingHit: " << hit_report->malicious_url << " "
-           << hit_report->page_url << " " << hit_report->referrer_url << " "
-           << hit_report->is_subresource << " "
-           << static_cast<int>(hit_report->threat_type);
-  delegate_->GetPingManager(web_contents->GetBrowserContext())
-      ->ReportSafeBrowsingHit(std::move(hit_report));
 }
 
 void SafeBrowsingUIManager::MaybeSendClientSafeBrowsingWarningShownReport(
@@ -295,58 +219,6 @@ void SafeBrowsingUIManager::MaybeSendClientSafeBrowsingWarningShownReport(
 void SafeBrowsingUIManager::CreateAllowlistForTesting(
     content::WebContents* web_contents) {
   EnsureAllowlistCreated(web_contents);
-}
-
-// static
-std::string SafeBrowsingUIManager::GetThreatTypeStringForInterstitial(
-    safe_browsing::SBThreatType threat_type) {
-  using enum SBThreatType;
-
-  switch (threat_type) {
-    case SB_THREAT_TYPE_URL_PHISHING:
-    case SB_THREAT_TYPE_URL_CLIENT_SIDE_PHISHING:
-      return "SOCIAL_ENGINEERING";
-    case SB_THREAT_TYPE_URL_MALWARE:
-      return "MALWARE";
-    case SB_THREAT_TYPE_URL_UNWANTED:
-      return "UNWANTED_SOFTWARE";
-    case SB_THREAT_TYPE_BILLING:
-      return "THREAT_TYPE_UNSPECIFIED";
-    case SB_THREAT_TYPE_MANAGED_POLICY_WARN:
-      return "MANAGED_POLICY_WARN";
-    case SB_THREAT_TYPE_MANAGED_POLICY_BLOCK:
-      return "MANAGED_POLICY_BLOCK";
-    case SB_THREAT_TYPE_UNUSED:
-    case SB_THREAT_TYPE_SAFE:
-    case SB_THREAT_TYPE_URL_BINARY_MALWARE:
-    case SB_THREAT_TYPE_EXTENSION:
-    case SB_THREAT_TYPE_API_ABUSE:
-    case SB_THREAT_TYPE_SUBRESOURCE_FILTER:
-    case SB_THREAT_TYPE_CSD_ALLOWLIST:
-    case DEPRECATED_SB_THREAT_TYPE_URL_PASSWORD_PROTECTION_PHISHING:
-    case DEPRECATED_SB_THREAT_TYPE_URL_CLIENT_SIDE_MALWARE:
-    case SB_THREAT_TYPE_SAVED_PASSWORD_REUSE:
-    case SB_THREAT_TYPE_SIGNED_IN_SYNC_PASSWORD_REUSE:
-    case SB_THREAT_TYPE_SIGNED_IN_NON_SYNC_PASSWORD_REUSE:
-    case SB_THREAT_TYPE_AD_SAMPLE:
-    case SB_THREAT_TYPE_BLOCKED_AD_POPUP:
-    case SB_THREAT_TYPE_BLOCKED_AD_REDIRECT:
-    case SB_THREAT_TYPE_SUSPICIOUS_SITE:
-    case SB_THREAT_TYPE_ENTERPRISE_PASSWORD_REUSE:
-    case SB_THREAT_TYPE_APK_DOWNLOAD:
-    case SB_THREAT_TYPE_HIGH_CONFIDENCE_ALLOWLIST:
-      NOTREACHED();
-  }
-  return std::string();
-}
-void SafeBrowsingUIManager::AddObserver(Observer* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  observer_list_.AddObserver(observer);
-}
-
-void SafeBrowsingUIManager::RemoveObserver(Observer* observer) {
-  DCHECK_CURRENTLY_ON(BrowserThread::UI);
-  observer_list_.RemoveObserver(observer);
 }
 
 const std::string SafeBrowsingUIManager::app_locale() const {
@@ -453,7 +325,7 @@ SafeBrowsingUIManager::CreateBlockingPage(
   }
   blocking_page = blocking_page_factory_->CreateSafeBrowsingPage(
       this, contents, blocked_url, {unsafe_resource},
-      /*should_trigger_reporting=*/true, blocked_page_shown_timestamp);
+      blocked_page_shown_timestamp);
 
   // Report that we showed an interstitial.
   if (forward_extension_event) {

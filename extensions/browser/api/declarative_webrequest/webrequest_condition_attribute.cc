@@ -11,9 +11,8 @@
 #include <vector>
 
 #include "base/check.h"
-#include "base/containers/contains.h"
-#include "base/lazy_instance.h"
 #include "base/memory/ptr_util.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/strings/string_util.h"
 #include "base/values.h"
@@ -24,7 +23,7 @@
 #include "extensions/browser/api/extensions_api_client.h"
 #include "extensions/browser/api/web_request/web_request_api_helpers.h"
 #include "extensions/browser/api/web_request/web_request_info.h"
-#include "extensions/browser/api/web_request/web_request_resource_type.h"
+#include "extensions/common/api/web_request/web_request_resource_type.h"
 #include "extensions/common/error_utils.h"
 #include "net/base/net_errors.h"
 #include "net/base/registry_controlled_domains/registry_controlled_domain.h"
@@ -79,8 +78,10 @@ struct WebRequestConditionAttributeFactory {
   }
 };
 
-base::LazyInstance<WebRequestConditionAttributeFactory>::Leaky
-    g_web_request_condition_attribute_factory = LAZY_INSTANCE_INITIALIZER;
+WebRequestConditionAttributeFactory& GetWebRequestConditionAttributeFactory() {
+  static base::NoDestructor<WebRequestConditionAttributeFactory> instance;
+  return *instance;
+}
 
 }  // namespace
 
@@ -105,7 +106,7 @@ WebRequestConditionAttribute::Create(
     std::string* error) {
   CHECK(value != nullptr && error != nullptr);
   bool bad_message = false;
-  return g_web_request_condition_attribute_factory.Get().factory.Instantiate(
+  return GetWebRequestConditionAttributeFactory().factory.Instantiate(
       name, value, error, &bad_message);
 }
 
@@ -134,7 +135,7 @@ WebRequestConditionAttributeResourceType::Create(
                                             keys::kResourceTypeKey);
     return nullptr;
   }
-  const base::Value::List& list = value->GetList();
+  const base::ListValue& list = value->GetList();
 
   std::vector<WebRequestResourceType> passed_types;
   passed_types.reserve(list.size());
@@ -166,7 +167,7 @@ bool WebRequestConditionAttributeResourceType::IsFulfilled(
     const WebRequestData& request_data) const {
   if (!(request_data.stage & GetStages()))
     return false;
-  return base::Contains(types_, request_data.request->web_request_type);
+  return std::ranges::contains(types_, request_data.request->web_request_type);
 }
 
 WebRequestConditionAttribute::Type
@@ -248,9 +249,9 @@ bool WebRequestConditionAttributeContentType::IsFulfilled(
                                   &had_charset, nullptr);
 
   if (inclusive_) {
-    return base::Contains(content_types_, mime_type);
+    return std::ranges::contains(content_types_, mime_type);
   } else {
-    return !base::Contains(content_types_, mime_type);
+    return !std::ranges::contains(content_types_, mime_type);
   }
 }
 
@@ -288,7 +289,7 @@ class HeaderMatcher {
   // dictionaries of the type declarativeWebRequest.HeaderFilter (see
   // declarative_web_request.json).
   static std::unique_ptr<const HeaderMatcher> Create(
-      const base::Value::List& tests);
+      const base::ListValue& tests);
 
   // Does |this| match the header "|name|: |value|"?
   bool TestNameValue(const std::string& name, const std::string& value) const;
@@ -335,7 +336,7 @@ class HeaderMatcher {
     // Gets the test group description in |tests| and creates the corresponding
     // HeaderMatchTest. On failure returns null.
     static std::unique_ptr<const HeaderMatchTest> Create(
-        const base::Value::Dict& tests);
+        const base::DictValue& tests);
 
     // Does the header "|name|: |value|" match all tests in |this|?
     bool Matches(const std::string& name, const std::string& value) const;
@@ -364,10 +365,10 @@ HeaderMatcher::~HeaderMatcher() = default;
 
 // static
 std::unique_ptr<const HeaderMatcher> HeaderMatcher::Create(
-    const base::Value::List& tests) {
+    const base::ListValue& tests) {
   std::vector<std::unique_ptr<const HeaderMatchTest>> header_tests;
   for (const auto& entry : tests) {
-    const base::Value::Dict* tests_dict = entry.GetIfDict();
+    const base::DictValue* tests_dict = entry.GetIfDict();
     if (!tests_dict)
       return nullptr;
 
@@ -424,7 +425,7 @@ bool HeaderMatcher::StringMatchTest::Matches(
                                    CaseInsensitiveCompareASCII<char>())
                    .begin() != str.end();
       } else {
-        return base::Contains(str, data_);
+        return str.contains(data_);
       }
   }
   // We never get past the "switch", but the compiler worries about no return.
@@ -451,7 +452,7 @@ HeaderMatcher::HeaderMatchTest::~HeaderMatchTest() = default;
 
 // static
 std::unique_ptr<const HeaderMatcher::HeaderMatchTest>
-HeaderMatcher::HeaderMatchTest::Create(const base::Value::Dict& tests) {
+HeaderMatcher::HeaderMatchTest::Create(const base::DictValue& tests) {
   std::vector<std::unique_ptr<const StringMatchTest>> name_match;
   std::vector<std::unique_ptr<const StringMatchTest>> value_match;
 

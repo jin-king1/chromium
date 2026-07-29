@@ -23,11 +23,8 @@ static_library("print_compositor") {
     "//ui/accessibility",
   ]
 
-  if (is_win) {
-    deps += [
-      "//content/public/child",
-      "//printing:printing_base",
-    ]
+  if (is_win || is_linux) {
+    deps += [ "//content/public/child" ]
   }
 
   public_deps = [
@@ -61,8 +58,6 @@ if (enable_printing) {
     ]
 
     if (enterprise_watermark) {
-      data = [ "//components/services/print_compositor/test/data" ]
-
       deps += [
         "//cc:test_support",
         "//components/enterprise/watermarking",

@@ -9,7 +9,6 @@ namespace base {
 namespace {
 
 const char* GetNameForProcessType(CurrentProcessType process_type) {
-#if BUILDFLAG(ENABLE_BASE_TRACING)
   switch (process_type) {
     case CurrentProcessType::PROCESS_UNSPECIFIED:
       return "Null";
@@ -95,17 +94,15 @@ const char* GetNameForProcessType(CurrentProcessType process_type) {
       return "Service: shape_detection.mojom.ShapeDetectionService";
     case CurrentProcessType::PROCESS_RENDERER_EXTENSION:
       return "Extension Renderer";
+    case CurrentProcessType::PROCESS_RENDERER_TOP_WEBUI:
+      return "WebUI Top Renderer";
   }
-#else
-  return "Null";
-#endif  // BUILDFLAG(ENABLE_BASE_TRACING)
 }
 
 }  // namespace
 
 // Used for logging histograms for IPC metrics based on their process type.
 ShortProcessType CurrentProcess::GetShortType(TypeKey key) {
-#if BUILDFLAG(ENABLE_BASE_TRACING)
   CurrentProcessType process = process_type_.load(std::memory_order_relaxed);
   switch (process) {
     case CurrentProcessType::PROCESS_UNSPECIFIED:
@@ -113,6 +110,7 @@ ShortProcessType CurrentProcess::GetShortType(TypeKey key) {
     case CurrentProcessType::PROCESS_BROWSER:
       return ShortProcessType::kBrowser;
     case CurrentProcessType::PROCESS_RENDERER:
+    case CurrentProcessType::PROCESS_RENDERER_TOP_WEBUI:
       return ShortProcessType::kRenderer;
     case CurrentProcessType::PROCESS_UTILITY:
       return ShortProcessType::kUtility;
@@ -164,9 +162,6 @@ ShortProcessType CurrentProcess::GetShortType(TypeKey key) {
     case CurrentProcessType::PROCESS_SERVICE_SHAPEDETECTION:
       return ShortProcessType::kService;
   }
-#else
-  return ShortProcessType::kUnspecified;
-#endif
 }
 
 // static

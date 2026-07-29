@@ -24,6 +24,7 @@ import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Feature;
 import org.chromium.content_public.browser.GestureListenerManager;
 import org.chromium.content_public.browser.GestureStateListener;
+import org.chromium.content_public.browser.test.util.WebContentsUtils;
 
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -35,22 +36,22 @@ public class WebViewModalDialogOverrideTest extends AwParameterizedTest {
 
     private static final String EMPTY_PAGE =
             """
-        <!doctype html>
-        <title>Modal Dialog Test</title>
-        <p>Testcase.</p>
-        """;
+            <!doctype html>
+            <title>Modal Dialog Test</title>
+            <p>Testcase.</p>
+            """;
     private static final String BEFORE_UNLOAD_URL =
             """
-        <!doctype html>
-        <head>
-            <script>
-                window.onbeforeunload = function() {
-                    return 'Are you sure?';
-                };
-            </script>
-        </head>
-        </body>
-        """;
+            <!doctype html>
+            <head>
+                <script>
+                    window.onbeforeunload = function() {
+                        return 'Are you sure?';
+                    };
+                </script>
+            </head>
+            </body>
+            """;
 
     public WebViewModalDialogOverrideTest(AwSettingsMutation param) {
         this.mActivityTestRule = new AwActivityTestRule(param.getMutation());
@@ -130,10 +131,7 @@ public class WebViewModalDialogOverrideTest extends AwParameterizedTest {
     /*
      * Verify that when the AwContentsClient calls handleJsConfirm and the client confirms.
      */
-    @Test
-    @SmallTest
-    @Feature({"AndroidWebView"})
-    public void testOverrideConfirmHandlingConfirmed() throws Throwable {
+    private void runConfirmHandlingConfirmed(boolean reparentContext) throws Throwable {
         final String confirmText = "Would you like a cookie?";
 
         final AtomicBoolean called = new AtomicBoolean(false);
@@ -158,6 +156,34 @@ public class WebViewModalDialogOverrideTest extends AwParameterizedTest {
                         awContents, client, "confirm('" + confirmText + "')");
         Assert.assertTrue(called.get());
         Assert.assertEquals("true", result);
+
+        if (reparentContext) {
+            called.set(false);
+            AwTestContainerView newView = mActivityTestRule.reparentAwContents(view);
+            String resultAfter =
+                    mActivityTestRule.executeJavaScriptAndWaitForResult(
+                            newView.getAwContents(), client, "confirm('" + confirmText + "')");
+            Assert.assertTrue(called.get());
+            Assert.assertEquals("true", resultAfter);
+        }
+    }
+
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testOverrideConfirmHandlingConfirmed() throws Throwable {
+        runConfirmHandlingConfirmed(false);
+    }
+
+    /*
+     * Verify that when the AwContentsClient calls handleJsConfirm and the client confirms,
+     * the state is preserved after reparenting.
+     */
+    @Test
+    @SmallTest
+    @Feature({"AndroidWebView"})
+    public void testOverrideConfirmHandlingConfirmed_WithReparenting() throws Throwable {
+        runConfirmHandlingConfirmed(true);
     }
 
     /*
@@ -194,7 +220,7 @@ public class WebViewModalDialogOverrideTest extends AwParameterizedTest {
     }
 
     private static class TapGestureStateListener extends GestureStateListener {
-        private CallbackHelper mCallbackHelper = new CallbackHelper();
+        private final CallbackHelper mCallbackHelper = new CallbackHelper();
 
         public int getCallCount() {
             return mCallbackHelper.getCallCount();
@@ -251,6 +277,9 @@ public class WebViewModalDialogOverrideTest extends AwParameterizedTest {
                 BEFORE_UNLOAD_URL,
                 "text/html",
                 false);
+        ThreadUtils.runOnUiThreadBlocking(
+                () -> WebContentsUtils.simulateEndOfPaintHolding(awContents.getWebContents()));
+
         AwActivityTestRule.enableJavaScriptOnUiThread(awContents);
         // JavaScript onbeforeunload dialogs require a user gesture.
         tapViewAndWait(view);

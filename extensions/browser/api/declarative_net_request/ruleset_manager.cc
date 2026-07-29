@@ -11,14 +11,14 @@
 
 #include "base/check_op.h"
 #include "base/command_line.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
+#include "base/metrics/histogram_functions.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
 #include "base/time/time.h"
 #include "base/timer/elapsed_timer.h"
 #include "components/web_cache/browser/web_cache_manager.h"
+#include "extensions/browser/api/constants.h"
 #include "extensions/browser/api/declarative_net_request/composite_matcher.h"
 #include "extensions/browser/api/declarative_net_request/constants.h"
 #include "extensions/browser/api/declarative_net_request/request_action.h"
@@ -31,10 +31,13 @@
 #include "extensions/browser/api/web_request/web_request_permissions.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/extensions_browser_client.h"
 #include "extensions/browser/install_prefs_helper.h"
 #include "extensions/common/api/declarative_net_request.h"
 #include "extensions/common/constants.h"
 #include "extensions/common/switches.h"
+#include "services/metrics/public/cpp/ukm_builders.h"
+#include "services/metrics/public/cpp/ukm_recorder.h"
 #include "url/origin.h"
 
 namespace extensions::declarative_net_request {
@@ -44,11 +47,21 @@ namespace flat_rule = url_pattern_index::flat;
 namespace dnr_api = api::declarative_net_request;
 using PageAccess = PermissionsData::PageAccess;
 
+constexpr char kAllowWebViewDeclarativeNetRequest[] =
+    "allow-webview-declarative-net-request";
+
+bool IsRedirectToFileUrl(const std::optional<RequestAction>& action) {
+  return action && action->IsRedirectOrUpgrade() && action->redirect_url &&
+         action->redirect_url->SchemeIsFile();
+}
+
 void NotifyRequestWithheld(const ExtensionId& extension_id,
                            const WebRequestInfo& request) {
   DCHECK(ExtensionsAPIClient::Get());
+  // TODO(crbug.com/379869738): Remove GetUnsafeValue.
   ExtensionsAPIClient::Get()->NotifyWebRequestWithheld(
-      request.render_process_id, request.frame_routing_id, extension_id);
+      request.global_id.child_id.GetUnsafeValue(),
+      request.global_id.frame_routing_id, extension_id);
 }
 
 // Helper to log the time taken in RulesetManager::EvaluateRequestInternal.
@@ -63,6 +76,21 @@ class ScopedEvaluateRequestTimer {
 
  private:
   base::ElapsedTimer timer_;
+};
+
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class RedirectActionType {
+  // DNR redirects that are not for the main frame.
+  kNonMainFrameRedirects = 0,
+  // DNR redirects that are for the main frame and are for the default search
+  // engine page.
+  kMainFrameDSERedirects = 1,
+  // DNR redirects that are for the main frame and are not for the default
+  // search engine page.
+  kOtherMainFrameRedirects = 2,
+  // The maximum value of the RedirectActionType enum.
+  kMaxValue = kOtherMainFrameRedirects,
 };
 
 }  // namespace
@@ -84,8 +112,13 @@ RulesetManager::~RulesetManager() {
 void RulesetManager::AddRuleset(const ExtensionId& extension_id,
                                 std::unique_ptr<CompositeMatcher> matcher) {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  DCHECK(!GetMatcherForExtension(extension_id))
+  // TODO(crbug.com/358617943): Replace LOG_IF() and histogram with CHECK().
+  const bool called_twice = GetMatcherForExtension(extension_id);
+  LOG_IF(ERROR, called_twice)
       << "AddRuleset called twice in succession for " << extension_id;
+  base::UmaHistogramBoolean(
+      "Extensions.DeclarativeNetRequest.AddRulesetCalledTwiceInSuccession",
+      called_twice);
 
   base::Time update_time = GetLastUpdateTime(prefs_, extension_id);
   rulesets_.emplace(extension_id, update_time, std::move(matcher));
@@ -182,7 +215,19 @@ std::vector<RequestAction> RulesetManager::EvaluateRequestWithHeaders(
     const net::HttpResponseHeaders* response_headers,
     bool is_incognito_context) const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
-  CHECK(response_headers);
+
+  if (!response_headers) {
+    // NOTE: This can happen for auth challenges from CORS preflight requests
+    // that get routed to the respective main request's handler (since they
+    // share the same `request_id`), which happens when `extraHeaders` is
+    // enabled.
+    //
+    // At this point, the main request is paused waiting for the preflight, and
+    // has not received its own headers, so `response_headers` is null. We must
+    // return early. See https://crbug.com/444248440.
+    return {};
+  }
+
   return EvaluateRequestInternal(request, response_headers,
                                  is_incognito_context);
 }
@@ -211,8 +256,8 @@ bool RulesetManager::HasExtraHeadersMatcherForRequest(
   // request would potentially match any onHeadersReceived rules based on
   // non-header parameters.
   return HasRulesets(RulesetMatchingStage::kOnHeadersReceived) ||
-         base::Contains(actions, RequestAction::Type::MODIFY_HEADERS,
-                        &RequestAction::type);
+         std::ranges::contains(actions, RequestAction::Type::MODIFY_HEADERS,
+                               &RequestAction::type);
 }
 
 void RulesetManager::OnRenderFrameCreated(content::RenderFrameHost* host) {
@@ -259,13 +304,11 @@ std::vector<RequestAction> RulesetManager::MergeModifyHeaderActions(
       [this](const RequestAction& lhs, const RequestAction& rhs) {
         auto lhs_install_time_it =
             extension_install_times_.find(lhs.extension_id);
-        CHECK(lhs_install_time_it != extension_install_times_.end(),
-              base::NotFatalUntil::M130);
+        CHECK(lhs_install_time_it != extension_install_times_.end());
 
         auto rhs_install_time_it =
             extension_install_times_.find(rhs.extension_id);
-        CHECK(rhs_install_time_it != extension_install_times_.end(),
-              base::NotFatalUntil::M130);
+        CHECK(rhs_install_time_it != extension_install_times_.end());
 
         // Same comparator as ExtensionRulesetData's for actions from different
         // extensions. Otherwise, default to RequestAction's comparator.
@@ -292,8 +335,9 @@ RulesetManager::ExtensionRulesetData::ExtensionRulesetData(
 RulesetManager::ExtensionRulesetData::~ExtensionRulesetData() = default;
 RulesetManager::ExtensionRulesetData::ExtensionRulesetData(
     ExtensionRulesetData&& other) = default;
-RulesetManager::ExtensionRulesetData& RulesetManager::ExtensionRulesetData::
-operator=(ExtensionRulesetData&& other) = default;
+RulesetManager::ExtensionRulesetData&
+RulesetManager::ExtensionRulesetData::operator=(ExtensionRulesetData&& other) =
+    default;
 
 bool RulesetManager::ExtensionRulesetData::operator<(
     const ExtensionRulesetData& other) const {
@@ -344,6 +388,15 @@ std::optional<RequestAction> RulesetManager::GetAction(
 
     CompositeMatcher::ActionInfo action_info =
         ruleset->matcher->GetAction(params, stage, ruleset_and_access.second);
+
+    // Extensions may not redirect to a file:// URL without explicit local file
+    // access. Drop the action if it does not have file access. Like matched
+    // redirect rules that do not have host access to the request's URL, It will
+    // still mask lower priority rules from the same ruleset.
+    if (IsRedirectToFileUrl(action_info.action) &&
+        !util::AllowFileAccess(ruleset->extension_id, browser_context_)) {
+      action_info.action.reset();
+    }
 
     DCHECK(!(action_info.action && action_info.notify_request_withheld));
     if (action_info.notify_request_withheld) {
@@ -465,6 +518,41 @@ std::vector<RequestAction> RulesetManager::EvaluateRequestInternal(
 
   if (action) {
     bool is_request_modifying_action = !action->IsAllowOrAllowAllRequests();
+
+    if (action->type == RequestAction::Type::REDIRECT) {
+      if (request.web_request_type != WebRequestResourceType::MAIN_FRAME) {
+        base::UmaHistogramEnumeration(
+            "Extensions.DeclarativeNetRequest.RedirectAction",
+            RedirectActionType::kNonMainFrameRedirects);
+      } else {
+        bool is_dse_redirect =
+            ExtensionsBrowserClient::Get()->IsDefaultSearchEngineRedirect(
+                browser_context_, request.url, action->redirect_url.value());
+        if (is_dse_redirect) {
+          base::UmaHistogramEnumeration(
+              "Extensions.DeclarativeNetRequest.RedirectAction",
+              RedirectActionType::kMainFrameDSERedirects);
+          ukm::builders::Extensions_DeclarativeNetRequest_DSERedirect(
+              ukm::UkmRecorder::GetSourceIdForExtensionUrl(
+                  base::PassKey<RulesetManager>(),
+                  Extension::GetBaseURLFromExtensionId(action->extension_id)))
+              .SetSeen(true)
+              .Record(ukm::UkmRecorder::Get());
+          ukm::builders::Extensions_SearchRedirect(
+              ukm::UkmRecorder::GetSourceIdForRedirectUrl(
+                  base::PassKey<RulesetManager>(),
+                  action->redirect_url.value()))
+              .SetApi(static_cast<int64_t>(
+                  ExtensionSearchRedirectedByApi::kDeclarativeNetRequest))
+              .Record(ukm::UkmRecorder::Get());
+        } else {
+          base::UmaHistogramEnumeration(
+              "Extensions.DeclarativeNetRequest.RedirectAction",
+              RedirectActionType::kOtherMainFrameRedirects);
+        }
+      }
+    }
+
     actions.push_back(std::move(*action));
 
     // If the request is blocked/redirected, no further modifications can
@@ -479,8 +567,8 @@ std::vector<RequestAction> RulesetManager::EvaluateRequestInternal(
   std::vector<RequestAction> modify_headers_actions =
       GetModifyHeadersActions(rulesets_to_evaluate, request, params, stage);
 
-  // Pass the allow rule priority cache to `request` so its current value can be
-  // reused in later rule matching stages.
+  // Pass the allow rule priority cache to `request` so its current value can
+  // be reused in later rule matching stages.
   request.max_priority_allow_action =
       std::move(params.max_priority_allow_action);
 
@@ -506,6 +594,14 @@ bool RulesetManager::ShouldEvaluateRequest(
     return false;
   }
 
+  // Declarative Net Request rules should not be matched against requests
+  // originating from WebViews, unless explicitly allowed.
+  // TODO(b/476261948): Replace the flag with a better solution.
+  if (request.is_web_view) {
+    return base::CommandLine::ForCurrentProcess()->HasSwitch(
+        kAllowWebViewDeclarativeNetRequest);
+  }
+
   return true;
 }
 
@@ -517,11 +613,10 @@ bool RulesetManager::ShouldEvaluateRulesetForRequest(
   // Extensions should not generally have access to non-main-frame requests
   // initiated by other extensions, though the --extensions-on-chrome-urls
   // switch overrides that restriction.
-  // Note: For discussions regarding handling of extension initiated navigations
-  //       see https://crbug.com/918137 and https://crbug.com/382670035.
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
-          switches::kExtensionsOnChromeURLs) &&
-      request.initiator &&
+  // Note: For discussions regarding handling of extension initiated
+  // navigations
+  //       see crbug.com/41433450 and crbug.com/382670035.
+  if (!switches::AreExtensionsOnExtensionURLsAllowed() && request.initiator &&
       request.web_request_type != WebRequestResourceType::MAIN_FRAME) {
     // Checking the precursor is necessary here since requests initiated by
     // manifest sandbox pages have an opaque initiator origin, but still
@@ -538,6 +633,13 @@ bool RulesetManager::ShouldEvaluateRulesetForRequest(
   // incognito context.
   if (is_incognito_context &&
       !util::IsIncognitoEnabled(ruleset.extension_id, browser_context_)) {
+    return false;
+  }
+
+  // Extensions may not intercept file:// URLs without explicit local file
+  // access.
+  if (request.url.SchemeIsFile() &&
+      !util::AllowFileAccess(ruleset.extension_id, browser_context_)) {
     return false;
   }
 
@@ -565,11 +667,10 @@ bool RulesetManager::ShouldEvaluateRulesetForRequest(
     }
 
     case HostPermissionsAlwaysRequired::kFalse: {
-      // Some requests should not be visible to extensions even if the extension
-      // doesn't require host permissions for them. Note: we are not checking
-      // for host permissions here.
-      // DO_NOT_CHECK_HOST is strictly less restrictive than
-      // REQUIRE_HOST_PERMISSION_FOR_URL_AND_INITIATOR.
+      // Some requests should not be visible to extensions even if the
+      // extension doesn't require host permissions for them. Note: we are not
+      // checking for host permissions here. DO_NOT_CHECK_HOST is strictly
+      // less restrictive than REQUIRE_HOST_PERMISSION_FOR_URL_AND_INITIATOR.
       PageAccess do_not_check_host_access =
           WebRequestPermissions::CanExtensionAccessURL(
               permission_helper_, ruleset.extension_id, request.url, tab_id,

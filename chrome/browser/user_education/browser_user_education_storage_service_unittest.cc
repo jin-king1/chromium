@@ -23,10 +23,8 @@
 
 namespace {
 BASE_FEATURE(kTestIPHFeature,
-             "TestIPHFeature",
              base::FEATURE_ENABLED_BY_DEFAULT);
 BASE_FEATURE(kTestIPHFeature2,
-             "TestIPHFeature2",
              base::FEATURE_ENABLED_BY_DEFAULT);
 constexpr char kAppName1[] = "App1";
 constexpr char kAppName2[] = "App2";
@@ -37,6 +35,10 @@ constexpr base::Time kNewSessionTime = kSessionTime + base::Days(3);
 constexpr base::Time kNewActiveTime = kNewSessionTime + base::Minutes(17);
 constexpr base::Time kLastShownTime1 = kSessionTime + base::Minutes(45);
 constexpr base::Time kLastShownTime2 = kSessionTime + base::Minutes(75);
+constexpr int kFirstSessionNumber = 5;
+constexpr char kNtpPromoId[] = "promo";
+constexpr char kNtpPromo2Id[] = "promo2";
+
 }  // namespace
 
 // Repeats some of the tests in UserEducationStorageServiceTest except that a
@@ -114,6 +116,7 @@ class BrowserUserEducationStorageServiceTest : public testing::Test {
     const auto actual = ReadSessionData();
     EXPECT_EQ(expected.start_time, actual.start_time);
     EXPECT_EQ(expected.most_recent_active_time, actual.most_recent_active_time);
+    EXPECT_EQ(expected.session_number, actual.session_number);
   }
 
   void SaveNewBadgeData(const user_education::NewBadgeData& data,
@@ -197,6 +200,7 @@ TEST_F(BrowserUserEducationStorageServiceTest, SavesAndReadsMultipleFeatures) {
 }
 
 TEST_F(BrowserUserEducationStorageServiceTest, NoSessionDataByDefault) {
+  user_education::UserEducationSessionData data;
   CompareSessionData(user_education::UserEducationSessionData());
 }
 
@@ -204,6 +208,7 @@ TEST_F(BrowserUserEducationStorageServiceTest, SavesAndReadsSessionData) {
   user_education::UserEducationSessionData data;
   data.start_time = kSessionTime;
   data.most_recent_active_time = kLastActiveTime;
+  data.session_number = kFirstSessionNumber;
   SaveSessionData(data);
   CompareSessionData(data);
 }
@@ -212,9 +217,11 @@ TEST_F(BrowserUserEducationStorageServiceTest, SaveSessionAgain) {
   user_education::UserEducationSessionData data;
   data.start_time = kSessionTime;
   data.most_recent_active_time = kLastActiveTime;
+  data.session_number = kFirstSessionNumber;
   SaveSessionData(data);
   data.start_time = kNewSessionTime;
   data.most_recent_active_time = kNewActiveTime;
+  data.session_number = kFirstSessionNumber + 1;
   SaveSessionData(data);
   CompareSessionData(data);
 }
@@ -223,6 +230,7 @@ TEST_F(BrowserUserEducationStorageServiceTest, ResetSessionClearsData) {
   user_education::UserEducationSessionData data;
   data.start_time = kSessionTime;
   data.most_recent_active_time = kLastActiveTime;
+  data.session_number = kFirstSessionNumber;
   SaveSessionData(data);
   ResetSessionData();
   CompareSessionData(user_education::UserEducationSessionData());
@@ -383,7 +391,7 @@ TEST_F(BrowserUserEducationStorageServiceTest, LegacyDataTest) {
                               base::TimeToValue(kLastSnoozeTime));
     pref_data.SetByDottedPath("TestIPHFeature.snooze_count", 1);
 
-    base::Value::List shown_for;
+    base::ListValue shown_for;
     shown_for.Append(kAppName1);
     pref_data.SetByDottedPath("TestIPHFeature.shown_for_apps",
                               std::move(shown_for));
@@ -417,4 +425,54 @@ TEST_F(BrowserUserEducationStorageServiceTest, LegacyDataTest) {
 
   // Reset the clock so there is no dangling pointer.
   service().set_clock_for_testing(base::DefaultClock::GetInstance());
+}
+
+TEST_F(BrowserUserEducationStorageServiceTest, NtpPromoData) {
+  user_education::NtpPromoData data;
+  data.last_clicked = base::Time::FromSecondsSinceUnixEpoch(1);
+  data.completed = base::Time::FromSecondsSinceUnixEpoch(2);
+  data.last_session = 3;
+  data.session_count_in_term = 4;
+  data.term_count = 5;
+  data.term_start_time = base::Time::FromSecondsSinceUnixEpoch(6);
+  data.dismissed_time = base::Time::FromSecondsSinceUnixEpoch(7);
+  service().SaveNtpPromoData(kNtpPromoId, data);
+  EXPECT_EQ(data, service().ReadNtpPromoData(kNtpPromoId).value());
+}
+
+TEST_F(BrowserUserEducationStorageServiceTest, NtpPromoDataNotPresent) {
+  user_education::NtpPromoData data;
+  EXPECT_FALSE(service().ReadNtpPromoData(kNtpPromoId).has_value());
+}
+
+TEST_F(BrowserUserEducationStorageServiceTest, NtpPromoDataReset) {
+  user_education::NtpPromoData data;
+  data.last_session = 3;
+  service().SaveNtpPromoData(kNtpPromoId, data);
+  service().SaveNtpPromoData(kNtpPromo2Id, data);
+  service().ResetNtpPromoData(kNtpPromoId);
+  // Ensure only the specified promo is cleared.
+  EXPECT_FALSE(service().ReadNtpPromoData(kNtpPromoId).has_value());
+  EXPECT_TRUE(service().ReadNtpPromoData(kNtpPromo2Id).has_value());
+}
+
+TEST_F(BrowserUserEducationStorageServiceTest, NtpPromoPreferences) {
+  user_education::NtpPromoPreferences prefs;
+  prefs.disabled = true;
+  service().SaveNtpPromoPreferences(prefs);
+  EXPECT_EQ(prefs, service().ReadNtpPromoPreferences());
+}
+
+TEST_F(BrowserUserEducationStorageServiceTest, NtpPromoPreferencesNotPresent) {
+  user_education::NtpPromoPreferences prefs;
+  EXPECT_EQ(prefs, service().ReadNtpPromoPreferences());
+}
+
+TEST_F(BrowserUserEducationStorageServiceTest, NtpPromoPreferencesReset) {
+  user_education::NtpPromoPreferences prefs;
+  prefs.disabled = true;
+  service().SaveNtpPromoPreferences(prefs);
+  service().ResetNtpPromoPreferences();
+  prefs = user_education::NtpPromoPreferences();
+  EXPECT_EQ(prefs, service().ReadNtpPromoPreferences());
 }

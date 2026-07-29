@@ -5,11 +5,10 @@
 package org.chromium.chrome.browser.notifications;
 
 import android.app.Notification;
+import android.app.NotificationManager;
 import android.text.format.DateUtils;
 
 import androidx.annotation.IntDef;
-import androidx.annotation.RequiresApi;
-import androidx.core.app.NotificationManagerCompat;
 
 import org.chromium.base.Callback;
 import org.chromium.base.MathUtils;
@@ -19,6 +18,7 @@ import org.chromium.base.shared_preferences.SharedPreferencesManager;
 import org.chromium.build.annotations.NullMarked;
 import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions;
+import org.chromium.chrome.browser.notifications.channels.ChromeChannelDefinitions.ChannelId;
 import org.chromium.chrome.browser.preferences.ChromePreferenceKeys;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
 import org.chromium.components.browser_ui.notifications.BaseNotificationManagerProxy;
@@ -83,54 +83,64 @@ public class NotificationUmaTracker {
         SystemNotificationType.UPM_ERROR,
         SystemNotificationType.WEBAPK_INSTALL_FAILED,
         SystemNotificationType.DATA_SHARING,
-        SystemNotificationType.UPM_ACCESS_LOSS_WARNING
+        SystemNotificationType.UPM_ACCESS_LOSS_WARNING,
+        SystemNotificationType.TRACING,
+        SystemNotificationType.SERIAL,
+        SystemNotificationType.SAFETY_HUB_UNSUBSCRIBED_NOTIFICATIONS,
+        SystemNotificationType.ACTOR,
+        SystemNotificationType.CHROME_FINDS,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface SystemNotificationType {
-        int UNKNOWN = -1;
-        int DOWNLOAD_FILES = 0;
-        int DOWNLOAD_PAGES = 1;
-        int CLOSE_INCOGNITO = 2;
-        int CONTENT_SUGGESTION = 3;
-        int MEDIA_CAPTURE = 4;
-        int PHYSICAL_WEB = 5;
-        int MEDIA = 6;
-        int SITES = 7;
-        int SYNC = 8;
-        int WEBAPK = 9;
-        int BROWSER_ACTIONS = 10;
-        int WEBAPP_ACTIONS = 11;
-        int OFFLINE_CONTENT_SUGGESTION = 12;
-        int TRUSTED_WEB_ACTIVITY_SITES = 13;
-        int OFFLINE_PAGES = 14;
-        int SEND_TAB_TO_SELF = 15;
-        int UPDATES = 16;
-        int CLICK_TO_CALL = 17;
-        int SHARED_CLIPBOARD = 18;
-        int PERMISSION_REQUESTS = 19;
-        int PERMISSION_REQUESTS_HIGH = 20;
-        int ANNOUNCEMENT = 21;
-        int SHARE_SAVE_IMAGE = 22;
-        int TWA_DISCLOSURE_INITIAL = 23;
-        int TWA_DISCLOSURE_SUBSEQUENT = 24;
-        int CHROME_REENGAGEMENT_1 = 25;
-        int CHROME_REENGAGEMENT_2 = 26;
-        int CHROME_REENGAGEMENT_3 = 27;
-        int PRICE_DROP_ALERTS = 28;
-        int SMS_FETCHER = 29;
-        int WEBAPK_INSTALL_IN_PROGRESS = 30;
-        int WEBAPK_INSTALL_COMPLETE = 31;
-        int PRICE_DROP_ALERTS_CHROME_MANAGED = 32;
-        int PRICE_DROP_ALERTS_USER_MANAGED = 33;
-        int CHROME_TIPS = 34;
-        int BLUETOOTH = 35;
-        int USB = 36;
-        int UPM_ERROR = 37;
-        int WEBAPK_INSTALL_FAILED = 38;
-        int DATA_SHARING = 39;
-        int UPM_ACCESS_LOSS_WARNING = 40;
+        int UNKNOWN = 0;
+        int DOWNLOAD_FILES = 1;
+        int DOWNLOAD_PAGES = 2;
+        int CLOSE_INCOGNITO = 3;
+        int CONTENT_SUGGESTION = 4;
+        int MEDIA_CAPTURE = 5;
+        int PHYSICAL_WEB = 6;
+        int MEDIA = 7;
+        int SITES = 8;
+        int SYNC = 9;
+        int WEBAPK = 10;
+        int BROWSER_ACTIONS = 11;
+        int WEBAPP_ACTIONS = 12;
+        int OFFLINE_CONTENT_SUGGESTION = 13;
+        int TRUSTED_WEB_ACTIVITY_SITES = 14;
+        int OFFLINE_PAGES = 15;
+        int SEND_TAB_TO_SELF = 16;
+        int UPDATES = 17;
+        int CLICK_TO_CALL = 18;
+        int SHARED_CLIPBOARD = 19;
+        int PERMISSION_REQUESTS = 20;
+        int PERMISSION_REQUESTS_HIGH = 21;
+        int ANNOUNCEMENT = 22;
+        int SHARE_SAVE_IMAGE = 23;
+        int TWA_DISCLOSURE_INITIAL = 24;
+        int TWA_DISCLOSURE_SUBSEQUENT = 25;
+        int CHROME_REENGAGEMENT_1 = 26;
+        int CHROME_REENGAGEMENT_2 = 27;
+        int CHROME_REENGAGEMENT_3 = 28;
+        int PRICE_DROP_ALERTS = 29;
+        int SMS_FETCHER = 30;
+        int WEBAPK_INSTALL_IN_PROGRESS = 31;
+        int WEBAPK_INSTALL_COMPLETE = 32;
+        int PRICE_DROP_ALERTS_CHROME_MANAGED = 33;
+        int PRICE_DROP_ALERTS_USER_MANAGED = 34;
+        int CHROME_TIPS = 35;
+        int BLUETOOTH = 36;
+        int USB = 37;
+        int UPM_ERROR = 38;
+        int WEBAPK_INSTALL_FAILED = 39;
+        int DATA_SHARING = 40;
+        int UPM_ACCESS_LOSS_WARNING = 41;
+        int TRACING = 42;
+        int SERIAL = 43;
+        int SAFETY_HUB_UNSUBSCRIBED_NOTIFICATIONS = 44;
+        int ACTOR = 45;
+        int CHROME_FINDS = 46;
 
-        int NUM_ENTRIES = 41;
+        int NUM_ENTRIES = 47;
     }
 
     /*
@@ -164,7 +174,17 @@ public class NotificationUmaTracker {
         ActionType.COMMIT_UNSUBSCRIBE_IMPLICIT,
         ActionType.COMMIT_UNSUBSCRIBE_EXPLICIT,
         ActionType.SHOW_ORIGINAL_NOTIFICATION,
-        ActionType.ALWAYS_ALLOW
+        ActionType.ALWAYS_ALLOW,
+        ActionType.SAFETY_HUB_UNSUBSCRIBED_NOTIFICATIONS_ACK,
+        ActionType.SAFETY_HUB_UNSUBSCRIBED_NOTIFICATIONS_REVIEW,
+        ActionType.REPORT_AS_SAFE,
+        ActionType.REPORT_WARNED_NOTIFICATION_AS_SPAM,
+        ActionType.REPORT_UNWARNED_NOTIFICATION_AS_SPAM,
+        ActionType.DOWNLOAD_DELETE_FROM_HISTORY,
+        ActionType.ACTOR_PAUSE,
+        ActionType.ACTOR_RESUME,
+        ActionType.ACTOR_CANCEL,
+        ActionType.ACTOR_VIEW,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface ActionType {
@@ -248,8 +268,36 @@ public class NotificationUmaTracker {
         // The "Always allow" button, used for allowing suspicious web notifications from an origin.
         int ALWAYS_ALLOW = 35;
 
+        // The "Got it" button on Safety Hub notification about unsubscribed notifications.
+        int SAFETY_HUB_UNSUBSCRIBED_NOTIFICATIONS_ACK = 36;
+
+        // The "Review" button on Safety Hub notification about unsubscribed notifications.
+        int SAFETY_HUB_UNSUBSCRIBED_NOTIFICATIONS_REVIEW = 37;
+
+        // The "Report as safe" button, used for sending non-suspicious notification contents to
+        // Google.
+        int REPORT_AS_SAFE = 38;
+        // The "Report as spam" button, used for sending suspicious notification contents to Google
+        // after the user unsubscribed from notifications when they received a warning.
+        int REPORT_WARNED_NOTIFICATION_AS_SPAM = 39;
+        // The "Report as spam" button, used for sending suspicious notification contents to Google
+        // after the user unsubscribed from notifications when they did not receive a warning.
+        int REPORT_UNWARNED_NOTIFICATION_AS_SPAM = 40;
+
+        // Delete from history button on user download notification.
+        int DOWNLOAD_DELETE_FROM_HISTORY = 41;
+
+        // Pause button on actor notification.
+        int ACTOR_PAUSE = 42;
+        // Resume button on actor notification.
+        int ACTOR_RESUME = 43;
+        // Cancel button on actor notification.
+        int ACTOR_CANCEL = 44;
+        // View button on actor notification.
+        int ACTOR_VIEW = 45;
+
         // Number of real entries, excluding `UNKNOWN`.
-        int NUM_ENTRIES = 36;
+        int NUM_ENTRIES = 46;
     }
 
     /**
@@ -263,13 +311,13 @@ public class NotificationUmaTracker {
         NotificationRationaleResult.NAVIGATE_BACK_OR_TOUCH_OUTSIDE,
         NotificationRationaleResult.NOT_ATTACHED_TO_WINDOW,
         NotificationRationaleResult.ACTIVITY_DESTROYED,
-        NotificationRationaleResult.BOTTOM_SHEET_BACK_PRESS,
-        NotificationRationaleResult.BOTTOM_SHEET_SWIPE,
-        NotificationRationaleResult.BOTTOM_SHEET_TAP_SCRIM,
-        NotificationRationaleResult.BOTTOM_SHEET_FAILED_TO_OPEN,
-        NotificationRationaleResult.BOTTOM_SHEET_DESTROYED,
-        NotificationRationaleResult.BOTTOM_SHEET_CLOSED_UNKNOWN,
-        NotificationRationaleResult.BOTTOM_SHEET_NEVER_OPENED,
+        // NotificationRationaleResult.BOTTOM_SHEET_BACK_PRESS,
+        // NotificationRationaleResult.BOTTOM_SHEET_SWIPE,
+        // NotificationRationaleResult.BOTTOM_SHEET_TAP_SCRIM,
+        // NotificationRationaleResult.BOTTOM_SHEET_FAILED_TO_OPEN,
+        // NotificationRationaleResult.BOTTOM_SHEET_DESTROYED,
+        // NotificationRationaleResult.BOTTOM_SHEET_CLOSED_UNKNOWN,
+        // NotificationRationaleResult.BOTTOM_SHEET_NEVER_OPENED,
         NotificationRationaleResult.NUM_ENTRIES
     })
     @Retention(RetentionPolicy.SOURCE)
@@ -279,13 +327,13 @@ public class NotificationUmaTracker {
         int NAVIGATE_BACK_OR_TOUCH_OUTSIDE = 2;
         int ACTIVITY_DESTROYED = 3;
         int NOT_ATTACHED_TO_WINDOW = 4;
-        int BOTTOM_SHEET_BACK_PRESS = 5;
-        int BOTTOM_SHEET_SWIPE = 6;
-        int BOTTOM_SHEET_TAP_SCRIM = 7;
-        int BOTTOM_SHEET_FAILED_TO_OPEN = 8;
-        int BOTTOM_SHEET_DESTROYED = 9;
-        int BOTTOM_SHEET_CLOSED_UNKNOWN = 10;
-        int BOTTOM_SHEET_NEVER_OPENED = 11;
+        // int BOTTOM_SHEET_BACK_PRESS = 5; Obsolete
+        // int BOTTOM_SHEET_SWIPE = 6; Obsolete
+        // int BOTTOM_SHEET_TAP_SCRIM = 7; Obsolete
+        // int BOTTOM_SHEET_FAILED_TO_OPEN = 8; Obsolete
+        // int BOTTOM_SHEET_DESTROYED = 9; Obsolete
+        // int BOTTOM_SHEET_CLOSED_UNKNOWN = 10; Obsolete
+        // int BOTTOM_SHEET_NEVER_OPENED = 11; Obsolete
 
         int NUM_ENTRIES = 12;
     }
@@ -390,7 +438,7 @@ public class NotificationUmaTracker {
         if (type == SystemNotificationType.UNKNOWN) return;
 
         RecordHistogram.recordEnumeratedHistogram(
-                "Mobile.SystemNotification.Content.Click",
+                "Mobile.SystemNotification.Content.Click2",
                 type,
                 SystemNotificationType.NUM_ENTRIES);
         if (type == SystemNotificationType.DOWNLOAD_FILES) {
@@ -425,6 +473,10 @@ public class NotificationUmaTracker {
                         "Mobile.SystemNotification.Content.Click.Age.PriceDropUserManaged",
                         createTime);
                 break;
+            case SystemNotificationType.ACTOR:
+                recordNotificationAgeHistogram(
+                        "Mobile.SystemNotification.Content.Click.Age.Actor", createTime);
+                break;
         }
     }
 
@@ -440,7 +492,7 @@ public class NotificationUmaTracker {
         // TODO(xingliu): This may not work if Android kill Chrome before native library is loaded.
         // Cache data in Android shared preference and flush them to native when available.
         RecordHistogram.recordEnumeratedHistogram(
-                "Mobile.SystemNotification.Dismiss", type, SystemNotificationType.NUM_ENTRIES);
+                "Mobile.SystemNotification.Dismiss2", type, SystemNotificationType.NUM_ENTRIES);
         recordNotificationAgeHistogram("Mobile.SystemNotification.Dismiss.Age", createTime);
 
         switch (type) {
@@ -468,6 +520,10 @@ public class NotificationUmaTracker {
                 recordNotificationAgeHistogram(
                         "Mobile.SystemNotification.Dismiss.Age.PriceDropUserManaged", createTime);
                 break;
+            case SystemNotificationType.ACTOR:
+                recordNotificationAgeHistogram(
+                        "Mobile.SystemNotification.Dismiss.Age.Actor", createTime);
+                break;
         }
     }
 
@@ -486,6 +542,12 @@ public class NotificationUmaTracker {
 
         // TODO(xingliu): This may not work if Android kill Chrome before native library is loaded.
         // Cache data in Android shared preference and flush them to native when available.
+        if (notificationType != SystemNotificationType.UNKNOWN) {
+            RecordHistogram.recordEnumeratedHistogram(
+                    "Mobile.SystemNotification.AnyButton.Click",
+                    notificationType,
+                    SystemNotificationType.NUM_ENTRIES);
+        }
         RecordHistogram.recordEnumeratedHistogram(
                 "Mobile.SystemNotification.Action.Click", actionType, ActionType.NUM_ENTRIES);
         recordNotificationAgeHistogram("Mobile.SystemNotification.Action.Click.Age", createTime);
@@ -516,6 +578,10 @@ public class NotificationUmaTracker {
                 recordNotificationAgeHistogram(
                         "Mobile.SystemNotification.Action.Click.Age.PriceDropUserManaged",
                         createTime);
+                break;
+            case SystemNotificationType.ACTOR:
+                recordNotificationAgeHistogram(
+                        "Mobile.SystemNotification.Action.Click.Age.Actor", createTime);
                 break;
         }
     }
@@ -553,6 +619,22 @@ public class NotificationUmaTracker {
 
         RecordHistogram.recordBooleanHistogram(
                 "Mobile.SystemNotification.Permission.Change", isPermissionGranted);
+    }
+
+    /**
+     * Called when the channel notifications are blocked or allowed through Android settings.
+     *
+     * @param channelId The channel id for which the notifications enabled status is changed.
+     * @param blockedState If true all notifications are blocked.
+     */
+    public void onNotificationChannelPermissionSettingChange(
+            String channelId, boolean blockedState) {
+        boolean isPermissionGranted = !blockedState;
+
+        RecordHistogram.recordBooleanHistogram(
+                "Mobile.SystemNotification.Permission.Change."
+                        + notificationChannelIdToSuffix(channelId),
+                isPermissionGranted);
     }
 
     /** Records the result of showing the notification permission rationale dialog. */
@@ -654,17 +736,45 @@ public class NotificationUmaTracker {
                 count);
     }
 
+    /**
+     * Records the number of suspicious notifications from an origin, when the user taps to show the
+     * original contents of the suspicious notifications. This number is displayed on the suspicious
+     * notification warning.
+     *
+     * @param count The suspicious notification count.
+     */
+    public static void recordSuspiciousNotificationCountOnShowOriginals(int count) {
+        RecordHistogram.recordCount100Histogram(
+                "SafeBrowsing.SuspiciousNotificationWarning."
+                        + "ShowOriginalNotifications.SuspiciousNotificationCount",
+                count);
+    }
+
+    /**
+     * Records the number of suspicious notifications that were unexpectedly not delivered to the
+     * user, when they tap to show the originals. Note: if all suspicious notifications are
+     * delivered as expected, then 0 will be logged.
+     *
+     * @param count The actual number of notifications that were not properly delivered.
+     */
+    public static void recordSuspiciousNotificationsDroppedCountOnShowOriginals(int count) {
+        RecordHistogram.recordCount100Histogram(
+                "SafeBrowsing.SuspiciousNotificationWarning."
+                        + "ShowOriginalNotifications.SuspiciousNotificationsDroppedCount",
+                count);
+    }
+
     private void logNotificationShown(
             @SystemNotificationType int type,
             @ChromeChannelDefinitions.ChannelId String channelId) {
         if (!NotificationProxyUtils.areNotificationsEnabled()) {
             logPotentialBlockedCause();
-            recordHistogram("Mobile.SystemNotification.Blocked", type);
+            recordHistogram("Mobile.SystemNotification.Blocked2", type);
             return;
         }
         if (channelId == null) {
             saveLastShownNotification(type);
-            recordHistogram("Mobile.SystemNotification.Shown", type);
+            recordHistogram("Mobile.SystemNotification.Shown2", type);
             return;
         }
 
@@ -672,15 +782,14 @@ public class NotificationUmaTracker {
                 channelId,
                 (blocked) -> {
                     if (blocked) {
-                        recordHistogram("Mobile.SystemNotification.ChannelBlocked", type);
+                        recordHistogram("Mobile.SystemNotification.ChannelBlocked2", type);
                     } else {
                         saveLastShownNotification(type);
-                        recordHistogram("Mobile.SystemNotification.Shown", type);
+                        recordHistogram("Mobile.SystemNotification.Shown2", type);
                     }
                 });
     }
 
-    @RequiresApi(26)
     private void isChannelBlocked(
             @ChromeChannelDefinitions.ChannelId String channelId, Callback<Boolean> callback) {
         mNotificationManager.getNotificationChannel(
@@ -689,7 +798,7 @@ public class NotificationUmaTracker {
                     callback.onResult(
                             channel != null
                                     && channel.getImportance()
-                                            == NotificationManagerCompat.IMPORTANCE_NONE);
+                                            == NotificationManager.IMPORTANCE_NONE);
                 });
     }
 
@@ -707,7 +816,7 @@ public class NotificationUmaTracker {
         mSharedPreferences.removeKey(
                 ChromePreferenceKeys.NOTIFICATIONS_LAST_SHOWN_NOTIFICATION_TYPE);
 
-        recordHistogram("Mobile.SystemNotification.BlockedAfterShown", lastType);
+        recordHistogram("Mobile.SystemNotification.BlockedAfterShown2", lastType);
     }
 
     private static void recordHistogram(String name, @SystemNotificationType int type) {
@@ -741,5 +850,73 @@ public class NotificationUmaTracker {
                 1,
                 (int) (DateUtils.WEEK_IN_MILLIS / DateUtils.MINUTE_IN_MILLIS),
                 50);
+    }
+
+    private static String notificationChannelIdToSuffix(String channelId) {
+        // LINT.IfChange(NotificationChannelId)
+        switch (channelId) {
+            case ChannelId.BROWSER:
+                return "Browser";
+            case ChannelId.ACTOR:
+                return "Actor";
+            case ChannelId.COLLABORATION:
+                return "Collaboration";
+            case ChannelId.DOWNLOADS:
+                return "Downloads";
+            case ChannelId.INCOGNITO:
+                return "Incognito";
+            case ChannelId.MEDIA_PLAYBACK:
+                return "Media";
+            case ChannelId.SCREEN_CAPTURE:
+                return "ScreenCapture";
+            case ChannelId.CONTENT_SUGGESTIONS:
+                return "ContentSuggestions";
+            case ChannelId.WEBAPP_ACTIONS:
+                return "WebappActions";
+            case ChannelId.SITES:
+                return "Sites";
+            case ChannelId.VR:
+                return "Vr";
+            case ChannelId.SHARING:
+                return "Sharing";
+            case ChannelId.UPDATES:
+                return "Updates";
+            case ChannelId.COMPLETED_DOWNLOADS:
+                return "CompletedDownloads";
+            case ChannelId.PERMISSION_REQUESTS:
+                return "PermissionRequests";
+            case ChannelId.PERMISSION_REQUESTS_HIGH:
+                return "PermissionRequestsHigh";
+            case ChannelId.ANNOUNCEMENT:
+                return "Announcement";
+            case ChannelId.WEBAPPS:
+                return "TwaDisclosureInitial";
+            case ChannelId.WEBAPPS_QUIET:
+                return "TwaDisclosureSubsequent";
+            case ChannelId.WEBRTC_CAM_AND_MIC:
+                return "WebrtcCamAndMic";
+            case ChannelId.PRICE_DROP:
+                return "ShoppingPriceDropAlerts";
+            case ChannelId.PRICE_DROP_DEFAULT:
+                return "ShoppingPriceDropAlertsDefault";
+            case ChannelId.SECURITY_KEY:
+                return "SecurityKey";
+            case ChannelId.BLUETOOTH:
+                return "Bluetooth";
+            case ChannelId.USB:
+                return "Usb";
+            case ChannelId.SERIAL:
+                return "Serial";
+            case ChannelId.TIPS:
+                return "Tips";
+            case ChannelId.TIPS_V2:
+                return "TipsV2";
+            case ChannelId.CHROME_FINDS:
+                return "ChromeFinds";
+            default:
+                // Group all non-recognized channel ids into an aggregate bucket.
+                return "Unknown";
+        }
+        // LINT.ThenChange(//chrome/browser/notifications/android/java/src/org/chromium/chrome/browser/notifications/channels/ChromeChannelDefinitions.java:ChannelId)
     }
 }

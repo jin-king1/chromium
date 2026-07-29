@@ -13,6 +13,9 @@ namespace mojo {
 const char NamedPlatformChannel::kNamedHandleSwitch[] =
     "mojo-named-platform-channel-pipe";
 
+NamedPlatformChannel::Options::Options() = default;
+NamedPlatformChannel::Options::~Options() = default;
+
 NamedPlatformChannel::NamedPlatformChannel(const Options& options) {
   server_endpoint_ = PlatformChannelServerEndpoint(
       CreateServerEndpoint(options, &server_name_));
@@ -45,7 +48,8 @@ void NamedPlatformChannel::PassServerNameOnCommandLine(
 PlatformChannelEndpoint NamedPlatformChannel::ConnectToServer(
     const ServerName& server_name) {
   DCHECK(!server_name.empty());
-  Options options = {.server_name = server_name};
+  Options options;
+  options.server_name = server_name;
   return CreateClientEndpoint(options);
 }
 
@@ -60,8 +64,9 @@ PlatformChannelEndpoint NamedPlatformChannel::ConnectToServer(
 PlatformChannelEndpoint NamedPlatformChannel::ConnectToServer(
     const base::CommandLine& command_line) {
   ServerName name = command_line.GetSwitchValueNative(kNamedHandleSwitch);
-  if (name.empty())
+  if (name.empty()) {
     return PlatformChannelEndpoint();
+  }
   return ConnectToServer(name);
 }
 

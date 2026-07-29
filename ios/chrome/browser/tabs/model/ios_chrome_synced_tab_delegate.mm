@@ -7,15 +7,21 @@
 #import "base/check.h"
 #import "components/prefs/pref_service.h"
 #import "components/sessions/ios/ios_serialized_navigation_builder.h"
+#import "components/signin/public/base/consent_level.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
+#import "components/signin/public/identity_manager/tribool.h"
 #import "components/sync/base/features.h"
 #import "components/sync_sessions/sync_sessions_client.h"
 #import "components/sync_sessions/synced_window_delegates_getter.h"
 #import "ios/chrome/browser/complex_tasks/model/ios_task_tab_helper.h"
 #import "ios/chrome/browser/ntp/ui_bundled/new_tab_page_feature.h"
-#import "ios/chrome/browser/sessions/model/ios_chrome_session_tab_helper.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/model/prefs/pref_names.h"
+#import "ios/chrome/browser/shared/model/profile/features.h"
+#import "ios/chrome/browser/shared/model/profile/profile_attributes_storage_ios.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
+#import "ios/chrome/browser/shared/model/profile/profile_ios_util.h"
+#import "ios/chrome/browser/shared/model/profile/profile_manager_ios.h"
 #import "ios/chrome/browser/signin/model/identity_manager_factory.h"
 #import "ios/web/public/navigation/navigation_item.h"
 #import "ios/web/public/navigation/navigation_manager.h"
@@ -62,15 +68,16 @@ bool ProfileHasPrimaryIdentityManaged(ProfileIOS* profile) {
   }
 
   return identity_manager
-      ->FindExtendedAccountInfo(identity_manager->GetPrimaryAccountInfo(
-          signin::ConsentLevel::kSignin))
-      .IsManaged();
+             ->FindExtendedAccountInfo(identity_manager->GetPrimaryAccountInfo(
+                 signin::ConsentLevel::kSignin))
+             .IsManaged() == signin::Tribool::kTrue;
 }
 
 }  // namespace
 
-IOSChromeSyncedTabDelegate::IOSChromeSyncedTabDelegate(web::WebState* web_state)
-    : web_state_(web_state) {
+IOSChromeSyncedTabDelegate::IOSChromeSyncedTabDelegate(web::WebState* web_state,
+                                                       SessionID window_id)
+    : web_state_(web_state), window_id_(window_id) {
   DCHECK(web_state);
 }
 
@@ -81,11 +88,11 @@ void IOSChromeSyncedTabDelegate::ResetCachedLastActiveTime() {
 }
 
 SessionID IOSChromeSyncedTabDelegate::GetWindowId() const {
-  return IOSChromeSessionTabHelper::FromWebState(web_state_)->window_id();
+  return window_id_;
 }
 
 SessionID IOSChromeSyncedTabDelegate::GetSessionId() const {
-  return IOSChromeSessionTabHelper::FromWebState(web_state_)->session_id();
+  return web_state_->GetUniqueIdentifier().ToSessionID();
 }
 
 bool IOSChromeSyncedTabDelegate::IsBeingDestroyed() const {
@@ -167,22 +174,21 @@ bool IOSChromeSyncedTabDelegate::ShouldSync(
     return false;  // This deliberately ignores a new pending entry.
   }
 
-  if (base::FeatureList::IsEnabled(kIdentityDiscAccountMenu)) {
-    // If fast account switching via the account particle disk on the NTP is
-    // enabled, then for managed accounts, only sync tabs that have been updated
-    // after the signin.
-    ProfileIOS* profile =
-        ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
-    if (ProfileHasPrimaryIdentityManaged(profile)) {
-      base::Time signin_time =
-          profile->GetPrefs()->GetTime(prefs::kLastSigninTimestamp);
-      // Note: Don't use GetLastActiveTime() here: (a) it only tracks when the
-      // tab was last made visible (not when it was last used), and (b) it
-      // intentionally caches outdated values for a few minutes. Instead, query
-      // the most-recent activity time from the WebState directly.
-      if (GetMostRecentActivityTime(web_state_) < signin_time) {
-        return false;
-      }
+  // For managed accounts in the personal profile, only sync tabs that have
+  // been updated after the signin.
+  // TODO(crbug.com/407498240): Remove this once all managed accounts have
+  // been migrated into their own profiles.
+  ProfileIOS* profile =
+      ProfileIOS::FromBrowserState(web_state_->GetBrowserState());
+  if (ProfileHasPrimaryIdentityManaged(profile) && IsPersonalProfile(profile)) {
+    base::Time signin_time =
+        profile->GetPrefs()->GetTime(prefs::kLastSigninTimestamp);
+    // Note: Don't use GetLastActiveTime() here: (a) it only tracks when the
+    // tab was last made visible (not when it was last used), and (b) it
+    // intentionally caches outdated values for a few minutes. Instead, query
+    // the most-recent activity time from the WebState directly.
+    if (GetMostRecentActivityTime(web_state_) < signin_time) {
+      return false;
     }
   }
 
@@ -227,5 +233,3 @@ IOSChromeSyncedTabDelegate::ReadPlaceholderTabSnapshotIfItShouldSync(
   NOTREACHED() << "ReadPlaceholderTabSnapshotIfItShouldSync is not supported "
                   "for the iOS platform.";
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(IOSChromeSyncedTabDelegate)

@@ -5,7 +5,9 @@
 #ifndef COMPONENTS_DATA_SHARING_PUBLIC_GROUP_DATA_H_
 #define COMPONENTS_DATA_SHARING_PUBLIC_GROUP_DATA_H_
 
+#include <optional>
 #include <string>
+#include <vector>
 
 #include "base/time/time.h"
 #include "base/types/strong_alias.h"
@@ -26,6 +28,15 @@ enum class MemberRole {
   kFormerMember = 4
 };
 
+// This tells if the group is enabled or not. This field is set by chrome client
+// after comparing the version info from ReadGroup request and comparing it with
+// hardcoded version info in Chrome client.
+enum class GroupEnabledStatus {
+  kUnknown = 0,
+  kEnabled = 1,
+  kDisabledChromeNeedsUpdate = 2,
+};
+
 struct GroupMember {
   GroupMember();
 
@@ -34,7 +45,9 @@ struct GroupMember {
               std::string email,
               MemberRole role,
               GURL avatar_url,
-              std::string given_name);
+              std::string given_name,
+              base::Time creation_time = base::Time(),
+              base::Time last_updated_time = base::Time());
 
   GroupMember(const GroupMember&);
   GroupMember& operator=(const GroupMember&);
@@ -50,6 +63,8 @@ struct GroupMember {
   MemberRole role = MemberRole::kUnknown;
   GURL avatar_url;
   std::string given_name;
+  base::Time creation_time;
+  base::Time last_updated_time;
 };
 
 // Subset of GroupMember fields that could be temporarily stored after member is
@@ -74,6 +89,8 @@ struct GroupMemberPartialData {
   std::string email;
   GURL avatar_url;
   std::string given_name;
+  base::Time creation_time;
+  base::Time last_updated_time;
 };
 
 struct GroupToken {
@@ -102,7 +119,8 @@ struct GroupData {
             std::string display_name,
             std::vector<GroupMember> members,
             std::vector<GroupMember> former_members,
-            std::string access_token);
+            std::string access_token,
+            GroupEnabledStatus enabled_status = GroupEnabledStatus::kEnabled);
 
   GroupData(const GroupData&);
   GroupData& operator=(const GroupData&);
@@ -116,6 +134,7 @@ struct GroupData {
   std::string display_name;
   std::vector<GroupMember> members;
   std::vector<GroupMember> former_members;
+  GroupEnabledStatus enabled_status = GroupEnabledStatus::kEnabled;
 };
 
 struct GroupEvent {

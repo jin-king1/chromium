@@ -8,7 +8,6 @@ import static io.netty.handler.codec.http.HttpResponseStatus.OK;
 import static io.netty.handler.codec.http.HttpVersion.HTTP_1_1;
 
 import android.os.ConditionVariable;
-import android.util.Log;
 
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.buffer.Unpooled;
@@ -30,6 +29,8 @@ import io.netty.handler.logging.LogLevel;
 import io.netty.handler.logging.LoggingHandler;
 import io.netty.util.CharsetUtil;
 
+import org.chromium.base.Log;
+
 /** A simple HTTP server for testing. */
 public class HttpTestServer implements TestSupport.TestServer {
     private static final String TAG = HttpTestServer.class.getSimpleName();
@@ -37,8 +38,8 @@ public class HttpTestServer implements TestSupport.TestServer {
     private static final int PORT = 8080;
 
     private Channel mServerChannel;
-    private ConditionVariable mStartBlock = new ConditionVariable();
-    private ConditionVariable mShutdownBlock = new ConditionVariable();
+    private final ConditionVariable mStartBlock = new ConditionVariable();
+    private final ConditionVariable mShutdownBlock = new ConditionVariable();
 
     @Override
     public boolean start() {

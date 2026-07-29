@@ -18,6 +18,7 @@
 #include "base/containers/flat_map.h"
 #include "base/memory/raw_ptr.h"
 #include "base/strings/strcat.h"
+#include "base/strings/string_number_conversions.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chromeos/ash/services/bluetooth_config/public/mojom/cros_bluetooth_config.mojom.h"
 #include "chromeos/constants/chromeos_features.h"
@@ -121,13 +122,12 @@ class BluetoothDeviceListItemViewTest : public AshTestBase {
     widget_ = CreateFramelessTestWidget();
     widget_->SetFullscreen(true);
     widget_->SetContentsView(bluetooth_device_list_item.release());
-
-    base::RunLoop().RunUntilIdle();
   }
 
   void TearDown() override {
+    // Reset list item before widget due to dependency.
+    bluetooth_device_list_item_ = nullptr;
     widget_.reset();
-
     AshTestBase::TearDown();
   }
 
@@ -142,8 +142,7 @@ class BluetoothDeviceListItemViewTest : public AshTestBase {
  protected:
   std::unique_ptr<views::Widget> widget_;
   std::unique_ptr<FakeBluetoothDetailedView> fake_bluetooth_detailed_view_;
-  raw_ptr<BluetoothDeviceListItemView, DanglingUntriaged>
-      bluetooth_device_list_item_;
+  raw_ptr<BluetoothDeviceListItemView> bluetooth_device_list_item_;
 };
 
 TEST_F(BluetoothDeviceListItemViewTest, HasCorrectLabel) {

@@ -11,6 +11,7 @@
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/types/optional_ref.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "third_party/blink/public/mojom/fetch/fetch_api_request.mojom-blink-forward.h"
 #include "third_party/blink/public/mojom/timing/resource_timing.mojom-blink.h"
 #include "third_party/blink/public/platform/platform.h"
@@ -110,14 +111,19 @@ class MockFetchContext : public FetchContext {
         weak_wrapper_resource_load_info_notifier_->AsWeakPtr());
   }
 
-  bool CalculateIfAdSubresource(
+  ResourceAnnotations CalculateResourceAnnotations(
       const ResourceRequestHead& resource_request,
       base::optional_ref<const KURL> alias_url,
       ResourceType type,
-      const FetchInitiatorInfo& initiator_info) override {
+      const FetchInitiatorInfo& initiator_info,
+      bool scan_javascript_stack) override {
     const KURL url =
         alias_url.has_value() ? alias_url.value() : resource_request.Url();
-    return tagged_urls_.Contains(url.GetString());
+
+    if (tagged_urls_.Contains(url.GetString())) {
+      return ResourceAnnotations{subresource_filter::ScopedRule()};
+    }
+    return {};
   }
 
   void SetResourceLoadInfoNotifier(
@@ -133,6 +139,15 @@ class MockFetchContext : public FetchContext {
     return potentially_unused_preloads_;
   }
 
+  void SetPermissionsPolicy(
+      std::unique_ptr<network::PermissionsPolicy> policy) {
+    permissions_policy_ = std::move(policy);
+  }
+
+  const network::PermissionsPolicy* GetPermissionsPolicy() const override {
+    return permissions_policy_.get();
+  }
+
  private:
   raw_ptr<mojom::ResourceLoadInfoNotifier> resource_load_info_notifier_ =
       nullptr;
@@ -141,6 +156,7 @@ class MockFetchContext : public FetchContext {
   Vector<String> blocked_urls_;
   Vector<String> tagged_urls_;
   Vector<KURL> potentially_unused_preloads_;
+  std::unique_ptr<network::PermissionsPolicy> permissions_policy_;
 };
 
 }  // namespace blink

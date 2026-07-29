@@ -7,7 +7,6 @@
 #include <utility>
 
 #include "chrome/browser/browser_process.h"
-#include "chrome/browser/download/bubble/download_bubble_prefs.h"
 #include "chrome/browser/download/bubble/download_bubble_ui_controller.h"
 #include "chrome/browser/download/chrome_download_manager_delegate.h"
 #include "chrome/browser/download/download_core_service.h"
@@ -15,21 +14,19 @@
 #include "chrome/browser/download/download_item_warning_data.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
-#include "chrome/browser/ui/download/download_bubble_info.h"
+#include "chrome/browser/ui/views/download/bubble/download_bubble_navigation_handler.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_partial_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_primary_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_list_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_row_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_bubble_security_view.h"
 #include "chrome/browser/ui/views/download/bubble/download_dialog_view.h"
-#include "chrome/browser/ui/views/download/bubble/download_toolbar_button_view.h"
 #include "components/offline_items_collection/core/offline_item.h"
 #include "components/safe_browsing/core/common/proto/csd.pb.h"
 #include "content/public/browser/download_item_utils.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/layout_types.h"
-#include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 
 #if BUILDFLAG(SAFE_BROWSING_AVAILABLE)
@@ -61,7 +58,7 @@ DownloadBubbleContentsView::DownloadBubbleContentsView(
     base::WeakPtr<Browser> browser,
     base::WeakPtr<DownloadBubbleUIController> bubble_controller,
     base::WeakPtr<DownloadBubbleNavigationHandler> navigation_handler,
-    bool primary_view_is_partial_view,
+    DownloadBubbleMode mode,
     std::unique_ptr<DownloadBubbleContentsViewInfo> info,
     views::BubbleDialogDelegate* bubble_delegate)
     : info_(std::move(info)),
@@ -74,16 +71,19 @@ DownloadBubbleContentsView::DownloadBubbleContentsView(
       ->SetOrientation(views::LayoutOrientation::kVertical);
 
   std::unique_ptr<DownloadBubblePrimaryView> primary_view;
-  if (primary_view_is_partial_view) {
-    primary_view = std::make_unique<DownloadBubblePartialView>(
-        browser, bubble_controller, navigation_handler,
-        info_->row_list_view_info(),
-        base::BindOnce(&DownloadBubbleNavigationHandler::OnDialogInteracted,
-                       navigation_handler));
-  } else {
-    primary_view = std::make_unique<DownloadDialogView>(
-        browser, bubble_controller, navigation_handler,
-        info_->row_list_view_info());
+  switch (mode) {
+    case DownloadBubbleMode::kPartial:
+      primary_view = std::make_unique<DownloadBubblePartialView>(
+          browser, bubble_controller, navigation_handler,
+          info_->row_list_view_info(),
+          base::BindOnce(&DownloadBubbleNavigationHandler::OnDialogInteracted,
+                         navigation_handler));
+      break;
+    case DownloadBubbleMode::kComplete:
+      primary_view = std::make_unique<DownloadDialogView>(
+          browser, bubble_controller, navigation_handler,
+          info_->row_list_view_info());
+      break;
   }
 
   primary_view_ = AddChildView(std::move(primary_view));
@@ -102,7 +102,6 @@ DownloadBubbleContentsView::~DownloadBubbleContentsView() {
   if (VisiblePage() == Page::kSecurity) {
     security_view_->MaybeLogDismiss();
   }
-  security_view_->Reset();
   // In order to ensure that `info_` is valid for the entire lifetime of the
   // child views, we delete the child views here rather than in `~View()`.
   primary_view_ = nullptr;
@@ -119,7 +118,6 @@ DownloadBubbleRowView* DownloadBubbleContentsView::ShowPrimaryPage(
     std::optional<offline_items_collection::ContentId> id) {
   CHECK(!id || *id != ContentId());
   security_view_->SetVisible(false);
-  security_view_->Reset();
   info_->ResetSecurityView();
   // Reset fixed width, which could be previously set by the security
   // view.

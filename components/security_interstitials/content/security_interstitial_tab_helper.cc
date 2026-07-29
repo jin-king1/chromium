@@ -13,10 +13,11 @@
 
 namespace {
 
-bool IsInPrimaryMainFrameOrSubFrame(
+bool FrameTypeMayTriggerInterstitial(
     content::NavigationHandle* navigation_handle) {
   return (navigation_handle->GetNavigatingFrameType() ==
               content::FrameType::kPrimaryMainFrame ||
+          navigation_handle->IsGuestViewMainFrame() ||
           (navigation_handle->GetNavigatingFrameType() ==
                content::FrameType::kSubframe &&
            navigation_handle->GetParentFrame()->IsActive()));
@@ -30,7 +31,7 @@ SecurityInterstitialTabHelper::~SecurityInterstitialTabHelper() = default;
 void SecurityInterstitialTabHelper::DidFinishNavigation(
     content::NavigationHandle* navigation_handle) {
   if (navigation_handle->IsSameDocument() ||
-      !IsInPrimaryMainFrameOrSubFrame(navigation_handle)) {
+      !FrameTypeMayTriggerInterstitial(navigation_handle)) {
     return;
   }
 
@@ -110,7 +111,7 @@ void SecurityInterstitialTabHelper::AssociateBlockingPage(
         blocking_page) {
   // An interstitial should not be shown in a prerendered page or in a fenced
   // frame. The prerender should just be canceled.
-  CHECK(IsInPrimaryMainFrameOrSubFrame(navigation_handle));
+  CHECK(FrameTypeMayTriggerInterstitial(navigation_handle));
 
   // CreateForWebContents() creates a tab helper if it doesn't yet exist for the
   // WebContents provided by |navigation_handle|.
@@ -129,19 +130,20 @@ void SecurityInterstitialTabHelper::BindInterstitialCommands(
         security_interstitials::mojom::InterstitialCommands> receiver,
     content::RenderFrameHost* rfh) {
   auto* web_contents = content::WebContents::FromRenderFrameHost(rfh);
-  if (!web_contents)
+  if (!web_contents) {
     return;
+  }
   auto* tab_helper =
       SecurityInterstitialTabHelper::FromWebContents(web_contents);
-  if (!tab_helper)
+  if (!tab_helper) {
     return;
+  }
   tab_helper->receivers_.Bind(rfh, std::move(receiver));
 }
 
 bool SecurityInterstitialTabHelper::IsInterstitialPendingForNavigation(
     int64_t navigation_id) const {
-  return base::Contains(blocking_documents_for_pending_navigations_,
-                        navigation_id);
+  return blocking_documents_for_pending_navigations_.contains(navigation_id);
 }
 
 bool SecurityInterstitialTabHelper::ShouldDisplayURL() const {
@@ -162,8 +164,19 @@ bool SecurityInterstitialTabHelper::HasPendingOrActiveInterstitial() const {
 
 bool SecurityInterstitialTabHelper::IsInterstitialCommittedForFrame(
     content::FrameTreeNodeId frame_tree_node_id) const {
-  return base::Contains(blocking_documents_for_committed_navigations_,
-                        frame_tree_node_id);
+  return blocking_documents_for_committed_navigations_.contains(
+      frame_tree_node_id);
+}
+
+security_interstitials::SecurityInterstitialPage*
+SecurityInterstitialTabHelper::GetBlockingPageForFrame(
+    content::FrameTreeNodeId frame_tree_node_id) {
+  if (IsInterstitialCommittedForFrame(frame_tree_node_id)) {
+    return blocking_documents_for_committed_navigations_
+        .find(frame_tree_node_id)
+        ->second.get();
+  }
+  return nullptr;
 }
 
 security_interstitials::SecurityInterstitialPage*
@@ -197,8 +210,8 @@ void SecurityInterstitialTabHelper::SetBlockingPage(
 
 SecurityInterstitialPage*
 SecurityInterstitialTabHelper::GetBlockingPageForCurrentTargetFrame() {
-  auto* render_frame_host = receivers_.GetCurrentTargetFrame();
-  content::FrameTreeNodeId id = render_frame_host->GetFrameTreeNodeId();
+  content::RenderFrameHost& render_frame_host = receivers_.CurrentTargetFrame();
+  content::FrameTreeNodeId id = render_frame_host.GetFrameTreeNodeId();
   if (!IsInterstitialCommittedForFrame(id)) {
     // TODO(crbug.com/376688788): Remove this condition. This method should not
     // be invoked if there is no blocking page for the current target frame.
@@ -306,6 +319,45 @@ void SecurityInterstitialTabHelper::OpenEnhancedProtectionSettings() {
   HandleCommand(security_interstitials::SecurityInterstitialCommand::
                     CMD_OPEN_ENHANCED_PROTECTION_SETTINGS);
 }
+
+#if BUILDFLAG(IS_ANDROID)
+void SecurityInterstitialTabHelper::OpenAndroidAdvancedProtectionSettings() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_OPEN_ANDROID_ADVANCED_PROTECTION_SETTINGS);
+}
+#endif  // BUILDFLAG(IS_ANDROID)
+
+void SecurityInterstitialTabHelper::OpenHelpCenterInNewTab() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_OPEN_HELP_CENTER_IN_NEW_TAB);
+}
+
+void SecurityInterstitialTabHelper::OpenDiagnosticInNewTab() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_OPEN_DIAGNOSTIC_IN_NEW_TAB);
+}
+
+void SecurityInterstitialTabHelper::OpenReportingPrivacyInNewTab() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_OPEN_REPORTING_PRIVACY_IN_NEW_TAB);
+}
+
+void SecurityInterstitialTabHelper::OpenWhitepaperInNewTab() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_OPEN_WHITEPAPER_IN_NEW_TAB);
+}
+
+void SecurityInterstitialTabHelper::ReportPhishingErrorInNewTab() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_REPORT_PHISHING_ERROR_IN_NEW_TAB);
+}
+
+#if !BUILDFLAG(IS_ANDROID) && !BUILDFLAG(IS_IOS)
+void SecurityInterstitialTabHelper::ShowCertificateViewer() {
+  HandleCommand(security_interstitials::SecurityInterstitialCommand::
+                    CMD_SHOW_CERTIFICATE_VIEWER);
+}
+#endif
 
 WEB_CONTENTS_USER_DATA_KEY_IMPL(SecurityInterstitialTabHelper);
 

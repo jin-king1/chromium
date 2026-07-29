@@ -15,15 +15,21 @@ class ProfileIOS;
 @interface PushNotificationDelegate
     : NSObject <UNUserNotificationCenterDelegate>
 
-- (instancetype)initWithAppState:(AppState*)appState NS_DESIGNATED_INITIALIZER;
+- (instancetype)initWithAppState:(AppState*)appState
+          userNotificationCenter:
+              (UNUserNotificationCenter*)userNotificationCenter
+    NS_DESIGNATED_INITIALIZER;
 
 - (instancetype)init NS_UNAVAILABLE;
 
 // Passes the contents of an incoming push notification to the appropriate
 // `PushNotificationClient` for processing and logs the time it takes for the
-// client to process the notification.
-- (UIBackgroundFetchResult)applicationWillProcessIncomingRemoteNotification:
-    (NSDictionary*)userInfo;
+// client to process the notification. Calls `completionHandler` with the result
+// of the processing.
+- (void)applicationWillProcessIncomingRemoteNotification:(NSDictionary*)userInfo
+                                  fetchCompletionHandler:
+                                      (void (^)(UIBackgroundFetchResult result))
+                                          completionHandler;
 
 // When the device successfully registers with APNS and receives its APNS device
 // token this function aggregates all the necessary information and registers

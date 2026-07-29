@@ -5,9 +5,10 @@
 #import "ios/chrome/browser/fullscreen/ui_bundled/fullscreen_model.h"
 
 #import "base/strings/sys_string_conversions.h"
+#import "base/test/scoped_feature_list.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/fullscreen_model_test_util.h"
 #import "ios/chrome/browser/fullscreen/ui_bundled/test/test_fullscreen_model_observer.h"
-#import "ios/chrome/browser/toolbar/ui_bundled/fullscreen/toolbars_size.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/fullscreen/toolbars_size.h"
 #import "ios/web/common/features.h"
 #import "testing/platform_test.h"
 
@@ -101,6 +102,30 @@ TEST_F(FullscreenModelTest, ResetForNavigation) {
     EXPECT_FALSE(model()->has_base_offset());
   }
   EXPECT_EQ(observer().progress(), 1.0);
+}
+
+// Tests that ResetForNavigation() correctly resets manually forced fullscreen.
+TEST_F(FullscreenModelTest, ResetForNavigationWithManuallyForced) {
+  // Enable the feature.
+  base::test::ScopedFeatureList scoped_feature_list;
+  scoped_feature_list.InitAndEnableFeature(kHideToolbarsInOverflowMenu);
+
+  // Manually force fullscreen.
+  model()->SetForceFullscreenMode(true);
+  model()->set_manually_forced(true);
+  model()->SetInsetsUpdateEnabled(false);
+  model()->IncrementDisabledCounter();
+
+  ASSERT_TRUE(model()->IsForceFullscreenMode());
+  ASSERT_FALSE(model()->IsInsetsUpdateEnabled());
+  ASSERT_FALSE(model()->enabled());
+
+  // Call ResetForNavigation() and verify that the forced state is reset.
+  model()->ResetForNavigation();
+
+  EXPECT_FALSE(model()->IsForceFullscreenMode());
+  EXPECT_TRUE(model()->IsInsetsUpdateEnabled());
+  EXPECT_TRUE(model()->enabled());
 }
 
 // Tests that the progress value is not updated if the current scroll is being
@@ -325,4 +350,20 @@ TEST_F(FullscreenModelTest, ScrolledToTopAndBottom) {
   model()->SetYContentOffset(kContentHeight - kScrollViewHeight);
   EXPECT_FALSE(model()->is_scrolled_to_top());
   EXPECT_TRUE(model()->is_scrolled_to_bottom());
+}
+
+// Tests that after scrolling down a lot to enter fullscreen, scrolling
+// partially up as part of the same drag event exits fullscreen.
+TEST_F(FullscreenModelTest, ScrollDownThenUp) {
+  model()->SetScrollViewIsDragging(true);
+  model()->SetScrollViewIsScrolling(true);
+  EXPECT_EQ(observer().progress(), 1.0);
+  model()->SetYContentOffset(model()->GetYContentOffset() + kToolbarHeight * 3);
+  EXPECT_EQ(observer().progress(), 0);
+  // Simulate a direction change in the swipe.
+  model()->SetYContentOffset(model()->GetYContentOffset() - 5);
+  model()->SetYContentOffset(model()->GetYContentOffset() - kToolbarHeight);
+  EXPECT_EQ(observer().progress(), 1.0);
+  model()->SetScrollViewIsDragging(false);
+  model()->SetScrollViewIsScrolling(false);
 }

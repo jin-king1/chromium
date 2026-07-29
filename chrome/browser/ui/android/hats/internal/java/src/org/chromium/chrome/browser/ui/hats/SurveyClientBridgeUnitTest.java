@@ -20,6 +20,7 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mockito.ArgumentCaptor;
+import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.MockitoJUnit;
 import org.mockito.junit.MockitoRule;
@@ -29,6 +30,10 @@ import org.chromium.base.test.BaseRobolectricTestRunner;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcher;
 import org.chromium.chrome.browser.lifecycle.ActivityLifecycleDispatcherProvider;
 import org.chromium.chrome.browser.profiles.Profile;
+import org.chromium.chrome.browser.tabmodel.TabModelSelector;
+import org.chromium.chrome.browser.tabmodel.TabModelSelectorSupplier;
+import org.chromium.ui.base.ActivityWindowAndroid;
+import org.chromium.ui.base.IntentRequestTracker;
 import org.chromium.ui.base.WindowAndroid;
 
 import java.lang.ref.WeakReference;
@@ -48,19 +53,34 @@ public class SurveyClientBridgeUnitTest {
     @Mock SurveyClient mDelegateSurveyClient;
     @Mock ActivityLifecycleDispatcher mActivityLifecycleDispatcher;
     @Mock Profile mProfile;
+    @Mock TabModelSelector mTabModelSelector;
+    @Captor ArgumentCaptor<Map<String, Boolean>> mBitValueCaptor;
+    @Captor ArgumentCaptor<Map<String, String>> mStringValueCaptor;
+
+    WindowAndroid mWindow;
 
     @Before
     public void setup() {
         mActivity = Robolectric.buildActivity(LifecycleDispatcherActivity.class).get();
         mActivity.setLifecycleDispatcher(mActivityLifecycleDispatcher);
         SurveyClientFactory.setInstanceForTesting(mFactory);
+        TabModelSelectorSupplier.setInstanceForTesting(mTabModelSelector);
 
-        doReturn(mDelegateSurveyClient).when(mFactory).createClient(any(), any(), any());
+        doReturn(mDelegateSurveyClient).when(mFactory).createClient(any(), any(), any(), any());
+
+        mWindow =
+                new ActivityWindowAndroid(
+                        mActivity,
+                        false,
+                        IntentRequestTracker.createFromActivity(mActivity),
+                        /* insetObserver= */ null,
+                        /* occlusionTrackingAllowed= */ true);
     }
 
     @After
     public void tearDown() {
         mActivity.finish();
+        mWindow.destroy();
     }
 
     @Test
@@ -70,7 +90,7 @@ public class SurveyClientBridgeUnitTest {
         TestSurveyUtils.setTestSurveyConfigForTrigger(
                 TEST_TRIGGER, new String[] {}, new String[] {});
         SurveyClientBridge bridge =
-                SurveyClientBridge.create(TEST_TRIGGER, testDelegate, mProfile, "");
+                SurveyClientBridge.create(TEST_TRIGGER, testDelegate, mProfile, "", mWindow);
         assertNotNull(bridge);
 
         bridge.showSurvey(mActivity, mActivityLifecycleDispatcher);
@@ -78,7 +98,7 @@ public class SurveyClientBridgeUnitTest {
 
         ArgumentCaptor<SurveyConfig> surveyConfigArgumentCaptor =
                 ArgumentCaptor.forClass(SurveyConfig.class);
-        verify(mFactory).createClient(surveyConfigArgumentCaptor.capture(), any(), any());
+        verify(mFactory).createClient(surveyConfigArgumentCaptor.capture(), any(), any(), any());
 
         assertEquals(
                 TestSurveyUtils.TEST_TRIGGER_ID_FOO,
@@ -93,7 +113,7 @@ public class SurveyClientBridgeUnitTest {
                 TEST_TRIGGER, new String[] {}, new String[] {});
         SurveyClientBridge bridge =
                 SurveyClientBridge.create(
-                        TEST_TRIGGER, testDelegate, mProfile, SUPPLIED_TRIGGER_ID);
+                        TEST_TRIGGER, testDelegate, mProfile, SUPPLIED_TRIGGER_ID, mWindow);
         assertNotNull(bridge);
 
         bridge.showSurvey(mActivity, mActivityLifecycleDispatcher);
@@ -101,7 +121,7 @@ public class SurveyClientBridgeUnitTest {
 
         ArgumentCaptor<SurveyConfig> surveyConfigArgumentCaptor =
                 ArgumentCaptor.forClass(SurveyConfig.class);
-        verify(mFactory).createClient(surveyConfigArgumentCaptor.capture(), any(), any());
+        verify(mFactory).createClient(surveyConfigArgumentCaptor.capture(), any(), any(), any());
         assertEquals(SUPPLIED_TRIGGER_ID, surveyConfigArgumentCaptor.getValue().mTriggerId);
     }
 
@@ -112,7 +132,7 @@ public class SurveyClientBridgeUnitTest {
         TestSurveyUtils.setTestSurveyConfigForTrigger(
                 TEST_TRIGGER, new String[] {"bit1", "bit2"}, new String[] {"string1", "string2"});
         SurveyClientBridge bridge =
-                SurveyClientBridge.create(TEST_TRIGGER, testDelegate, mProfile, "");
+                SurveyClientBridge.create(TEST_TRIGGER, testDelegate, mProfile, "", mWindow);
         assertNotNull(bridge);
 
         Map<String, Boolean> bitValues = Map.of("bit1", true, "bit2", false);
@@ -130,7 +150,7 @@ public class SurveyClientBridgeUnitTest {
                 new TestSurveyUtils.TestSurveyUiDelegate();
         TestSurveyUtils.setTestSurveyConfigForTrigger(TEST_TRIGGER, bitFields, stringFields);
         SurveyClientBridge bridge =
-                SurveyClientBridge.create(TEST_TRIGGER, testDelegate, mProfile, "");
+                SurveyClientBridge.create(TEST_TRIGGER, testDelegate, mProfile, "", mWindow);
         assertNotNull(bridge);
 
         WindowAndroid window = mock(WindowAndroid.class);
@@ -143,27 +163,25 @@ public class SurveyClientBridgeUnitTest {
                 stringFields,
                 new String[] {"stringVal1", "stringVal2"});
 
-        ArgumentCaptor<Map<String, Boolean>> bitValueCaptor = ArgumentCaptor.forClass(Map.class);
-        ArgumentCaptor<Map<String, String>> stringValueCaptor = ArgumentCaptor.forClass(Map.class);
-
         verify(mDelegateSurveyClient)
                 .showSurvey(
                         eq(mActivity),
                         eq(mActivityLifecycleDispatcher),
-                        bitValueCaptor.capture(),
-                        stringValueCaptor.capture());
+                        mBitValueCaptor.capture(),
+                        mStringValueCaptor.capture());
 
         // Check bit values
-        assertEquals("Bit PSD value mismatch.", true, bitValueCaptor.getValue().get("fieldTrue"));
-        assertEquals("Bit PSD value mismatch.", false, bitValueCaptor.getValue().get("fieldFalse"));
+        assertEquals("Bit PSD value mismatch.", true, mBitValueCaptor.getValue().get("fieldTrue"));
+        assertEquals(
+                "Bit PSD value mismatch.", false, mBitValueCaptor.getValue().get("fieldFalse"));
         assertEquals(
                 "String PSD value mismatch.",
                 "stringVal1",
-                stringValueCaptor.getValue().get("string1"));
+                mStringValueCaptor.getValue().get("string1"));
         assertEquals(
                 "String PSD value mismatch.",
                 "stringVal2",
-                stringValueCaptor.getValue().get("string2"));
+                mStringValueCaptor.getValue().get("string2"));
     }
 
     // Test activity that allows ActivityLifecycleDispatcherProvider casting in code.

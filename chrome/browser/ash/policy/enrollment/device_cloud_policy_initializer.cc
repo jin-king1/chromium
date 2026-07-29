@@ -7,15 +7,13 @@
 #include <memory>
 #include <utility>
 
+#include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/logging.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_client_factory_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_manager_ash.h"
 #include "chrome/browser/ash/policy/core/device_cloud_policy_store_ash.h"
 #include "chrome/browser/ash/policy/enrollment/auto_enrollment_type_checker.h"
-#include "chrome/browser/browser_process.h"
-#include "chrome/browser/net/system_network_context_manager.h"
-#include "chrome/common/chrome_content_client.h"
 #include "chromeos/ash/components/cryptohome/cryptohome_parameters.h"
 #include "chromeos/ash/components/install_attributes/install_attributes.h"
 #include "chromeos/ash/components/system/statistics_provider.h"
@@ -26,22 +24,21 @@
 namespace policy {
 
 DeviceCloudPolicyInitializer::DeviceCloudPolicyInitializer(
+    scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory,
     DeviceManagementService* enterprise_service,
     ash::InstallAttributes* install_attributes,
     ServerBackedStateKeysBroker* state_keys_broker,
     DeviceCloudPolicyStoreAsh* policy_store,
     DeviceCloudPolicyManagerAsh* policy_manager,
     ash::system::StatisticsProvider* statistics_provider)
-    : enterprise_service_(enterprise_service),
+    : url_loader_factory_(std::move(url_loader_factory)),
+      enterprise_service_(enterprise_service),
       install_attributes_(install_attributes),
       state_keys_broker_(state_keys_broker),
       policy_store_(policy_store),
       policy_manager_(policy_manager),
-      statistics_provider_(statistics_provider) {}
-
-void DeviceCloudPolicyInitializer::SetSystemURLLoaderFactoryForTesting(
-    scoped_refptr<network::SharedURLLoaderFactory> system_url_loader_factory) {
-  system_url_loader_factory_for_testing_ = system_url_loader_factory;
+      statistics_provider_(statistics_provider) {
+  CHECK(url_loader_factory_);
 }
 
 DeviceCloudPolicyInitializer::~DeviceCloudPolicyInitializer() {
@@ -56,15 +53,19 @@ void DeviceCloudPolicyInitializer::Init() {
   policy_store_->AddObserver(this);
   policy_manager_observer_.Observe(policy_manager_.get());
 
-  // If supported, we want to obtain state keys before proceeding.
-  if (AutoEnrollmentTypeChecker::AreFREStateKeysSupported()) {
+  // If state keys are supported but not available, we need to obtain them
+  // before proceeding.
+  // Background: `DeviceCloudPolicyManagerAsh::StartConnection` expects state
+  // keys to be present if they are supported).
+  if (AutoEnrollmentTypeChecker::AreFREStateKeysSupported() &&
+      !state_keys_broker_->available()) {
     state_keys_update_subscription_ =
         state_keys_broker_->RegisterUpdateCallback(base::BindRepeating(
             &DeviceCloudPolicyInitializer::TryToStartConnection,
             base::Unretained(this)));
+    return;
   }
 
-  // TODO(b/333951800): This could be an else to the if, check if warranted.
   TryToStartConnection();
 }
 
@@ -101,10 +102,7 @@ std::unique_ptr<CloudPolicyClient> DeviceCloudPolicyInitializer::CreateClient(
   // DeviceDMToken callback is empty here because for device policies this
   // DMToken is already provided in the policy fetch requests.
   return CreateDeviceCloudPolicyClientAsh(
-      statistics_provider_, device_management_service,
-      system_url_loader_factory_for_testing_
-          ? system_url_loader_factory_for_testing_
-          : g_browser_process->shared_url_loader_factory(),
+      statistics_provider_, device_management_service, url_loader_factory_,
       CloudPolicyClient::DeviceDMTokenCallback());
 }
 
@@ -118,10 +116,8 @@ void DeviceCloudPolicyInitializer::TryToStartConnection() {
     policy_manager_->OnPolicyStoreReady(install_attributes_);
   }
 
-  // TODO(crbug.com/1304636): Move this and all other checks from here to a
-  // separate method.
   if (!policy_manager_->HasSchemaRegistry()) {
-    // crbug.com/1295871: `policy_manager_` might not have schema registry on
+    // crbug.com/40821368: `policy_manager_` might not have schema registry on
     // start connection attempt. This may happen on chrome restart when
     // `chrome::kInitialProfile` is created after login profile: policy will be
     // loaded but `BuildSchemaRegistryServiceForProfile` will not be called for
@@ -129,8 +125,6 @@ void DeviceCloudPolicyInitializer::TryToStartConnection() {
     return;
   }
 
-  // TODO(b/181140445): If we had a separate state keys upload request to DM
-  // Server we could drop the `state_keys_broker_->available()` requirement.
   if (state_keys_broker_->available() ||
       !AutoEnrollmentTypeChecker::AreFREStateKeysSupported()) {
     StartConnection(CreateClient(enterprise_service_));

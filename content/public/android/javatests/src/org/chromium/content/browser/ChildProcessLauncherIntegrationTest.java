@@ -16,11 +16,14 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 
+import org.chromium.base.ChildBindingState;
 import org.chromium.base.process_launcher.ChildConnectionAllocator;
 import org.chromium.base.process_launcher.ChildProcessConnection;
+import org.chromium.base.process_launcher.IChildProcessArgs;
 import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.CommandLineFlags;
 import org.chromium.base.test.util.CriteriaHelper;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.UrlUtils;
 import org.chromium.content_public.browser.LoadUrlParams;
 import org.chromium.content_public.browser.NavigationController;
@@ -34,8 +37,8 @@ import java.util.List;
 import java.util.concurrent.CountDownLatch;
 
 /**
- * Integration test that starts the full shell and load pages to test ChildProcessLauncher
- * and related code.
+ * Integration test that starts the full shell and loads pages to test ChildProcessLauncher and
+ * related code.
  */
 @RunWith(BaseJUnit4ClassRunner.class)
 public class ChildProcessLauncherIntegrationTest {
@@ -110,7 +113,8 @@ public class ChildProcessLauncherIntegrationTest {
         @Override
         public void removeVisibleBinding() {
             super.removeVisibleBinding();
-            if (mRemovedBothVisibleAndStrongBinding == null && !isStrongBindingBound()) {
+            if (mRemovedBothVisibleAndStrongBinding == null
+                    && bindingStateCurrent() < ChildBindingState.STRONG) {
                 mRemovedBothVisibleAndStrongBinding = new RuntimeException("removeVisibleBinding");
             }
         }
@@ -118,7 +122,8 @@ public class ChildProcessLauncherIntegrationTest {
         @Override
         public void removeStrongBinding() {
             super.removeStrongBinding();
-            if (mRemovedBothVisibleAndStrongBinding == null && !isVisibleBindingBound()) {
+            if (mRemovedBothVisibleAndStrongBinding == null
+                    && bindingStateCurrent() < ChildBindingState.VISIBLE) {
                 mRemovedBothVisibleAndStrongBinding = new RuntimeException("removeStrongBinding");
             }
         }
@@ -140,12 +145,29 @@ public class ChildProcessLauncherIntegrationTest {
         "disable-features=SpareRendererForSitePerProcess,AndroidWarmUpSpareRendererWithTimeout"
     })
     public void testCrossDomainNavigationDoNotLoseImportance() throws Throwable {
+        testCrossDomainNavigationDoNotLoseImportance(null);
+    }
+
+    @Test
+    @MediumTest
+    // This test may run with --site-per-process or AndroidWarmUpSpareRendererWithTimeout, which
+    // also enables a feature to maintain a spare renderer process.
+    // The spare process interferes with assertions on the number of process connections in this
+    // test, so disable it.
+    @CommandLineFlags.Add({
+        "disable-features=SpareRendererForSitePerProcess,AndroidWarmUpSpareRendererWithTimeout"
+    })
+    @DisabledTest(message = "No released Android version which supports this yet")
+    public void testCrossDomainNavigationJavaless() throws Throwable {
+        testCrossDomainNavigationDoNotLoseImportance(
+                "org.chromium.content.app.NativeOnlySandboxedProcessService");
+    }
+
+    private void testCrossDomainNavigationDoNotLoseImportance(String serviceName) throws Throwable {
         final TestChildProcessConnectionFactory factory = new TestChildProcessConnectionFactory();
         final List<TestChildProcessConnection> connections = factory.getConnections();
         ChildProcessLauncherHelperImpl.setSandboxServicesSettingsForTesting(
-                factory,
-                10 /* arbitrary number, only really need 2 */,
-                null /* use default service name */);
+                factory, 10 /* arbitrary number, only really need 2 */, serviceName);
 
         // TODO(boliu,nasko): Ensure navigation is actually successful
         // before proceeding.
@@ -241,9 +263,8 @@ public class ChildProcessLauncherIntegrationTest {
         private boolean mCrashServiceCalled;
         private final CountDownLatch mDisconnectedLatch = new CountDownLatch(1);
         // Arguments to setupConnection
-        private Bundle mConnectionBundle;
+        private IChildProcessArgs mChildProcessArgs;
         private List<IBinder> mClientInterfaces;
-        private IBinder mBinderBox;
         private ConnectionCallback mConnectionCallback;
 
         public CrashOnLaunchChildProcessConnection(
@@ -269,16 +290,11 @@ public class ChildProcessLauncherIntegrationTest {
             super.onServiceConnectedOnLauncherThread(service);
             crashServiceForTesting();
             mCrashServiceCalled = true;
-            if (mConnectionBundle != null) {
+            if (mChildProcessArgs != null) {
                 super.setupConnection(
-                        mConnectionBundle,
-                        mClientInterfaces,
-                        mBinderBox,
-                        mConnectionCallback,
-                        null);
-                mConnectionBundle = null;
+                        mChildProcessArgs, mClientInterfaces, mConnectionCallback, null);
+                mChildProcessArgs = null;
                 mClientInterfaces = null;
-                mBinderBox = null;
                 mConnectionCallback = null;
             }
         }
@@ -291,21 +307,18 @@ public class ChildProcessLauncherIntegrationTest {
 
         @Override
         public void setupConnection(
-                Bundle connectionBundle,
+                IChildProcessArgs childProcessArgs,
                 List<IBinder> clientInterfaces,
-                IBinder binderBox,
                 ConnectionCallback connectionCallback,
                 ZygoteInfoCallback zygoteInfoCallback) {
             // Make sure setupConnection is called after crashServiceForTesting so that
             // setupConnection is guaranteed to fail.
             if (mCrashServiceCalled) {
-                super.setupConnection(
-                        connectionBundle, clientInterfaces, binderBox, connectionCallback, null);
+                super.setupConnection(childProcessArgs, clientInterfaces, connectionCallback, null);
                 return;
             }
-            mConnectionBundle = connectionBundle;
+            mChildProcessArgs = childProcessArgs;
             mClientInterfaces = clientInterfaces;
-            mBinderBox = binderBox;
             mConnectionCallback = connectionCallback;
         }
 

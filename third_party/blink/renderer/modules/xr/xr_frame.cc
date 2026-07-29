@@ -12,6 +12,7 @@
 #include "third_party/blink/renderer/modules/xr/xr_joint_space.h"
 #include "third_party/blink/renderer/modules/xr/xr_light_estimate.h"
 #include "third_party/blink/renderer/modules/xr/xr_light_probe.h"
+#include "third_party/blink/renderer/modules/xr/xr_mesh_set.h"
 #include "third_party/blink/renderer/modules/xr/xr_plane_set.h"
 #include "third_party/blink/renderer/modules/xr/xr_reference_space.h"
 #include "third_party/blink/renderer/modules/xr/xr_session.h"
@@ -43,7 +44,10 @@ const char kSpacesSequenceTooLarge[] =
 
 const char kMismatchedBufferSizes[] = "Buffer sizes must be equal";
 
-std::optional<uint64_t> GetPlaneId(
+const char kTransformsDetached[] =
+    "The transforms array was detached during fillPoses().";
+
+std::optional<device::PlaneId> GetPlaneId(
     const device::mojom::blink::XRNativeOriginInformation& native_origin) {
   if (native_origin.is_plane_id()) {
     return native_origin.get_plane_id();
@@ -148,6 +152,18 @@ XRPlaneSet* XRFrame::detectedPlanes(ExceptionState& exception_state) const {
   return session_->GetDetectedPlanes();
 }
 
+XRMeshSet* XRFrame::detectedMeshes(ExceptionState& exception_state) const {
+  DVLOG(3) << __func__;
+
+  if (!is_active_) {
+    exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                      kInactiveFrame);
+    return nullptr;
+  }
+
+  return session_->GetDetectedMeshes();
+}
+
 XRLightEstimate* XRFrame::getLightEstimate(
     XRLightProbe* light_probe,
     ExceptionState& exception_state) const {
@@ -235,6 +251,11 @@ XRPose* XRFrame::getPose(XRSpace* space,
 
   if (!session_->CanReportPoses()) {
     exception_state.ThrowSecurityError(XRSession::kCannotReportPoses);
+    return nullptr;
+  }
+
+  if ((space->IsInputSpace() || basespace->IsInputSpace()) &&
+      !session_->CanReportInputPoses()) {
     return nullptr;
   }
 
@@ -380,7 +401,7 @@ ScriptPromise<XRAnchor> XRFrame::CreateAnchorFromNonStationarySpace(
     ScriptState* script_state,
     const gfx::Transform& native_origin_from_anchor,
     XRSpace* space,
-    std::optional<uint64_t> maybe_plane_id,
+    std::optional<device::PlaneId> maybe_plane_id,
     ExceptionState& exception_state) {
   DVLOG(2) << __func__;
 
@@ -456,6 +477,11 @@ XRJointPose* XRFrame::getJointPose(XRJointSpace* joint,
     return nullptr;
   }
 
+  // JointSpaces are input spaces, so no need to check if the baseSpace is one.
+  if (!session_->CanReportInputPoses()) {
+    return nullptr;
+  }
+
   const XRPose* pose = joint->getPose(baseSpace);
   if (!pose) {
     return nullptr;
@@ -493,7 +519,8 @@ bool XRFrame::fillJointRadii(
   auto radii_data = radii->AsSpan();
   for (unsigned offset = 0; offset < jointSpaces.size(); offset++) {
     const XRJointSpace* joint_space = jointSpaces[offset];
-    if (joint_space->handHasMissingPoses()) {
+    if (!session_->CanReportInputPoses() ||
+        joint_space->handHasMissingPoses()) {
       radii_data[offset] = NAN;
       all_valid = false;
     } else {
@@ -516,10 +543,12 @@ bool XRFrame::fillPoses(const HeapVector<Member<XRSpace>>& spaces,
     return false;
   }
 
+  bool using_input_space = base_space->IsInputSpace();
   for (const auto& space : spaces) {
     if (!IsSameSession(space->session(), exception_state)) {
       return false;
     }
+    using_input_space |= space->IsInputSpace();
   }
 
   if (!IsSameSession(base_space->session(), exception_state)) {
@@ -536,18 +565,29 @@ bool XRFrame::fillPoses(const HeapVector<Member<XRSpace>>& spaces,
     return false;
   }
 
+  if (using_input_space && !session_->CanReportInputPoses()) {
+    return false;
+  }
+
   bool all_valid = true;
   auto transforms_data = transforms->AsSpan();
   for (const auto& space : spaces) {
-    auto [current_transform, remaining] =
-        transforms_data.split_at(kFloatsPerTransform);
-    if (const XRPose* pose = space->getPose(base_space)) {
+    auto current_transform = transforms_data.take_first<kFloatsPerTransform>();
+    const XRPose* pose = space->getPose(base_space);
+    // getPose() can synchronously dispatch a reset event if the space requires
+    // updating, which could detach the buffer in a JavaScript listener.
+    if (transforms->IsDetached()) {
+      exception_state.ThrowDOMException(DOMExceptionCode::kInvalidStateError,
+                                        kTransformsDetached);
+      return false;
+    }
+
+    if (pose) {
       current_transform.copy_from(pose->transform()->matrix()->AsSpan());
     } else {
       std::ranges::fill(current_transform, NAN);
       all_valid = false;
     }
-    transforms_data = remaining;
   }
 
   return all_valid;

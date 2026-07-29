@@ -7,14 +7,15 @@
 
 #import <Foundation/Foundation.h>
 
-#include "base/memory/raw_ptr.h"
-#include "components/signin/public/identity_manager/account_info.h"
-#include "components/signin/public/identity_manager/identity_manager.h"
+#import "base/memory/raw_ptr.h"
+#import "base/scoped_observation.h"
+#import "components/signin/public/identity_manager/account_info.h"
+#import "components/signin/public/identity_manager/identity_manager.h"
 
-// Implement this protocol and pass your implementation into an
-// IdentityManagerObserverBridge object to receive IdentityManager observer
-// callbacks in Objective-C.
-@protocol IdentityManagerObserverBridgeDelegate <NSObject>
+// Implement this protocol and pass your implementation into a
+// signin::IdentityManagerObserverBridge object to receive
+// signin::IdentityManager::Observer callbacks in Objective-C.
+@protocol IdentityManagerObserving <NSObject>
 
 @optional
 
@@ -23,30 +24,29 @@
 // IdentityManager::Observer in identity_manager.h for the specification of
 // these semantics.
 
-- (void)onPrimaryAccountChanged:(const signin::PrimaryAccountChangeEvent&)event;
-- (void)onRefreshTokenUpdatedForAccount:(const CoreAccountInfo&)accountInfo;
-- (void)onRefreshTokenRemovedForAccount:(const CoreAccountId&)accountId;
-- (void)onRefreshTokensLoaded;
-- (void)onAccountsInCookieUpdated:
+- (void)primaryAccountDidChange:(const signin::PrimaryAccountChangeEvent&)event;
+- (void)refreshTokenDidUpdateForAccount:(const CoreAccountInfo&)accountInfo;
+- (void)refreshTokenWasRemovedForAccount:(const CoreAccountId&)accountId;
+- (void)refreshTokensWasLoaded;
+- (void)accountsInCookieWasUpdated:
             (const signin::AccountsInCookieJarInfo&)accountsInCookieJarInfo
-                            error:(const GoogleServiceAuthError&)error;
-- (void)onEndBatchOfRefreshTokenStateChanges;
-- (void)onExtendedAccountInfoUpdated:(const AccountInfo&)info;
-- (void)onAccountsOnDeviceChanged;
-- (void)onEndBatchOfPrimaryAccountChanges;
-- (void)onIdentityManagerShutdown:(signin::IdentityManager*)identityManager;
+                             error:(const GoogleServiceAuthError&)error;
+- (void)batchOfRefreshTokenStateChangesDidEnd;
+- (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info;
+- (void)accountsOnDeviceDidChange;
+- (void)batchOfPrimaryAccountChangesDidEnd;
+- (void)identityManagerDidShutdown:(signin::IdentityManager*)identityManager;
 
 @end
 
 namespace signin {
 
-// Bridge class that listens for |IdentityManager| notifications and
-// passes them to its Objective-C delegate.
+// Bridge class that listens for |IdentityManager| notifications and passes them
+// to the Objective-C object.
 class IdentityManagerObserverBridge : public IdentityManager::Observer {
  public:
-  IdentityManagerObserverBridge(
-      IdentityManager* identity_manager,
-      id<IdentityManagerObserverBridgeDelegate> delegate);
+  IdentityManagerObserverBridge(IdentityManager* identity_manager,
+                                id<IdentityManagerObserving> target);
 
   IdentityManagerObserverBridge(const IdentityManagerObserverBridge&) = delete;
   IdentityManagerObserverBridge& operator=(
@@ -74,8 +74,11 @@ class IdentityManagerObserverBridge : public IdentityManager::Observer {
  private:
   // Identity manager to observe.
   raw_ptr<IdentityManager> identity_manager_;
+  base::ScopedObservation<signin::IdentityManager,
+                          signin::IdentityManager::Observer>
+      identity_manager_observation_{this};
   // Delegate to call.
-  __weak id<IdentityManagerObserverBridgeDelegate> delegate_;
+  __weak id<IdentityManagerObserving> target_;
 };
 
 }  // namespace signin

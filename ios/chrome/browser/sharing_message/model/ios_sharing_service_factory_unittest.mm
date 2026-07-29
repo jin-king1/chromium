@@ -4,9 +4,7 @@
 
 #import "ios/chrome/browser/sharing_message/model/ios_sharing_service_factory.h"
 
-#import "base/test/scoped_feature_list.h"
 #import "components/pref_registry/pref_registry_syncable.h"
-#import "components/send_tab_to_self/features.h"
 #import "components/sharing_message/pref_names.h"
 #import "components/sharing_message/sharing_service.h"
 #import "components/sync_preferences/testing_pref_service_syncable.h"
@@ -21,23 +19,20 @@
 class IOSSharingServiceFactoryTest : public PlatformTest {
  protected:
   IOSSharingServiceFactoryTest() {
-    scoped_feature_list_.InitAndEnableFeature(
-        send_tab_to_self::kSendTabToSelfIOSPushNotifications);
 
     profile_ = TestProfileIOS::Builder().Build();
     profile_->GetSyncablePrefs()->SetDict(prefs::kSharingFCMRegistration,
-                                          base::Value::Dict());
+                                          base::DictValue());
   }
 
-  base::test::ScopedFeatureList scoped_feature_list_;
   web::WebTaskEnvironment task_environment_;
   std::unique_ptr<TestProfileIOS> profile_;
 };
 
-// Tests that IOSSharingServiceFactory creates
-// SharingService.
-TEST_F(IOSSharingServiceFactoryTest, CreateService) {
+// Tests that IOSSharingServiceFactory does not create SharingService
+// for TestProfileIOS.
+TEST_F(IOSSharingServiceFactoryTest, NoServiceForTests) {
   SharingService* service =
       IOSSharingServiceFactory::GetForProfile(profile_.get());
-  ASSERT_TRUE(service);
+  EXPECT_FALSE(service);
 }

@@ -30,13 +30,9 @@ class AlternativeNameFieldParserTest : public FormFieldParserTestBase,
 
  protected:
   std::unique_ptr<FormFieldParser> Parse(ParsingContext& context,
-                                         AutofillScanner* scanner) override {
+                                         AutofillScanner& scanner) override {
     return AlternativeNameFieldParser::Parse(context, scanner);
   }
-
- private:
-  base::test::ScopedFeatureList scoped_features{
-      features::kAutofillSupportPhoneticNameForJP};
 };
 
 TEST_F(AlternativeNameFieldParserTest, FamilyGivenPhoneticName) {

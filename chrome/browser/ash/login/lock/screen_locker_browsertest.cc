@@ -17,6 +17,7 @@
 #include "chrome/browser/ui/ash/login/user_adding_screen.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -29,7 +30,7 @@
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
 #include "testing/gtest/include/gtest/gtest.h"
-#include "ui/compositor/scoped_animation_duration_scale_mode.h"
+#include "ui/gfx/scoped_animation_duration_scale_mode.h"
 
 namespace ash {
 namespace {
@@ -52,8 +53,8 @@ class ScreenLockerTest : public InProcessBrowserTest {
   // InProcessBrowserTest:
   void SetUpInProcessBrowserTestFixture() override {
     zero_duration_mode_ =
-        std::make_unique<ui::ScopedAnimationDurationScaleMode>(
-            ui::ScopedAnimationDurationScaleMode::ZERO_DURATION);
+        std::make_unique<gfx::ScopedAnimationDurationScaleMode>(
+            gfx::ScopedAnimationDurationScaleMode::ZERO_DURATION);
   }
 
   void EnrollFingerprint() {
@@ -86,7 +87,7 @@ class ScreenLockerTest : public InProcessBrowserTest {
  private:
   void OnStartSession(const dbus::ObjectPath& path) {}
 
-  std::unique_ptr<ui::ScopedAnimationDurationScaleMode> zero_duration_mode_;
+  std::unique_ptr<gfx::ScopedAnimationDurationScaleMode> zero_duration_mode_;
   std::unique_ptr<quick_unlock::TestApi> test_api_;
 };
 
@@ -118,7 +119,7 @@ IN_PROC_BROWSER_TEST_F(ScreenLockerTest, TestFullscreenExit) {
   // hidden), locking the screen should exit fullscreen. The shelf is
   // auto hidden when in immersive fullscreen.
   ScreenLockerTester tester;
-  BrowserWindow* browser_window = browser()->window();
+  BrowserWindow* browser_window = BrowserWindow::FromBrowser(browser());
   auto* window_state = WindowState::Get(browser_window->GetNativeWindow());
   {
     ui_test_utils::ToggleFullscreenModeAndWait(browser());
@@ -150,7 +151,8 @@ IN_PROC_BROWSER_TEST_F(ScreenLockerTest, TestFullscreenExit) {
         browser()->tab_strip_model()->GetActiveWebContents();
     ui_test_utils::FullscreenWaiter waiter(browser(), {.tab_fullscreen = true});
     browser()
-        ->exclusive_access_manager()
+        ->GetFeatures()
+        .exclusive_access_manager()
         ->fullscreen_controller()
         ->EnterFullscreenModeForTab(web_contents->GetPrimaryMainFrame());
     waiter.Wait();

@@ -8,17 +8,22 @@
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/metrics/chrome_metrics_services_manager_client.h"
 #include "chrome/browser/metrics/testing/metrics_consent_override.h"
-#include "chrome/browser/metrics/testing/sync_metrics_test_utils.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/sync/test/integration/sync_service_impl_harness.h"
 #include "chrome/browser/sync/test/integration/sync_test.h"
 #include "chrome/browser/unified_consent/unified_consent_service_factory.h"
+#include "chrome/test/base/testing_browser_process.h"
 #include "components/metrics/dwa/dwa_entry_builder.h"
 #include "components/metrics/dwa/dwa_recorder.h"
 #include "components/metrics/dwa/dwa_service.h"
+#include "components/metrics/private_metrics/private_metrics_features.h"
 #include "components/metrics_services_manager/metrics_services_manager.h"
 #include "components/unified_consent/unified_consent_service.h"
 #include "content/public/test/browser_test.h"
+#include "services/network/public/cpp/weak_wrapper_shared_url_loader_factory.h"
+#include "third_party/federated_compute/src/fcp/confidentialcompute/cose.h"
+#include "third_party/federated_compute/src/fcp/confidentialcompute/crypto.h"
+#include "third_party/federated_compute/src/fcp/confidentialcompute/crypto_test_util.h"
 
 #if !BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/ui/browser.h"
@@ -32,6 +37,21 @@
 #endif
 
 namespace metrics::dwa {
+
+namespace {
+
+std::string CreatePublicKeyForTesting() {
+  auto public_key =
+      fcp::confidential_compute::GenerateHpkeKeyPair("key-id").first;
+  auto decoded = fcp::confidential_compute::OkpCwt::Decode(public_key);
+
+  // DWA validates the existence of the algorithm field, set it to 0 for tests.
+  decoded->algorithm = 0;
+
+  return decoded->Encode().value();
+}
+
+}  // namespace
 
 #if !BUILDFLAG(IS_ANDROID)
 typedef Browser* PlatformBrowser;
@@ -54,8 +74,9 @@ class DwaBrowserTest : public SyncTest {
   DwaBrowserTest() : SyncTest(SINGLE_CLIENT) {
     // Explicitly enable DWA and disable metrics reporting. Disabling metrics
     // reporting should affect only UMA--not DWA.
-    scoped_feature_list_.InitWithFeatures({dwa::kDwaFeature},
-                                          {internal::kMetricsReportingFeature});
+    scoped_feature_list_.InitWithFeatures(
+        {dwa::kDwaFeature, private_metrics::kPrivateMetricsFeature},
+        {internal::kMetricsReportingFeature});
   }
 
   DwaBrowserTest(const DwaBrowserTest&) = delete;
@@ -73,8 +94,14 @@ class DwaBrowserTest : public SyncTest {
     // Having an empty TabModelList allows us to simply add the appropriate
     // TabModel.
     EXPECT_EQ(1U, TabModelList::models().size());
-    TabModelList::RemoveTabModel(TabModelList::models()[0]);
+    initial_tab_model_ = TabModelList::models()[0].get();
+    TabModelList::RemoveTabModel(initial_tab_model_);
     EXPECT_EQ(0U, TabModelList::models().size());
+  }
+
+  void PostRunTestOnMainThread() override {
+    // Restore the initial tab model so the browser can shut down cleanly.
+    TabModelList::AddTabModel(initial_tab_model_);
   }
 #endif  // BUILDFLAG(IS_ANDROID)
 
@@ -85,7 +112,6 @@ class DwaBrowserTest : public SyncTest {
 
   void AssertDwaRecorderHasMetrics() const {
     ASSERT_TRUE(metrics::dwa::DwaRecorder::Get()->HasEntries());
-    ASSERT_TRUE(metrics::dwa::DwaRecorder::Get()->HasPageLoadEvents());
   }
 
   void ExpectDwaIsDisabledAndDisallowed() const {
@@ -100,7 +126,6 @@ class DwaBrowserTest : public SyncTest {
 
   void ExpectDwaRecorderIsEmpty() const {
     EXPECT_FALSE(metrics::dwa::DwaRecorder::Get()->HasEntries());
-    EXPECT_FALSE(metrics::dwa::DwaRecorder::Get()->HasPageLoadEvents());
   }
 
   void RecordTestDwaEntryMetric() {
@@ -110,15 +135,17 @@ class DwaBrowserTest : public SyncTest {
     builder.Record(dwa::DwaRecorder::Get());
   }
 
-  void RecordTestDwaEntryMetricAndPageLoadEvent() {
+  void RecordTestMetricsAndAssertMetricsRecorded() {
     RecordTestDwaEntryMetric();
-    metrics::dwa::DwaRecorder::Get()->OnPageLoad();
-    RecordTestDwaEntryMetric();
+    AssertDwaRecorderHasMetrics();
   }
 
-  void RecordTestMetricsAndAssertMetricsRecorded() {
-    RecordTestDwaEntryMetricAndPageLoadEvent();
-    AssertDwaRecorderHasMetrics();
+  void SetupDwaService() {
+    auto public_key = CreatePublicKeyForTesting();
+    GetDwaService()->SetEncryptionPublicKeyForTesting(public_key);
+    GetDwaService()->SetEncryptionPublicKeyVerifierForTesting(
+        base::BindRepeating([](const fcp::confidential_compute::OkpCwt&)
+                                -> bool { return true; }));
   }
 
   void SetMsbbConsentState(Profile* profile, bool consent_state) {
@@ -138,15 +165,16 @@ class DwaBrowserTest : public SyncTest {
     ASSERT_NE(consent_service, nullptr);
 
     std::unique_ptr<SyncServiceImplHarness> harness =
-        test::InitializeProfileForSync(profile, GetFakeServer()->AsWeakPtr());
+        SyncServiceImplHarness::Create(
+            profile, SyncServiceImplHarness::SigninType::FAKE_SIGNIN);
     EXPECT_TRUE(harness->SetupSync());
 
     if (consent_state) {
-      ASSERT_TRUE(
-          harness->EnableSyncForType(syncer::UserSelectableType::kExtensions));
+      ASSERT_TRUE(harness->EnableSelectableType(
+          syncer::UserSelectableType::kExtensions));
     } else {
-      ASSERT_TRUE(
-          harness->DisableSyncForType(syncer::UserSelectableType::kExtensions));
+      ASSERT_TRUE(harness->DisableSelectableType(
+          syncer::UserSelectableType::kExtensions));
     }
   }
 
@@ -157,15 +185,16 @@ class DwaBrowserTest : public SyncTest {
     ASSERT_NE(consent_service, nullptr);
 
     std::unique_ptr<SyncServiceImplHarness> harness =
-        test::InitializeProfileForSync(profile, GetFakeServer()->AsWeakPtr());
+        SyncServiceImplHarness::Create(
+            profile, SyncServiceImplHarness::SigninType::FAKE_SIGNIN);
     EXPECT_TRUE(harness->SetupSync());
 
     if (consent_state) {
       ASSERT_TRUE(
-          harness->EnableSyncForType(syncer::UserSelectableType::kApps));
+          harness->EnableSelectableType(syncer::UserSelectableType::kApps));
     } else {
       ASSERT_TRUE(
-          harness->DisableSyncForType(syncer::UserSelectableType::kApps));
+          harness->DisableSelectableType(syncer::UserSelectableType::kApps));
     }
   }
 #endif  // !BUILDFLAG(IS_CHROMEOS)
@@ -174,7 +203,8 @@ class DwaBrowserTest : public SyncTest {
   std::unique_ptr<SyncServiceImplHarness> EnableSyncForProfile(
       Profile* profile) {
     std::unique_ptr<SyncServiceImplHarness> harness =
-        test::InitializeProfileForSync(profile, GetFakeServer()->AsWeakPtr());
+        SyncServiceImplHarness::Create(
+            profile, SyncServiceImplHarness::SigninType::FAKE_SIGNIN);
     EXPECT_TRUE(harness->SetupSync());
 
     // If unified consent is enabled, then enable url-keyed-anonymized data
@@ -229,6 +259,10 @@ class DwaBrowserTest : public SyncTest {
 
  private:
   base::test::ScopedFeatureList scoped_feature_list_;
+
+#if BUILDFLAG(IS_ANDROID)
+  raw_ptr<TabModel> initial_tab_model_;
+#endif  // !BUILDFLAG(IS_ANDROID)
 };
 
 // LINT.IfChange(DwaServiceCheck)
@@ -236,6 +270,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest, DwaServiceCheck) {
   test::MetricsConsentOverride metrics_consent(true);
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
+  SetupDwaService();
 
   dwa::DwaService* dwa_service = GetDwaService();
   dwa::DwaRecorder* dwa_recorder = metrics::dwa::DwaRecorder::Get();
@@ -246,12 +281,6 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest, DwaServiceCheck) {
   // Records a DWA entry metric.
   RecordTestDwaEntryMetric();
   EXPECT_TRUE(dwa_recorder->HasEntries());
-  EXPECT_FALSE(dwa_recorder->HasPageLoadEvents());
-  EXPECT_FALSE(dwa_service->unsent_log_store()->has_unsent_logs());
-
-  dwa_recorder->OnPageLoad();
-  EXPECT_FALSE(dwa_recorder->HasEntries());
-  EXPECT_TRUE(dwa_recorder->HasPageLoadEvents());
   EXPECT_FALSE(dwa_service->unsent_log_store()->has_unsent_logs());
 
   GetDwaService()->Flush(
@@ -352,7 +381,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest, UkmConsentChangeCheck_Msbb) {
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 
@@ -382,7 +411,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest, UkmConsentChangeCheck_Extensions) {
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 
@@ -410,7 +439,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest, UkmConsentChangeCheck_Apps) {
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 
@@ -438,7 +467,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest,
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 
@@ -472,7 +501,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest, UkmConsentChangeCheck_MsbbAndApps) {
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 
@@ -505,7 +534,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest,
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 
@@ -538,7 +567,7 @@ IN_PROC_BROWSER_TEST_F(DwaBrowserTest,
   Profile* profile = ProfileManager::GetLastUsedProfileIfLoaded();
   EnableSyncForProfile(profile);
 
-  RecordTestDwaEntryMetricAndPageLoadEvent();
+  RecordTestDwaEntryMetric();
   AssertDwaIsEnabledAndAllowed();
   AssertDwaRecorderHasMetrics();
 

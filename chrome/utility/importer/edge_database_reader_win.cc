@@ -11,6 +11,8 @@
 
 #include <vector>
 
+#include "base/compiler_specific.h"
+
 namespace {
 
 // This is an arbitary size chosen for the database error message buffer.
@@ -26,7 +28,7 @@ bool ValidateAndConvertValueGeneric(const JET_COLTYP match_column_type,
                                     const std::vector<uint8_t>& column_data,
                                     T* value) {
   if ((column_type == match_column_type) && (column_data.size() == sizeof(T))) {
-    memcpy(value, &column_data[0], sizeof(T));
+    UNSAFE_TODO(memcpy(value, &column_data[0], sizeof(T)));
     return true;
   }
   return false;
@@ -50,7 +52,7 @@ bool ValidateAndConvertValue(const JET_COLTYP column_type,
     std::u16string& value_ref = *value;
     size_t char_length = column_data.size() / sizeof(char16_t);
     value_ref.resize(char_length);
-    memcpy(&value_ref[0], &column_data[0], column_data.size());
+    UNSAFE_TODO(memcpy(&value_ref[0], &column_data[0], column_data.size()));
     // Remove any trailing NUL characters.
     while (char_length > 0) {
       if (value_ref[char_length - 1])

@@ -2,8 +2,11 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
+#include "ui/ozone/platform/wayland/host/wayland_screen.h"
+
 #include <wayland-server-protocol.h>
 #include <wayland-server.h>
+
 #include <memory>
 
 #include "base/memory/raw_ptr.h"
@@ -16,11 +19,10 @@
 #include "ui/display/display_switches.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/geometry/rect.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/ozone/platform/wayland/host/wayland_connection.h"
 #include "ui/ozone/platform/wayland/host/wayland_output.h"
 #include "ui/ozone/platform/wayland/host/wayland_output_manager.h"
-#include "ui/ozone/platform/wayland/host/wayland_screen.h"
 #include "ui/ozone/platform/wayland/host/wayland_seat.h"
 #include "ui/ozone/platform/wayland/test/mock_pointer.h"
 #include "ui/ozone/platform/wayland/test/mock_surface.h"
@@ -377,7 +379,7 @@ TEST_P(WaylandScreenTest, OutputPropertyChangesMissingLogicalSize) {
   TestDisplayObserver observer;
   platform_screen_->AddObserver(&observer);
 
-  const uint32_t output_id = 7;
+  const uint32_t output_id = 8;
   const int64_t display_id = 1ll << 34;
   const gfx::Point origin(50, 70);
   const gfx::Size physical_size(1200, 1600);
@@ -516,7 +518,7 @@ TEST_P(WaylandScreenTest, GetAcceleratedWidgetAtScreenPoint) {
       gfx::Point(window_bounds.width() + 1, window_bounds.height() + 1));
   EXPECT_EQ(widget_at_screen_point, gfx::kNullAcceleratedWidget);
 
-  MockWaylandPlatformWindowDelegate delegate;
+  MockWaylandPlatformWindowDelegate delegate(connection_.get());
   auto menu_window_bounds =
       gfx::Rect(window_->GetBoundsInDIP().width() - 10,
                 window_->GetBoundsInDIP().height() - 10, 100, 100);
@@ -768,7 +770,7 @@ TEST_P(WaylandScreenTest, GetDisplayForAcceleratedWidget) {
 }
 
 TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
-  MockWaylandPlatformWindowDelegate delegate;
+  MockWaylandPlatformWindowDelegate delegate(connection_.get());
   std::unique_ptr<WaylandWindow> second_window =
       CreateWaylandWindowWithProperties(gfx::Rect(0, 0, 1920, 1080),
                                         PlatformWindowType::kWindow,
@@ -961,9 +963,20 @@ TEST_P(WaylandScreenTest, GetCursorScreenPoint) {
   EXPECT_EQ(gfx::Point(1912, 1071), platform_screen_->GetCursorScreenPoint());
 }
 
+class WaylandScreenTestNoFractionalScale : public WaylandScreenTest {
+ public:
+  WaylandScreenTestNoFractionalScale() = default;
+  ~WaylandScreenTestNoFractionalScale() override = default;
+
+  WaylandScreenTestNoFractionalScale(
+      const WaylandScreenTestNoFractionalScale&) = delete;
+  WaylandScreenTestNoFractionalScale& operator=(
+      const WaylandScreenTestNoFractionalScale&) = delete;
+};
+
 // Checks that the surface that backs the window receives new scale of the
 // output that it is in.
-TEST_P(WaylandScreenTest, SetWindowScale) {
+TEST_P(WaylandScreenTestNoFractionalScale, SetWindowScale) {
   constexpr int32_t kTripleScale = 3;
 
   const uint32_t surface_id = window_->root_surface()->get_surface_id();
@@ -1013,7 +1026,7 @@ TEST_P(WaylandScreenTest, SetWindowScale) {
 // which implies in its scale being set to the primary output's scale at its
 // initialization, any primary output scale update (or other properties that
 // lead to scale change) must be propagated to the window.
-TEST_P(WaylandScreenTest, SetWindowScaleWithoutEnteredOutput) {
+TEST_P(WaylandScreenTestNoFractionalScale, SetWindowScaleWithoutEnteredOutput) {
   // Test pre-conditions: single output setup whereas |output_| is the primary
   // output managed by |output_manager_|, with initial scale == 1.
   ASSERT_EQ(1u, output_manager_->GetAllOutputs().size());
@@ -1153,5 +1166,9 @@ TEST_P(WaylandScreenTest, OutputStateIsConsistentWhenNotifyingObservers) {
 INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
                          WaylandScreenTest,
                          Values(wl::ServerConfig{}));
+INSTANTIATE_TEST_SUITE_P(XdgVersionStableTest,
+                         WaylandScreenTestNoFractionalScale,
+                         Values(wl::ServerConfig{
+                             .supports_viewporter_surface_scaling = false}));
 
 }  // namespace ui

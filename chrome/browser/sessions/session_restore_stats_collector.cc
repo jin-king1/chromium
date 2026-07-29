@@ -13,23 +13,17 @@
 #include "base/memory/weak_ptr.h"
 #include "base/metrics/field_trial_params.h"
 #include "base/metrics/histogram_functions.h"
-#include "base/metrics/histogram_macros.h"
-#include "base/strings/stringprintf.h"
+#include "base/strings/strcat.h"
 #include "base/task/bind_post_task.h"
-#include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/resource_coordinator/session_restore_policy.h"
 #include "components/performance_manager/public/decorators/site_data_recorder.h"
 #include "components/performance_manager/public/features.h"
 #include "components/performance_manager/public/graph/page_node.h"
 #include "components/performance_manager/public/performance_manager.h"
 #include "components/performance_manager/public/persistence/site_data/feature_usage.h"
 #include "components/performance_manager/public/persistence/site_data/site_data_reader.h"
-#include "components/site_engagement/content/site_engagement_service.h"
-#include "components/site_engagement/core/mojom/site_engagement_details.mojom.h"
 #include "content/public/browser/browser_context.h"
-#include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/permission_controller.h"
+#include "content/public/browser/permission_descriptor_util.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "third_party/blink/public/common/permissions/permission_utils.h"
@@ -57,64 +51,22 @@ RenderWidgetHost* GetRenderWidgetHost(WebContents* web_contents) {
   return nullptr;
 }
 
-// Returns the site engagement score of a WebContents. Copied from
-// chrome/browser/resource_coordinator/session_restore_policy.cc.
-size_t GetSiteEngagementScore(content::WebContents* contents) {
-  // Get the active navigation entry. Restored tabs should always have one.
-  auto& controller = contents->GetController();
-  auto* nav_entry =
-      controller.GetEntryAtIndex(controller.GetCurrentEntryIndex());
-  DCHECK(nav_entry);
-
-  auto* engagement_svc = site_engagement::SiteEngagementService::Get(
-      Profile::FromBrowserContext(contents->GetBrowserContext()));
-  double engagement =
-      engagement_svc->GetDetails(nav_entry->GetURL()).total_score;
-
-  // Return the engagement as an integer.
-  return engagement;
-}
-
-bool HasLowSiteEngagement(content::WebContents* contents) {
-  // There are 3 ways to handle session restore:
-  //
-  // Case 1: kBackgroundTabLoadingFromPerformanceManager is disabled.
-  //
-  // The algorithm uses SessionRestorePolicy::kMinSiteEngagementToRestore.
-  // SessionRestore.TabCount.LowSiteEngagement counts tabs that are less than
-  // this.
-  //
-  // Case 2: kBackgroundTabLoadingFromPerformanceManager is enabled, and uses
-  // a min value from kBackgroundTabLoadingMinSiteEngagement.
-  //
-  // SessionRestore.TabCount.LowSiteEngagement counts tabs that are less than
-  // kBackgroundTabLoadingMinSiteEngagement.
-  //
-  // Case 3: kBackgroundTabLoadingFromPerformanceManager is enabled, but
-  // kBackgroundTabLoadingMinSiteEngagement returns 0.
-  //
-  // The session restore algorithm ignores site engagement.
-  // SessionRestore.TabCount.LowSiteEngagement counts tabs that are less than
-  // SessionRestorePolicy::kMinSiteEngagementToRestore, to see what data the PM
-  // algorithm is ignoring.
-  const size_t min_site_engagement =
-      performance_manager::features::kBackgroundTabLoadingMinSiteEngagement
-          .Get();
-  if (min_site_engagement == 0) {
-    return GetSiteEngagementScore(contents) <
-           resource_coordinator::SessionRestorePolicy::
-               kMinSiteEngagementToRestore;
-  }
-  return GetSiteEngagementScore(contents) < min_site_engagement;
-}
-
 bool HasNotificationPermission(content::WebContents* contents) {
   return contents->GetBrowserContext()
              ->GetPermissionController()
              ->GetPermissionResultForOriginWithoutContext(
-                 blink::PermissionType::NOTIFICATIONS,
+                 content::PermissionDescriptorUtil::
+                     CreatePermissionDescriptorForPermissionType(
+                         blink::PermissionType::NOTIFICATIONS),
                  url::Origin::Create(contents->GetLastCommittedURL()))
              .status == blink::mojom::PermissionStatus::GRANTED;
+}
+
+void LogFirstPaintHistogram(base::TimeDelta paint_time,
+                            std::string_view suffix = "") {
+  base::UmaHistogramCustomTimes(
+      base::StrCat({"SessionRestore.ForegroundTabFirstPaint4", suffix}),
+      paint_time, base::Milliseconds(100), base::Minutes(16), 50);
 }
 
 }  // namespace
@@ -172,7 +124,7 @@ void SessionRestoreStatsCollector::TrackTabs(
 
     // Look up background feature use in `site_data_reader` on the PM sequence,
     // and post the result to OnTabUpdatesInBackground() on the current
-    // sequence, along with site engagement and permissions info.
+    // sequence, along with permissions info.
     base::OnceCallback<bool(const SiteDataReader&)> on_site_data_ready =
         base::BindOnce([](const SiteDataReader& site_data_reader) {
           return site_data_reader.UpdatesFaviconInBackground() ==
@@ -184,7 +136,6 @@ void SessionRestoreStatsCollector::TrackTabs(
     base::OnceCallback<void(bool)> on_tab_updates_in_background =
         base::BindOnce(&SessionRestoreStatsCollector::OnTabUpdatesInBackground,
                        weak_factory_.GetWeakPtr(),
-                       HasLowSiteEngagement(tab.contents()),
                        HasNotificationPermission(tab.contents()));
 
     performance_manager::WaitForSiteDataReader(
@@ -284,7 +235,6 @@ void SessionRestoreStatsCollector::ReportStatsAndSelfDestroy() {
 }
 
 void SessionRestoreStatsCollector::OnTabUpdatesInBackground(
-    bool low_site_engagement,
     bool background_notification_permission,
     bool updates_in_background) {
   if (background_notification_permission) {
@@ -292,13 +242,6 @@ void SessionRestoreStatsCollector::OnTabUpdatesInBackground(
   }
   if (updates_in_background) {
     tab_loader_stats_.updates_in_background_tab_count++;
-  }
-  if (low_site_engagement) {
-    tab_loader_stats_.low_site_engagement_tab_count++;
-    if (background_notification_permission || updates_in_background) {
-      tab_loader_stats_
-          .low_site_engagement_with_background_communication_tab_count++;
-    }
   }
 }
 
@@ -308,19 +251,26 @@ SessionRestoreStatsCollector::UmaStatsReportingDelegate::
 void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
     ReportTabLoaderStats(const TabLoaderStats& tab_loader_stats) {
   if (!tab_loader_stats.foreground_tab_first_paint.is_zero()) {
-    UMA_HISTOGRAM_CUSTOM_TIMES("SessionRestore.ForegroundTabFirstPaint4",
-                               tab_loader_stats.foreground_tab_first_paint,
-                               base::Milliseconds(100), base::Minutes(16), 50);
-
-    std::string time_for_count = base::StringPrintf(
-        "SessionRestore.ForegroundTabFirstPaint4_%u",
-        static_cast<unsigned int>(tab_loader_stats.tab_count));
-    base::HistogramBase* counter_for_count = base::Histogram::FactoryTimeGet(
-        time_for_count, base::Milliseconds(100), base::Minutes(16), 50,
-        base::Histogram::kUmaTargetedHistogramFlag);
-    counter_for_count->AddTime(tab_loader_stats.foreground_tab_first_paint);
+    LogFirstPaintHistogram(tab_loader_stats.foreground_tab_first_paint);
+    std::string_view count_suffix;
+    CHECK_GT(tab_loader_stats.tab_count, 0u);
+    if (tab_loader_stats.tab_count < 2) {
+      count_suffix = ".1Tab";
+    } else if (tab_loader_stats.tab_count < 4) {
+      count_suffix = ".2to3Tabs";
+    } else if (tab_loader_stats.tab_count < 8) {
+      count_suffix = ".4to7Tabs";
+    } else if (tab_loader_stats.tab_count < 16) {
+      count_suffix = ".8to15Tabs";
+    } else if (tab_loader_stats.tab_count < 32) {
+      count_suffix = ".16to31Tabs";
+    } else {
+      count_suffix = ".32PlusTabs";
+    }
+    LogFirstPaintHistogram(tab_loader_stats.foreground_tab_first_paint,
+                           count_suffix);
   }
-  UMA_HISTOGRAM_ENUMERATION(
+  base::UmaHistogramEnumeration(
       "SessionRestore.ForegroundTabFirstPaint4.FinishReason",
       tab_loader_stats.tab_first_paint_reason, PAINT_FINISHED_UMA_MAX);
 
@@ -336,12 +286,6 @@ void SessionRestoreStatsCollector::UmaStatsReportingDelegate::
                               tab_loader_stats.pinned_tab_count);
   base::UmaHistogramCounts100("SessionRestore.TabCount.Grouped",
                               tab_loader_stats.grouped_tab_count);
-  base::UmaHistogramCounts100("SessionRestore.TabCount.LowSiteEngagement",
-                              tab_loader_stats.low_site_engagement_tab_count);
-  base::UmaHistogramCounts100(
-      "SessionRestore.TabCount.LowSiteEngagementWithBackgroundCommunication",
-      tab_loader_stats
-          .low_site_engagement_with_background_communication_tab_count);
   base::UmaHistogramCounts100(
       "SessionRestore.TabCount.BackgroundNotificationPermission",
       tab_loader_stats.notification_permission_tab_count);

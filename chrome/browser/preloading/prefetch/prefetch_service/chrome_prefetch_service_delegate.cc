@@ -6,6 +6,9 @@
 
 #include "chrome/browser/battery/battery_saver.h"
 #include "chrome/browser/data_saver/data_saver.h"
+#if BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/flags/android/chrome_feature_list.h"
+#endif  // BUILDFLAG(IS_ANDROID)
 #include "chrome/browser/preloading/prefetch/prefetch_service/prefetch_origin_decider.h"
 #include "chrome/browser/preloading/preloading_features.h"
 #include "chrome/browser/preloading/preloading_prefs.h"
@@ -22,6 +25,7 @@
 #include "google_apis/google_api_keys.h"
 #include "net/http/http_util.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 ChromePrefetchServiceDelegate::ChromePrefetchServiceDelegate(
     content::BrowserContext* browser_context)
@@ -108,14 +112,14 @@ bool ChromePrefetchServiceDelegate::IsDomainInPrefetchAllowList(
 }
 
 bool ChromePrefetchServiceDelegate::IsContaminationExempt(
-    const GURL& referring_url) {
+    const url::Origin& referring_origin) {
   // The default search engine has been chosen by the user and its cross-site
   // navigations have a significant performance impact.
   TemplateURLService* template_url_service =
       TemplateURLServiceFactory::GetForProfile(profile_);
   return template_url_service &&
-         template_url_service->IsSearchResultsPageFromDefaultSearchProvider(
-             referring_url);
+         template_url_service->GetDefaultSearchProviderOrigin() ==
+             referring_origin;
 }
 
 void ChromePrefetchServiceDelegate::OnPrefetchLikely(

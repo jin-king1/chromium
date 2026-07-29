@@ -92,9 +92,21 @@ class CORE_EXPORT FrameFetchContext final : public BaseFetchContext,
                       WebScopedVirtualTimePauser&,
                       ResourceType) override;
 
+  void FillInitiatorInfo(FetchInitiatorInfo& initiator_info) override;
+
   void AddResourceTiming(mojom::blink::ResourceTimingInfoPtr,
                          const AtomicString& initiator_type) override;
   bool AllowImage() const override;
+
+  void CheckGuardrailsPolicyForAssetSize(GuardrailPolicyAssetType asset_type,
+                                         size_t bytes,
+                                         const KURL& url) override;
+
+  void CheckGuardrailsPolicyForRequest(
+      ResourceType resource_type,
+      mojom::blink::RequestContextType request_context,
+      const ResourceResponse& response,
+      const KURL& url) override;
 
   void ModifyRequestForMixedContentUpgrade(ResourceRequest&) override;
 
@@ -110,8 +122,7 @@ class CORE_EXPORT FrameFetchContext final : public BaseFetchContext,
       ResourceRequest&,
       const ResourceLoaderOptions&) override;
 
-  bool StartSpeculativeImageDecode(Resource* resource,
-                                   base::OnceClosure callback) override;
+  bool StartSpeculativeImageDecode(Resource* resource) override;
 
   bool IsPrerendering() const override;
 
@@ -129,11 +140,14 @@ class CORE_EXPORT FrameFetchContext final : public BaseFetchContext,
 
   void Trace(Visitor*) const override;
 
-  bool CalculateIfAdSubresource(
+  bool IsFrameContext() const override { return true; }
+
+  ResourceAnnotations CalculateResourceAnnotations(
       const ResourceRequestHead& resource_request,
       base::optional_ref<const KURL> alias_url,
       ResourceType type,
-      const FetchInitiatorInfo& initiator_info) override;
+      const FetchInitiatorInfo& initiator_info,
+      bool scan_javascript_stack) override;
 
   // LoadingBehaviorObserver overrides:
   void DidObserveLoadingBehavior(LoadingBehaviorFlag) override;
@@ -155,7 +169,7 @@ class CORE_EXPORT FrameFetchContext final : public BaseFetchContext,
   void AddLcpPredictedCallback(base::OnceClosure callback) override;
 
  private:
-  friend class FrameFetchContextTest;
+  friend class FrameFetchContextTestBase;
 
   struct FrozenState;
 
@@ -206,7 +220,9 @@ class CORE_EXPORT FrameFetchContext final : public BaseFetchContext,
   void AddCSPHashReport(
       const String& url,
       const HashMap<HashAlgorithm, String>& integrity_hashes) override;
-  const ClientHintsPreferences GetClientHintsPreferences() const;
+  String GetSVGCacheIdentifier() const override;
+
+  const ClientHintsPreferences& GetClientHintsPreferences() const;
   float GetDevicePixelRatio() const;
   String GetReducedAcceptLanguage() const;
 
@@ -229,6 +245,14 @@ class CORE_EXPORT FrameFetchContext final : public BaseFetchContext,
   // Serializing the brand major version list is expensive, so it's cached.
   std::optional<UserAgentMetadata> last_ua_;
   std::optional<AtomicString> last_ua_serialized_brand_major_version_list_;
+  std::optional<AtomicString> last_ua_serialized_platform_;
+
+  // Killswitch for a feature that disables the logic that would upgrade
+  // requests with "RequiresUpgradeForLoader" when DevTools is attached
+  // just for devtools to show full request headers (that aren't used) for
+  // resources that are served from memory cache.
+  // https://crbug.com/512514655
+  bool is_fast_memory_cache_with_devtools_enabled_ = false;
 };
 
 }  // namespace blink

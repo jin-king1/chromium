@@ -6,6 +6,8 @@
 # pylint: disable=too-many-lines
 
 import collections
+from collections.abc import Generator
+import dataclasses
 import datetime
 from enum import Enum
 import gzip
@@ -13,28 +15,25 @@ import io
 import logging
 import os
 import posixpath
-import subprocess
 import sys
 import tempfile
-from typing import Any, Generator, List, Optional, Set, Tuple
+import time
+from typing import Any
 import unittest
-
-import dataclasses  # Built-in, but pylint gives an ordering false positive.
 
 # vpython-provided modules.
 import perfetto.trace_processor as tp  # pylint: disable=import-error
 
+from telemetry.timeline import tracing_config
+from tracing.trace_data import trace_data
+
+import gpu_path_util
 from gpu_tests import common_browser_args as cba
 from gpu_tests import common_typing as ct
 from gpu_tests import gpu_integration_test
 from gpu_tests import overlay_support
 from gpu_tests import trace_test_pages
 from gpu_tests.util import host_information
-
-import gpu_path_util
-
-from telemetry.timeline import tracing_config
-from tracing.trace_data import trace_data
 
 gpu_data_relative_path = gpu_path_util.GPU_DATA_RELATIVE_PATH
 
@@ -125,7 +124,16 @@ _STATIC_BITMAP_TO_VID_FRAME_CONVERT_EVENT_NAME =\
 
 _MFD3D11VC_CAPTURE_EVENT_NAME = 'CopyTextureToGpuMemoryBuffer'
 _MFD3D11VC_MAP_EVENT_NAME = 'GpuMemoryBufferTrackerWin::DuplicateAsUnsafeRegion'
-_MFD3D11VC_PRESENT_EVENT_NAME = 'DXGISharedHandleState::AcquireKeyedMutex'
+_MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME =\
+    'GpuChannelMessageFilter::CopyToGpuMemoryBufferAsync'
+_MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME2 =\
+    'MappableBufferDXGI::MapAsync'
+# GPU-process event: fires when accessing a DXGI shared handle backed texture.
+# Camera capture textures always have dxgi_shared_handle_state_.
+_MFD3D11VC_PRESENT_EVENT_NAME =\
+    'D3DImageBacking::BeginAccessD3D11::DXGISharedHandle'
+_WGC_DELIVER_TEXTURE_EVENT_NAME =\
+    'DesktopCaptureDevice::DeliverTextureToClient'
 
 # Caching events and constants
 _GPU_HOST_STORE_BLOB_EVENT_NAME =\
@@ -159,7 +167,7 @@ class _TraceTestOrigin(Enum):
 @dataclasses.dataclass
 class _TraceTestArguments():
   """Struct-like object for passing trace test arguments instead of dicts."""
-  browser_args: List[str]
+  browser_args: list[str]
   category: str
   test_harness_script: str
   finish_js_condition: str
@@ -194,13 +202,13 @@ class _CacheTraceTestArguments():
   for the restarted browser case because each browser restart seeds a new
   temporary directory with only the contents after the first load page.
   """
-  browser_args: List[str]
+  browser_args: list[str]
   category: str
   test_harness_script: str
   finish_js_condition: str
   first_load_eval_func: str
   cache_eval_func: str
-  cache_pages: List[str]
+  cache_pages: list[str]
   cache_page_origin: _TraceTestOrigin = _TraceTestOrigin.DEFAULT
   test_renavigation: bool = True
 
@@ -215,8 +223,8 @@ class _CacheTraceTestArguments():
                                restart_browser=True)
 
   def GenerateCacheHitTests(
-      self, cache_args: Optional[dict]
-  ) -> Generator[Tuple[str, _TraceTestArguments], None, None]:
+      self, cache_args: dict | None
+  ) -> Generator[tuple[str, _TraceTestArguments], None, None]:
     """Returns a generator for all cache hit trace tests.
 
     First pass of tests just do a re-navigation, second pass restarts with a
@@ -271,7 +279,7 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
   def _SuiteSupportsParallelTests(cls) -> bool:
     return True
 
-  def _GetSerialGlobs(self) -> Set[str]:
+  def _GetSerialGlobs(self) -> set[str]:
     serial_globs = set()
     if host_information.IsWindows():
       serial_globs |= {
@@ -285,7 +293,7 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
       }
     return serial_globs
 
-  def _GetSerialTests(self) -> Set[str]:
+  def _GetSerialTests(self) -> set[str]:
     serial_tests = set()
     if host_information.IsMac():
       serial_tests |= {
@@ -392,6 +400,17 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
                 success_eval_func='CheckMediaFoundationD3D11VideoCapture',
                 other_args=p.other_args)
         ])
+      for p in namespace.WgcDesktopCaptureTextureTests('TraceTest'):
+        yield (p.name, posixpath.join(gpu_data_relative_path, p.url), [
+            _TraceTestArguments(
+                browser_args=p.browser_args,
+                category=cls._DisabledByDefaultTraceCategory(
+                    'video_and_image_capture'),
+                test_harness_script=basic_test_harness_script,
+                finish_js_condition='domAutomationController._finished',
+                success_eval_func='CheckWgcDesktopCaptureTexture',
+                other_args=p.other_args)
+        ])
 
     for test in namespace.WebGpuLoadReloadCachingTests(
         'WebGPUCachingTraceTest'):
@@ -449,7 +468,8 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
                      test_renavigation=False)
              ])
 
-  def _GetLocalPerfettoTraceProcessorPath(self) -> Optional[str]:
+  @classmethod
+  def _GetLocalPerfettoTraceProcessorPath(cls) -> str | None:
     """Gets the path to the local Perfetto trace_processor_shell binary.
 
     Returns:
@@ -459,7 +479,7 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
     # TODO(crbug.com/383999365): Remove this special case once locally built
     # versions of trace_processor_shell on Windows support the necessary HTTP
     # functionality.
-    os_name = self.browser.platform.GetOSName()
+    os_name = cls.browser.platform.GetOSName()
     if os_name and os_name.lower() == 'win':
       logging.warning(
           'Falling back to cloud version of trace_processor_shell because '
@@ -477,7 +497,7 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
       # version for consistency.
       binary = 'host_trace_processor_shell'
 
-    output_directory = self.GetOriginalFinderOptions().chromium_output_dir
+    output_directory = cls.GetOriginalFinderOptions().chromium_output_dir
     if not output_directory:
       logging.warning(
           'Chromium output directory not set, not able to find local '
@@ -492,29 +512,57 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
       return None
     return filepath
 
-  def _GetTraceProcessorForTrace(self, trace: bytes) -> tp.TraceProcessor:
+  @classmethod
+  def _GetTraceProcessorLoadTimeout(cls) -> int:
+    """Determines the load timeout to use for a TraceProcessor.
+
+    Returns:
+      The load timeout that should be used based on platform, etc.
+    """
     # The default 2 second load timeout works in almost all cases, but can
     # cause flakes on rare occasions. Known slow configurations are:
     #   * Mac/Debug (due to slower binaries?)
     #   * Mac/NVIDIA (due to old/slow hardware)
     #   * Linux (unknown cause)
+    #   * ChromeOS VMs (extra load from VM slows down system)
+    #   * Win/ARM64 (likely slow due to using x64 emulation)
     load_timeout = 2
     slow_load_timeout = 10
-    os_name = self.browser.platform.GetOSName()
+    os_name = cls.browser.platform.GetOSName()
     if os_name == 'mac':
-      if self.browser.browser_type == 'debug':
+      if cls.browser.browser_type == 'debug':
         load_timeout = slow_load_timeout
-      elif 'nvidia' in self.__class__.GetPlatformTags(self.browser):
+      elif 'nvidia' in cls.GetPlatformTags(cls.browser):
         load_timeout = slow_load_timeout
     elif os_name == 'linux':
       load_timeout = slow_load_timeout
+    elif os_name == 'chromeos':
+      if 'chromeos-board-amd64-generic' in cls.GetPlatformTags(cls.browser):
+        load_timeout = slow_load_timeout
+    elif os_name == 'win':
+      if 'arch-arm64' in cls.GetPlatformTags(cls.browser):
+        load_timeout = slow_load_timeout
+    return load_timeout
 
-    processor_path = self._GetLocalPerfettoTraceProcessorPath()
+  @classmethod
+  def _GetTraceProcessorConfig(cls) -> tp.TraceProcessorConfig:
+    """Gets the standardized trace processor config for the current platform.
+
+    Returns:
+      A TraceProcessorConfig with an automatically determined load timeout.
+      Will use the locally built trace processor if available.
+    """
+    load_timeout = cls._GetTraceProcessorLoadTimeout()
+    processor_path = cls._GetLocalPerfettoTraceProcessorPath()
     if processor_path:
       processor_config = tp.TraceProcessorConfig(bin_path=processor_path,
                                                  load_timeout=load_timeout)
     else:
       processor_config = tp.TraceProcessorConfig(load_timeout=load_timeout)
+    return processor_config
+
+  def _GetTraceProcessorForTrace(self, trace: bytes) -> tp.TraceProcessor:
+    processor_config = self._GetTraceProcessorConfig()
     trace_processor = tp.TraceProcessor(io.BytesIO(trace),
                                         config=processor_config)
     return trace_processor
@@ -522,8 +570,8 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
   def _RunActualGpuTraceTest(self,
                              test_path: str,
                              args: _TraceTestArguments,
-                             profile_dir: Optional[str] = None,
-                             profile_type: Optional[str] = None) -> dict:
+                             profile_dir: str | None = None,
+                             profile_type: str | None = None) -> dict:
     """Returns a dictionary generated via the success evaluation."""
     if args.restart_browser:
       # The version of this test in the old GPU test harness restarted the
@@ -550,8 +598,7 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
     tab.Navigate(url, script_to_evaluate_on_commit=args.test_harness_script)
 
     try:
-      tab.action_runner.WaitForJavaScriptCondition(args.finish_js_condition,
-                                                   timeout=60)
+      tab.action_runner.WaitForJavaScriptCondition(args.finish_js_condition)
     finally:
       test_messages = tab.EvaluateJavaScript(
           'domAutomationController._messages')
@@ -583,22 +630,21 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
       self._RunActualGpuTraceTest(test_path, params)
     elif isinstance(params, _CacheTraceTestArguments):
       # Create a new temporary directory for each cache test that is run.
-      cache_profile_dir = tempfile.TemporaryDirectory()
+      with tempfile.TemporaryDirectory() as cache_profile_dir:
+        # Run the first load page and get the number of expected cache hits.
+        load_params = params.GenerateFirstLoadTest()
+        results =\
+          self._RunActualGpuTraceTest(test_path,
+                                      load_params,
+                                      profile_dir=cache_profile_dir,
+                                      profile_type='exact')
 
-      # Run the first load page and get the number of expected cache hits.
-      load_params = params.GenerateFirstLoadTest()
-      results =\
-        self._RunActualGpuTraceTest(test_path,
-                                    load_params,
-                                    profile_dir=cache_profile_dir.name,
-                                    profile_type='exact')
-
-      # Generate and run the cache hit tests using the seeded cache dir.
-      for (hit_path, trace_params) in params.GenerateCacheHitTests(results):
-        self._RunActualGpuTraceTest(hit_path,
-                                    trace_params,
-                                    profile_dir=cache_profile_dir.name,
-                                    profile_type='clean')
+        # Generate and run the cache hit tests using the seeded cache dir.
+        for (hit_path, trace_params) in params.GenerateCacheHitTests(results):
+          self._RunActualGpuTraceTest(hit_path,
+                                      trace_params,
+                                      profile_dir=cache_profile_dir,
+                                      profile_type='clean')
 
   @classmethod
   def SetUpProcess(cls) -> None:
@@ -607,28 +653,31 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
     cls.StartBrowser()
     cls.SetStaticServerDirs(data_paths)
 
-  @classmethod
-  def TearDownProcess(cls) -> None:
-    # There is a bug somewhere in the Windows version of trace_processor_shell
-    # that causes it to consistently leave behind orphaned processes. These
-    # prevent Swarming from cleaning up the output directory, which causes the
-    # task to fail. So, kill any processes that are still alive since we do not
-    # need them at this point.
-    # TODO(crbug.com/383999365): Remove this workaround when the bug is fixed
-    # on Perfetto's end.
-    os_name = cls.browser.platform.GetOSName()
-    if os_name and os_name.lower() == 'win':
-      logging.info('Killing orphaned trace_processor_shell processes')
-      cmd = ['taskkill', '/f', '/t', '/im', 'trace_processor_shell.exe']
-      try:
-        subprocess.run(cmd, check=True)
-      except subprocess.CalledProcessError as e:
-        logging.error(
-            'Failed to kill orphaned trace_processor_shell processes: %s', e)
-    super().TearDownProcess()
+    # This is a workaround for the case where:
+    #   1. The cloud binary is used instead of the locally compiled one, namely
+    #      on Windows.
+    #   2. Multiple parallel jobs try to use the trace processor for the first
+    #      time in close succession.
+    # When this occurs, one job can download the binary and start using it,
+    # which causes the other job to fail to move their copy of the binary to
+    # the cached location. Because these jobs cannot communicate with each
+    # other, we need to make a best effort to have one ensure that the binary
+    # is downloaded while preventing the others from interfering.
+    # TODO(crbug.com/453705242): Remove this if/when Perfetto provides a way
+    # to prevent multiple parallel Perfetto uses from conflicting with each
+    # other when downloading the binary.
+    if cls._GetLocalPerfettoTraceProcessorPath():
+      return
+    if cls.child.worker_num == 1:
+      with tp.TraceProcessor(None, config=cls._GetTraceProcessorConfig()):
+        pass
+    else:
+      # At the time of writing, the downloaded binary is ~11 MB, so 5 seconds
+      # should be plenty for the first job to download it.
+      time.sleep(5)
 
   @classmethod
-  def GenerateBrowserArgs(cls, additional_args: List[str]) -> List[str]:
+  def GenerateBrowserArgs(cls, additional_args: list[str]) -> list[str]:
     """Adds default arguments to |additional_args|.
 
     See the parent class' method documentation for additional information.
@@ -642,12 +691,18 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
         # suffer" infobar caused by --enable-gpu-benchmarking which can
         # interfere with these tests.
         cba.TEST_TYPE_GPU,
+        # Disable DSE Prewarm feature as this causes timeout as the
+        # prewarm page inserted behind the test scenario makes the
+        # existing tests' expectations confused.
+        # TODO(https://crbug.com/431928370): Fix the tests to work with
+        # the feature enabled once the proper CDP support is introduced.
+        cba.DISABLE_DIRECT_SEARCH_ENGINE_PREWARM,
     ])
     return default_args
 
   @staticmethod
   def _SwapChainPresentationModeListToStr(
-      presentation_mode_list: List[int]) -> str:
+      presentation_mode_list: list[int]) -> str:
     modes = [
         overlay_support.PresentationModeEventToStr(m)
         for m in presentation_mode_list
@@ -656,7 +711,7 @@ class TraceIntegrationTest(gpu_integration_test.GpuIntegrationTest):
 
   @staticmethod
   def _DisabledByDefaultTraceCategory(category: str) -> str:
-    return 'disabled-by-default-%s' % category
+    return f'disabled-by-default-{category}'
 
   def _MaybeSavePerfettoTraceAsArtifact(self, trace: bytes) -> None:
     if self.artifacts:
@@ -693,7 +748,7 @@ WHERE
 """
     for row in trace_processor.query(query):
       if row.cnt <= 0:
-        self.fail('Trace markers for GPU category %s were not found' % category)
+        self.fail(f'Trace markers for GPU category {category} were not found')
 
   def _GetVideoExpectations(self, other_args: dict) -> '_VideoExpectations':
     """Helper for creating expectations for CheckVideoPath and CheckOverlayMode.
@@ -772,6 +827,7 @@ WHERE
   AND args.arg_set_id = slices.arg_set_id
 """
     for row in trace_processor.query(swap_event_query):
+      value = None
       if row.key == pixel_format_key:
         value = row.string_value
       elif row.key == zero_copy_key:
@@ -872,15 +928,15 @@ WHERE
         continue
       if (overlay_support.PresentationModeEventToStr(mode)
           != expected.presentation_mode):
-        self.fail('SwapChain presentation mode mismatch, expected %s got %s' %
-                  (expected.presentation_mode,
-                   TraceIntegrationTest._SwapChainPresentationModeListToStr(
-                       presentation_mode_history)))
+        history_str = TraceIntegrationTest._SwapChainPresentationModeListToStr(
+            presentation_mode_history)
+        self.fail(f'SwapChain presentation mode mismatch, expected '
+                  f'{expected.presentation_mode} got {history_str}')
       valid_entry_found = True
     if not valid_entry_found:
-      self.fail(
-          'No valid frame statistics being collected: %s' % TraceIntegrationTest
-          ._SwapChainPresentationModeListToStr(presentation_mode_history))
+      history_str = TraceIntegrationTest._SwapChainPresentationModeListToStr(
+          presentation_mode_history)
+      self.fail(f'No valid frame statistics being collected: {history_str}')
 
   def _EvaluateSuccess_CheckSwapChainPath(self, category: str,
                                           trace_processor: tp.TraceProcessor,
@@ -917,13 +973,11 @@ WHERE
       break
 
     if expect_overlay and not found_overlay:
-      self.fail(
-          'Overlay expected but not found: matching %s events were not found' %
-          _BEGIN_OVERLAY_ACCESS_EVENT_NAME)
+      self.fail(f'Overlay expected but not found: matching '
+                f'{_BEGIN_OVERLAY_ACCESS_EVENT_NAME} events were not found')
     elif expect_no_overlay and found_overlay:
-      self.fail(
-          'Overlay not expected but found: matching %s events were found' %
-          _BEGIN_OVERLAY_ACCESS_EVENT_NAME)
+      self.fail(f'Overlay not expected but found: matching '
+                f'{_BEGIN_OVERLAY_ACCESS_EVENT_NAME} events were found')
 
   def _EvaluateSuccess_CheckSwapChainHasAlpha(
       self, category: str, trace_processor: tp.TraceProcessor,
@@ -1151,6 +1205,8 @@ WHERE
 
     # Make sure that all of the expected events are actually present.
     found_events = {
+        _MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME: False,
+        _MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME2: False,
         _MFD3D11VC_CAPTURE_EVENT_NAME: False,
         _MFD3D11VC_MAP_EVENT_NAME: False,
         _MFD3D11VC_PRESENT_EVENT_NAME: False,
@@ -1161,16 +1217,62 @@ SELECT
 FROM
   slices
 """
+
     for row in trace_processor.query(event_query):
       if row.name in found_events:
         found_events[row.name] = True
+
+    # any of the three mapping events is sufficient.
+    if found_events[_MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME]:
+      found_events[_MFD3D11VC_MAP_EVENT_NAME] = True
+    if found_events[_MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME2]:
+      found_events[_MFD3D11VC_MAP_EVENT_NAME] = True
+    if found_events[_MFD3D11VC_MAP_EVENT_NAME]:
+      found_events[_MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME] = True
+      found_events[_MFD3D11VC_ALTERNATIVE_MAP_EVENT_NAME2] = True
 
     for event_name, found in found_events.items():
       if not found:
         self.fail(f'No {event_name} events found')
 
+  def _EvaluateSuccess_CheckWgcDesktopCaptureTexture(
+      self, category: str, trace_processor: tp.TraceProcessor,
+      _other_args: dict) -> None:
+    del category  # Unused.
+    os_version = self.browser.platform.GetOSVersionName()
+    assert os_version
+    if os_version.lower() != 'win11':
+      self.skipTest('WgcDesktopCaptureTexture requires Windows 11')
+
+    # WGC texture mode requires Windows 11 24H2+ (build 26100+).
+    os_version_detail = self.browser.platform.GetOSVersionDetailString()
+    try:
+      build_number = int(os_version_detail.split('.')[-1])
+    except (ValueError, IndexError):
+      build_number = 0
+    if build_number < 26100:
+      self.skipTest(
+          f'WgcDesktopCaptureTexture requires Win11 24H2+ (build 26100+), '
+          f'got build {build_number}')
+
+    js_succeeded = self.tab.EvaluateJavaScript(
+        'domAutomationController._succeeded')
+    self.assertTrue(js_succeeded)
+
+    event_query = f"""\
+SELECT
+  COUNT(*) AS cnt
+FROM
+  slices
+WHERE
+  name = '{_WGC_DELIVER_TEXTURE_EVENT_NAME}'
+"""
+    for row in trace_processor.query(event_query):
+      if row.cnt == 0:
+        self.fail(f'No {_WGC_DELIVER_TEXTURE_EVENT_NAME} events found')
+
   @classmethod
-  def ExpectationsFiles(cls) -> List[str]:
+  def ExpectationsFiles(cls) -> list[str]:
     return [
         os.path.join(
             os.path.dirname(os.path.abspath(__file__)), 'test_expectations',
@@ -1181,10 +1283,10 @@ FROM
 @dataclasses.dataclass
 class _VideoExpectations():
   """Struct-like object for passing around video test expectations."""
-  pixel_format: Optional[str] = None
-  zero_copy: Optional[bool] = None
-  no_overlay: Optional[bool] = None
-  presentation_mode: Optional[str] = None
+  pixel_format: str | None = None
+  zero_copy: bool | None = None
+  no_overlay: bool | None = None
+  presentation_mode: str | None = None
 
 
 def _MergePerfettoTraces(trace_builder: trace_data.TraceDataBuilder) -> bytes:

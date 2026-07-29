@@ -32,10 +32,12 @@ class IncomingPasswordSharingInvitationDataTypeController
   ~IncomingPasswordSharingInvitationDataTypeController() override;
 
   // syncer::DataTypeController implementation.
-  PreconditionState GetPreconditionState() const override;
+  PreconditionState GetPreconditionState(
+      const PreconditionContext& context) const override;
 
   // syncer::SyncServiceObserver implementation.
   void OnStateChanged(syncer::SyncService* sync) override;
+  void OnSyncShutdown(syncer::SyncService* sync) override;
 
  private:
   void OnPasswordSharingEnabledPolicyChanged();

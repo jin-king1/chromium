@@ -37,8 +37,8 @@
 #include "ui/gfx/geometry/rect.h"
 
 namespace blink {
+struct PaintInfo;
 
-class GraphicsContext;
 class ScrollableArea;
 class WebMouseEvent;
 class WebViewImpl;
@@ -95,8 +95,6 @@ class CORE_EXPORT ScrollbarTheme {
   // parameter on Mac.
   virtual bool BlinkControlsOverlayVisibility() const { return true; }
 
-  virtual bool InvalidateOnMouseEnterExit() const { return false; }
-
   // Returns parts of the scrollbar which must be repainted following a change
   // in the thumb position, given scroll positions before and after.
   virtual ScrollbarPart PartsToInvalidateOnThumbPositionChange(
@@ -106,11 +104,11 @@ class CORE_EXPORT ScrollbarTheme {
     return kAllParts;
   }
 
-  virtual void PaintScrollCorner(GraphicsContext&,
+  virtual void PaintScrollCorner(const PaintInfo&,
                                  const ScrollableArea&,
                                  const DisplayItemClient&,
                                  const gfx::Rect& corner_rect);
-  virtual void PaintTickmarks(GraphicsContext&,
+  virtual void PaintTickmarks(const PaintInfo&,
                               const Scrollbar&,
                               const gfx::Rect&);
   virtual SkColor4f ThumbColor(const Scrollbar&) const { NOTREACHED(); }
@@ -141,7 +139,7 @@ class CORE_EXPORT ScrollbarTheme {
   // scroll position.
   virtual int ThumbPosition(const Scrollbar&, float scroll_position) const;
   // The length of the thumb along the axis of the scrollbar.
-  virtual int ThumbLength(const Scrollbar&) const;
+  int ThumbLength(const Scrollbar&) const;
   // The position of the track relative to the scrollbar.
   virtual int TrackPosition(const Scrollbar&) const;
   // The length of the track along the axis of the scrollbar.
@@ -174,18 +172,14 @@ class CORE_EXPORT ScrollbarTheme {
                           gfx::Rect& thumb,
                           gfx::Rect& end_track) const;
 
-  virtual void PaintThumb(GraphicsContext&,
+  virtual void PaintThumb(const PaintInfo&,
                           const Scrollbar&,
                           const gfx::Rect&) {}
 
   // Paints the track (including tickmarks if present) and the buttons.
-  void PaintTrackAndButtons(GraphicsContext&,
+  void PaintTrackAndButtons(const PaintInfo&,
                             const Scrollbar&,
                             const gfx::Rect&);
-
-  virtual int MaxOverlapBetweenPages() const {
-    return std::numeric_limits<int>::max();
-  }
 
   virtual base::TimeDelta InitialAutoscrollTimerDelay() const;
   virtual base::TimeDelta AutoscrollTimerDelay() const;
@@ -196,7 +190,10 @@ class CORE_EXPORT ScrollbarTheme {
     return rect;
   }
 
+  // Register a scrollbar to be updated if the native theme changes.
+  // This is currently only implemented by ScrollbarThemeMac.
   virtual void RegisterScrollbar(Scrollbar&) {}
+  virtual bool IsScrollbarRegistered(Scrollbar&) const { return false; }
 
   virtual bool IsMockTheme() const { return false; }
 
@@ -245,21 +242,25 @@ class CORE_EXPORT ScrollbarTheme {
 
   virtual bool AllowsHitTest() const { return true; }
 
+  static bool DesktopAndroidScrollbarsEnabled() {
+    return ScrollbarThemeSettings::DesktopAndroidScrollbarsEnabled();
+  }
+
  protected:
   // The point is in the same coordinate space as the scrollbar's FrameRect.
   virtual ScrollbarPart HitTest(const Scrollbar&, const gfx::Point&) const;
 
   virtual int TickmarkBorderWidth() const { return 0; }
   // Paints the background of the track, not including tickmarks.
-  virtual void PaintTrackBackground(GraphicsContext&,
+  virtual void PaintTrackBackground(const PaintInfo&,
                                     const Scrollbar&,
                                     const gfx::Rect&) {}
-  virtual void PaintButton(GraphicsContext&,
+  virtual void PaintButton(const PaintInfo&,
                            const Scrollbar&,
                            const gfx::Rect&,
                            ScrollbarPart) {}
 
-  virtual void PaintTrackBackgroundAndButtons(GraphicsContext& context,
+  virtual void PaintTrackBackgroundAndButtons(const PaintInfo&,
                                               const Scrollbar&,
                                               const gfx::Rect&);
 

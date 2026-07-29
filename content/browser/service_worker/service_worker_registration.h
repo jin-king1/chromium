@@ -6,10 +6,12 @@
 #define CONTENT_BROWSER_SERVICE_WORKER_SERVICE_WORKER_REGISTRATION_H_
 
 #include <stdint.h>
+
 #include <memory>
 #include <string>
 #include <vector>
 
+#include "base/byte_size.h"
 #include "base/memory/ref_counted.h"
 #include "base/observer_list.h"
 #include "base/task/single_thread_task_runner.h"
@@ -38,6 +40,22 @@ class CONTENT_EXPORT ServiceWorkerRegistration
  public:
   using StatusCallback =
       base::OnceCallback<void(blink::ServiceWorkerStatusCode status)>;
+
+  // These values are persisted to logs. Entries should not be renumbered and
+  // numeric values should never be reused.
+  //
+  // LINT.IfChange(DeleteInitiator)
+  enum class DeleteInitiator {
+    kUnregister = 0,
+    kDeleteForStorageKey = 1,
+    kForceDelete = 2,
+    kRegistrationFailure = 3,
+    kContentPublicApi = 4,
+    kWebUI = 5,
+    kTest = 6,
+    kMaxValue = kTest,
+  };
+  // LINT.ThenChange(//tools/metrics/histograms/metadata/service/enums.xml:ServiceWorkerRegistrationDeleteInitiator)
 
   class CONTENT_EXPORT Listener {
    public:
@@ -105,12 +123,10 @@ class CONTENT_EXPORT ServiceWorkerRegistration
   void SetStored();
   void UnsetStored();
 
-  int64_t resources_total_size_bytes() const {
-    return resources_total_size_bytes_;
-  }
+  base::ByteSize resources_total_size() const { return resources_total_size_; }
 
-  void set_resources_total_size_bytes(int64_t resources_total_size_bytes) {
-    resources_total_size_bytes_ = resources_total_size_bytes;
+  void set_resources_total_size(base::ByteSize resources_total_size) {
+    resources_total_size_ = resources_total_size;
   }
 
   // Returns the active version. This version may be in ACTIVATING or ACTIVATED
@@ -179,11 +195,11 @@ class CONTENT_EXPORT ServiceWorkerRegistration
   // Deletes this registration from storage immediately. Triggers the
   // [[ClearRegistration]] algorithm when the currently active version has no
   // controllees.
-  void DeleteAndClearWhenReady();
+  void DeleteAndClearWhenReady(DeleteInitiator initiator);
 
   // Deletes this registration from storage immediately and then triggers the
   // [[ClearRegistration]] algorithm.
-  void DeleteAndClearImmediately();
+  void DeleteAndClearImmediately(DeleteInitiator initiator);
 
   // Restores this registration in storage and cancels the pending
   // [[ClearRegistration]] algorithm.
@@ -276,7 +292,8 @@ class CONTENT_EXPORT ServiceWorkerRegistration
       scoped_refptr<ServiceWorkerVersion> activating_version,
       blink::ServiceWorkerStatusCode status);
 
-  void OnDeleteFinished(blink::ServiceWorkerStatusCode status);
+  void OnDeleteFinished(DeleteInitiator initiator,
+                        blink::ServiceWorkerStatusCode status);
 
   // This method corresponds to the [[ClearRegistration]] algorithm.
   void Clear();
@@ -310,7 +327,7 @@ class CONTENT_EXPORT ServiceWorkerRegistration
   blink::mojom::NavigationPreloadState navigation_preload_state_;
   base::Time last_update_check_;
   base::TimeDelta self_update_delay_;
-  int64_t resources_total_size_bytes_;
+  base::ByteSize resources_total_size_;
 
   // This registration is the primary owner of these versions.
   scoped_refptr<ServiceWorkerVersion> active_version_;

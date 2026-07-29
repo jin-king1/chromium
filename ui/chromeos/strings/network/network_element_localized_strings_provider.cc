@@ -154,20 +154,11 @@ constexpr webui::LocalizedString kElementLocalizedStrings[] = {
 
 void AddLocalizedStrings(content::WebUIDataSource* html_source) {
   html_source->AddLocalizedStrings(kElementLocalizedStrings);
-
-  html_source->AddLocalizedString(
-      "OncTypeTether", ash::features::IsInstantHotspotRebrandEnabled()
-                           ? IDS_NETWORK_TYPE_HOTSPOT
-                           : IDS_NETWORK_TYPE_TETHER);
 }
 
 void AddLocalizedValuesToBuilder(::login::LocalizedValuesBuilder* builder) {
   for (const auto& entry : kElementLocalizedStrings)
     builder->Add(entry.name, entry.id);
-
-  builder->Add("OncTypeTether", ash::features::IsInstantHotspotRebrandEnabled()
-                                    ? IDS_NETWORK_TYPE_HOTSPOT
-                                    : IDS_NETWORK_TYPE_TETHER);
 }
 
 void AddOncLocalizedStrings(content::WebUIDataSource* html_source) {
@@ -435,6 +426,10 @@ void AddDetailsLocalizedStrings(content::WebUIDataSource* html_source) {
        IDS_SETTINGS_INTERNET_NETWORK_PROXY_CONNECTION_TYPE},
       {"networkProxyEnforcedPolicy",
        IDS_SETTINGS_INTERNET_NETWORK_PROXY_ENFORCED_POLICY},
+      {"networkProxyOverrideEnforcedPolicy",
+       IDS_SETTINGS_INTERNET_NETWORK_PROXY_OVERRIDE_ENFORCED_POLICY},
+      {"networkProxyEnforcedCombinedPolicies",
+       IDS_SETTINGS_INTERNET_NETWORK_PROXY_ENFORCED_COMBINED_POLICIES},
       {"networkProxyExceptionInputA11yLabel",
        IDS_SETTINGS_INTERNET_NETWORK_PROXY_EXCEPTION_INPUT_ACCESSIBILITY_LABEL},
       {"networkProxyExceptionList",
@@ -557,16 +552,20 @@ void AddDetailsLocalizedStrings(content::WebUIDataSource* html_source) {
       "isApnRevampAndAllowApnModificationPolicyEnabled",
       ash::features::IsApnRevampAndAllowApnModificationPolicyEnabled());
 
+  html_source->AddBoolean(
+      "isESimEmptyActivationCodeSupportEnabled",
+      ash::features::IsESimEmptyActivationCodeSupportEnabled());
+
   html_source->AddString("apnSettingsDescriptionWithLink",
                          l10n_util::GetStringFUTF16(
                              IDS_SETTINGS_APN_DESCRIPTION_WITH_LEARN_MORE_LINK,
-                             chrome::kApnSettingsLearnMoreUrl));
+                             ash::external_urls::kApnSettingsLearnMoreUrl));
 
   html_source->AddString(
       "apnSelectionDialogDescriptionWithLink",
       l10n_util::GetStringFUTF16(
           IDS_SETTINGS_APN_SELECTION_DIALOG_DESCRIPTION_WITH_LINK,
-          chrome::kApnSettingsLearnMoreUrl));
+          ash::external_urls::kApnSettingsLearnMoreUrl));
 }
 
 void AddConfigLocalizedStrings(content::WebUIDataSource* html_source) {
@@ -622,6 +621,10 @@ void AddErrorLocalizedStrings(content::WebUIDataSource* html_source) {
       {"networkErrorNoUserCertificate", IDS_NETWORK_ERROR_NO_USER_CERT},
       {ash::NetworkConnectionHandler::kErrorPassphraseRequired,
        IDS_NETWORK_ERROR_PASSPHRASE_REQUIRED},
+      {ash::NetworkConnectionHandler::kErrorBlockedByPolicy,
+       IDS_NETWORK_ERROR_BLOCKED_BY_POLICY},
+      {ash::NetworkConnectionHandler::kErrorWaitingForScan,
+       IDS_NETWORK_ERROR_WAITING_FOR_SCAN},
       {"networkErrorUnknown", IDS_NETWORK_ERROR_UNKNOWN},
       {"networkErrorNotAvailableForNetworkAuth",
        IDS_SETTINGS_INTERNET_NETWORK_NOT_AVAILABLE_FOR_NETWORK_AUTH},

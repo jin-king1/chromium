@@ -6,9 +6,11 @@
 
 #include "third_party/blink/renderer/core/layout/block_node.h"
 #include "third_party/blink/renderer/core/layout/constraint_space_builder.h"
+#include "third_party/blink/renderer/core/layout/geometry/axis.h"
 #include "third_party/blink/renderer/core/layout/hit_test_result.h"
 #include "third_party/blink/renderer/core/layout/layout_result.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_layout_info.h"
+#include "third_party/blink/renderer/core/layout/svg/svg_layout_support.h"
 #include "third_party/blink/renderer/core/layout/svg/svg_resources.h"
 #include "third_party/blink/renderer/core/layout/svg/transformed_hit_test_location.h"
 #include "third_party/blink/renderer/core/paint/paint_layer.h"
@@ -58,7 +60,7 @@ gfx::RectF LayoutSVGForeignObject::DecoratedBoundingBox() const {
 gfx::RectF LayoutSVGForeignObject::VisualRectInLocalSVGCoordinates() const {
   NOT_DESTROYED();
   PhysicalOffset offset = PhysicalLocation();
-  PhysicalSize size = Size();
+  PhysicalSize size = StitchedSize();
   return gfx::RectF(offset.left, offset.top, size.width, size.height);
 }
 
@@ -73,7 +75,7 @@ AffineTransform LayoutSVGForeignObject::LocalToSVGParentTransform() const {
   return transform;
 }
 
-LayoutPoint LayoutSVGForeignObject::LocationInternal() const {
+PhysicalOffset LayoutSVGForeignObject::PhysicalLocation() const {
   NOT_DESTROYED();
   return overridden_location_;
 }
@@ -104,7 +106,7 @@ SVGLayoutResult LayoutSVGForeignObject::UpdateSVGLayout(
   // will not care about (reach) this value.
   UpdateTransformBeforeLayout();
 
-  const PhysicalRect old_frame_rect(PhysicalLocation(), Size());
+  const PhysicalRect old_frame_rect(PhysicalLocation(), StitchedSize());
 
   // Resolve the viewport in the local coordinate space - this does not include
   // zoom.
@@ -121,9 +123,10 @@ SVGLayoutResult LayoutSVGForeignObject::UpdateSVGLayout(
   // This is necessary for external/wpt/inert/inert-on-non-html.html.
   // See FullyClipsContents() in fully_clipped_state_stack.cc.
   const float zoom = style.EffectiveZoom();
-  LogicalSize zoomed_size = PhysicalSize(LayoutUnit(viewport_.width() * zoom),
-                                         LayoutUnit(viewport_.height() * zoom))
-                                .ConvertToLogical(style.GetWritingMode());
+  LogicalSize zoomed_size =
+      ToLogicalSize(PhysicalSize(LayoutUnit(viewport_.width() * zoom),
+                                 LayoutUnit(viewport_.height() * zoom)),
+                    style.GetWritingMode());
 
   // Use the zoomed version of the viewport as the location, because we will
   // interpose a transform that "unzooms" the effective zoom to let the children
@@ -135,11 +138,11 @@ SVGLayoutResult LayoutSVGForeignObject::UpdateSVGLayout(
   // would pull this information from ComputedStyle - in SVG those properties
   // are ignored for non <svg> elements, so we mimic what happens when
   // specifying them through CSS.
-  overridden_location_ = LayoutPoint(zoomed_location);
+  overridden_location_ = PhysicalOffset::FromPointFFloor(zoomed_location);
 
-  ConstraintSpaceBuilder builder(
-      style.GetWritingMode(), style.GetWritingDirection(),
-      /* is_new_fc */ true, /* adjust_inline_size_if_needed */ false);
+  ConstraintSpaceBuilder builder(style.GetWritingMode(),
+                                 style.GetWritingDirection(),
+                                 /* is_new_fc */ true);
   builder.SetAvailableSize(zoomed_size);
   builder.SetIsFixedInlineSize(true);
   builder.SetIsFixedBlockSize(true);
@@ -148,25 +151,26 @@ SVGLayoutResult LayoutSVGForeignObject::UpdateSVGLayout(
 
   // Any propagated sticky-descendants may have invalid sticky-constraints.
   // Clear them now.
-  if (const auto* sticky_descendants =
-          content_result->GetPhysicalFragment().PropagatedStickyDescendants()) {
-    for (const auto& sticky_descendant : *sticky_descendants) {
-      sticky_descendant->SetStickyConstraints(nullptr);
+  for (const auto& item :
+       content_result->GetPhysicalFragment().StickyDescendants()) {
+    if (auto* pending = item.GetIfPending()) {
+      pending->ClearStickyConstraints(kPhysicalAxesBoth);
     }
   }
 
   DCHECK(!NeedsLayout() || ChildLayoutBlockedByDisplayLock());
 
-  const PhysicalRect frame_rect(PhysicalLocation(), Size());
+  const PhysicalRect frame_rect(PhysicalLocation(), StitchedSize());
   bool bounds_changed = old_frame_rect != frame_rect;
   if (UpdateAfterSVGLayout(layout_info, bounds_changed)) {
     bounds_changed = true;
   }
 
   const bool has_viewport_dependence =
-      To<SVGForeignObjectElement>(GetElement())->SelfHasRelativeLengths() ||
       (transform_uses_reference_box_ &&
-       StyleRef().TransformBox() == ETransformBox::kViewBox);
+       style.TransformBox() == ETransformBox::kViewBox) ||
+      style.Width().HasPercent() || style.Height().HasPercent() ||
+      style.X().HasPercent() || style.Y().HasPercent();
 
   DCHECK(!needs_transform_update_);
   return SVGLayoutResult(bounds_changed, has_viewport_dependence);
@@ -182,10 +186,12 @@ bool LayoutSVGForeignObject::UpdateAfterSVGLayout(
   return UpdateTransformAfterLayout(layout_info, bounds_changed);
 }
 
-void LayoutSVGForeignObject::StyleDidChange(StyleDifference diff,
-                                            const ComputedStyle* old_style) {
+void LayoutSVGForeignObject::StyleDidChange(
+    StyleDifference diff,
+    const ComputedStyle* old_style,
+    const StyleChangeContext& style_change_context) {
   NOT_DESTROYED();
-  LayoutSVGBlock::StyleDidChange(diff, old_style);
+  LayoutSVGBlock::StyleDidChange(diff, old_style, style_change_context);
 
   float old_zoom = old_style ? old_style->EffectiveZoom()
                              : ComputedStyleInitialValues::InitialZoom();
@@ -207,6 +213,19 @@ bool LayoutSVGForeignObject::NodeAtPointFromSVG(
                                             LocalToSVGParentTransform());
   if (!local_location) {
     return false;
+  }
+
+  if (result.GetHitTestRequest().IsHitTestVisualOverflow()) [[unlikely]] {
+    gfx::RectF bounds =
+        SVGLayoutSupport::ApplyFiltersToRect(*this, DecoratedBoundingBox());
+    if (local_location->Intersects(bounds)) {
+      UpdateHitTestResult(result, PhysicalOffset::FromPointFRound(
+                                      local_location->TransformedPoint()));
+      if (result.AddNodeToListBasedTestResult(GetElement(), *local_location) ==
+          kStopHitTesting) {
+        return true;
+      }
+    }
   }
 
   // |local_location| already includes the offset of the <foreignObject>

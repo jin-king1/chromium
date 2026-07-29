@@ -5,7 +5,6 @@
 import 'chrome://resources/cr_elements/cr_tree/cr_tree.js';
 
 import type {CrTreeItemElement} from 'chrome://resources/cr_elements/cr_tree/cr_tree_item.js';
-import {stringToMojoString16} from 'chrome://resources/js/mojo_type_util.js';
 import {PromiseResolver} from 'chrome://resources/js/promise_resolver.js';
 import type {File} from 'chrome://resources/mojo/mojo/public/mojom/base/file.mojom-webui.js';
 import type {ReadOnlyBuffer} from 'chrome://resources/mojo/mojo/public/mojom/base/read_only_buffer.mojom-webui.js';
@@ -106,6 +105,11 @@ class FakeDeviceManagerRemote extends TestBrowserProxy implements
       _guid: string, _devicePendingReceiver: UsbDevicePendingReceiver,
       _deviceClient: UsbDeviceClientRemote|null) {}
 
+  getUnrestrictedDevice(
+      _guid: string, _blockedInterfaceClasses: number[],
+      _devicePendingReceiver: UsbDevicePendingReceiver,
+      _deviceClient: UsbDeviceClientRemote|null) {}
+
   getDevices(): Promise<{results: UsbDeviceInfo[]}> {
     this.methodCalled('getDevices');
     return Promise.resolve({results: this.devices});
@@ -131,9 +135,14 @@ class FakeDeviceManagerRemote extends TestBrowserProxy implements
   async setClient() {}
 }
 
+interface StoredResponse {
+  status: UsbTransferStatus;
+  data: ReadOnlyBuffer;
+}
+
 class FakeUsbDeviceRemote extends TestBrowserProxy implements
     UsbDeviceInterface {
-  responses = new Map<string, any>();
+  responses = new Map<string, StoredResponse>();
   receiver: UsbDeviceReceiver;
 
   constructor() {
@@ -147,8 +156,8 @@ class FakeUsbDeviceRemote extends TestBrowserProxy implements
   }
 
   controlTransferIn(
-      params: UsbControlTransferParams, length: number, _timeout: number):
-      Promise<{status: UsbTransferStatus, data: ReadOnlyBuffer}> {
+      params: UsbControlTransferParams, length: number,
+      _timeout: number): Promise<StoredResponse> {
     const response =
         this.responses.get(usbControlTransferParamsToString(params));
     if (!response) {
@@ -157,21 +166,21 @@ class FakeUsbDeviceRemote extends TestBrowserProxy implements
         data: {buffer: []},
       });
     }
-    response.data = {buffer: response.data.slice(0, length)};
+    response.data = {buffer: response.data.buffer.slice(0, length)};
     return Promise.resolve(response);
   }
 
   /**
    * Set a response for a given request.
    */
-  setResponse(params: UsbControlTransferParams, response: any) {
+  setResponse(params: UsbControlTransferParams, response: StoredResponse) {
     this.responses.set(usbControlTransferParamsToString(params), response);
   }
 
   /**
    * Set the device descriptor the device will respond to queries with.
    */
-  setDeviceDescriptor(response: any) {
+  setDeviceDescriptor(response: StoredResponse) {
     const params: UsbControlTransferParams = {
       type: UsbControlTransferType.STANDARD,
       recipient: UsbControlTransferRecipient.DEVICE,
@@ -217,7 +226,7 @@ class FakeUsbDeviceRemote extends TestBrowserProxy implements
   }
 
   genericTransferIn(_endpointNumber: number, _length: number, _timeout: number):
-      Promise<{status: UsbTransferStatus, data: ReadOnlyBuffer}> {
+      Promise<StoredResponse> {
     assertNotReached();
   }
 
@@ -265,10 +274,10 @@ function fakeDeviceInfo(num: number): UsbDeviceInfo {
     deviceVersionMajor: 3,
     deviceVersionMinor: 2,
     deviceVersionSubminor: 1,
-    manufacturerName: stringToMojoString16('test'),
+    manufacturerName: 'test',
     productName: null,
     serialNumber: null,
-    webusbLandingPage: {url: 'http://google.com'},
+    webusbLandingPage: 'http://google.com',
     activeConfiguration: 1,
     configurations: [],
   };
@@ -281,26 +290,28 @@ function createDeviceWithValidDeviceDescriptor(): FakeUsbDeviceRemote {
   const deviceRemote = new FakeUsbDeviceRemote();
   deviceRemote.setDeviceDescriptor({
     status: UsbTransferStatus.COMPLETED,
-    data: [
-      0x12,
-      0x01,
-      0x00,
-      0x02,
-      0x00,
-      0x00,
-      0x00,
-      0x40,
-      0x50,
-      0x10,
-      0xEF,
-      0x17,
-      0x21,
-      0x03,
-      0x01,
-      0x02,
-      0x00,
-      0x01,
-    ],
+    data: {
+      buffer: [
+        0x12,
+        0x01,
+        0x00,
+        0x02,
+        0x00,
+        0x00,
+        0x00,
+        0x40,
+        0x50,
+        0x10,
+        0xEF,
+        0x17,
+        0x21,
+        0x03,
+        0x01,
+        0x02,
+        0x00,
+        0x01,
+      ],
+    },
   });
   return deviceRemote;
 }
@@ -312,7 +323,7 @@ function createDeviceWithShortDeviceDescriptor(): FakeUsbDeviceRemote {
   const deviceRemote = new FakeUsbDeviceRemote();
   deviceRemote.setDeviceDescriptor({
     status: UsbTransferStatus.SHORT_PACKET,
-    data: [0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x50],
+    data: {buffer: [0x12, 0x01, 0x00, 0x02, 0x00, 0x00, 0x00, 0x40, 0x50]},
   });
   return deviceRemote;
 }

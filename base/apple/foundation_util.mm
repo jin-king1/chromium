@@ -7,8 +7,6 @@
 #include <CoreFoundation/CoreFoundation.h>
 #import <Foundation/Foundation.h>
 #include <stddef.h>
-#include <stdlib.h>
-#include <string.h>
 
 #include <algorithm>
 #include <vector>
@@ -18,9 +16,11 @@
 #include "base/apple/osstatus_logging.h"
 #include "base/apple/scoped_cftyperef.h"
 #include "base/check.h"
+#include "base/compiler_specific.h"
 #include "base/containers/adapters.h"
 #include "base/files/file_path.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/numerics/checked_math.h"
 #include "base/numerics/safe_conversions.h"
 #include "base/strings/string_util.h"
@@ -284,20 +284,27 @@ TYPE_NAME_FOR_CF_TYPE_DEFN(CGColor)
 TYPE_NAME_FOR_CF_TYPE_DEFN(CTFont)
 TYPE_NAME_FOR_CF_TYPE_DEFN(CTRun)
 
+TYPE_NAME_FOR_CF_TYPE_DEFN(SecKey)
+
 #if !BUILDFLAG(IS_IOS)
 TYPE_NAME_FOR_CF_TYPE_DEFN(SecAccessControl)
 TYPE_NAME_FOR_CF_TYPE_DEFN(SecCertificate)
-TYPE_NAME_FOR_CF_TYPE_DEFN(SecKey)
 TYPE_NAME_FOR_CF_TYPE_DEFN(SecPolicy)
 #endif
 
 #undef TYPE_NAME_FOR_CF_TYPE_DEFN
 
-static const char* base_bundle_id;
+namespace {
+std::optional<std::string>& GetBaseBundleIDOverrideValue() {
+  static NoDestructor<std::optional<std::string>> base_bundle_id;
+  return *base_bundle_id;
+}
+}  // namespace
 
-const char* BaseBundleID() {
-  if (base_bundle_id) {
-    return base_bundle_id;
+std::string_view BaseBundleID() {
+  std::optional<std::string>& override = GetBaseBundleIDOverrideValue();
+  if (override.has_value()) {
+    return override.value();
   }
 
 #if BUILDFLAG(GOOGLE_CHROME_BRANDING)
@@ -307,11 +314,8 @@ const char* BaseBundleID() {
 #endif
 }
 
-void SetBaseBundleID(const char* new_base_bundle_id) {
-  if (new_base_bundle_id != base_bundle_id) {
-    free((void*)base_bundle_id);
-    base_bundle_id = new_base_bundle_id ? strdup(new_base_bundle_id) : nullptr;
-  }
+void SetBaseBundleIDOverride(std::string_view new_base_bundle_id) {
+  GetBaseBundleIDOverrideValue() = std::string(new_base_bundle_id);
 }
 
 #define CF_CAST_DEFN(TypeCF)                                       \
@@ -353,10 +357,10 @@ CF_CAST_DEFN(CTFontDescriptor)
 CF_CAST_DEFN(CTRun)
 
 CF_CAST_DEFN(SecCertificate)
+CF_CAST_DEFN(SecKey)
 
 #if !BUILDFLAG(IS_IOS)
 CF_CAST_DEFN(SecAccessControl)
-CF_CAST_DEFN(SecKey)
 CF_CAST_DEFN(SecPolicy)
 #endif
 
@@ -460,11 +464,11 @@ span<uint8_t> CFMutableDataToSpan(CFMutableDataRef data) {
 
 }  // namespace base::apple
 
-std::ostream& operator<<(std::ostream& o, const CFStringRef string) {
-  return o << base::SysCFStringRefToUTF8(string);
-}
-
 std::ostream& operator<<(std::ostream& o, const CFErrorRef err) {
+  if (!err) {
+    return o << "(null CFErrorRef)";
+  }
+
   base::apple::ScopedCFTypeRef<CFStringRef> desc(CFErrorCopyDescription(err));
   base::apple::ScopedCFTypeRef<CFDictionaryRef> user_info(
       CFErrorCopyUserInfo(err));
@@ -481,6 +485,13 @@ std::ostream& operator<<(std::ostream& o, const CFErrorRef err) {
   return o;
 }
 
+std::ostream& operator<<(std::ostream& o, const CFStringRef string) {
+  if (!string) {
+    return o << "(null CFStringRef)";
+  }
+  return o << base::SysCFStringRefToUTF8(string);
+}
+
 std::ostream& operator<<(std::ostream& o, CFRange range) {
   return o << NSStringFromRange(
              NSMakeRange(static_cast<NSUInteger>(range.location),
@@ -488,15 +499,14 @@ std::ostream& operator<<(std::ostream& o, CFRange range) {
 }
 
 std::ostream& operator<<(std::ostream& o, id obj) {
-  return obj ? o << [obj description].UTF8String : o << "(nil)";
+  if (!obj) {
+    return o << "(nil)";
+  }
+  return o << base::SysNSStringToUTF8([obj description]);
 }
 
 std::ostream& operator<<(std::ostream& o, NSRange range) {
   return o << NSStringFromRange(range);
-}
-
-std::ostream& operator<<(std::ostream& o, SEL selector) {
-  return o << NSStringFromSelector(selector);
 }
 
 #if !BUILDFLAG(IS_IOS)

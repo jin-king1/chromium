@@ -104,7 +104,7 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
   void OnNewTokenFrame(const quic::QuicNewTokenFrame& frame) override;
   void OnRetireConnectionIdFrame(
       const quic::QuicRetireConnectionIdFrame& frame) override;
-  void OnMessageFrame(const quic::QuicMessageFrame& frame) override;
+  void OnDatagramFrame(const quic::QuicDatagramFrame& frame) override;
   void OnHandshakeDoneFrame(const quic::QuicHandshakeDoneFrame& frame) override;
   void OnCoalescedPacketSent(const quic::QuicCoalescedPacket& coalesced_packet,
                              size_t length) override;
@@ -131,7 +131,9 @@ class NET_EXPORT_PRIVATE QuicConnectionLogger
   void UpdateReceivedFrameCounts(quic::QuicStreamId stream_id,
                                  int num_frames_received,
                                  int num_duplicate_frames_received);
-  void OnCertificateVerified(const CertVerifyResult& result);
+  void OnCertificateVerified(
+      const CertVerifyResult& result,
+      const std::vector<std::vector<uint8_t>>& server_tais);
 
   // Returns connection's overall packet loss rate in fraction.
   float ReceivedPacketLossRate() const;

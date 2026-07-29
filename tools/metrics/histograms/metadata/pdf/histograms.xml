@@ -23,7 +23,7 @@ chromium-metrics-reviews@google.com.
 <histograms>
 
 <histogram name="PDF.Actions" enum="ChromePDFViewerActions"
-    expires_after="2025-08-17">
+    expires_after="2027-01-03">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -36,7 +36,29 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.EngineLifetime" units="ms" expires_after="2025-11-01">
+<histogram name="PDF.Caret.FirstVisible" enum="Boolean"
+    expires_after="2026-12-27">
+  <owner>andyphan@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Tracks the PDF caret becoming visible for the first time when caret browsing
+    mode is enabled. Logged only once per document. Always records true. Not
+    recorded for Print Preview, since caret browsing mode is always disabled
+    there.
+  </summary>
+</histogram>
+
+<histogram name="PDF.DefaultState" enum="DefaultBrowserState"
+    expires_after="2027-01-03">
+  <owner>jessemckenna@google.com</owner>
+  <owner>davidbienvenu@chromium.org</owner>
+  <summary>
+    Whether Chrome is the default PDF viewer at startup. Only recorded on
+    Windows and Mac.
+  </summary>
+</histogram>
+
+<histogram name="PDF.EngineLifetime" units="ms" expires_after="2027-01-17">
   <owner>rhalavati@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -46,7 +68,7 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.FirstPaintTime" units="ms" expires_after="2025-11-01">
+<histogram name="PDF.FirstPaintTime" units="ms" expires_after="2027-01-17">
   <owner>rhalavati@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -58,9 +80,8 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.FormType" enum="PDFFormTypes" expires_after="2025-08-31">
+<histogram name="PDF.FormType" enum="PDFFormTypes" expires_after="2027-01-17">
   <owner>dhoss@chromium.org</owner>
-  <owner>kmoon@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
     Tracks what types of forms are present in PDF document, logged when the
@@ -68,7 +89,37 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.HasAttachment" enum="Boolean" expires_after="2025-07-27">
+<histogram name="PDF.GlicEnabled" enum="Boolean" expires_after="2027-01-01">
+  <owner>erikchen@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Emitted once each time a pdf (not print preview) is loaded. The boolean
+    indicates whether glic was enabled for the profile.
+  </summary>
+</histogram>
+
+<histogram name="PDF.GlicSummarizeButtonClicked" enum="Boolean"
+    expires_after="2027-01-01">
+  <owner>erikchen@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Emitted once each time the glic summarize button is clicked. Records true on
+    success and false on any failure.
+  </summary>
+</histogram>
+
+<histogram name="PDF.GlicSummarizeButtonEnabled" enum="Boolean"
+    expires_after="2027-01-01">
+  <owner>erikchen@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Emitted once each time a pdf (not print preview) is loaded. The boolean
+    indicates whether the summarize button was enabled for the profile. Note
+    that embedded pdfs if too small may still not show the summarize button.
+  </summary>
+</histogram>
+
+<histogram name="PDF.HasAttachment" enum="Boolean" expires_after="2026-12-16">
   <owner>nigi@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -77,8 +128,55 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
+<histogram name="PDF.InfoBar.SettingsResult" enum="PdfInfoBarSettingsResult"
+    expires_after="2027-01-03">
+  <owner>jessemckenna@google.com</owner>
+  <owner>davidbienvenu@chromium.org</owner>
+  <summary>
+    The result of showing the Windows settings UI to set Chrome as the default
+    PDF viewer. Recorded 30 seconds after the call to open the settings dialog
+    returns. Only recorded on Windows.
+  </summary>
+</histogram>
+
+<histogram name="PDF.InfoBar.Shown" enum="BooleanShown"
+    expires_after="2027-01-03">
+  <owner>jessemckenna@google.com</owner>
+  <owner>davidbienvenu@chromium.org</owner>
+  <summary>Recorded every time the PDF infobar is shown.</summary>
+</histogram>
+
+<histogram name="PDF.InfoBar.UserInteraction" enum="PDFInfoBarUserInteraction"
+    expires_after="2027-01-03">
+  <owner>jessemckenna@google.com</owner>
+  <owner>davidbienvenu@chromium.org</owner>
+  <summary>
+    User interaction with the PDF infobar (e.g., accepted, ignored, dismissed).
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2EmojiFontLoadFailed" enum="Boolean"
+    expires_after="2026-12-16">
+  <owner>andyphan@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Tracks emoji font load failures for Ink text annotations in the PDF viewer.
+    Recorded when an emoji font fails to load. Always records true.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2FontLoaded" enum="Boolean" expires_after="2026-12-16">
+  <owner>andyphan@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Tracks the success or failure of loading fonts for Ink text annotations in
+    the PDF viewer. Recorded when attempting to load a font. Records true on
+    success and false on failure.
+  </summary>
+</histogram>
+
 <histogram name="PDF.Ink2StrokeBrushType" enum="PDFInk2StrokeBrushType"
-    expires_after="2025-12-01">
+    expires_after="2026-12-16">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -92,18 +190,19 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PDF.Ink2StrokeHighlighterColor"
-    enum="PDFInk2StrokeHighlighterColor" expires_after="2025-12-01">
+    enum="PDFInk2StrokeHighlighterColor" expires_after="2026-12-16">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
     Tracks the brush color used for an Ink2 Highlighter stroke modification in
     the PDF viewer. This is only recorded when drawing actions are performed by
-    the user, but not if they occur as part of undo or redo operations.
+    the user, but not if they occur as part of undo or redo operations. Note
+    that this histogram shares the same enum with PDF.Ink2TextHighlighterColor.
   </summary>
 </histogram>
 
 <histogram name="PDF.Ink2StrokeInputDeviceType"
-    enum="PDFInk2StrokeInputDeviceType" expires_after="2025-12-01">
+    enum="PDFInk2StrokeInputDeviceType" expires_after="2026-08-09">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -112,12 +211,13 @@ chromium-metrics-reviews@google.com.
     strokes that erase pre-existing strokes in a PDF are also included. This is
     only recorded when drawing or erasing actions are performed by the user, but
     not if they occur as part of undo or redo operations. Eraser strokes that do
-    not erase any other strokes are ignored.
+    not erase any other strokes are ignored. Note that this histogram shares the
+    same enum with PDF.Ink2TextHighlightInputDeviceType.
   </summary>
 </histogram>
 
 <histogram name="PDF.Ink2StrokePenColor" enum="PDFInk2StrokePenColor"
-    expires_after="2025-12-01">
+    expires_after="2026-12-16">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -128,7 +228,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PDF.Ink2Stroke{Brush}Size" enum="PDFInk2StrokeBrushSize"
-    expires_after="2025-12-01">
+    expires_after="2026-10-11">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -144,8 +244,121 @@ chromium-metrics-reviews@google.com.
   </token>
 </histogram>
 
+<histogram name="PDF.Ink2TextAnnotationAlignment"
+    enum="PDFInk2TextAnnotationAlignment" expires_after="2026-12-16">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    Tracks the text alignment (left, center, or right) used for an Ink2 text
+    annotation in the PDF viewer. This is recorded whenever a non-empty text
+    annotation is committed by the user (either created or edited), but not if
+    it occurs as part of undo or redo operations.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextAnnotationBold" enum="Boolean"
+    expires_after="2026-12-16">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    Tracks whether an Ink2 text annotation in the PDF viewer has the bold style
+    applied. This is recorded whenever a non-empty text annotation is committed
+    by the user (either created or edited), but not if it occurs as part of undo
+    or redo operations.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextAnnotationColor" enum="PDFInk2TextAnnotationColor"
+    expires_after="2026-12-16">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    Tracks the color used for an Ink2 text annotation in the PDF viewer. This is
+    recorded whenever a non-empty text annotation is committed by the user
+    (either created or edited), but not if it occurs as part of undo or redo
+    operations.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextAnnotationItalic" enum="Boolean"
+    expires_after="2026-12-16">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    Tracks whether an Ink2 text annotation in the PDF viewer has the italic
+    style applied. This is recorded whenever a non-empty text annotation is
+    committed by the user (either created or edited), but not if it occurs as
+    part of undo or redo operations.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextAnnotationSize" units="pixels"
+    expires_after="2026-12-16">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    Tracks the font size used for an Ink2 text annotation in the PDF viewer. The
+    value recorded are integer font sizes and assumes there are no fractional
+    sizes. This is recorded whenever a non-empty text annotation is committed by
+    the user (either created or edited), but not if it occurs as part of undo or
+    redo operations.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextAnnotationTypeface"
+    enum="PDFInk2TextAnnotationTypeface" expires_after="2026-12-16">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    Tracks the typeface used for an Ink2 text annotation in the PDF viewer.
+    Specifically, it represents the higher-level user choice, and not the actual
+    underlying system font. This is recorded whenever a non-empty text
+    annotation is committed by the user (either created or edited), but not if
+    it occurs as part of undo or redo operations.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextHighlighterColor"
+    enum="PDFInk2StrokeHighlighterColor" expires_after="2026-12-16">
+  <owner>andyphan@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Tracks the highlighter color used for a single Ink2 text highlight action in
+    the PDF viewer. A text highlight action consists of one or more highlight
+    strokes that cover the user's text selection in the PDF. This is only
+    recorded when the text highlighting action is performed by the user, but not
+    if they occur as part of undo or redo operations. Note that this histogram
+    shares the same enum with PDF.Ink2StrokeHighlighterColor.
+  </summary>
+</histogram>
+
+<histogram name="PDF.Ink2TextHighlightInputDeviceType"
+    enum="PDFInk2StrokeInputDeviceType" expires_after="2026-12-16">
+  <owner>andyphan@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Tracks the input device type used for a single Ink2 text highlight action in
+    the PDF viewer. A text highlight action consists of one or more highlight
+    strokes that cover the user's text selection in the PDF. This is only
+    recorded when the text highlighting action is performed by the user, but not
+    if they occur as part of undo or redo operations. Note that this histogram
+    shares the same enum with PDF.Ink2StrokeInputDeviceType.
+  </summary>
+</histogram>
+
+<histogram name="PDF.LoadedWithInkTextAnnotations"
+    enum="PDFLoadedWithInkTextAnnotations" expires_after="2026-12-20">
+  <owner>andyphan@chromium.org</owner>
+  <owner>thestig@chromium.org</owner>
+  <summary>
+    Tracks the number of PDF documents loaded with existing Ink text annotations
+    in the PDF viewer. Records &quot;Unknown&quot; if there is a timeout failure
+    when scanning the PDF for existing Ink text annotations.
+  </summary>
+</histogram>
+
 <histogram name="PDF.LoadedWithV2InkAnnotations2"
-    enum="PDFLoadedWithV2InkAnnotations" expires_after="2025-12-01">
+    enum="PDFLoadedWithV2InkAnnotations" expires_after="2026-08-09">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -156,8 +369,8 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PDF.LoadStatus2" enum="ChromePDFViewerLoadStatus"
-    expires_after="2025-08-10">
-  <owner>kmoon@chromium.org</owner>
+    expires_after="2027-01-03">
+  <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
     Tracks what happens when Chrome tries to load a PDF. This metric tracks all
@@ -166,7 +379,7 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.PageCount" units="pages" expires_after="2025-08-17">
+<histogram name="PDF.PageCount" units="pages" expires_after="2027-01-03">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -174,7 +387,7 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.PageHasText" enum="Boolean" expires_after="2025-11-01">
+<histogram name="PDF.PageHasText" enum="Boolean" expires_after="2027-01-17">
   <owner>rhalavati@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -184,7 +397,7 @@ chromium-metrics-reviews@google.com.
 </histogram>
 
 <histogram name="PDF.PostMessageDataType" enum="PDFPostMessageDataType"
-    expires_after="2025-08-10">
+    expires_after="2026-12-27">
   <owner>andyphan@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -192,18 +405,139 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.RenderAndPaintVisiblePagesTime" units="ms"
-    expires_after="2025-07-13">
-  <owner>nigi@chromium.org</owner>
+<histogram name="PDF.RenderAndPaintTime" units="ms" expires_after="2026-11-29">
   <owner>thestig@chromium.org</owner>
+  <owner>ask@chromium.org</owner>
   <summary>
-    Time used for rendering and painting all the visible pages in the PDF
+    Time used for a full paint operation cycle in the PDF viewer, sans time
+    spent to flush afterwards. This encompasses multiple
+    PDF.RenderAndPaintVisiblePagesTime records.
+  </summary>
+</histogram>
+
+<histogram name="PDF.RenderAndPaintVisiblePagesTime" units="ms"
+    expires_after="2026-11-29">
+  <owner>thestig@chromium.org</owner>
+  <owner>ask@chromium.org</owner>
+  <summary>
+    Time used for rendering and painting all the visible pages in the PDF viewer
+    that require repainting because they intersect a damaged rect.
+  </summary>
+</histogram>
+
+<histogram name="PDF.RenderPaintAndFlushTime" units="ms"
+    expires_after="2026-11-29">
+  <owner>thestig@chromium.org</owner>
+  <owner>ask@chromium.org</owner>
+  <summary>
+    Time used for a full paint operation cycle in the PDF viewer, including time
+    spent to flush afterwards. This encompasses multiple
+    PDF.RenderAndPaintVisiblePagesTime records.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.BubbleAction"
+    enum="PDFSaveToDriveBubbleAction" expires_after="2026-11-29">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the action taken in the Save to Drive bubble from the PDF viewer.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.BubbleState" enum="PDFSaveToDriveBubbleState"
+    expires_after="2026-09-26">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the UI state of the opened Save to Drive bubble from the PDF viewer,
+    i.e., whether it is showing a success or a failure message.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.FileSize" units="KB"
+    expires_after="2026-11-29">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the size of the file being saved to Drive from the PDF viewer.
+    Recorded when an upload completes successfully.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.PrimaryAccountSelectionStatus"
+    enum="PDFSaveToDrivePrimaryAccountSelectionStatus"
+    expires_after="2026-09-26">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records which account was used for Save to Drive from the PDF viewer
+    relative to the primary account. Recorded when an upload completes
+    successfully.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.RetrySaveType" enum="PDFSaveToDriveSaveType"
+    expires_after="2026-09-26">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the save request type of the Save to Drive retry operation from the
+    PDF viewer.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.SaveType" enum="PDFSaveToDriveSaveType"
+    expires_after="2026-09-26">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the save request type of the Save to Drive operation from the PDF
     viewer.
   </summary>
 </histogram>
 
+<histogram name="PDF.SaveToDrive.UploadError" enum="PdfSaveToDriveErrorType"
+    expires_after="2026-11-29">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the error type when a Save to Drive upload fails from the PDF
+    viewer. Recorded when an upload fails.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.UploadLatency" units="ms"
+    expires_after="2026-09-26">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Tracks the time from when a Save to Drive upload is started to when it
+    completes successfully.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SaveToDrive.UploadStatus" enum="PdfSaveToDriveStatus"
+    expires_after="2026-11-29">
+  <owner>faizur@google.com</owner>
+  <owner>clarkbrian@chromium.org</owner>
+  <summary>
+    Records the status of a Save to Drive upload from the PDF viewer, and
+    important intermediate steps. Recorded when status changes.
+  </summary>
+</histogram>
+
+<histogram name="PDF.SchemeIsFile" enum="Boolean" expires_after="2027-01-09">
+  <owner>thestig@chromium.org</owner>
+  <owner>andyphan@chromium.org</owner>
+  <summary>
+    When loading a full-page PDF in the PDF Viewer, records whether the PDF is
+    loaded from a file:// URL or not.
+  </summary>
+</histogram>
+
 <histogram name="PDF.SearchifyAddedText" enum="Boolean"
-    expires_after="2025-11-01">
+    expires_after="2027-01-03">
   <owner>rhalavati@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
@@ -213,17 +547,31 @@ chromium-metrics-reviews@google.com.
   </summary>
 </histogram>
 
-<histogram name="PDF.SearchifySuccessful" enum="Boolean"
-    expires_after="2025-11-01">
+<histogram name="PDF.SearchifySuccessful2" enum="Boolean"
+    expires_after="2027-01-03">
   <owner>rhalavati@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>
     Tracks the number of PDF documents that Searchify is run on, and whether
-    Searchify could add any text to them or not.
+    Searchify could add any text to them or not. Previous metric
+    (PDF.SearchifySuccessful) overcounted cases where searchify was run and did
+    not add any results.
   </summary>
 </histogram>
 
-<histogram name="PDF.Version" enum="PDFVersion" expires_after="2025-07-13">
+<histogram name="PDF.SkiaFontMapperWindows.EnumFontsTime" units="ms"
+    expires_after="2027-01-24">
+  <owner>anthonyvd@chromium.org</owner>
+  <owner>ajgo@chromium.org</owner>
+  <summary>
+    Records the time spent in SkiaFontMapper's EnumFonts on Windows. This
+    operation iterates over all installed system fonts, which may be inefficient
+    and long on some devices (particularly slow disks and machines with large
+    amounts of installed fonts).
+  </summary>
+</histogram>
+
+<histogram name="PDF.Version" enum="PDFVersion" expires_after="2026-11-29">
   <owner>dhoss@chromium.org</owner>
   <owner>thestig@chromium.org</owner>
   <summary>Tracks versions of documents opened in the PDF viewer.</summary>

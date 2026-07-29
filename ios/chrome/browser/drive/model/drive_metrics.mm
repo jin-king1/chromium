@@ -13,6 +13,10 @@ const char kDriveCreateFolderResultSuccessful[] =
     "IOS.SaveToDrive.CreateFolder.Successful";
 const char kDriveCreateFolderResultErrorCode[] =
     "IOS.SaveToDrive.CreateFolder.ErrorCode";
+const char kDriveFetchClientFolderResultSuccessful[] =
+    "IOS.SaveToDrive.FetchClientFolder.Successful";
+const char kDriveFetchClientFolderResultErrorCode[] =
+    "IOS.SaveToDrive.FetchClientFolder.ErrorCode";
 const char kDriveFileUploadResultSuccessful[] =
     "IOS.SaveToDrive.UploadFile.Successful";
 const char kDriveFileUploadResultErrorCode[] =
@@ -40,3 +44,7 @@ const char kSaveToDriveUIMimeType[] = "IOS.SaveToDrive.UI.MimeType";
 const char kSaveToDriveUIFileSize[] = "IOS.SaveToDrive.UI.FileSizeMB";
 const char kSaveToDriveUINumberOfAttempts[] =
     "IOS.SaveToDrive.UI.NumberOfAttempts";
+
+// Save to Drive Sign In histograms.
+const char kSaveToDriveSignInStatus[] = "IOS.SaveToDrive.SignIn.Status";
+const char kSaveToDriveSignInResult[] = "IOS.SaveToDrive.SignIn.Result";

@@ -21,14 +21,17 @@
 #include "base/functional/bind.h"
 #include "base/metrics/metrics_hashes.h"
 #include "base/metrics/statistics_recorder.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
+#include "base/test/test_future.h"
 #include "chrome/browser/ash/accessibility/accessibility_feature_browsertest.h"
 #include "chrome/browser/ash/accessibility/accessibility_manager.h"
 #include "chrome/browser/ash/accessibility/accessibility_test_utils.h"
 #include "chrome/browser/ash/accessibility/autoclick_test_utils.h"
 #include "chrome/browser/ash/accessibility/automation_test_utils.h"
+#include "chrome/browser/ash/accessibility/chromevox_test_utils.h"
 #include "chrome/browser/ash/accessibility/dictation_bubble_test_helper.h"
 #include "chrome/browser/ash/accessibility/dictation_test_utils.h"
 #include "chrome/browser/ash/accessibility/select_to_speak_test_utils.h"
@@ -36,14 +39,14 @@
 #include "chrome/browser/ash/accessibility/switch_access_test_utils.h"
 #include "chrome/browser/ash/base/locale_util.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/global_features.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/speech/speech_recognition_constants.h"
 #include "chrome/browser/ui/browser.h"
 #include "chrome/browser/ui/browser_window.h"
-#include "chrome/common/extensions/extension_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "components/metrics/content/subprocess_metrics_provider.h"
 #include "components/prefs/pref_service.h"
 #include "components/soda/soda_installer.h"
@@ -59,6 +62,7 @@
 #include "ui/aura/window_tree_host.h"
 #include "ui/base/clipboard/clipboard.h"
 #include "ui/base/clipboard/clipboard_buffer.h"
+#include "ui/base/clipboard/test/clipboard_test_util.h"
 #include "ui/events/test/event_generator.h"
 
 namespace ash {
@@ -134,10 +138,6 @@ AccessibilityManager* GetManager() {
   return AccessibilityManager::Get();
 }
 
-void EnableChromeVox() {
-  GetManager()->EnableSpokenFeedback(true);
-}
-
 // A class used to define the parameters of a test case.
 class TestConfig {
  public:
@@ -172,14 +172,11 @@ class DictationTestBase : public AccessibilityFeatureBrowserTest,
   void SetUpCommandLine(base::CommandLine* command_line) override {
     utils_ = std::make_unique<DictationTestUtils>(speech_recognition_type(),
                                                   editable_type());
-
     std::vector<base::test::FeatureRef> enabled_features =
         utils_->GetEnabledFeatures();
-    std::vector<base::test::FeatureRef> disabled_features =
-        utils_->GetDisabledFeatures();
-    scoped_feature_list_.InitWithFeatures(enabled_features, disabled_features);
-
-    InProcessBrowserTest::SetUpCommandLine(command_line);
+    scoped_feature_list_.InitWithFeatures(enabled_features,
+                                          utils_->GetDisabledFeatures());
+    AccessibilityFeatureBrowserTest::SetUpCommandLine(command_line);
   }
 
   void SetUpOnMainThread() override {
@@ -188,6 +185,14 @@ class DictationTestBase : public AccessibilityFeatureBrowserTest,
         /*profile=*/GetProfile(),
         /*navigate_to_url=*/base::BindOnce(&DictationTestBase::NavigateToUrl,
                                            base::Unretained(this)));
+  }
+
+  void TearDownOnMainThread() override {
+    // Ignore browser-shutting-down error for MV3 because service workers
+    // are not killed during fast shutdown phase.
+    utils()->AddAllowedExtensionError(
+        ExtensionConsoleErrorObserver::kErrorBrowserIsShuttingDown);
+    InProcessBrowserTest::TearDownOnMainThread();
   }
 
   // Routers to DictationTestUtils methods.
@@ -253,10 +258,9 @@ class DictationTestBase : public AccessibilityFeatureBrowserTest,
   }
 
   std::string GetClipboardText() {
-    std::u16string text;
-    ui::Clipboard::GetForCurrentThread()->ReadText(
-        ui::ClipboardBuffer::kCopyPaste, /*data_dst=*/nullptr, &text);
-    return base::UTF16ToUTF8(text);
+    return base::UTF16ToUTF8(ui::clipboard_test_util::ReadText(
+        ui::Clipboard::GetForCurrentThread(), ui::ClipboardBuffer::kCopyPaste,
+        /*data_dst=*/nullptr));
   }
 
   void PressTab() {
@@ -339,7 +343,7 @@ IN_PROC_BROWSER_TEST_P(DictationTest, GetAllSupportedLocales) {
       EXPECT_TRUE(installed);
     } else {
       EXPECT_FALSE(installed) << " for locale " << locale;
-      if (base::Contains(kOfflineNotSupportedLocaleSet, locale)) {
+      if (kOfflineNotSupportedLocaleSet.contains(locale)) {
         EXPECT_FALSE(works_offline) << " for locale " << locale;
       }
     }
@@ -365,7 +369,7 @@ IN_PROC_BROWSER_TEST_P(DictationTest, GetAllSupportedLocales) {
       EXPECT_FALSE(installed);
     } else {
       EXPECT_FALSE(installed) << " for locale " << locale;
-      if (base::Contains(kOfflineNotSupportedLocaleSet, locale)) {
+      if (kOfflineNotSupportedLocaleSet.contains(locale)) {
         EXPECT_FALSE(works_offline) << " for locale " << locale;
       }
     }
@@ -434,7 +438,9 @@ IN_PROC_BROWSER_TEST_P(DictationTest, RecognitionEndsWhenInputFieldLosesFocus) {
 }
 
 IN_PROC_BROWSER_TEST_P(DictationTest, UserEndsDictationWhenChromeVoxEnabled) {
-  EnableChromeVox();
+  ChromeVoxTestUtils chromevox_test_utils;
+  chromevox_test_utils.EnableChromeVox();
+
   EXPECT_TRUE(GetManager()->IsSpokenFeedbackEnabled());
   InstallMockInputContextHandler();
 
@@ -445,27 +451,24 @@ IN_PROC_BROWSER_TEST_P(DictationTest, UserEndsDictationWhenChromeVoxEnabled) {
   WaitForRecognitionStopped();
 
   WaitForCommitText(kFinalSpeechResult16);
+  chromevox_test_utils.sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_P(DictationTest, ChromeVoxSilencedWhenToggledOn) {
-  // Set up ChromeVox.
-  test::SpeechMonitor sm;
-  EXPECT_FALSE(GetManager()->IsSpokenFeedbackEnabled());
-  extensions::ExtensionHostTestHelper host_helper(
-      GetProfile(), extension_misc::kChromeVoxExtensionId);
-  EnableChromeVox();
-  host_helper.WaitForHostCompletedFirstLoad();
+  ChromeVoxTestUtils chromevox_test_utils;
+  chromevox_test_utils.EnableChromeVox();
   EXPECT_TRUE(GetManager()->IsSpokenFeedbackEnabled());
 
   // Not yet forced to stop.
-  EXPECT_EQ(0, sm.stop_count());
+  EXPECT_EQ(0, chromevox_test_utils.sm()->stop_count());
 
   ToggleDictationWithKeystroke();
   WaitForRecognitionStarted();
 
   // Assert ChromeVox was asked to stop speaking at the toggle. Note: multiple
   // requests to stop speech can be sent, so we just expect stop_count() > 0.
-  EXPECT_GT(sm.stop_count(), 0);
+  EXPECT_GT(chromevox_test_utils.sm()->stop_count(), 0);
+  chromevox_test_utils.sm()->Replay();
 }
 
 IN_PROC_BROWSER_TEST_P(DictationTest, WorksWithSelectToSpeak) {
@@ -525,7 +528,7 @@ IN_PROC_BROWSER_TEST_P(DictationTest, Metrics) {
       speech_recognition_type() == speech::SpeechRecognitionType::kOnDevice;
   const char* metric_name = on_device ? kOnDeviceListeningDurationMetric
                                       : kNetworkListeningDurationMetric;
-  HistogramWaiter waiter(metric_name);
+  base::StatisticsRecorder::HistogramWaiter waiter(metric_name);
   ToggleDictationWithKeystroke();
   WaitForRecognitionStarted();
   ToggleDictationWithKeystroke();
@@ -815,7 +818,9 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(TestConfig(speech::SpeechRecognitionType::kNetwork,
                                  EditableType::kTextArea)));
 
-IN_PROC_BROWSER_TEST_P(DictationWithSwitchAccessTest, CanDictate) {
+// TODO(crbug.com/388867933): Re-enable this failing test caused by switch
+// access in manifest v3.
+IN_PROC_BROWSER_TEST_P(DictationWithSwitchAccessTest, DISABLED_CanDictate) {
   ToggleDictationWithKeystroke();
   WaitForRecognitionStarted();
   SendFinalResultAndWaitForEditableValue("Hello", "Hello");
@@ -833,10 +838,18 @@ class DictationJaTest : public DictationTestBase {
 
  protected:
   void SetUpOnMainThread() override {
-    locale_util::SwitchLanguage("ja", /*enable_locale_keyboard_layouts=*/true,
-                                /*login_layouts_only*/ false, base::DoNothing(),
-                                GetProfile());
-    g_browser_process->SetApplicationLocale("ja");
+    base::test::TestFuture<const ash::locale_util::LanguageSwitchResult&>
+        future;
+    locale_util::SwitchLanguage(
+        g_browser_process->GetFeatures()->application_locale_storage(), "ja",
+        /*enable_locale_keyboard_layouts=*/true,
+        /*login_layouts_only*/ false, future.GetCallback(), GetProfile());
+    auto result = future.Get();
+    ASSERT_TRUE(result.success);
+    ASSERT_EQ(
+        g_browser_process->GetFeatures()->application_locale_storage()->Get(),
+        "ja");
+
     GetActiveUserPrefs()->SetString(prefs::kAccessibilityDictationLocale, "ja");
 
     DictationTestBase::SetUpOnMainThread();
@@ -859,12 +872,30 @@ INSTANTIATE_TEST_SUITE_P(
     ::testing::Values(TestConfig(speech::SpeechRecognitionType::kNetwork,
                                  EditableType::kContentEditable)));
 
-IN_PROC_BROWSER_TEST_P(DictationJaTest, NoSmartSpacingOrCapitalization) {
+IN_PROC_BROWSER_TEST_P(DictationJaTest, NoSmartCapitalization) {
   ToggleDictationWithKeystroke();
   WaitForRecognitionStarted();
   SendFinalResultAndWaitForEditableValue("this", "this");
-  SendFinalResultAndWaitForEditableValue(" Is", "this Is");
-  SendFinalResultAndWaitForEditableValue("a test.", "this Isa test.");
+  // Note that spaces get removed when the Dictation language is Japanese
+  // (see the RemoveSpacesWithinUtterance) test case below.
+  SendFinalResultAndWaitForEditableValue(" Is", "thisIs");
+  SendFinalResultAndWaitForEditableValue("a test.", "thisIsatest.");
+  ToggleDictationWithKeystroke();
+  WaitForRecognitionStopped();
+}
+
+IN_PROC_BROWSER_TEST_P(DictationJaTest, RemoveSpacesWithinUtterance) {
+  ToggleDictationWithKeystroke();
+  WaitForRecognitionStarted();
+  // Dictate "I like tennis". Include spaces within this utterance, since we can
+  // receive results like this from the speech recognizer. Ensure that the
+  // spaces within the utterance are stripped out.
+  SendFinalResultAndWaitForEditableValue("私は テニス が好き です。",
+                                         "私はテニスが好きです。");
+  // Dictate "congratulations". Ensure that no spaces are added in between
+  // utterances.
+  SendFinalResultAndWaitForEditableValue("おめでとう",
+                                         "私はテニスが好きです。おめでとう");
   ToggleDictationWithKeystroke();
   WaitForRecognitionStopped();
 }
@@ -1365,7 +1396,7 @@ IN_PROC_BROWSER_TEST_P(DictationRegexCommandsTest,
 
 IN_PROC_BROWSER_TEST_P(DictationRegexCommandsTest, Metrics) {
   base::HistogramTester histogram_tester_;
-  HistogramWaiter waiter(kPumpkinUsedMetric);
+  base::StatisticsRecorder::HistogramWaiter waiter(kPumpkinUsedMetric);
   SendFinalResultAndWait("Undo");
   waiter.Wait();
   content::FetchHistogramsFromChildProcesses();
@@ -1511,14 +1542,17 @@ IN_PROC_BROWSER_TEST_P(DictationUITest, StandbyHints) {
 // Ensures that Search + D can be used to toggle Dictation when ChromeVox is
 // active. Also verifies that ChromeVox announces hints when they are shown in
 // the Dictation UI.
-IN_PROC_BROWSER_TEST_P(DictationUITest, ChromeVoxAnnouncesHints) {
+// TODO(crbug.com/453928508): Flaky on Linux ChromiumOS MSan Tests, and Debug
+// bots.
+#if defined(MEMORY_SANITIZER) || !defined(NDEBUG)
+#define MAYBE_ChromeVoxAnnouncesHints DISABLED_ChromeVoxAnnouncesHints
+#else
+#define MAYBE_ChromeVoxAnnouncesHints ChromeVoxAnnouncesHints
+#endif
+IN_PROC_BROWSER_TEST_P(DictationUITest, MAYBE_ChromeVoxAnnouncesHints) {
   // Setup ChromeVox first.
-  test::SpeechMonitor sm;
-  EXPECT_FALSE(GetManager()->IsSpokenFeedbackEnabled());
-  extensions::ExtensionHostTestHelper host_helper(
-      GetProfile(), extension_misc::kChromeVoxExtensionId);
-  EnableChromeVox();
-  host_helper.WaitForHostCompletedFirstLoad();
+  ChromeVoxTestUtils chromevox_test_utils;
+  chromevox_test_utils.EnableChromeVox();
   EXPECT_TRUE(GetManager()->IsSpokenFeedbackEnabled());
 
   ToggleDictationWithKeystroke();
@@ -1532,14 +1566,15 @@ IN_PROC_BROWSER_TEST_P(DictationUITest, ChromeVoxAnnouncesHints) {
       /*hints=*/std::vector<std::u16string>{kTrySaying, kType, kHelp});
 
   // Assert speech from ChromeVox.
-  sm.ExpectSpeechPattern("Try saying*Type*Help*");
-  sm.Replay();
+  chromevox_test_utils.sm()->ExpectSpeechPattern("Try saying*Type*Help*");
+  chromevox_test_utils.sm()->Replay();
 
   // Check that Chromevox changed to a different pitch to announce hints. Note
   // that only if the whole text pattern used the same parameters this will
   // match.
   auto params =
-      sm.GetParamsForPreviouslySpokenTextPattern("*Try saying*Type*Help*");
+      chromevox_test_utils.sm()->GetParamsForPreviouslySpokenTextPattern(
+          "*Try saying*Type*Help*");
   ASSERT_TRUE(params);
 
   // Note: the Chromevox personality that sets this value has a relative pitch
@@ -1834,8 +1869,9 @@ IN_PROC_BROWSER_TEST_P(DictationPumpkinTest, Repeat) {
 
 IN_PROC_BROWSER_TEST_P(DictationPumpkinTest, Metrics) {
   base::HistogramTester histogram_tester_;
-  HistogramWaiter used_waiter(kPumpkinUsedMetric);
-  HistogramWaiter succeeded_waiter(kPumpkinSucceededMetric);
+  base::StatisticsRecorder::HistogramWaiter used_waiter(kPumpkinUsedMetric);
+  base::StatisticsRecorder::HistogramWaiter succeeded_waiter(
+      kPumpkinSucceededMetric);
   SendFinalResultAndWaitForEditableValue("dictate hello", "Hello");
   used_waiter.Wait();
   succeeded_waiter.Wait();
@@ -2304,13 +2340,10 @@ IN_PROC_BROWSER_TEST_P(DictationKeyboardImprovementsTest,
 IN_PROC_BROWSER_TEST_P(DictationKeyboardImprovementsTest,
                        DISABLED_ToggledWithNoFocusTriggersSpeech) {
   TabAwayFromEditableAndReduceNoFocusedImeTimeout();
+
   // Setup ChromeVox.
-  test::SpeechMonitor sm;
-  EXPECT_FALSE(GetManager()->IsSpokenFeedbackEnabled());
-  extensions::ExtensionHostTestHelper host_helper(
-      GetProfile(), extension_misc::kChromeVoxExtensionId);
-  EnableChromeVox();
-  host_helper.WaitForHostCompletedFirstLoad();
+  ChromeVoxTestUtils chromevox_test_utils;
+  chromevox_test_utils.EnableChromeVox();
   EXPECT_TRUE(GetManager()->IsSpokenFeedbackEnabled());
 
   // Disable the console observer because toggling Dictation in the following
@@ -2321,8 +2354,9 @@ IN_PROC_BROWSER_TEST_P(DictationKeyboardImprovementsTest,
   WaitForRecognitionStopped();
 
   // Assert speech from ChromeVox.
-  sm.ExpectSpeechPattern("*Go to a text field to use Dictation*");
-  sm.Replay();
+  chromevox_test_utils.sm()->ExpectSpeechPattern(
+      "*Go to a text field to use Dictation*");
+  chromevox_test_utils.sm()->Replay();
 }
 
 }  // namespace ash

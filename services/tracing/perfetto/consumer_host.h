@@ -49,13 +49,12 @@ class ConsumerHost : public perfetto::Consumer, public mojom::ConsumerHost {
         mojo::PendingReceiver<mojom::TracingSessionHost> tracing_session_host,
         mojo::PendingRemote<mojom::TracingSessionClient> tracing_session_client,
         const perfetto::TraceConfig& trace_config,
-        perfetto::base::ScopedFile output_file,
-        mojom::TracingClientPriority priority);
+        perfetto::base::ScopedFile output_file);
     TracingSession(
         ConsumerHost* host,
         mojo::PendingReceiver<mojom::TracingSessionHost> tracing_session_host,
         mojo::PendingRemote<mojom::TracingSessionClient> tracing_session_client,
-        mojom::TracingClientPriority priority);
+        bool privacy_filtering_enabled);
 
     TracingSession(const TracingSession&) = delete;
     TracingSession& operator=(const TracingSession&) = delete;
@@ -72,11 +71,14 @@ class ConsumerHost : public perfetto::Consumer, public mojom::ConsumerHost {
     void CloneSession(const base::UnguessableToken& uuid,
                       CloneSessionCallback callback);
 
-    mojom::TracingClientPriority tracing_priority() const {
-      return tracing_priority_;
-    }
     bool tracing_enabled() const { return tracing_enabled_; }
     ConsumerHost* host() const { return host_; }
+    const std::string& unique_session_name() const {
+      return unique_session_name_;
+    }
+    bool privacy_filtering_enabled() const {
+      return privacy_filtering_enabled_;
+    }
 
     // Called by TracingService.
     void OnActiveServicePidAdded(base::ProcessId pid);
@@ -94,7 +96,6 @@ class ConsumerHost : public perfetto::Consumer, public mojom::ConsumerHost {
     void DisableTracingAndEmitJson(
         const std::string& agent_label_filter,
         mojo::ScopedDataPipeProducerHandle stream,
-        bool privacy_filtering_enabled,
         DisableTracingAndEmitJsonCallback callback) override;
 
    private:
@@ -107,6 +108,7 @@ class ConsumerHost : public perfetto::Consumer, public mojom::ConsumerHost {
     const raw_ptr<ConsumerHost> host_;
     mojo::Remote<mojom::TracingSessionClient> tracing_session_client_;
     mojo::Receiver<mojom::TracingSessionHost> receiver_;
+    std::string unique_session_name_;
     bool privacy_filtering_enabled_ = false;
     bool convert_to_legacy_json_ = false;
     base::SequenceBound<StreamWriter> read_buffers_stream_writer_;
@@ -116,7 +118,6 @@ class ConsumerHost : public perfetto::Consumer, public mojom::ConsumerHost {
         trace_processor_;
     std::string json_agent_label_filter_;
     base::OnceCallback<void(bool)> flush_callback_;
-    const mojom::TracingClientPriority tracing_priority_;
     base::OnceClosure on_disabled_callback_;
     std::set<base::ProcessId> filtered_pids_;
     bool tracing_enabled_ = true;

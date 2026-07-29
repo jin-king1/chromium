@@ -2,21 +2,14 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "android_webview/browser/lifecycle/aw_contents_lifecycle_notifier.h"
 
 #include <utility>
 
-#include "base/containers/contains.h"
-#include "base/not_fatal_until.h"
-#include "content/public/browser/browser_thread.h"
-
 // Must come after all headers that specialize FromJniType() / ToJniType().
 #include "android_webview/browser_jni_headers/AwContentsLifecycleNotifier_jni.h"
+#include "base/compiler_specific.h"
+#include "content/public/browser/browser_thread.h"
 
 using base::android::AttachCurrentThread;
 using content::BrowserThread;
@@ -77,10 +70,10 @@ void AwContentsLifecycleNotifier::OnWebViewCreated(
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   has_aw_contents_ever_created_ = true;
   bool first_created = !HasAwContentsInstance();
-  DCHECK(!base::Contains(aw_contents_to_data_, aw_contents));
+  DCHECK(!aw_contents_to_data_.contains(aw_contents));
 
   aw_contents_to_data_.emplace(aw_contents, AwContentsData());
-  state_count_[ToIndex(AwContentsState::kDetached)]++;
+  UNSAFE_TODO(state_count_[ToIndex(AwContentsState::kDetached)])++;
   UpdateAppState();
 
   if (first_created) {
@@ -93,10 +86,10 @@ void AwContentsLifecycleNotifier::OnWebViewDestroyed(
     const AwContents* aw_contents) {
   DCHECK_CURRENTLY_ON(BrowserThread::UI);
   const auto it = aw_contents_to_data_.find(aw_contents);
-  CHECK(it != aw_contents_to_data_.end(), base::NotFatalUntil::M130);
+  CHECK(it != aw_contents_to_data_.end());
 
-  state_count_[ToIndex(it->second.aw_content_state)]--;
-  DCHECK(state_count_[ToIndex(it->second.aw_content_state)] >= 0);
+  UNSAFE_TODO(state_count_[ToIndex(it->second.aw_content_state)])--;
+  UNSAFE_TODO(DCHECK(state_count_[ToIndex(it->second.aw_content_state)] >= 0));
   aw_contents_to_data_.erase(it);
   UpdateAppState();
 
@@ -173,22 +166,24 @@ void AwContentsLifecycleNotifier::OnAwContentsStateChanged(
       CalculateState(data->attached_to_window, data->window_visible);
   if (data->aw_content_state == state)
     return;
-  state_count_[ToIndex(data->aw_content_state)]--;
-  DCHECK(state_count_[ToIndex(data->aw_content_state)] >= 0);
-  state_count_[ToIndex(state)]++;
+  UNSAFE_TODO(state_count_[ToIndex(data->aw_content_state)])--;
+  UNSAFE_TODO(DCHECK(state_count_[ToIndex(data->aw_content_state)] >= 0));
+  UNSAFE_TODO(state_count_[ToIndex(state)])++;
   data->aw_content_state = state;
   UpdateAppState();
 }
 
 void AwContentsLifecycleNotifier::UpdateAppState() {
   WebViewAppStateObserver::State state;
-  if (state_count_[ToIndex(AwContentsState::kForeground)] > 0)
+  if (UNSAFE_TODO(state_count_[ToIndex(AwContentsState::kForeground)]) > 0) {
     state = WebViewAppStateObserver::State::kForeground;
-  else if (state_count_[ToIndex(AwContentsState::kBackground)] > 0)
+  } else if (UNSAFE_TODO(state_count_[ToIndex(AwContentsState::kBackground)]) >
+             0) {
     state = WebViewAppStateObserver::State::kBackground;
-  else if (state_count_[ToIndex(AwContentsState::kDetached)] > 0)
+  } else if (UNSAFE_TODO(state_count_[ToIndex(AwContentsState::kDetached)]) >
+             0) {
     state = WebViewAppStateObserver::State::kUnknown;
-  else
+  } else
     state = WebViewAppStateObserver::State::kDestroyed;
   if (state != app_state_) {
     bool previous_in_foreground =
@@ -203,21 +198,22 @@ void AwContentsLifecycleNotifier::UpdateAppState() {
     }
 
     Java_AwContentsLifecycleNotifier_onAppStateChanged(
-        AttachCurrentThread(), java_ref_, static_cast<jint>(app_state_));
+        AttachCurrentThread(), java_ref_, static_cast<int32_t>(app_state_));
   }
 }
 
 bool AwContentsLifecycleNotifier::HasAwContentsInstance() const {
   for (size_t i = 0; i < std::size(state_count_); i++) {
-    if (state_count_[i] > 0)
+    if (UNSAFE_TODO(state_count_[i]) > 0) {
       return true;
+    }
   }
   return false;
 }
 
 AwContentsLifecycleNotifier::AwContentsData*
 AwContentsLifecycleNotifier::GetAwContentsData(const AwContents* aw_contents) {
-  DCHECK(base::Contains(aw_contents_to_data_, aw_contents));
+  DCHECK(aw_contents_to_data_.contains(aw_contents));
   return &aw_contents_to_data_.at(aw_contents);
 }
 
@@ -227,3 +223,5 @@ void AwContentsLifecycleNotifier::InitForTesting() {  // IN-TEST
 }
 
 }  // namespace android_webview
+
+DEFINE_JNI(AwContentsLifecycleNotifier)

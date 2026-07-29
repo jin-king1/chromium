@@ -11,6 +11,7 @@
 #include <string>
 #include <vector>
 
+#include "base/callback_list.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/ash/app_mode/isolated_web_app/kiosk_iwa_data.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_base.h"
@@ -18,12 +19,15 @@
 #include "chrome/browser/ash/policy/core/device_local_account.h"
 #include "chrome/browser/chromeos/app_mode/kiosk_web_app_update_observer.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/web_applications/web_app_install_info.h"
+#include "chrome/browser/web_applications/model/web_app_icon_types.h"
 #include "components/account_id/account_id.h"
 
+class PrefService;
 class PrefRegistrySimple;
 
 namespace ash {
+
+class KioskCryptohomeRemover;
 
 class KioskIwaManager : public KioskAppManagerBase {
  public:
@@ -34,7 +38,10 @@ class KioskIwaManager : public KioskAppManagerBase {
 
   // Returns the manager instance or will crash if it not yet initiazlied.
   static KioskIwaManager* Get();
-  KioskIwaManager();
+
+  // `cryptohome_remover` must be non-null, and must outlive `this`.
+  KioskIwaManager(PrefService& local_state,
+                  KioskCryptohomeRemover* cryptohome_remover);
   KioskIwaManager(const KioskIwaManager&) = delete;
   KioskIwaManager& operator=(const KioskIwaManager&) = delete;
   ~KioskIwaManager() override;
@@ -85,13 +92,23 @@ class KioskIwaManager : public KioskAppManagerBase {
   // removed.
   void ProcessDeviceLocalAccount(const policy::DeviceLocalAccount& account,
                                  KioskIwaDataMap& previous_apps);
+  // Tracks blocklist changes that influence the list of installed apps.
+  void OnRuntimeDataChanged();
 
   // TODO(crbug.com/377878781): Make common helpers for all kiosk app managers.
   std::vector<std::unique_ptr<KioskIwaData>> isolated_web_apps_;
   std::optional<AccountId> auto_launch_id_;
 
+  // If an auto-launch app is blocked, we should be able to get its
+  // KioskIwaData. This allows us to show an error message on the splash screen
+  // informing the user that the app is blocked. Since isolated_web_apps_ does
+  // not contain the blocked apps, we store it separately.
+  std::unique_ptr<KioskIwaData> maybe_blocked_auto_launch_app_;
+
   // Observes IWA updates. Persists through the whole IWA Kiosk session.
   std::unique_ptr<chromeos::KioskWebAppUpdateObserver> app_update_observer_;
+  // Track and remove apps added to the IWA blocklist
+  base::CallbackListSubscription runtime_data_changed_subscription_;
 
   base::WeakPtrFactory<KioskIwaManager> weak_ptr_factory_{this};
 };

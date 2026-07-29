@@ -5,9 +5,9 @@
 #include "chrome/browser/web_applications/isolated_web_apps/isolated_web_app_features.h"
 
 #include <tuple>
+#include <utility>
 
 #include "base/test/scoped_feature_list.h"
-#include "base/types/cxx23_to_underlying.h"
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/web_applications/test/web_app_test.h"
 #include "chrome/common/chrome_features.h"
@@ -29,10 +29,10 @@ using testing::IsTrue;
 class IsolatedWebAppFeaturesTest : public WebAppTest {
  protected:
   void SetDeveloperToolsAvailabilityPolicy(
-      policy::DeveloperToolsPolicyHandler::Availability availability) {
+      policy::DeveloperToolsAvailability availability) {
     profile()->GetTestingPrefService()->SetManagedPref(
         prefs::kDevToolsAvailability,
-        base::Value(base::to_underlying(availability)));
+        base::Value(std::to_underlying(availability)));
   }
 };
 
@@ -54,7 +54,7 @@ TEST_F(IsolatedWebAppFeaturesTest, IwaEnabledDevPolicyDisabled) {
   base::test::ScopedFeatureList scoped_feature_list{features::kIsolatedWebApps};
 
   SetDeveloperToolsAvailabilityPolicy(
-      policy::DeveloperToolsPolicyHandler::Availability::
+      policy::DeveloperToolsAvailability::
           kDisallowedForForceInstalledExtensions);
   EXPECT_THAT(IsIwaDevModeEnabled(profile()), IsFalse());
 }
@@ -66,7 +66,7 @@ TEST_F(IsolatedWebAppFeaturesTest, IwaEnabledDevModeEnabledDevPolicyDisabled) {
   EXPECT_THAT(IsIwaDevModeEnabled(profile()), IsTrue());
 
   SetDeveloperToolsAvailabilityPolicy(
-      policy::DeveloperToolsPolicyHandler::Availability::kDisallowed);
+      policy::DeveloperToolsAvailability::kDisallowed);
   EXPECT_THAT(IsIwaDevModeEnabled(profile()), IsFalse());
 }
 

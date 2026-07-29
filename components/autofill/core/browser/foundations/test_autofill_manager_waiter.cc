@@ -12,8 +12,27 @@
 #include "base/strings/string_util.h"
 #include "base/strings/stringprintf.h"
 #include "base/test/scoped_run_loop_timeout.h"
+#include "components/autofill/core/browser/foundations/autofill_manager_test_api.h"
 
 namespace autofill {
+
+namespace internal {
+
+MaybeScopedRunLoopTimeout::MaybeScopedRunLoopTimeout(
+    const base::Location& timeout_enabled_from_here,
+    std::optional<base::TimeDelta> timeout,
+    base::RepeatingCallback<std::string()> on_timeout_log) {
+  const bool is_mock_time =
+      !base::test::ScopedRunLoopTimeout::ExistsForCurrentThread();
+  if (!is_mock_time) {
+    run_loop_timeout_.emplace(timeout_enabled_from_here, timeout,
+                              std::move(on_timeout_log));
+  }
+}
+
+MaybeScopedRunLoopTimeout::~MaybeScopedRunLoopTimeout() = default;
+
+}  // namespace internal
 
 TestAutofillManagerWaiter::State::State() = default;
 TestAutofillManagerWaiter::State::~State() = default;
@@ -57,9 +76,8 @@ std::string TestAutofillManagerWaiter::DescribeState() const {
   return base::StringPrintf(
       "TestAutofillManagerWaiter created at %s for %zu relevant events has "
       "seen events [%s] is %stimed out",
-      waiter_location_.ToString().c_str(), state_->num_expected_relevant_events,
-      base::JoinString(events_vector, ", ").c_str(),
-      state_->timed_out ? "" : "not ");
+      waiter_location_.ToString(), state_->num_expected_relevant_events,
+      base::JoinString(events_vector, ", "), state_->timed_out ? "" : "not ");
 }
 
 size_t TestAutofillManagerWaiter::num_pending_events() const {
@@ -158,8 +176,7 @@ void TestAutofillManagerWaiter::OnBeforeTextFieldValueChanged(
 void TestAutofillManagerWaiter::OnAfterTextFieldValueChanged(
     AutofillManager& manager,
     FormGlobalId form,
-    FieldGlobalId field,
-    const std::u16string& text_value) {
+    FieldGlobalId field) {
   OnAfter(Event::kTextFieldValueChanged);
 }
 
@@ -191,6 +208,18 @@ void TestAutofillManagerWaiter::OnAfterSelectControlSelectionChanged(
   OnAfter(Event::kSelectControlSelectionChanged);
 }
 
+void TestAutofillManagerWaiter::OnBeforeSelectFieldOptionsDidChange(
+    AutofillManager& manager,
+    FormGlobalId form) {
+  OnBefore(Event::kSelectFieldOptionsDidChange);
+}
+
+void TestAutofillManagerWaiter::OnAfterSelectFieldOptionsDidChange(
+    AutofillManager& manager,
+    FormGlobalId form) {
+  OnAfter(Event::kSelectFieldOptionsDidChange);
+}
+
 void TestAutofillManagerWaiter::OnBeforeAskForValuesToFill(
     AutofillManager& manager,
     FormGlobalId form,
@@ -220,16 +249,15 @@ void TestAutofillManagerWaiter::OnAfterFocusOnFormField(
   OnAfter(Event::kFocusOnFormField);
 }
 
-void TestAutofillManagerWaiter::OnBeforeDidFillAutofillFormData(
+void TestAutofillManagerWaiter::OnBeforeDidAutofillForm(
     AutofillManager& manager,
     FormGlobalId form) {
-  OnBefore(Event::kDidFillAutofillFormData);
+  OnBefore(Event::kDidAutofillForm);
 }
 
-void TestAutofillManagerWaiter::OnAfterDidFillAutofillFormData(
-    AutofillManager& manager,
-    FormGlobalId form) {
-  OnAfter(Event::kDidFillAutofillFormData);
+void TestAutofillManagerWaiter::OnAfterDidAutofillForm(AutofillManager& manager,
+                                                       FormGlobalId form) {
+  OnAfter(Event::kDidAutofillForm);
 }
 
 void TestAutofillManagerWaiter::OnBeforeJavaScriptChangedAutofilledValue(
@@ -246,10 +274,28 @@ void TestAutofillManagerWaiter::OnAfterJavaScriptChangedAutofilledValue(
   OnAfter(Event::kJavaScriptChangedAutofilledValue);
 }
 
-void TestAutofillManagerWaiter::OnFormSubmitted(AutofillManager& manager,
-                                                const FormData& form) {
+void TestAutofillManagerWaiter::OnBeforeFormSubmitted(AutofillManager& manager,
+                                                      const FormData& form) {
   OnBefore(Event::kFormSubmitted);
+}
+
+void TestAutofillManagerWaiter::OnAfterFormSubmitted(AutofillManager& manager,
+                                                     const FormData& form) {
   OnAfter(Event::kFormSubmitted);
+}
+
+void TestAutofillManagerWaiter::OnBeforeFormWithEmailVerificationTokenSubmitted(
+    AutofillManager& manager,
+    const FormData& form,
+    const FieldGlobalId& field_id) {
+  OnBefore(Event::kFormWithEmailVerificationTokenSubmitted);
+}
+
+void TestAutofillManagerWaiter::OnAfterFormWithEmailVerificationTokenSubmitted(
+    AutofillManager& manager,
+    const FormData& form,
+    const FieldGlobalId& field_id) {
+  OnAfter(Event::kFormWithEmailVerificationTokenSubmitted);
 }
 
 void TestAutofillManagerWaiter::OnBeforeLoadedServerPredictions(
@@ -318,7 +364,7 @@ testing::AssertionResult TestAutofillManagerWaiter::Wait(
   while (!state_->timed_out &&
          (num_pending_events() > 0 ||
           num_completed_relevant_events() < num_expected_relevant_events)) {
-    base::test::ScopedRunLoopTimeout run_loop_timeout(
+    internal::MaybeScopedRunLoopTimeout run_loop_timeout(
         location, timeout,
         base::BindRepeating(
             [](TestAutofillManagerWaiter& waiter) {
@@ -358,7 +404,7 @@ const FormStructure* WaitForMatchingForm(
       DCHECK(!matching_form_);
       matching_form_ = FindForm();
       if (!matching_form_) {
-        base::test::ScopedRunLoopTimeout run_loop_timeout(
+        internal::MaybeScopedRunLoopTimeout run_loop_timeout(
             location, timeout,
             base::BindRepeating(
                 [](const Waiter* self) {
@@ -404,12 +450,12 @@ const FormStructure* WaitForMatchingForm(
       }
     }
 
-    FormStructure* FindForm() const {
+    const FormStructure* FindForm() const {
+      std::vector<const FormStructure*> forms =
+          test_api(*manager_).form_structures();
       auto it = std::ranges::find_if(
-          manager_->form_structures(),
-          [&](const auto& p) { return pred_.Run(*p.second); });
-      return it != manager_->form_structures().end() ? it->second.get()
-                                                     : nullptr;
+          forms, [&](const FormStructure* form) { return pred_.Run(*form); });
+      return it != forms.end() ? *it : nullptr;
     }
 
     base::ScopedObservation<AutofillManager, AutofillManager::Observer>

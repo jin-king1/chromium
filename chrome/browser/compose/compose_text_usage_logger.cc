@@ -79,33 +79,33 @@ ComposeTextUsageLogger::~ComposeTextUsageLogger() {
 
 void ComposeTextUsageLogger::OnAfterTextFieldValueChanged(
     autofill::AutofillManager& manager,
-    autofill::FormGlobalId form,
-    autofill::FieldGlobalId field,
-    const std::u16string& text_value) {
-  autofill::FormType form_type = autofill::FormType::kUnknownFormType;
-  int64_t form_control_type = -1;
-  autofill::FieldSignature field_signature;
-  autofill::FormSignature form_signature;
-  autofill::FormStructure* form_structure = manager.FindCachedFormById(form);
-  bool is_long_field = false;
-  if (form_structure) {
-    form_signature = form_structure->form_signature();
-    const autofill::AutofillField* field_data =
-        form_structure->GetFieldById(field);
-    if (field_data) {
-      form_type = FieldTypeGroupToFormType(field_data->Type().group());
-      form_control_type = static_cast<int64_t>(field_data->form_control_type());
+    autofill::FormGlobalId form_id,
+    autofill::FieldGlobalId field_id) {
+  auto [form, field] = manager.FindFormAndField(form_id, field_id);
 
-      switch (field_data->form_control_type()) {
-        case autofill::FormControlType::kContentEditable:
-        case autofill::FormControlType::kTextArea:
-          is_long_field = true;
-          break;
-        default:
-          break;
-      }
-      field_signature = field_data->GetFieldSignature();
+  autofill::FormSignature form_signature =
+      form ? form->form_signature() : autofill::FormSignature();
+
+  autofill::FieldSignature field_signature;
+  autofill::DenseSet<autofill::FormType> form_types;
+  int64_t form_control_type = -1;
+  bool is_long_field = false;
+  std::u16string text_value = u"";
+
+  if (field) {
+    form_types = field->Type().GetFormTypes();
+    form_control_type = static_cast<int64_t>(field->form_control_type());
+    text_value = field->value();
+
+    switch (field->form_control_type()) {
+      case autofill::FormControlType::kContentEditable:
+      case autofill::FormControlType::kTextArea:
+        is_long_field = true;
+        break;
+      default:
+        break;
     }
+    field_signature = field->GetFieldSignature();
   }
 
   // The page UKM source ID should not change while this object is alive. Keep
@@ -122,7 +122,7 @@ void ComposeTextUsageLogger::OnAfterTextFieldValueChanged(
     Reset();
   }
 
-  FieldMetrics& metrics = field_metrics_[field];
+  FieldMetrics& metrics = field_metrics_[field_id];
   if (!metrics.initialized) {
     if (text_value.length() > MAX_CHARS_TYPED_AT_ONCE) {
       metrics.initial_text = text_value;
@@ -137,18 +137,22 @@ void ComposeTextUsageLogger::OnAfterTextFieldValueChanged(
   }
   metrics.last_update_time = base::TimeTicks::Now();
 
-  switch (form_type) {
-    case autofill::FormType::kUnknownFormType:
-      break;
-    case autofill::FormType::kAddressForm:
-      metrics.is_autofill_field_type = true;
-      break;
-    case autofill::FormType::kStandaloneCvcForm:
-    case autofill::FormType::kCreditCardForm:
-    case autofill::FormType::kPasswordForm:
-      metrics.sensitive_field = true;
-      metrics.is_autofill_field_type = true;
-      break;
+  for (autofill::FormType form_type : form_types) {
+    switch (form_type) {
+      case autofill::FormType::kUnknownFormType:
+        break;
+      case autofill::FormType::kAddressForm:
+      case autofill::FormType::kLoyaltyCardForm:
+        metrics.is_autofill_field_type = true;
+        break;
+      case autofill::FormType::kStandaloneCvcForm:
+      case autofill::FormType::kCreditCardForm:
+      case autofill::FormType::kPasswordForm:
+      case autofill::FormType::kOneTimePasswordForm:
+        metrics.sensitive_field = true;
+        metrics.is_autofill_field_type = true;
+        break;
+    }
   }
 
   // Note that field_data->value doesn't have the current value, so we use

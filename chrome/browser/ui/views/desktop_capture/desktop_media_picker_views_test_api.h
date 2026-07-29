@@ -47,7 +47,14 @@ class DesktopMediaPickerViewsTestApi {
   std::u16string_view GetAudioLabelText() const;
   void SetAudioSharingApprovedByUser(bool allow);
   bool IsAudioSharingApprovedByUser() const;
+  bool IsScreenAudioOffered() const;
+  bool IsWindowAudioOffered() const;
+  content::DesktopMediaID::AudioType GetWindowAudioType() const;
   views::MdTextButton* GetReselectButton();
+  std::u16string GetOkButtonLabelText() const;
+  bool IsOkButtonEnabled() const;
+  bool IsAudioRecommendationVisible() const;
+  std::u16string GetDelegatedButtonText() const;
 
   bool HasSourceAtIndex(size_t index) const;
   void FocusSourceAtIndex(size_t index, bool select = true);

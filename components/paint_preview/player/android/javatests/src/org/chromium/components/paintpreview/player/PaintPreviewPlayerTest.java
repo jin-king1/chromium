@@ -35,16 +35,18 @@ import org.junit.runner.RunWith;
 
 import org.chromium.base.ThreadUtils;
 import org.chromium.base.test.BaseActivityTestRule;
-import org.chromium.base.test.BaseJUnit4ClassRunner;
 import org.chromium.base.test.util.ApplicationTestUtils;
 import org.chromium.base.test.util.CallbackHelper;
 import org.chromium.base.test.util.Criteria;
 import org.chromium.base.test.util.CriteriaHelper;
 import org.chromium.base.test.util.DisableIf;
+import org.chromium.base.test.util.DisabledTest;
 import org.chromium.base.test.util.Feature;
 import org.chromium.components.signin.AccountManagerFacadeProvider;
 import org.chromium.components.signin.test.util.FakeAccountManagerFacade;
+import org.chromium.content_public.browser.test.ContentJUnit4ClassRunner;
 import org.chromium.content_public.browser.test.NativeLibraryTestUtils;
+import org.chromium.ui.base.DeviceFormFactor;
 import org.chromium.ui.test.util.BlankUiTestActivity;
 import org.chromium.ui.test.util.RenderTestRule;
 import org.chromium.ui.test.util.ViewUtils;
@@ -53,7 +55,7 @@ import org.chromium.url.GURL;
 import java.util.List;
 
 /** Instrumentation tests for the Paint Preview player. */
-@RunWith(BaseJUnit4ClassRunner.class)
+@RunWith(ContentJUnit4ClassRunner.class)
 public class PaintPreviewPlayerTest {
     private static final long TIMEOUT_MS = 5000;
 
@@ -106,12 +108,20 @@ public class PaintPreviewPlayerTest {
                     mLayout = new FrameLayout(mActivityTestRule.getActivity());
                     mActivityTestRule.getActivity().setContentView(mLayout);
                 });
+        InstrumentationRegistry.getInstrumentation().waitForIdleSync();
         AccountManagerFacadeProvider.setInstanceForTests(new FakeAccountManagerFacade());
         NativeLibraryTestUtils.loadNativeLibraryAndInitBrowserProcess();
     }
 
     @After
     public void tearDown() throws Exception {
+        // overscrollRefreshTest() swipes near the top of the screen and may open the status bar.
+        //
+        // Collapse the status bar to avoid it breaking other tests (crbug.com/354279630).
+        InstrumentationRegistry.getInstrumentation()
+                .getUiAutomation()
+                .executeShellCommand("cmd statusbar collapse");
+
         ThreadUtils.runOnUiThreadBlocking(mPlayerManager::destroy);
     }
 
@@ -187,9 +197,7 @@ public class PaintPreviewPlayerTest {
     /** Tests that link clicks in the player work correctly. */
     @Test
     @MediumTest
-    @DisableIf.Build(
-            message = "Test is failing on Android P+, see crbug.com/1110939.",
-            sdk_is_greater_than = VERSION_CODES.O_MR1)
+    @DisabledTest(message = "Test is failing on Android P+, see crbug.com/1110939.")
     public void linkClickTest() {
         initPlayerManager(false);
         final View playerHostView = mPlayerManager.getView();
@@ -217,15 +225,15 @@ public class PaintPreviewPlayerTest {
 
     @Test
     @MediumTest
+    @DisableIf.Device(DeviceFormFactor.DESKTOP_FREEFORM) // crbug.com/511289160
     public void overscrollRefreshTest() throws Exception {
         initPlayerManager(true);
         UiDevice uiDevice = UiDevice.getInstance(InstrumentationRegistry.getInstrumentation());
         int deviceHeight = uiDevice.getDisplayHeight();
         int statusBarHeight = statusBarHeight();
-        int navigationBarHeight = navigationBarHeight();
-        int padding = 20;
-        int toY = deviceHeight - navigationBarHeight - padding;
-        int fromY = statusBarHeight + padding;
+        int viewportHeight = deviceHeight - statusBarHeight - navigationBarHeight();
+        int fromY = statusBarHeight + viewportHeight / 4;
+        int toY = statusBarHeight + viewportHeight * 3 / 4;
         uiDevice.swipe(50, fromY, 50, toY, 5);
 
         mRefreshedCallback.waitForOnly();

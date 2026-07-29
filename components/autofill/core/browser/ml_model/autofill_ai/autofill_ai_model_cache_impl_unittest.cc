@@ -10,15 +10,25 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/task_environment.h"
 #include "base/time/time.h"
+#include "base/types/optional_ref.h"
+#include "components/autofill/core/browser/autofill_field.h"
+#include "components/autofill/core/browser/autofill_format_string.h"
+#include "components/autofill/core/browser/field_types.h"
 #include "components/autofill/core/browser/ml_model/autofill_ai/autofill_ai_model_cache.h"
 #include "components/autofill/core/browser/proto/autofill_ai_model_cache.pb.h"
+#include "components/autofill/core/browser/proto/server.pb.h"
 #include "components/autofill/core/common/signatures.h"
 #include "components/leveldb_proto/public/proto_database_provider.h"
+#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
 namespace autofill {
 
 namespace {
+
+using ::testing::IsEmpty;
+using ::testing::Pair;
+using ::testing::UnorderedElementsAre;
 
 class AutofillAiModelCacheImplTest : public ::testing::Test {
  public:
@@ -46,7 +56,8 @@ class AutofillAiModelCacheImplTest : public ::testing::Test {
     // Process remaining operations.
     task_environment_.RunUntilIdle();
     cache_ = std::make_unique<AutofillAiModelCacheImpl>(
-        db_provider_.get(), temp_dir_.GetPath(), max_cache_size, max_cache_age);
+        /*history_service=*/nullptr, db_provider_.get(), temp_dir_.GetPath(),
+        max_cache_size, max_cache_age);
     // Wait until database has loaded.
     task_environment_.RunUntilIdle();
   }
@@ -67,7 +78,7 @@ TEST_F(AutofillAiModelCacheImplTest, AddNewEntry) {
 
   EXPECT_FALSE(cache().Contains(signature1));
   EXPECT_FALSE(cache().Contains(signature2));
-  cache().Update(signature1, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature1, AutofillAiModelCache::ModelResponse(), {});
   EXPECT_TRUE(cache().Contains(signature1));
   EXPECT_FALSE(cache().Contains(signature2));
 }
@@ -78,7 +89,7 @@ TEST_F(AutofillAiModelCacheImplTest, CacheSurvivesRestart) {
   constexpr auto signature = FormSignature(123);
 
   EXPECT_FALSE(cache().Contains(signature));
-  cache().Update(signature, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature, AutofillAiModelCache::ModelResponse(), {});
   EXPECT_TRUE(cache().Contains(signature));
 
   // Simulate restart.
@@ -95,11 +106,11 @@ TEST_F(AutofillAiModelCacheImplTest, MaxCacheSize) {
   constexpr auto signature4 = FormSignature(123456);
 
   RecreateCache(/*max_cache_size=*/3);
-  cache().Update(signature1, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature1, AutofillAiModelCache::ModelResponse(), {});
   AdvanceClock(base::Days(1));
-  cache().Update(signature2, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature2, AutofillAiModelCache::ModelResponse(), {});
   AdvanceClock(base::Days(1));
-  cache().Update(signature3, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature3, AutofillAiModelCache::ModelResponse(), {});
   AdvanceClock(base::Days(1));
   EXPECT_TRUE(cache().Contains(signature1));
   EXPECT_TRUE(cache().Contains(signature2));
@@ -107,7 +118,7 @@ TEST_F(AutofillAiModelCacheImplTest, MaxCacheSize) {
   EXPECT_FALSE(cache().Contains(signature4));
 
   // Adding a fourth entry removes the first one.
-  cache().Update(signature4, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature4, AutofillAiModelCache::ModelResponse(), {});
   EXPECT_FALSE(cache().Contains(signature1));
   EXPECT_TRUE(cache().Contains(signature2));
   EXPECT_TRUE(cache().Contains(signature3));
@@ -128,11 +139,11 @@ TEST_F(AutofillAiModelCacheImplTest, MaxCacheAge) {
   constexpr auto signature3 = FormSignature(12345);
 
   RecreateCache(/*max_cache_size=*/10, /*max_cache_age=*/base::Days(3));
-  cache().Update(signature1, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature1, AutofillAiModelCache::ModelResponse(), {});
   AdvanceClock(base::Days(1));
-  cache().Update(signature2, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature2, AutofillAiModelCache::ModelResponse(), {});
   AdvanceClock(base::Days(1));
-  cache().Update(signature3, AutofillAiModelCache::CacheEntry());
+  cache().Update(signature3, AutofillAiModelCache::ModelResponse(), {});
   AdvanceClock(base::Days(1));
   EXPECT_TRUE(cache().Contains(signature1));
   EXPECT_TRUE(cache().Contains(signature2));
@@ -157,6 +168,24 @@ TEST_F(AutofillAiModelCacheImplTest, MaxCacheAge) {
   EXPECT_TRUE(cache().Contains(signature3));
 }
 
+TEST_F(AutofillAiModelCacheImplTest, Erase) {
+  constexpr auto signature1 = FormSignature(123);
+  constexpr auto signature2 = FormSignature(1234);
+
+  cache().Update(signature1, AutofillAiModelCache::ModelResponse(), {});
+  cache().Update(signature2, AutofillAiModelCache::ModelResponse(), {});
+  EXPECT_TRUE(cache().Contains(signature1));
+  EXPECT_TRUE(cache().Contains(signature2));
+
+  cache().Erase(signature2);
+  EXPECT_TRUE(cache().Contains(signature1));
+  EXPECT_FALSE(cache().Contains(signature2));
+
+  cache().Erase(signature1);
+  EXPECT_FALSE(cache().Contains(signature1));
+  EXPECT_FALSE(cache().Contains(signature2));
+}
+
 // Tests that `Autofill.AutofillAi.ModelCache.InitSuccess` is emitted on
 // startup.
 TEST_F(AutofillAiModelCacheImplTest, InitSuccessMetric) {
@@ -164,6 +193,78 @@ TEST_F(AutofillAiModelCacheImplTest, InitSuccessMetric) {
   RecreateCache();
   histogram_tester.ExpectUniqueSample(
       "Autofill.AutofillAi.ModelCache.InitSuccess", true, 1);
+}
+
+// Tests that the cache returns the properly parsed field predictions for a
+// given cache entry.
+TEST_F(AutofillAiModelCacheImplTest, GetFieldPredictions) {
+  constexpr auto form_signature = FormSignature(123);
+  constexpr auto field_signature1 = FieldSignature(345);
+  constexpr auto field_signature2 = FieldSignature(765);
+
+  AutofillAiModelCache::ModelResponse model_response;
+  {
+    auto* field_response = model_response.add_field_responses();
+    field_response->add_all_field_types(PASSPORT_NUMBER);
+    field_response->add_all_field_types(NATIONAL_ID_CARD_NUMBER);
+  }
+  {
+    auto* field_response = model_response.add_field_responses();
+    field_response->add_all_field_types(PASSPORT_ISSUING_COUNTRY);
+  }
+  {
+    auto* field_response = model_response.add_field_responses();
+    field_response->add_all_field_types(PASSPORT_EXPIRATION_DATE);
+    field_response->set_formatting_meta("DD.MM.YYYY");
+  }
+
+  using FieldIdentifier = AutofillAiModelCache::FieldIdentifier;
+  using FieldPrediction = AutofillAiModelCache::FieldPrediction;
+  const auto identifier1 = FieldIdentifier{.signature = field_signature1};
+  const auto identifier2 = FieldIdentifier{.signature = field_signature1,
+                                           .rank_in_signature_group = 1};
+  const auto identifier3 = FieldIdentifier{.signature = field_signature2};
+  cache().Update(form_signature, model_response,
+                 {identifier1, identifier2, identifier3});
+
+  EXPECT_THAT(
+      cache().GetFieldPredictions(form_signature),
+      UnorderedElementsAre(
+          Pair(identifier1,
+               FieldPrediction({PASSPORT_NUMBER, NATIONAL_ID_CARD_NUMBER})),
+          Pair(identifier2, FieldPrediction({PASSPORT_ISSUING_COUNTRY})),
+          Pair(identifier3,
+               FieldPrediction({PASSPORT_EXPIRATION_DATE},
+                               AutofillFormatString(u"DD.MM.YYYY",
+                                                    FormatString_Type_DATE)))));
+}
+
+// Tests that the cache handles invalid field types gracefully.
+TEST_F(AutofillAiModelCacheImplTest, GetFieldPredictionsInvalidType) {
+  constexpr auto form_signature = FormSignature(123);
+  constexpr auto field_signature = FieldSignature(345);
+
+  AutofillAiModelCache::ModelResponse model_response;
+  {
+    auto* field_response = model_response.add_field_responses();
+    constexpr int invalid_field_type = 789;
+    static_assert(!ToSafeFieldType(invalid_field_type).has_value());
+    field_response->add_all_field_types(invalid_field_type);
+  }
+
+  using FieldIdentifier = AutofillAiModelCache::FieldIdentifier;
+  using FieldPrediction = AutofillAiModelCache::FieldPrediction;
+  const auto identifier = FieldIdentifier{.signature = field_signature};
+  cache().Update(form_signature, model_response, {identifier});
+
+  EXPECT_THAT(cache().GetFieldPredictions(form_signature),
+              UnorderedElementsAre(Pair(identifier, FieldPrediction())));
+}
+
+// Tests that the cache returns an empty map if there is no cache entry for
+// the form signature.
+TEST_F(AutofillAiModelCacheImplTest, GetNonExistantFieldPrediction) {
+  EXPECT_THAT(cache().GetFieldPredictions(FormSignature(4565)), IsEmpty());
 }
 
 }  // namespace

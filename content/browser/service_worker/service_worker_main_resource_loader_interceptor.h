@@ -7,7 +7,6 @@
 
 #include <memory>
 
-#include "base/gtest_prod_util.h"
 #include "base/memory/weak_ptr.h"
 #include "content/browser/loader/navigation_loader_interceptor.h"
 #include "content/browser/navigation_subresource_loader_params.h"
@@ -16,6 +15,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/child_process_host.h"
 #include "content/public/browser/service_worker_client_info.h"
+#include "content/public/common/child_process_id.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "services/network/public/cpp/single_request_url_loader_factory.h"
@@ -52,8 +52,26 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoaderInterceptor final
   CreateForWorker(
       const network::ResourceRequest& resource_request,
       const net::IsolationInfo& isolation_info,
-      int process_id,
+      ChildProcessId process_id,
       const DedicatedOrSharedWorkerToken& worker_token,
+      base::WeakPtr<ServiceWorkerMainResourceHandle> navigation_handle);
+
+  static std::unique_ptr<ServiceWorkerMainResourceLoaderInterceptor>
+  CreateForPrefetch(
+      const network::ResourceRequest& resource_request,
+      base::WeakPtr<ServiceWorkerMainResourceHandle> navigation_handle,
+      scoped_refptr<network::SharedURLLoaderFactory>
+          network_url_loader_factory);
+
+  // Creates a ServiceWorkerMainResourceLoaderInterceptor for a download
+  // request ("Save link as", "Save image as", <a download>). Returns nullptr
+  // if the interceptor could not be created for the URL.
+  // Precondition: `resource_request.trusted_params` must be set; its
+  // `isolation_info` is consumed when constructing the ServiceWorkerClient.
+  // Requires features::kServiceWorkerInterceptDownloads to be enabled.
+  static std::unique_ptr<ServiceWorkerMainResourceLoaderInterceptor>
+  CreateForDownload(
+      const network::ResourceRequest& resource_request,
       base::WeakPtr<ServiceWorkerMainResourceHandle> navigation_handle);
 
   ServiceWorkerMainResourceLoaderInterceptor(
@@ -84,8 +102,7 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoaderInterceptor final
   friend class ServiceWorkerMainResourceLoaderInterceptorTest;
 
   ServiceWorkerMainResourceLoaderInterceptor(
-      base::WeakPtr<ServiceWorkerMainResourceHandle> handle,
-      bool skip_service_worker);
+      base::WeakPtr<ServiceWorkerMainResourceHandle> handle);
 
   // Returns true if a ServiceWorkerMainResourceLoaderInterceptor should be
   // created for a navigation to |url|.
@@ -108,9 +125,6 @@ class CONTENT_EXPORT ServiceWorkerMainResourceLoaderInterceptor final
   // WorkerScriptLoader which owns |this|.
   // TODO(falken): Arrange things so |handle_| outlives |this| for workers too.
   const base::WeakPtr<ServiceWorkerMainResourceHandle> handle_;
-
-  // For all clients:
-  const bool skip_service_worker_;
 
   // Handles a single request. Set to a new instance on redirects.
   std::unique_ptr<ServiceWorkerControlleeRequestHandler> request_handler_;

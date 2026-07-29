@@ -7,17 +7,17 @@
 #include <functional>
 #include <optional>
 #include <string>
+#include <variant>
 
 #include "base/check.h"
 #include "base/feature_list.h"
 #include "base/metrics/histogram_macros.h"
-#include "base/not_fatal_until.h"
 #include "base/notreached.h"
+#include "base/rand_util.h"
 #include "base/types/optional_ref.h"
 #include "base/types/optional_util.h"
 #include "build/build_config.h"
 #include "components/content_settings/core/common/content_settings.h"
-#include "components/content_settings/core/common/content_settings_enums.mojom-shared.h"
 #include "components/content_settings/core/common/content_settings_enums.mojom.h"
 #include "components/content_settings/core/common/content_settings_metadata.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -25,13 +25,15 @@
 #include "components/privacy_sandbox/privacy_sandbox_features.h"
 #include "net/base/features.h"
 #include "net/base/net_errors.h"
+#include "net/base/schemeful_site.h"
 #include "net/base/url_util.h"
 #include "net/cookies/cookie_constants.h"
 #include "net/cookies/cookie_setting_override.h"
 #include "net/cookies/cookie_util.h"
 #include "net/cookies/site_for_cookies.h"
 #include "net/cookies/static_cookie_policy.h"
-#include "third_party/abseil-cpp/absl/types/variant.h"
+#include "services/network/public/cpp/features.h"
+#include "services/network/public/cpp/permissions_policy/permissions_policy.h"
 #include "url/gurl.h"
 #include "url/origin.h"
 
@@ -50,25 +52,9 @@ constexpr StorageAccessResult GetStorageAccessResult(
     case AllowMechanism::kNone:
       return StorageAccessResult::ACCESS_BLOCKED;
     case AllowMechanism::kAllowByExplicitSetting:
-    case AllowMechanism::kAllowByTrackingProtectionException:
     case AllowMechanism::kAllowByGlobalSetting:
     case AllowMechanism::kAllowByEnterprisePolicyCookieAllowedForUrls:
       return StorageAccessResult::ACCESS_ALLOWED;
-    case AllowMechanism::kAllowBy3PCDMetadataSource1pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSource3pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceUnspecified:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceTest:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceDogFood:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCriticalSector:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCuj:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceGovEduTld:
-      return StorageAccessResult::ACCESS_ALLOWED_3PCD_METADATA_GRANT;
-    case AllowMechanism::kAllowBy3PCD:
-      return StorageAccessResult::ACCESS_ALLOWED_3PCD_TRIAL;
-    case AllowMechanism::kAllowByTopLevel3PCD:
-      return StorageAccessResult::ACCESS_ALLOWED_TOP_LEVEL_3PCD_TRIAL;
-    case AllowMechanism::kAllowBy3PCDHeuristics:
-      return StorageAccessResult::ACCESS_ALLOWED_3PCD_HEURISTICS_GRANT;
     case AllowMechanism::kAllowByStorageAccess:
       return StorageAccessResult::ACCESS_ALLOWED_STORAGE_ACCESS_GRANT;
     case AllowMechanism::kAllowByTopLevelStorageAccess:
@@ -77,37 +63,6 @@ constexpr StorageAccessResult GetStorageAccessResult(
       return StorageAccessResult::ACCESS_ALLOWED_SCHEME;
     case AllowMechanism::kAllowBySandboxValue:
       return StorageAccessResult::ACCESS_ALLOWED_SANDBOX_VALUE;
-  }
-}
-
-constexpr std::optional<SettingSource> GetSettingSource(
-    ThirdPartyCookieAllowMechanism mechanism) {
-  using AllowMechanism = ThirdPartyCookieAllowMechanism;
-  switch (mechanism) {
-    // 3PCD-related mechanisms all map to `kTpcdGrant`.
-    case AllowMechanism::kAllowBy3PCDMetadataSource1pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSource3pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceUnspecified:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceTest:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceDogFood:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCriticalSector:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCuj:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceGovEduTld:
-    case AllowMechanism::kAllowBy3PCD:
-    case AllowMechanism::kAllowBy3PCDHeuristics:
-    case AllowMechanism::kAllowByTopLevel3PCD:
-      return SettingSource::kTpcdGrant;
-    // Other mechanisms do not map to a `SettingSource`.
-    case AllowMechanism::kNone:
-    case AllowMechanism::kAllowByExplicitSetting:
-    case AllowMechanism::kAllowByTrackingProtectionException:
-    case AllowMechanism::kAllowByGlobalSetting:
-    case AllowMechanism::kAllowByEnterprisePolicyCookieAllowedForUrls:
-    case AllowMechanism::kAllowByStorageAccess:
-    case AllowMechanism::kAllowByTopLevelStorageAccess:
-    case AllowMechanism::kAllowByScheme:
-    case AllowMechanism::kAllowBySandboxValue:
-      return std::nullopt;
   }
 }
 
@@ -128,19 +83,34 @@ bool IsEligibleForStorageAccess(net::CookieSettingOverrides overrides) {
              net::CookieSettingOverride::kStorageAccessGrantEligibleViaHeader);
 }
 
-}  // namespace
+// Returns true if the `permissions_policy` allows the "storage-access" feature
+// for the `url`.
+bool IsStorageAccessAllowedByPermissionsPolicy(
+    const url::Origin& origin,
+    base::optional_ref<const network::PermissionsPolicy> permissions_policy) {
+  // TODO(crbug.com/382291442): Remove feature guarding once launched.
+  // If these features are not enabled, return true to maintain the existing
+  // behavior.
+  if (!base::FeatureList::IsEnabled(
+          network::features::kPopulatePermissionsPolicyOnRequest) ||
+      !base::FeatureList::IsEnabled(
+          network::features::kStorageAccessHeadersRespectPermissionsPolicy)) {
+    return true;
+  }
 
-bool CookieSettingsBase::storage_access_api_grants_unpartitioned_storage_ =
-    false;
+  // TODO(crbug.com/382291442): Once the feature guarding is removed, change the
+  // function argument to a required `network::PermissionsPolicy` and move the
+  // `CHECK` to the caller.
+  CHECK(permissions_policy.has_value());
 
-void CookieSettingsBase::
-    SetStorageAccessAPIGrantsUnpartitionedStorageForTesting(bool grants) {
-  storage_access_api_grants_unpartitioned_storage_ = grants;
+  return permissions_policy->IsFeatureEnabledForOrigin(
+      network::mojom::PermissionsPolicyFeature::kStorageAccessAPI, origin);
 }
 
-CookieSettingsBase::CookieSettingsBase()
-    : is_storage_partitioned_(base::FeatureList::IsEnabled(
-          net::features::kThirdPartyStoragePartitioning)) {}
+}  // namespace
+
+
+CookieSettingsBase::CookieSettingsBase() = default;
 
 CookieSettingsBase::CookieSettingWithMetadata::CookieSettingWithMetadata(
     ContentSetting cookie_setting,
@@ -159,7 +129,7 @@ CookieSettingsBase::CookieSettingWithMetadata::CookieSettingWithMetadata(
 bool CookieSettingsBase::CookieSettingWithMetadata::
     BlockedByThirdPartyCookieBlocking() const {
   const bool out = !IsAllowed(cookie_setting_) && allow_partitioned_cookies_;
-  CHECK(!out || is_third_party_request_, base::NotFatalUntil::M130);
+  CHECK(!out || is_third_party_request_);
   return out;
 }
 
@@ -172,13 +142,7 @@ CookieSettingsBase::GetContentSettingsTypes() {
           ContentSettingsType::LEGACY_COOKIE_ACCESS,
           ContentSettingsType::STORAGE_ACCESS,
           ContentSettingsType::TOP_LEVEL_STORAGE_ACCESS,
-          ContentSettingsType::TPCD_HEURISTICS_GRANTS,
-          ContentSettingsType::TPCD_TRIAL,
-          ContentSettingsType::TOP_LEVEL_TPCD_TRIAL,
           ContentSettingsType::FEDERATED_IDENTITY_SHARING,
-          ContentSettingsType::TRACKING_PROTECTION,
-          ContentSettingsType::TOP_LEVEL_TPCD_ORIGIN_TRIAL,
-          ContentSettingsType::STORAGE_ACCESS_HEADER_ORIGIN_TRIAL,
           ContentSettingsType::LEGACY_COOKIE_SCOPE,
       });
   return kInstance;
@@ -192,95 +156,9 @@ GURL CookieSettingsBase::GetFirstPartyURL(
                                      : site_for_cookies.RepresentativeUrl();
 }
 
-// static
-bool CookieSettingsBase::IsAnyTpcdMetadataAllowMechanism(
-    const ThirdPartyCookieAllowMechanism& mechanism) {
-  using AllowMechanism = ThirdPartyCookieAllowMechanism;
-  switch (mechanism) {
-    case AllowMechanism::kNone:
-    case AllowMechanism::kAllowByExplicitSetting:
-    case AllowMechanism::kAllowByTrackingProtectionException:
-    case AllowMechanism::kAllowByGlobalSetting:
-    case AllowMechanism::kAllowBy3PCD:
-    case AllowMechanism::kAllowBy3PCDHeuristics:
-    case AllowMechanism::kAllowByStorageAccess:
-    case AllowMechanism::kAllowByTopLevelStorageAccess:
-    case AllowMechanism::kAllowByTopLevel3PCD:
-    case AllowMechanism::kAllowByEnterprisePolicyCookieAllowedForUrls:
-    case AllowMechanism::kAllowByScheme:
-    case AllowMechanism::kAllowBySandboxValue:
-      return false;
-    case AllowMechanism::kAllowBy3PCDMetadataSourceUnspecified:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceTest:
-    case AllowMechanism::kAllowBy3PCDMetadataSource1pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSource3pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceDogFood:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCriticalSector:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCuj:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceGovEduTld:
-      return true;
-  }
-}
-
-// static
-bool CookieSettingsBase::Is1PDtRelatedAllowMechanism(
-    const ThirdPartyCookieAllowMechanism& mechanism) {
-  using AllowMechanism = ThirdPartyCookieAllowMechanism;
-  switch (mechanism) {
-    case AllowMechanism::kAllowByTopLevel3PCD:
-    case AllowMechanism::kAllowBy3PCDMetadataSource1pDt:
-      return true;
-    case AllowMechanism::kNone:
-    case AllowMechanism::kAllowByExplicitSetting:
-    case AllowMechanism::kAllowByTrackingProtectionException:
-    case AllowMechanism::kAllowByGlobalSetting:
-    case AllowMechanism::kAllowBy3PCD:
-    case AllowMechanism::kAllowBy3PCDHeuristics:
-    case AllowMechanism::kAllowByStorageAccess:
-    case AllowMechanism::kAllowByTopLevelStorageAccess:
-    case AllowMechanism::kAllowByEnterprisePolicyCookieAllowedForUrls:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceUnspecified:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceTest:
-    case AllowMechanism::kAllowBy3PCDMetadataSource3pDt:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceDogFood:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCriticalSector:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceCuj:
-    case AllowMechanism::kAllowBy3PCDMetadataSourceGovEduTld:
-    case AllowMechanism::kAllowByScheme:
-    case AllowMechanism::kAllowBySandboxValue:
-      return false;
-  }
-}
-
-// static
-ThirdPartyCookieAllowMechanism
-CookieSettingsBase::TpcdMetadataSourceToAllowMechanism(
-    const mojom::TpcdMetadataRuleSource& source) {
-  using TpcdMetadataRuleSource = mojom::TpcdMetadataRuleSource;
-  using AllowMechanism = ThirdPartyCookieAllowMechanism;
-  switch (source) {
-    case TpcdMetadataRuleSource::SOURCE_1P_DT:
-      return AllowMechanism::kAllowBy3PCDMetadataSource1pDt;
-    case TpcdMetadataRuleSource::SOURCE_3P_DT:
-      return AllowMechanism::kAllowBy3PCDMetadataSource3pDt;
-    case TpcdMetadataRuleSource::SOURCE_UNSPECIFIED:
-      return AllowMechanism::kAllowBy3PCDMetadataSourceUnspecified;
-    case TpcdMetadataRuleSource::SOURCE_TEST:
-      return AllowMechanism::kAllowBy3PCDMetadataSourceTest;
-    case TpcdMetadataRuleSource::SOURCE_DOGFOOD:
-      return AllowMechanism::kAllowBy3PCDMetadataSourceDogFood;
-    case TpcdMetadataRuleSource::SOURCE_CRITICAL_SECTOR:
-      return AllowMechanism::kAllowBy3PCDMetadataSourceCriticalSector;
-    case TpcdMetadataRuleSource::SOURCE_CUJ:
-      return AllowMechanism::kAllowBy3PCDMetadataSourceCuj;
-    case TpcdMetadataRuleSource::SOURCE_GOV_EDU_TLD:
-      return AllowMechanism::kAllowBy3PCDMetadataSourceGovEduTld;
-  }
-}
-
 bool CookieSettingsBase::ShouldDeleteCookieOnExit(
     const ContentSettingsForOneType& cookie_settings,
-    const std::string& domain,
+    std::string_view domain,
     net::CookieSourceScheme scheme) const {
   // Cookies with an unknown (kUnset) scheme will be treated as having a not
   // secure scheme.
@@ -317,9 +195,9 @@ bool CookieSettingsBase::ShouldDeleteCookieOnExit(
     // While we don't know on which top-frame-origin a cookie was set, we still
     // use exceptions that only specify a secondary pattern to handle cookies
     // that match this pattern.
-    const std::string& host = entry.primary_pattern.MatchesAllHosts()
-                                  ? entry.secondary_pattern.GetHost()
-                                  : entry.primary_pattern.GetHost();
+    std::string_view host = entry.primary_pattern.MatchesAllHosts()
+                                ? entry.secondary_pattern.GetHost()
+                                : entry.primary_pattern.GetHost();
     if (net::cookie_util::IsDomainMatch(domain, host)) {
       if (entry.GetContentSetting() == CONTENT_SETTING_ALLOW) {
         return false;
@@ -359,7 +237,13 @@ bool CookieSettingsBase::IsFullCookieAccessAllowed(
     const net::SiteForCookies& site_for_cookies,
     base::optional_ref<const url::Origin> top_frame_origin,
     net::CookieSettingOverrides overrides,
+    base::optional_ref<const net::CookiePartitionKey> cookie_partition_key,
     CookieSettingWithMetadata* cookie_settings) const {
+  if (cookie_partition_key.has_value() &&
+      cookie_partition_key->ForbidsUnpartitionedCookieAccess()) {
+    return false;
+  }
+
   CookieSettingWithMetadata setting = GetCookieSettingInternal(
       url, site_for_cookies,
       GetFirstPartyURL(site_for_cookies, top_frame_origin.as_ptr()), overrides,
@@ -384,7 +268,7 @@ bool CookieSettingsBase::IsCookieSessionOnly(const GURL& origin) const {
 
 net::CookieAccessSemantics
 CookieSettingsBase::GetCookieAccessSemanticsForDomain(
-    const std::string& cookie_domain) const {
+    std::string_view cookie_domain) const {
   ContentSetting setting = GetSettingForLegacyCookieAccess(cookie_domain);
   DCHECK(IsValidSettingForLegacyAccess(setting));
   switch (setting) {
@@ -398,7 +282,7 @@ CookieSettingsBase::GetCookieAccessSemanticsForDomain(
 }
 
 net::CookieScopeSemantics CookieSettingsBase::GetCookieScopeSemanticsForDomain(
-    const std::string& cookie_domain) const {
+    std::string_view cookie_domain) const {
   ContentSetting setting = GetSettingForLegacyCookieScope(cookie_domain);
   DCHECK(IsValidSettingForLegacyAccess(setting));
   switch (setting) {
@@ -411,130 +295,31 @@ net::CookieScopeSemantics CookieSettingsBase::GetCookieScopeSemanticsForDomain(
   }
 }
 
-bool CookieSettingsBase::ShouldConsiderMitigationsFor3pcd(
-    const GURL& first_party_url,
+CookieSettingsBase::ModifierMode CookieSettingsBase::GetModifierMode(
+    base::optional_ref<const url::Origin> top_frame_origin,
     net::CookieSettingOverrides overrides) const {
-  // Mitigations should take effect if they are enabled (through means such as
-  // 3PCD or forced 3PC phaseout) or if third-party cookies are not blocked
-  // globally and the origin trial for third-party cookie deprecation is enabled
-  // under `first_party_url` .
-  return overrides.Has(net::CookieSettingOverride::
-                           kForceEnableThirdPartyCookieMitigations) ||
-         MitigationsEnabledFor3pcd() ||
-         (!ShouldBlockThirdPartyCookies(/*top_frame_origin=*/std::nullopt,
-                                        overrides) &&
-          IsBlockedByTopLevel3pcdOriginTrial(first_party_url));
-}
-
-bool CookieSettingsBase::IsBlockedByTopLevel3pcdOriginTrial(
-    const GURL& first_party_url) const {
-#if BUILDFLAG(IS_IOS)
-  return false;
-#else
-  return base::FeatureList::IsEnabled(
-             net::features::kTopLevelTpcdOriginTrial) &&
-         GetContentSetting(first_party_url, first_party_url,
-                           ContentSettingsType::TOP_LEVEL_TPCD_ORIGIN_TRIAL,
-                           /*info=*/nullptr) == CONTENT_SETTING_BLOCK;
-#endif
-}
-
-bool CookieSettingsBase::IsAllowedBy3pcdTrialSettings(
-    const GURL& url,
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  return base::FeatureList::IsEnabled(net::features::kTpcdTrialSettings) &&
-         !overrides.Has(net::CookieSettingOverride::kSkipTPCDTrial) &&
-         ShouldConsiderMitigationsFor3pcd(first_party_url, overrides) &&
-         GetContentSetting(url, first_party_url,
-                           ContentSettingsType::TPCD_TRIAL,
-                           /*info=*/nullptr) == CONTENT_SETTING_ALLOW;
-}
-
-bool CookieSettingsBase::IsAllowedByTopLevel3pcdTrialSettings(
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  return base::FeatureList::IsEnabled(
-             net::features::kTopLevelTpcdTrialSettings) &&
-         !overrides.Has(net::CookieSettingOverride::kSkipTopLevelTPCDTrial) &&
-         ShouldConsiderMitigationsFor3pcd(first_party_url, overrides) &&
-         // Top-level 3pcd trial settings use
-         // |WebsiteSettingsInfo::TOP_ORIGIN_ONLY_SCOPE| by default and as a
-         // result only use a primary pattern (with wildcard placeholder for the
-         // secondary pattern).
-         GetContentSetting(first_party_url, first_party_url,
-                           ContentSettingsType::TOP_LEVEL_TPCD_TRIAL,
-                           /*info=*/nullptr) == CONTENT_SETTING_ALLOW;
-}
-
-bool CookieSettingsBase::Are3pcsForceDisabledByOverride(
-    net::CookieSettingOverrides overrides) const {
-  return overrides.Has(
-      net::CookieSettingOverride::kForceDisableThirdPartyCookies);
-}
-
-bool CookieSettingsBase::ShouldConsider3pcdMetadataGrantsSettings(
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  return base::FeatureList::IsEnabled(net::features::kTpcdMetadataGrants) &&
-         !overrides.Has(net::CookieSettingOverride::kSkipTPCDMetadataGrant) &&
-         ShouldConsiderMitigationsFor3pcd(first_party_url, overrides);
-}
-
-CookieSettingsBase::IsAllowedWithMetadata
-CookieSettingsBase::IsAllowedBy3pcdMetadataGrantsSettings(
-    const GURL& url,
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  SettingInfo info;
-  bool allowed =
-      ShouldConsider3pcdMetadataGrantsSettings(first_party_url, overrides) &&
-      IsAllowed(GetContentSetting(url, first_party_url,
-                                  ContentSettingsType::TPCD_METADATA_GRANTS,
-                                  &info));
-  return {allowed, info};
-}
-
-CookieSettingsBase::IsAllowedWithMetadata
-CookieSettingsBase::IsAllowedByTrackingProtectionSetting(
-    const GURL& url,
-    const GURL& first_party_url) const {
-  SettingInfo info;
-  bool allowed =
-      base::FeatureList::IsEnabled(
-          privacy_sandbox::kTrackingProtectionContentSettingFor3pcb) &&
-      GetContentSetting(url, first_party_url,
-                        ContentSettingsType::TRACKING_PROTECTION,
-                        &info) == CONTENT_SETTING_ALLOW;
-  return {allowed, info};
-}
-
-bool CookieSettingsBase::IsAllowedBy3pcdHeuristicsGrantsSettings(
-    const GURL& url,
-    const GURL& first_party_url,
-    net::CookieSettingOverrides overrides) const {
-  return base::FeatureList::IsEnabled(
-             content_settings::features::kTpcdHeuristicsGrants) &&
-         features::kTpcdReadHeuristicsGrants.Get() &&
-         !overrides.Has(net::CookieSettingOverride::kSkipTPCDHeuristicsGrant) &&
-         ShouldConsiderMitigationsFor3pcd(first_party_url, overrides) &&
-         GetContentSetting(url, first_party_url,
-                           ContentSettingsType::TPCD_HEURISTICS_GRANTS,
-                           /*info=*/nullptr) == CONTENT_SETTING_ALLOW;
-}
-
-net::CookieSettingOverrides CookieSettingsBase::SettingOverridesForStorage()
-    const {
-  net::CookieSettingOverrides overrides;
-  if (storage_access_api_grants_unpartitioned_storage_ ||
-      is_storage_partitioned_) {
-    overrides.Put(net::CookieSettingOverride::kStorageAccessGrantEligible);
+  if (overrides.Has(
+          net::CookieSettingOverride::kForceDisableThirdPartyCookies)) {
+    return ModifierMode::kBlock;
   }
-  if (is_storage_partitioned_) {
-    overrides.Put(
-        net::CookieSettingOverride::kTopLevelStorageAccessGrantEligible);
+  if (overrides.Has(
+          net::CookieSettingOverride::kForceEnableThirdPartyCookies)) {
+    return ModifierMode::kAllow;
   }
-  return overrides;
+  return ModifierMode::kUndefined;
+}
+
+std::optional<bool> CookieSettingsBase::MaybeBlockThirdPartyCookiesPerModifiers(
+    base::optional_ref<const url::Origin> top_frame_origin,
+    net::CookieSettingOverrides overrides) const {
+  switch (GetModifierMode(top_frame_origin, overrides)) {
+    case ModifierMode::kAllow:
+      return false;
+    case ModifierMode::kBlock:
+      return true;
+    case ModifierMode::kUndefined:
+      return std::nullopt;
+  }
 }
 
 bool CookieSettingsBase::IsAllowedByTopLevelStorageAccessGrant(
@@ -561,13 +346,12 @@ bool CookieSettingsBase::IsAllowedBySandboxValue(
 
   url::Origin origin = url::Origin::Create(url);
   url::Origin first_party_origin = url::Origin::Create(first_party_url);
-  return origin.IsSameOriginWith(first_party_origin) ||
-         net::SchemefulSite(origin) == net::SchemefulSite(first_party_origin);
+  return net::SchemefulSite::IsSameSite(origin, first_party_origin);
 }
 
-absl::variant<CookieSettingsBase::AllowAllCookies,
-              CookieSettingsBase::AllowPartitionedCookies,
-              CookieSettingsBase::BlockAllCookies>
+std::variant<CookieSettingsBase::AllowAllCookies,
+             CookieSettingsBase::AllowPartitionedCookies,
+             CookieSettingsBase::BlockAllCookies>
 CookieSettingsBase::DecideAccess(const GURL& url,
                                  const GURL& first_party_url,
                                  bool is_third_party_request,
@@ -591,7 +375,7 @@ CookieSettingsBase::DecideAccess(const GURL& url,
         ThirdPartyCookieAllowMechanism::kAllowByGlobalSetting};
   }
 
-  if (IsThirdPartyCookiesAllowedScheme(first_party_url.scheme())) {
+  if (IsThirdPartyCookiesAllowedScheme(first_party_url.GetScheme())) {
     return AllowAllCookies{ThirdPartyCookieAllowMechanism::kAllowByScheme};
   }
 
@@ -613,52 +397,15 @@ CookieSettingsBase::DecideAccess(const GURL& url,
         ThirdPartyCookieAllowMechanism::kAllowBySandboxValue};
   }
 
-  if (IsAllowedBy3pcdHeuristicsGrantsSettings(url, first_party_url,
-                                              overrides)) {
-    return AllowAllCookies{
-        ThirdPartyCookieAllowMechanism::kAllowBy3PCDHeuristics};
-  }
-
   // Enterprise Policies:
   if (is_explicit_setting && setting_info.source == SettingSource::kPolicy) {
     return AllowAllCookies{ThirdPartyCookieAllowMechanism::
                                kAllowByEnterprisePolicyCookieAllowedForUrls};
   }
 
-  // Chrome controlled mechanisms (ex. 3PCD Metadata Grants):
-  if (IsAllowedWithMetadata tpcd_metadata_info =
-          IsAllowedBy3pcdMetadataGrantsSettings(url, first_party_url,
-                                                overrides);
-      tpcd_metadata_info.allowed) {
-    return AllowAllCookies{TpcdMetadataSourceToAllowMechanism(
-        tpcd_metadata_info.info.metadata.tpcd_metadata_rule_source())};
-  }
-
   if (is_explicit_setting) {
     return AllowAllCookies{
         ThirdPartyCookieAllowMechanism::kAllowByExplicitSetting};
-  }
-
-  // 3PCD 1P and 3P DTs
-  // New registrations are not supported for the deprecation trials, but the
-  // tokens are still valid until they expire.
-  // TODO(https://crbug.com/364917750): Remove this check once the trials are no
-  // longer relevant.
-  if (IsAllowedByTopLevel3pcdTrialSettings(first_party_url, overrides)) {
-    return AllowAllCookies{
-        ThirdPartyCookieAllowMechanism::kAllowByTopLevel3PCD};
-  }
-  if (IsAllowedBy3pcdTrialSettings(url, first_party_url, overrides)) {
-    return AllowAllCookies{ThirdPartyCookieAllowMechanism::kAllowBy3PCD};
-  }
-
-  // Check for a TRACKING_PROTECTION exception, which should also disable 3PCB.
-  if (IsAllowedWithMetadata tp_info =
-          IsAllowedByTrackingProtectionSetting(url, first_party_url);
-      tp_info.allowed) {
-    setting_info = std::move(tp_info.info);
-    return AllowAllCookies{
-        ThirdPartyCookieAllowMechanism::kAllowByTrackingProtectionException};
   }
 
   return AllowPartitionedCookies{};
@@ -713,38 +460,26 @@ CookieSettingsBase::GetCookieSettingInternal(
   const bool block_third_party_cookies = ShouldBlockThirdPartyCookies(
       url::Origin::Create(first_party_url), overrides);
 
-  const absl::variant<AllowAllCookies, AllowPartitionedCookies, BlockAllCookies>
+  const std::variant<AllowAllCookies, AllowPartitionedCookies, BlockAllCookies>
       choice = DecideAccess(url, first_party_url, is_third_party_request,
                             overrides, cookie_setting, is_explicit_setting,
                             block_third_party_cookies, setting_info);
 
   if (const AllowAllCookies* allow_cookies =
-          absl::get_if<AllowAllCookies>(&choice)) {
+          std::get_if<AllowAllCookies>(&choice)) {
     CHECK(IsAllowed(cookie_setting));
     CHECK(!is_third_party_request || !block_third_party_cookies ||
-              allow_cookies->mechanism != ThirdPartyCookieAllowMechanism::kNone,
-          base::NotFatalUntil::M128);
+          allow_cookies->mechanism != ThirdPartyCookieAllowMechanism::kNone);
     // `!is_third_party_request` implies that the exemption reason must be
     // kNone. (It doesn't make sense to exempt a first-party cookie from 3PCD.)
     CHECK(is_third_party_request ||
-              allow_cookies->mechanism == ThirdPartyCookieAllowMechanism::kNone,
-          base::NotFatalUntil::M128);
+          allow_cookies->mechanism == ThirdPartyCookieAllowMechanism::kNone);
 
     FireStorageAccessHistogram(
         GetStorageAccessResult(allow_cookies->mechanism));
 
-    if (allow_cookies->mechanism ==
-        ThirdPartyCookieAllowMechanism::kAllowByTrackingProtectionException) {
-      is_explicit_setting = true;
-      cookie_setting = CONTENT_SETTING_ALLOW;
-    }
     if (info) {
-      if (std::optional<SettingSource> source =
-              GetSettingSource(allow_cookies->mechanism);
-          source.has_value()) {
-        setting_info.source = *source;
-      }
-      *info = setting_info;
+      *info = std::move(setting_info);
     }
     const CookieSettingWithMetadata out{
         cookie_setting,
@@ -759,15 +494,15 @@ CookieSettingsBase::GetCookieSettingInternal(
     return out;
   }
 
-  if (absl::holds_alternative<AllowPartitionedCookies>(choice)) {
-    CHECK(is_third_party_request, base::NotFatalUntil::M128);
-    CHECK(block_third_party_cookies, base::NotFatalUntil::M128);
-    CHECK(!is_explicit_setting, base::NotFatalUntil::M128);
+  if (std::holds_alternative<AllowPartitionedCookies>(choice)) {
+    CHECK(is_third_party_request);
+    CHECK(block_third_party_cookies);
+    CHECK(!is_explicit_setting);
 
     FireStorageAccessHistogram(StorageAccessResult::ACCESS_BLOCKED);
 
     if (info) {
-      *info = setting_info;
+      *info = std::move(setting_info);
     }
     const CookieSettingWithMetadata out{
         CONTENT_SETTING_BLOCK,
@@ -781,12 +516,12 @@ CookieSettingsBase::GetCookieSettingInternal(
     return out;
   }
 
-  CHECK(absl::holds_alternative<BlockAllCookies>(choice));
-  CHECK_EQ(cookie_setting, CONTENT_SETTING_BLOCK, base::NotFatalUntil::M128);
+  CHECK(std::holds_alternative<BlockAllCookies>(choice));
+  CHECK_EQ(cookie_setting, CONTENT_SETTING_BLOCK);
   FireStorageAccessHistogram(StorageAccessResult::ACCESS_BLOCKED);
 
   if (info) {
-    *info = setting_info;
+    *info = std::move(setting_info);
   }
   const CookieSettingWithMetadata out{
       CONTENT_SETTING_BLOCK,
@@ -805,21 +540,30 @@ CookieSettingsBase::GetStorageAccessStatus(
     const GURL& url,
     const net::SiteForCookies& site_for_cookies,
     base::optional_ref<const url::Origin> top_frame_origin,
-    net::CookieSettingOverrides overrides) const {
+    net::CookieSettingOverrides overrides,
+    base::optional_ref<const net::CookiePartitionKey> cookie_partition_key,
+    base::optional_ref<const network::PermissionsPolicy> permissions_policy)
+
+    const {
   if (!IsThirdPartyRequest(url, site_for_cookies)) {
     return std::nullopt;
   }
   if (IsFullCookieAccessAllowed(url, site_for_cookies, top_frame_origin,
-                                overrides)) {
+                                overrides, cookie_partition_key)) {
     return net::cookie_util::StorageAccessStatus::kActive;
   }
   if (IsEligibleForStorageAccess(overrides)) {
     return net::cookie_util::StorageAccessStatus::kNone;
   }
+  if (!IsStorageAccessAllowedByPermissionsPolicy(url::Origin::Create(url),
+                                                 permissions_policy)) {
+    return net::cookie_util::StorageAccessStatus::kNone;
+  }
   if (IsFullCookieAccessAllowed(
           url, site_for_cookies, top_frame_origin,
           base::Union(overrides, {net::CookieSettingOverride::
-                                      kStorageAccessGrantEligibleViaHeader}))) {
+                                      kStorageAccessGrantEligibleViaHeader}),
+          cookie_partition_key)) {
     return net::cookie_util::StorageAccessStatus::kInactive;
   }
   return net::cookie_util::StorageAccessStatus::kNone;
@@ -834,12 +578,10 @@ bool CookieSettingsBase::IsAllowedByStorageAccessGrant(
           net::CookieSettingOverride::kStorageAccessGrantEligibleViaHeader)) {
     return false;
   }
-  // The Storage Access API allows access in A(B(A)) case (or similar). Do the
-  // same-origin check first for performance reasons.
+  // The Storage Access API allows access in A(B(A)) case (or similar).
   const url::Origin origin = url::Origin::Create(url);
   const url::Origin first_party_origin = url::Origin::Create(first_party_url);
-  if (origin.IsSameOriginWith(first_party_origin) ||
-      net::SchemefulSite(origin) == net::SchemefulSite(first_party_origin)) {
+  if (net::SchemefulSite::IsSameSite(origin, first_party_origin)) {
     return true;
   }
   if (GetContentSetting(url, first_party_url,
@@ -860,7 +602,7 @@ bool CookieSettingsBase::IsAllowedByStorageAccessGrant(
 }
 
 ContentSetting CookieSettingsBase::GetSettingForLegacyCookieAccess(
-    const std::string& cookie_domain) const {
+    std::string_view cookie_domain) const {
   // The content setting patterns are treated as domains, not URLs, so the
   // scheme is irrelevant (so we can just arbitrarily pass false).
   GURL cookie_domain_url = net::cookie_util::CookieOriginToURL(
@@ -872,13 +614,13 @@ ContentSetting CookieSettingsBase::GetSettingForLegacyCookieAccess(
 }
 
 ContentSetting CookieSettingsBase::GetSettingForLegacyCookieScope(
-    const std::string& cookie_domain) const {
-  // The content setting patterns are treated as domains, not URLs, so the
-  // scheme is irrelevant (so we can just arbitrarily pass false).
-  GURL cookie_domain_url = net::cookie_util::CookieOriginToURL(
-      cookie_domain, false /*secure_scheme=*/);
+    std::string_view cookie_domain) const {
+  // The content setting patterns are treated as registrable domains, not URLs,
+  // so the scheme is irrelevant (so we can just arbitrarily pass false).
+  net::SchemefulSite registrable_domain(net::cookie_util::CookieOriginToURL(
+      cookie_domain, false /*secure_scheme=*/));
 
-  return GetContentSetting(cookie_domain_url, GURL(),
+  return GetContentSetting(registrable_domain.GetURL(), GURL(),
                            ContentSettingsType::LEGACY_COOKIE_SCOPE,
                            /*info=*/nullptr);
 }

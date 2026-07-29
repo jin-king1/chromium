@@ -24,6 +24,7 @@
 #include "chrome/credential_provider/gaiacp/internet_availability_checker.h"
 #include "chrome/credential_provider/gaiacp/scoped_lsa_policy.h"
 #include "chrome/credential_provider/gaiacp/win_http_url_fetcher.h"
+#include "services/device/public/proto/hid_gcpw.pb.h"
 #include "url/gurl.h"
 
 // These define are documented in
@@ -51,19 +52,19 @@ inline constexpr int kWindowsPasswordBufferLength = 32;
 
 // Maximum domain length is 256 characters including null.
 // https://support.microsoft.com/en-ca/help/909264/naming-conventions-in-active-directory-for-computers-domains-sites-and
-constexpr int kWindowsDomainBufferLength = 256;
+inline constexpr int kWindowsDomainBufferLength = 256;
 
 // According to:
 // https://stackoverflow.com/questions/1140528/what-is-the-maximum-length-of-a-sid-in-sddl-format
-constexpr int kWindowsSidBufferLength = 184;
+inline constexpr int kWindowsSidBufferLength = 184;
 
 // Max number of attempts to find a new username when a user already exists
 // with the same username.
-constexpr int kMaxUsernameAttempts = 10;
+inline constexpr int kMaxUsernameAttempts = 10;
 
 // First index to append to a username when another user with the same name
 // already exists.
-constexpr int kInitialDuplicateUsernameIndex = 2;
+inline constexpr int kInitialDuplicateUsernameIndex = 2;
 
 // Default extension used as a fallback if the picture_url returned from gaia
 // does not have a file extension.
@@ -223,6 +224,7 @@ enum class CommDirection {
 };
 HRESULT InitializeStdHandles(CommDirection direction,
                              StdHandlesToCreate to_create,
+                             bool create_named_pipe_for_stdin,
                              ScopedStartupInfo* startupinfo,
                              StdParentHandles* parent_handles);
 
@@ -281,10 +283,10 @@ std::wstring GetStringResource(UINT base_message_id,
 // Gets the language selected by the base::win::i18n::LanguageSelector.
 std::wstring GetSelectedLanguage();
 
-// Securely clear a base::Value::Dict that may have a password field.
-void SecurelyClearDictionaryValue(base::optional_ref<base::Value::Dict> dict);
+// Securely clear a base::DictValue that may have a password field.
+void SecurelyClearDictionaryValue(base::optional_ref<base::DictValue> dict);
 void SecurelyClearDictionaryValueWithKey(
-    base::optional_ref<base::Value::Dict> dict,
+    base::optional_ref<base::DictValue> dict,
     const std::string& password_key);
 
 // Securely clear std::wstring and std::string.
@@ -294,9 +296,9 @@ void SecurelyClearString(std::string& str);
 // Securely clear a given |buffer| with size |length|.
 void SecurelyClearBuffer(void* buffer, size_t length);
 
-// Helpers to get strings from base::Value::Dict.
-std::wstring GetDictString(const base::Value::Dict& dict, const char* name);
-std::string GetDictStringUTF8(const base::Value::Dict& dict, const char* name);
+// Helpers to get strings from base::DictValue.
+std::wstring GetDictString(const base::DictValue& dict, const char* name);
+std::string GetDictStringUTF8(const base::DictValue& dict, const char* name);
 
 // Perform a recursive search on a nested dictionary object. Note that the
 // names provided in the input should be in order. Below is an example : Lets
@@ -368,7 +370,7 @@ void InitWindowsStringWithString(const WindowsStringCharT* string,
 // Extracts the provided keys from the given dictionary. Returns true if all
 // keys are found. If any of the key isn't found, returns false.
 bool ExtractKeysFromDict(
-    const base::Value::Dict& dict,
+    const base::DictValue& dict,
     const std::vector<std::pair<std::string, std::string*>>& needed_outputs);
 
 // Gets the bios serial number of the windows device.
@@ -429,6 +431,20 @@ std::unique_ptr<base::File> GetOpenedFileForUser(const std::wstring& sid,
 // stores the last fetch time.
 base::TimeDelta GetTimeDeltaSinceLastFetch(const std::wstring& sid,
                                            const std::wstring& flag);
+
+// Reads a single message from the pipe. The message is expected to be prefixed
+// with a 32-bit size.
+HRESULT ReadMessageFromPipe(base::win::ScopedHandle& pipe,
+                            std::vector<uint8_t>* buffer);
+
+// Writes a single message to the pipe. The message is prefixed with a 32-bit
+// size.
+HRESULT WriteMessageToPipe(base::win::ScopedHandle& pipe,
+                           const std::vector<uint8_t>& buffer);
+
+device::gcpw::HidOpenDeviceGcpwResponse ProcessHidOpenDeviceRequest(
+    const device::gcpw::HidOpenDeviceGcpwRequest& request,
+    HANDLE logon_ui_process);
 
 }  // namespace credential_provider
 

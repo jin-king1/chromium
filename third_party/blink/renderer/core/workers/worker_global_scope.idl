@@ -40,9 +40,7 @@
     // attribute EventHandler ononline;
 
     // https://html.spec.whatwg.org/C/#apis-available-to-workers
-    // Although RaisesException is not specified, importScripts() can actually
-    // throw exceptions directly to V8.
-    void importScripts(ScriptURLString... urls);
+    [RaisesException] void importScripts((USVString or TrustedScriptURL)... urls);
     readonly attribute WorkerNavigator navigator;
 
 
@@ -59,9 +57,6 @@
     // WindowOrWorkerGlobalScope mixin
     // https://html.spec.whatwg.org/C/#windoworworkerglobalscope-mixin
     [Replaceable] readonly attribute DOMString origin;
-
-    // TrustedTypes API: http://github.com/w3c/trusted-types
-    readonly attribute TrustedTypePolicyFactory trustedTypes;
 };
 
 WorkerGlobalScope includes UniversalGlobalScope;

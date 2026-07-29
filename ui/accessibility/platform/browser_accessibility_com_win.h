@@ -5,6 +5,10 @@
 #ifndef UI_ACCESSIBILITY_PLATFORM_BROWSER_ACCESSIBILITY_COM_WIN_H_
 #define UI_ACCESSIBILITY_PLATFORM_BROWSER_ACCESSIBILITY_COM_WIN_H_
 
+#include <objbase.h>
+
+#include <windows.h>
+
 #include <oleacc.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -14,16 +18,16 @@
 #include <string>
 #include <vector>
 
-#include "base/win/atl.h"
-#include "ui/accessibility/platform/browser_accessibility.h"
-#include "ui/accessibility/platform/browser_accessibility_win.h"
 #include "base/component_export.h"
+#include "base/memory/raw_ptr.h"
 #include "third_party/iaccessible2/ia2_api_all.h"
 #include "third_party/isimpledom/ISimpleDOMDocument.h"
 #include "third_party/isimpledom/ISimpleDOMNode.h"
 #include "third_party/isimpledom/ISimpleDOMText.h"
 #include "ui/accessibility/ax_enums.mojom-forward.h"
 #include "ui/accessibility/platform/ax_platform_node_win.h"
+#include "ui/accessibility/platform/browser_accessibility.h"
+#include "ui/accessibility/platform/browser_accessibility_win.h"
 
 // This nonstandard GUID is taken directly from the Mozilla sources
 // (https://searchfox.org/mozilla-central/source/accessible/windows/msaa/ServiceProvider.cpp#110).
@@ -33,6 +37,7 @@ const GUID GUID_ISimpleDOM = {0x0c539790,
                               {0xb6, 0x61, 0x00, 0xaa, 0x00, 0x4c, 0xd6, 0xd8}};
 
 namespace ui {
+
 class BrowserAccessibilityWin;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -56,17 +61,9 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
                              public ISimpleDOMNode,
                              public ISimpleDOMText {
  public:
-  BEGIN_COM_MAP(BrowserAccessibilityComWin)
-  COM_INTERFACE_ENTRY(IAccessibleAction)
-  COM_INTERFACE_ENTRY(IAccessibleApplication)
-  COM_INTERFACE_ENTRY(IAccessibleHyperlink)
-  COM_INTERFACE_ENTRY(IAccessibleImage)
-  COM_INTERFACE_ENTRY(ISimpleDOMDocument)
-  COM_INTERFACE_ENTRY(ISimpleDOMNode)
-  COM_INTERFACE_ENTRY(ISimpleDOMText)
-  COM_INTERFACE_ENTRY_CHAIN(AXPlatformNodeWin)
-  END_COM_MAP()
-
+  IFACEMETHODIMP_(ULONG) AddRef() override;
+  IFACEMETHODIMP_(ULONG) Release() override;
+  IFACEMETHODIMP QueryInterface(REFIID iid, void** ppvObject) override;
   // Mappings from roles and states to human readable strings. Initialize
   // with |InitializeStringMaps|.
   static std::map<int32_t, std::u16string> role_string_map;
@@ -84,10 +81,50 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
   COMPONENT_EXPORT(AX_PLATFORM) void OnReferenced() override;
   COMPONENT_EXPORT(AX_PLATFORM) void OnDereferenced() override;
 
+  struct WinAttributes {
+    WinAttributes();
+    ~WinAttributes();
+
+    // IAccessible name, description, help, value.
+    std::wstring name;
+    std::wstring description;
+    std::wstring value;
+
+    // IAccessible role and state.
+    int32_t ia_role = 0;
+    int32_t ia_state = 0;
+
+    // IAccessible2 role and state.
+    int32_t ia2_role = 0;
+    int32_t ia2_state = 0;
+
+    // Maps each style span to its start offset in hypertext.
+    TextAttributeMap offset_to_text_attributes;
+
+    // Ignored state
+    bool ignored = false;
+  };
+
+  // Holds transient state needed only while processing a tree update.
+  struct UpdateState {
+    UpdateState();
+    UpdateState(const UpdateState&) = delete;
+    UpdateState& operator=(const UpdateState&) = delete;
+    ~UpdateState();
+
+    std::unique_ptr<WinAttributes> old_win_attributes;
+    AXLegacyHypertext old_hypertext;
+  };
+
   // Called after an atomic tree update completes. See
-  // BrowserAccessibilityManagerWin::OnAtomicUpdateFinished for more
-  // details on what these do.
-  COMPONENT_EXPORT(AX_PLATFORM) void UpdateStep1ComputeWinAttributes();
+  // BrowserAccessibilityManagerWin::OnAtomicUpdateFinished for more details on
+  // what these do.
+
+  // `update_state` must be a pointer to an empty `UpdateState` instance. The
+  // caller must ensure that this pointer remains valid until
+  // `UpdateStep3FireEvents` returns.
+  COMPONENT_EXPORT(AX_PLATFORM)
+  void UpdateStep1ComputeWinAttributes(UpdateState* update_state);
   COMPONENT_EXPORT(AX_PLATFORM) void UpdateStep2ComputeHypertext();
   COMPONENT_EXPORT(AX_PLATFORM) void UpdateStep3FireEvents();
 
@@ -322,17 +359,6 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
                                              REFIID riid,
                                              void** object) override;
 
-  //
-  // CComObjectRootEx methods.
-  //
-
-  // Called by BEGIN_COM_MAP() / END_COM_MAP().
-  static COMPONENT_EXPORT(AX_PLATFORM) STDMETHODIMP
-  InternalQueryInterface(void* this_ptr,
-                         const _ATL_INTMAP_ENTRY* entries,
-                         REFIID iid,
-                         void** object);
-
   // Computes and caches the IA2 text style attributes for the text and other
   // embedded child objects.
   COMPONENT_EXPORT(AX_PLATFORM) void ComputeStylesIfNeeded();
@@ -342,11 +368,12 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
     return win_attributes_->offset_to_text_attributes;
   }
 
+ protected:
+  // QueryInterface override for conditional interface filtering.
+  HRESULT ResolveInterfaces(REFIID iid, void** ppvObject) override;
+
  private:
   // Private accessors.
-  const std::vector<std::wstring>& ia2_attributes() const {
-    return win_attributes_->ia2_attributes;
-  }
   std::wstring name() const { return win_attributes_->name; }
   std::wstring description() const { return win_attributes_->description; }
   std::wstring value() const { return win_attributes_->value; }
@@ -394,50 +421,12 @@ BrowserAccessibilityComWin : public AXPlatformNodeWin,
 
   // Fire a Windows-specific accessibility event notification on this node.
   void FireNativeEvent(LONG win_event_type) const;
-  struct WinAttributes {
-    WinAttributes();
-    ~WinAttributes();
-
-    // Ignored state
-    bool ignored;
-
-    // IAccessible role and state.
-    int32_t ia_role;
-    int32_t ia_state;
-
-    // IAccessible name, description, help, value.
-    std::wstring name;
-    std::wstring description;
-    std::wstring value;
-
-    // IAccessible2 role and state.
-    int32_t ia2_role;
-    int32_t ia2_state;
-
-    // IAccessible2 attributes.
-    std::vector<std::wstring> ia2_attributes;
-
-    // Maps each style span to its start offset in hypertext.
-    TextAttributeMap offset_to_text_attributes;
-  };
 
   std::unique_ptr<WinAttributes> win_attributes_;
 
-  // Holds transient state needed only while processing a tree update.
-  struct UpdateState {
-    UpdateState(std::unique_ptr<WinAttributes> old_win_attributes,
-                AXLegacyHypertext old_hypertext);
-    UpdateState(const UpdateState&) = delete;
-    UpdateState& operator=(const UpdateState&) = delete;
-    ~UpdateState();
-
-    std::unique_ptr<WinAttributes> old_win_attributes;
-    AXLegacyHypertext old_hypertext;
-  };
-
   // Only valid during the scope of a IA2_EVENT_TEXT_REMOVED or
   // IA2_EVENT_TEXT_INSERTED event.
-  std::unique_ptr<UpdateState> update_state_;
+  raw_ptr<UpdateState> update_state_ = nullptr;
 
   // The previous scroll position, so we can tell if this object scrolled.
   int previous_scroll_x_;

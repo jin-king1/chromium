@@ -6,15 +6,23 @@
 
 #include <optional>
 
-#include "base/functional/callback_forward.h"
+#include "base/functional/callback_helpers.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/numerics/safe_conversions.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/time/time.h"
+#include "third_party/blink/public/mojom/ai/ai_common.mojom-blink.h"
 #include "third_party/blink/public/mojom/ai/model_streaming_responder.mojom-blink.h"
-#include "third_party/blink/renderer/bindings/core/v8/script_promise_resolver.h"
+#include "third_party/blink/renderer/bindings/core/v8/script_value.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_message_content.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_language_model_tool_call.h"
+#include "third_party/blink/renderer/bindings/modules/v8/v8_union_language_model_message_value.h"
 #include "third_party/blink/renderer/core/dom/abort_signal.h"
 #include "third_party/blink/renderer/core/execution_context/execution_context.h"
 #include "third_party/blink/renderer/core/streams/readable_stream.h"
 #include "third_party/blink/renderer/core/streams/readable_stream_default_controller_with_script_scope.h"
 #include "third_party/blink/renderer/core/streams/underlying_source_base.h"
+#include "third_party/blink/renderer/modules/ai/ai_utils.h"
 #include "third_party/blink/renderer/modules/ai/exception_helpers.h"
 #include "third_party/blink/renderer/platform/bindings/script_state.h"
 #include "third_party/blink/renderer/platform/context_lifecycle_observer.h"
@@ -29,6 +37,32 @@ namespace blink {
 
 namespace {
 
+void RecordCompletionMetrics(
+    AIMetrics::AISessionType session_type,
+    base::TimeTicks start_time,
+    int response_callback_count,
+    const mojom::blink::ModelExecutionContextInfoPtr& context_info) {
+  base::UmaHistogramBoolean(
+      AIMetrics::GetAISessionCrashedMetricName(session_type), false);
+
+  base::TimeDelta duration = base::TimeTicks::Now() - start_time;
+  base::UmaHistogramMediumTimes(
+      AIMetrics::GetAISessionResponseCompleteTimeMetricName(session_type),
+      duration);
+  if (response_callback_count == 1) {
+    base::UmaHistogramMediumTimes(
+        AIMetrics::GetAISessionFirstResponseTimeMetricName(session_type),
+        duration);
+  }
+  // TODO(crbug.com/481347574): Add ResponseTokens metric and ensure
+  // ContextTokens is populated across all APIs.
+  if (context_info) {
+    base::UmaHistogramCounts1M(
+        AIMetrics::GetAISessionContextTokensMetricName(session_type),
+        base::saturated_cast<int>(context_info->current_tokens));
+  }
+}
+
 // Implementation of blink::mojom::blink::ModelStreamingResponder that
 // handles the streaming output of the model execution, and returns the full
 // result through a promise.
@@ -38,23 +72,30 @@ class Responder final : public GarbageCollected<Responder>,
  public:
   Responder(ScriptState* script_state,
             AbortSignal* signal,
-            ScriptPromiseResolver<IDLString>* resolver,
             AIMetrics::AISessionType session_type,
-            base::OnceCallback<void(mojom::blink::ModelExecutionContextInfoPtr)>
+            base::OnceCallback<void(const String&,
+                                    mojom::blink::ModelExecutionContextInfoPtr)>
                 complete_callback,
-            base::RepeatingClosure overflow_callback)
+            base::RepeatingCallback<void(Vector<mojom::blink::ToolCallPtr>)>
+                tool_call_callback,
+            base::RepeatingClosure overflow_callback,
+            base::OnceCallback<void(DOMException* exception)> error_callback,
+            base::OnceCallback<void()> abort_callback)
       : script_state_(script_state),
-        resolver_(resolver),
         receiver_(this, ExecutionContext::From(script_state)),
         abort_signal_(signal),
         session_type_(session_type),
         complete_callback_(std::move(complete_callback)),
-        overflow_callback_(overflow_callback) {
+        tool_call_callback_(std::move(tool_call_callback)),
+        overflow_callback_(overflow_callback),
+        error_callback_(std::move(error_callback)),
+        abort_callback_(std::move(abort_callback)),
+        start_time_(base::TimeTicks::Now()) {
     SetContextLifecycleNotifier(ExecutionContext::From(script_state));
     if (abort_signal_) {
       CHECK(!abort_signal_->aborted());
       abort_handle_ = abort_signal_->AddAlgorithm(
-          WTF::BindOnce(&Responder::OnAborted, WrapWeakPersistent(this)));
+          BindOnce(&Responder::OnAborted, WrapWeakPersistent(this)));
     }
   }
   ~Responder() override = default;
@@ -64,38 +105,32 @@ class Responder final : public GarbageCollected<Responder>,
   void Trace(Visitor* visitor) const override {
     ContextLifecycleObserver::Trace(visitor);
     visitor->Trace(script_state_);
-    visitor->Trace(resolver_);
     visitor->Trace(receiver_);
     visitor->Trace(abort_signal_);
     visitor->Trace(abort_handle_);
   }
 
-  ScriptPromise<IDLString> GetPromise() { return resolver_->Promise(); }
-
   mojo::PendingRemote<blink::mojom::blink::ModelStreamingResponder>
   BindNewPipeAndPassRemote(
       scoped_refptr<base::SequencedTaskRunner> task_runner) {
-    return receiver_.BindNewPipeAndPassRemote(task_runner);
+    auto pending_remote = receiver_.BindNewPipeAndPassRemote(task_runner);
+    receiver_.set_disconnect_handler(
+        BindOnce(&Responder::OnConnectionError, WrapWeakPersistent(this)));
+    return pending_remote;
   }
 
   // `mojom::blink::ModelStreamingResponder` implementation.
-  void OnStreaming(
-      const String& text,
-      mojom::blink::ModelStreamingResponderAction action) override {
+  void OnStreaming(const String& text) override {
     RecordResponseStatusMetrics(
         mojom::blink::ModelStreamingResponseStatus::kOngoing);
     response_callback_count_++;
-    // Update the response with the latest value.
-    switch (action) {
-      case mojom::blink::ModelStreamingResponderAction::kAppend: {
-        response_ = response_ + text;
-        break;
-      }
-      case mojom::blink::ModelStreamingResponderAction::kReplace: {
-        response_ = text;
-        break;
-      }
+    if (response_callback_count_ == 1) {
+      base::UmaHistogramMediumTimes(
+          AIMetrics::GetAISessionFirstResponseTimeMetricName(session_type_),
+          base::TimeTicks::Now() - start_time_);
     }
+    // Update the response with the latest value.
+    response_ = StrCat({response_, text});
   }
 
   void OnCompletion(
@@ -104,18 +139,23 @@ class Responder final : public GarbageCollected<Responder>,
         mojom::blink::ModelStreamingResponseStatus::kComplete);
     response_callback_count_++;
 
-    resolver_->Resolve(response_);
-    if (context_info && complete_callback_) {
-      std::move(complete_callback_).Run(std::move(context_info));
+    RecordCompletionMetrics(session_type_, start_time_,
+                            response_callback_count_, context_info);
+
+    if (complete_callback_) {
+      std::move(complete_callback_).Run(response_, std::move(context_info));
     }
     RecordResponseMetrics();
     Cleanup();
   }
 
-  void OnError(mojom::blink::ModelStreamingResponseStatus status) override {
+  void OnError(mojom::blink::ModelStreamingResponseStatus status,
+               mojom::blink::QuotaErrorInfoPtr quota_error_info) override {
     RecordResponseStatusMetrics(status);
     response_callback_count_++;
-    resolver_->Reject(ConvertModelStreamingResponseErrorToDOMException(status));
+    std::move(error_callback_)
+        .Run(ConvertModelStreamingResponseErrorToDOMException(
+            status, std::move(quota_error_info)));
     RecordResponseMetrics();
     Cleanup();
   }
@@ -126,16 +166,34 @@ class Responder final : public GarbageCollected<Responder>,
     }
   }
 
+  void OnToolCalls(Vector<mojom::blink::ToolCallPtr> tool_calls) override {
+    RecordResponseStatusMetrics(
+        mojom::blink::ModelStreamingResponseStatus::kOngoing);
+    ++response_callback_count_;
+    if (response_callback_count_ == 1) {
+      base::UmaHistogramMediumTimes(
+          AIMetrics::GetAISessionFirstResponseTimeMetricName(session_type_),
+          base::TimeTicks::Now() - start_time_);
+    }
+    if (tool_call_callback_) {
+      tool_call_callback_.Run(std::move(tool_calls));
+    }
+  }
+
   // ContextLifecycleObserver implementation.
   void ContextDestroyed() override { Cleanup(); }
 
  private:
   void OnAborted() {
-    if (!resolver_) {
-      return;
-    }
-    resolver_->Reject(abort_signal_->reason(script_state_));
+    std::move(abort_callback_).Run();
     Cleanup();
+  }
+
+  void OnConnectionError() {
+    base::UmaHistogramBoolean(
+        AIMetrics::GetAISessionCrashedMetricName(session_type_), true);
+    OnError(ModelStreamingResponseStatus::kErrorSessionDestroyed,
+            /*quota_error_info=*/nullptr);
   }
 
   void RecordResponseStatusMetrics(
@@ -147,14 +205,13 @@ class Responder final : public GarbageCollected<Responder>,
   void RecordResponseMetrics() {
     base::UmaHistogramCounts1M(
         AIMetrics::GetAISessionResponseSizeMetricName(session_type_),
-        int(response_.CharactersSizeInBytes()));
+        static_cast<int>(response_.CharactersSizeInBytes()));
     base::UmaHistogramCounts1M(
         AIMetrics::GetAISessionResponseCallbackCountMetricName(session_type_),
         response_callback_count_);
   }
 
   void Cleanup() {
-    resolver_ = nullptr;
     receiver_.reset();
     keep_alive_.Clear();
     if (abort_handle_) {
@@ -164,7 +221,6 @@ class Responder final : public GarbageCollected<Responder>,
   }
 
   Member<ScriptState> script_state_;
-  Member<ScriptPromiseResolver<IDLString>> resolver_;
   String response_;
   int response_callback_count_ = 0;
   HeapMojoReceiver<blink::mojom::blink::ModelStreamingResponder, Responder>
@@ -173,12 +229,20 @@ class Responder final : public GarbageCollected<Responder>,
   Member<AbortSignal> abort_signal_;
   Member<AbortSignal::AlgorithmHandle> abort_handle_;
   const AIMetrics::AISessionType session_type_;
-  // The callback will be invoked once when the responder receive the first
-  // `kComplete`.
-  base::OnceCallback<void(
-      mojom::blink::ModelExecutionContextInfoPtr context_info)>
+  // The callback invoked after the complete model response was received.
+  base::OnceCallback<void(const String&,
+                          mojom::blink::ModelExecutionContextInfoPtr)>
       complete_callback_;
+  // The callback invoked when tool calls are received from the model.
+  base::RepeatingCallback<void(Vector<mojom::blink::ToolCallPtr>)>
+      tool_call_callback_;
+  // A callback invoked anytime the model's token context window is exceeded.
   base::RepeatingClosure overflow_callback_;
+  // Callback invoked on model error.
+  base::OnceCallback<void(DOMException*)> error_callback_;
+  // Callback invoked on AbortSignal abort.
+  base::OnceCallback<void()> abort_callback_;
+  base::TimeTicks start_time_;
 };
 
 // Implementation of blink::mojom::blink::ModelStreamingResponder that
@@ -201,11 +265,12 @@ class StreamingResponder final
         abort_signal_(signal),
         session_type_(session_type),
         complete_callback_(std::move(complete_callback)),
-        overflow_callback_(overflow_callback) {
+        overflow_callback_(overflow_callback),
+        start_time_(base::TimeTicks::Now()) {
     if (abort_signal_) {
       CHECK(!abort_signal_->aborted());
-      abort_handle_ = abort_signal_->AddAlgorithm(WTF::BindOnce(
-          &StreamingResponder::OnAborted, WrapWeakPersistent(this)));
+      abort_handle_ = abort_signal_->AddAlgorithm(
+          BindOnce(&StreamingResponder::OnAborted, WrapWeakPersistent(this)));
     }
   }
   ~StreamingResponder() override = default;
@@ -224,7 +289,10 @@ class StreamingResponder final
   mojo::PendingRemote<blink::mojom::blink::ModelStreamingResponder>
   BindNewPipeAndPassRemote(
       scoped_refptr<base::SequencedTaskRunner> task_runner) {
-    return receiver_.BindNewPipeAndPassRemote(task_runner);
+    auto pending_remote = receiver_.BindNewPipeAndPassRemote(task_runner);
+    receiver_.set_disconnect_handler(BindOnce(
+        &StreamingResponder::OnConnectionError, WrapWeakPersistent(this)));
+    return pending_remote;
   }
 
   ReadableStream* CreateReadableStream() {
@@ -247,14 +315,17 @@ class StreamingResponder final
   }
 
   // `blink::mojom::blink::ModelStreamingResponder` implementation.
-  void OnStreaming(
-      const String& text,
-      mojom::blink::ModelStreamingResponderAction action) override {
+  void OnStreaming(const String& text) override {
     RecordResponseStatusMetrics(
         mojom::blink::ModelStreamingResponseStatus::kOngoing);
     // Update the response info and enqueue the latest response.
     response_callback_count_++;
-    response_size_ = int(text.CharactersSizeInBytes());
+    if (response_callback_count_ == 1) {
+      base::UmaHistogramMediumTimes(
+          AIMetrics::GetAISessionFirstResponseTimeMetricName(session_type_),
+          base::TimeTicks::Now() - start_time_);
+    }
+    response_size_ = static_cast<int>(text.CharactersSizeInBytes());
     v8::HandleScope handle_scope(script_state_->GetIsolate());
     Controller()->Enqueue(V8String(script_state_->GetIsolate(), text));
   }
@@ -264,20 +335,24 @@ class StreamingResponder final
     RecordResponseStatusMetrics(
         mojom::blink::ModelStreamingResponseStatus::kComplete);
     response_callback_count_++;
+
+    RecordCompletionMetrics(session_type_, start_time_,
+                            response_callback_count_, context_info);
+
     Controller()->Close();
     if (context_info && complete_callback_) {
       std::move(complete_callback_).Run(std::move(context_info));
     }
     RecordResponseMetrics();
     Cleanup();
-    return;
   }
 
-  void OnError(ModelStreamingResponseStatus status) override {
+  void OnError(ModelStreamingResponseStatus status,
+               mojom::blink::QuotaErrorInfoPtr quota_error_info) override {
     RecordResponseStatusMetrics(status);
     response_callback_count_++;
-    Controller()->Error(
-        ConvertModelStreamingResponseErrorToDOMException(status));
+    Controller()->Error(ConvertModelStreamingResponseErrorToDOMException(
+        status, std::move(quota_error_info)));
     RecordResponseMetrics();
     Cleanup();
   }
@@ -285,6 +360,38 @@ class StreamingResponder final
   void OnContextOverflow() override {
     if (overflow_callback_) {
       overflow_callback_.Run();
+    }
+  }
+
+  void OnToolCalls(Vector<mojom::blink::ToolCallPtr> tool_calls) override {
+    RecordResponseStatusMetrics(
+        mojom::blink::ModelStreamingResponseStatus::kOngoing);
+    ++response_callback_count_;
+    if (response_callback_count_ == 1) {
+      base::UmaHistogramMediumTimes(
+          AIMetrics::GetAISessionFirstResponseTimeMetricName(session_type_),
+          base::TimeTicks::Now() - start_time_);
+    }
+
+    // For `Tool Use` Open-loop: Stream tool call messages as structured data.
+    // Each tool call becomes a separate chunk in the stream.
+    ExceptionState exception_state(script_state_->GetIsolate());
+    HeapVector<Member<LanguageModelMessageContent>> messages =
+        ConvertMojoToolCallsToMessages(script_state_, tool_calls,
+                                       exception_state);
+
+    if (exception_state.HadException()) {
+      Controller()->Error(DOMException::Create(
+          "Failed to convert tool call arguments",
+          DOMException::GetErrorName(DOMExceptionCode::kDataError)));
+      return;
+    }
+
+    ScriptState::Scope scope(script_state_);
+    for (const auto& message : messages) {
+      v8::Local<v8::Value> message_v8 =
+          ToV8Traits<LanguageModelMessageContent>::ToV8(script_state_, message);
+      Controller()->Enqueue(message_v8);
     }
   }
 
@@ -299,6 +406,13 @@ class StreamingResponder final
       Controller()->Error(reason.V8Value());
     }
     Cleanup();
+  }
+
+  void OnConnectionError() {
+    base::UmaHistogramBoolean(
+        AIMetrics::GetAISessionCrashedMetricName(session_type_), true);
+    OnError(ModelStreamingResponseStatus::kErrorSessionDestroyed,
+            /*quota_error_info=*/nullptr);
   }
 
   void RecordResponseStatusMetrics(
@@ -339,6 +453,7 @@ class StreamingResponder final
   base::OnceCallback<void(mojom::blink::ModelExecutionContextInfoPtr)>
       complete_callback_;
   base::RepeatingClosure overflow_callback_;
+  base::TimeTicks start_time_;
 };
 
 }  // namespace
@@ -347,15 +462,20 @@ mojo::PendingRemote<blink::mojom::blink::ModelStreamingResponder>
 CreateModelExecutionResponder(
     ScriptState* script_state,
     AbortSignal* signal,
-    ScriptPromiseResolver<IDLString>* resolver,
     scoped_refptr<base::SequencedTaskRunner> task_runner,
     AIMetrics::AISessionType session_type,
-    base::OnceCallback<void(mojom::blink::ModelExecutionContextInfoPtr)>
+    base::OnceCallback<void(const String&,
+                            mojom::blink::ModelExecutionContextInfoPtr)>
         complete_callback,
-    base::RepeatingClosure overflow_callback) {
+    base::RepeatingCallback<void(Vector<mojom::blink::ToolCallPtr>)>
+        tool_call_callback,
+    base::RepeatingClosure overflow_callback,
+    base::OnceCallback<void(DOMException*)> error_callback,
+    base::OnceCallback<void()> abort_callback) {
   Responder* responder = MakeGarbageCollected<Responder>(
-      script_state, signal, resolver, session_type,
-      std::move(complete_callback), overflow_callback);
+      script_state, signal, session_type, std::move(complete_callback),
+      std::move(tool_call_callback), overflow_callback,
+      std::move(error_callback), std::move(abort_callback));
   return responder->BindNewPipeAndPassRemote(task_runner);
 }
 

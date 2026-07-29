@@ -66,32 +66,6 @@ class ChromePasswordProtectionServiceSyncBrowserTest : public SyncTest {
   ChromePasswordProtectionServiceSyncBrowserTest& operator=(
       const ChromePasswordProtectionServiceSyncBrowserTest&) = delete;
 
-  void SetUpOnMainThread() override {
-    SyncTest::SetUpOnMainThread();
-
-    ASSERT_TRUE(embedded_test_server()->Start());
-
-    ASSERT_TRUE(SetupClients());
-
-    // Sign the profile in and enable Sync.
-    ASSERT_TRUE(
-        GetClient(0)->SignInPrimaryAccount(signin::ConsentLevel::kSync));
-
-    CoreAccountInfo current_info =
-        IdentityManagerFactory::GetForProfile(GetProfile(0))
-            ->GetPrimaryAccountInfo(signin::ConsentLevel::kSync);
-    // Need to update hosted domain since it is not populated.
-    AccountInfo account_info;
-    account_info.account_id = current_info.account_id;
-    account_info.gaia = current_info.gaia;
-    account_info.email = current_info.email;
-    account_info.hosted_domain = "domain.com";
-    signin::UpdateAccountInfoForAccount(
-        IdentityManagerFactory::GetForProfile(GetProfile(0)), account_info);
-
-    ASSERT_TRUE(GetClient(0)->SetupSync());
-  }
-
   safe_browsing::ChromePasswordProtectionService* GetService(
       bool is_incognito) {
     return ChromePasswordProtectionService::GetPasswordProtectionService(
@@ -112,10 +86,11 @@ class ChromePasswordProtectionServiceSyncBrowserTest : public SyncTest {
 
 IN_PROC_BROWSER_TEST_F(ChromePasswordProtectionServiceSyncBrowserTest,
                        GSuitePasswordAlertMode) {
+  ASSERT_TRUE(SetupSync(SyncTestAccount::kEnterpriseAccount1));
+
   ConfigureEnterprisePasswordProtection(
       PasswordProtectionTrigger::PASSWORD_REUSE);
   ChromePasswordProtectionService* service = GetService(/*is_incognito=*/false);
-  chrome::NewTab(GetBrowser(0));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(
       GetBrowser(0), embedded_test_server()->GetURL(kLoginPageUrl)));
   base::HistogramTester histograms;

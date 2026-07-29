@@ -93,26 +93,22 @@ export class AdditionalAccountsSettingsCardElement extends
         },
         readOnly: true,
       },
-
-      /**
-       * Used by DeepLinkingMixin to focus this page's deep links.
-       */
-      supportedSettingIds: {
-        type: Object,
-        value: () => new Set<Setting>([
-          Setting.kAddAccount,
-          Setting.kRemoveAccount,
-        ]),
-      },
     };
   }
 
-  accounts: Account[];
-  private actionMenuAccount_: Account|null;
+  declare accounts: Account[];
+
+  // DeepLinkingMixin override
+  override supportedSettingIds = new Set<Setting>([
+    Setting.kAddAccount,
+    Setting.kRemoveAccount,
+  ]);
+
+  declare private actionMenuAccount_: Account|null;
   private browserProxy_: AccountManagerBrowserProxy;
-  private isChildUser_: boolean;
-  private isDeviceAccountManaged_: boolean;
-  private isSecondaryGoogleAccountSigninAllowed_: boolean;
+  declare private isChildUser_: boolean;
+  declare private isDeviceAccountManaged_: boolean;
+  declare private isSecondaryGoogleAccountSigninAllowed_: boolean;
 
   constructor() {
     super();

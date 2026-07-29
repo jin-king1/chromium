@@ -4,108 +4,32 @@
 
 #include "components/autofill/core/browser/metrics/field_filling_stats_and_score_metrics.h"
 
-#include "base/containers/flat_map.h"
+#include <stddef.h>
+
+#include <algorithm>
+#include <memory>
+#include <string>
+
+#include "base/check_op.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/notreached.h"
 #include "base/strings/strcat.h"
+#include "components/autofill/core/browser/autofill_field.h"
 #include "components/autofill/core/browser/field_type_utils.h"
 #include "components/autofill/core/browser/filling/filling_product.h"
 #include "components/autofill/core/browser/form_structure.h"
 #include "components/autofill/core/browser/form_types.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics_utils.h"
-#include "components/autofill/core/common/autofill_features.h"
+#include "components/autofill/core/browser/suggestions/suggestion_util.h"
+#include "components/autofill/core/common/dense_set.h"
+#include "components/autofill/core/common/html_field_types.h"
 
 namespace autofill::autofill_metrics {
 
 namespace {
 
-// Logs the `filling_stats` of the fields within a `form_type`.
-// The `histogram_prefix` is used as part of the histogram name, and is
-// appended by the `form_type`. The filling status consists of the
-// number of accepted, corrected or and unfilled fields.
-void LogFieldFillingStatsWithHistogramPrefix(
-    FormTypeNameForLogging form_type,
-    const std::string& histogram_prefix,
-    const FormGroupFillingStats& filling_stats) {
-  // Do not acquire metrics for classified forms/fields if autofill was not used
-  // in this form group.
-  if (form_type != FormTypeNameForLogging::kUnknownFormType &&
-      filling_stats.TotalFilled() == 0) {
-    return;
-  }
-
-  // For the unclassified fields case, only log if there was manually filling
-  // involved.
-  if (form_type == FormTypeNameForLogging::kUnknownFormType &&
-      filling_stats.TotalManuallyFilled() == 0) {
-    return;
-  }
-
-  const std::string histogram_prefix_with_form_type = base::StrCat(
-      {histogram_prefix, FormTypeNameForLoggingToStringView(form_type), "."});
-  // Counts into those histograms are mutually exclusive.
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "Accepted"}),
-      filling_stats.num_accepted);
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "CorrectedToSameType"}),
-      filling_stats.num_corrected_to_same_type);
-
-  base::UmaHistogramCounts100(base::StrCat({histogram_prefix_with_form_type,
-                                            "CorrectedToDifferentType"}),
-                              filling_stats.num_corrected_to_different_type);
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "CorrectedToUnknownType"}),
-      filling_stats.num_corrected_to_unknown_type);
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "CorrectedToEmpty"}),
-      filling_stats.num_corrected_to_empty);
-
-  base::UmaHistogramCounts100(base::StrCat({histogram_prefix_with_form_type,
-                                            "ManuallyFilledToSameType"}),
-                              filling_stats.num_manually_filled_to_same_type);
-
-  base::UmaHistogramCounts100(
-      base::StrCat(
-          {histogram_prefix_with_form_type, "ManuallyFilledToDifferentType"}),
-      filling_stats.num_manually_filled_to_different_type);
-
-  base::UmaHistogramCounts100(
-      base::StrCat(
-          {histogram_prefix_with_form_type, "ManuallyFilledToUnknownType"}),
-      filling_stats.num_manually_filled_to_unknown_type);
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "LeftEmpty"}),
-      filling_stats.num_left_empty);
-
-  // Counts into those histograms are not mutually exclusive and a single field
-  // can contribute to multiple of those.
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "TotalCorrected"}),
-      filling_stats.TotalCorrected());
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "TotalFilled"}),
-      filling_stats.TotalFilled());
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "TotalUnfilled"}),
-      filling_stats.TotalUnfilled());
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "TotalManuallyFilled"}),
-      filling_stats.TotalManuallyFilled());
-
-  base::UmaHistogramCounts100(
-      base::StrCat({histogram_prefix_with_form_type, "Total"}),
-      filling_stats.Total());
-}
-
-void LogCompactFieldFillingStats(const std::string& histogram_name,
-                                 const FormGroupFillingStats& filling_stats) {
+void LogFieldFillingStats(const std::string& histogram_name,
+                          const FormGroupFillingStats& filling_stats) {
   // Do not acquire metrics if autofill was not used.
   if (filling_stats.TotalFilled() == 0) {
     return;
@@ -148,12 +72,6 @@ void LogCompactFieldFillingStats(const std::string& histogram_name,
     base::UmaHistogramEnumeration(histogram_name,
                                   FieldFillingStatus::kLeftEmpty);
   }
-}
-
-void LogFieldFillingStats(FormTypeNameForLogging form_type,
-                          const FormGroupFillingStats& filling_stats) {
-  LogFieldFillingStatsWithHistogramPrefix(
-      form_type, base::StrCat({"Autofill.FieldFillingStats."}), filling_stats);
 }
 
 // Logs a form-wide score for the fields of `form_type` based on the
@@ -261,10 +179,10 @@ FieldFillingStatus GetFieldFillingStatus(const AutofillField& field) {
   const bool possible_types_empty =
       !FieldHasMeaningfulPossibleFieldTypes(field);
   const bool possible_types_contain_type = TypeOfFieldIsPossibleType(field);
-  if (field.is_autofilled()) {
+  if (field.last_modifier() == FieldModifier::kAutofill) {
     return FieldFillingStatus::kAccepted;
   }
-  if (field.previously_autofilled()) {
+  if (field.all_modifiers().contains(FieldModifier::kAutofill)) {
     if (is_empty) {
       return FieldFillingStatus::kCorrectedToEmpty;
     }
@@ -291,10 +209,11 @@ FieldFillingStatus GetFieldFillingStatus(const AutofillField& field) {
 FormGroupFillingStats GetFormFillingStatsForFormType(
     FormType form_type,
     const FormStructure& form_structure) {
+  DCHECK_NE(form_type, FormType::kUnknownFormType);
   FormGroupFillingStats filling_stats_for_form_type;
 
   for (auto& field : form_structure) {
-    if (FieldTypeGroupToFormType(field->Type().group()) != form_type) {
+    if (!field->Type().GetFormTypes().contains(form_type)) {
       continue;
     }
     filling_stats_for_form_type.AddFieldFillingStatus(
@@ -303,7 +222,9 @@ FormGroupFillingStats GetFormFillingStatsForFormType(
   return filling_stats_for_form_type;
 }
 
-void LogFieldFillingStatsAndScore(const FormStructure& form) {
+void LogFieldFillingStatsAndScore(
+    const FormStructure& form,
+    AutocompleteUnrecognizedBehavior ac_unrecognized_behavior) {
   // Tracks how many fields are filled, unfilled or corrected.
   FormGroupFillingStats address_field_stats;
   FormGroupFillingStats postal_address_field_stats;
@@ -316,12 +237,11 @@ void LogFieldFillingStatsAndScore(const FormStructure& form) {
     // collect the type-unspecific field filling statistics.
     // Those are only emitted when autofill was used on at least one field of
     // the form.
-    const FormType form_type_of_field =
-        FieldTypeGroupToFormType(field->Type().group());
+    const DenseSet<FormType> form_type_of_field = field->Type().GetFormTypes();
     const bool is_address_form_field =
-        form_type_of_field == FormType::kAddressForm;
+        form_type_of_field.contains(FormType::kAddressForm);
     const bool is_credit_card_form_field =
-        form_type_of_field == FormType::kCreditCardForm;
+        form_type_of_field.contains(FormType::kCreditCardForm);
     if (!is_address_form_field && !is_credit_card_form_field) {
       FieldFillingStatus field_stats = GetFieldFillingStatus(*field);
       unclassified_fields_field_stats.AddFieldFillingStatus(field_stats);
@@ -344,25 +264,18 @@ void LogFieldFillingStatsAndScore(const FormStructure& form) {
     if (is_address_form_field &&
         (field->filling_product() == FillingProduct::kAddress ||
          field->filling_product() == FillingProduct::kNone) &&
-        field->ShouldSuppressSuggestionsAndFillingByDefault()) {
+        field->html_type() == HtmlFieldType::kUnrecognized) {
       ac_unrecognized_address_field_stats.AddFieldFillingStatus(
           GetFieldFillingStatus(*field));
     }
   }
-  LogFieldFillingStats(FormTypeNameForLogging::kAddressForm,
+  LogFieldFillingStats("Autofill.FieldFillingStats.Address",
                        address_field_stats);
-  LogFieldFillingStats(FormTypeNameForLogging::kPostalAddressForm,
+  LogFieldFillingStats("Autofill.FieldFillingStats.PostalAddress",
                        postal_address_field_stats);
-  LogFieldFillingStats(FormTypeNameForLogging::kCreditCardForm, cc_field_stats);
-  LogCompactFieldFillingStats("Autofill.FieldFillingStats.Address",
-                              address_field_stats);
-  LogCompactFieldFillingStats("Autofill.FieldFillingStats.CreditCard",
-                              cc_field_stats);
-  LogCompactFieldFillingStats(
-      "Autofill.AutocompleteUnrecognized.FieldFillingStats2",
-      ac_unrecognized_address_field_stats);
-  LogFieldFillingStats(FormTypeNameForLogging::kUnknownFormType,
-                       unclassified_fields_field_stats);
+  LogFieldFillingStats("Autofill.FieldFillingStats.CreditCard", cc_field_stats);
+  LogFieldFillingStats("Autofill.AutocompleteUnrecognized.FieldFillingStats2",
+                       ac_unrecognized_address_field_stats);
   LogFormFillingScore(FormType::kAddressForm, address_field_stats);
   LogFormFillingScore(FormType::kCreditCardForm, cc_field_stats);
 

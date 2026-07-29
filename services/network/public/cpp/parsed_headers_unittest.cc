@@ -16,6 +16,7 @@
 #include "net/http/http_response_headers.h"
 #include "net/http/http_util.h"
 #include "services/network/public/cpp/features.h"
+#include "services/network/public/mojom/declarative_performance_observer.mojom.h"
 #include "services/network/public/mojom/parsed_headers.mojom.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -361,6 +362,65 @@ TEST(ParsedHeadersTest, CookieIndices) {
   EXPECT_THAT(
       parsed_headers->cookie_indices,
       ::testing::Optional(::testing::ElementsAre("logged_in", "user_lang")));
+}
+
+TEST(ParsedHeadersTest, IntegrityPolicy) {
+  base::test::ScopedFeatureList enable{features::kIntegrityPolicyScript};
+  const std::string_view headers =
+      "HTTP/1.1 200 OK\r\n"
+      "Integrity-Policy: blocked-destinations=(script)\r\n"
+      "Integrity-Policy-Report-Only: blocked-destinations=(script)\r\n\r\n";
+  const auto parsed_headers = ParseHeaders(headers);
+
+  ASSERT_TRUE(parsed_headers);
+  EXPECT_EQ(parsed_headers->integrity_policy.blocked_destinations.size(), 1u);
+  EXPECT_EQ(
+      parsed_headers->integrity_policy_report_only.blocked_destinations.size(),
+      1u);
+}
+
+TEST(ParsedHeadersTest, ConnectionAllowlist) {
+  base::test::ScopedFeatureList enable{features::kConnectionAllowlists};
+  const std::string_view headers =
+      "HTTP/1.1 200 OK\r\n"
+      "Connection-Allowlist: (\"https://site.example/\")\r\n"
+      "Connection-Allowlist-Report-Only: (\"https://site.example/\")\r\n";
+  const auto parsed_headers = ParseHeaders(headers);
+
+  ASSERT_TRUE(parsed_headers);
+  EXPECT_TRUE(parsed_headers->connection_allowlists.enforced.has_value());
+  EXPECT_TRUE(parsed_headers->connection_allowlists.report_only.has_value());
+}
+
+TEST(ParsedHeadersTest, DeclarativePerformanceObserver) {
+  const std::string_view headers =
+      "HTTP/1.1 200 OK\r\n"
+      "Performance-Observer: report-to=\"default\", "
+      "entry-types=(\"mark\")\r\n\r\n";
+  const auto parsed_headers = ParseHeaders(headers);
+
+  ASSERT_TRUE(parsed_headers);
+  ASSERT_TRUE(parsed_headers->declarative_performance_observer_policy);
+  EXPECT_EQ(parsed_headers->declarative_performance_observer_policy
+                ->reporting_endpoint,
+            "default");
+  ASSERT_EQ(parsed_headers->declarative_performance_observer_policy->entry_types
+                .size(),
+            1u);
+  EXPECT_EQ(
+      parsed_headers->declarative_performance_observer_policy->entry_types[0],
+      mojom::PerformanceEntryType::kMark);
+}
+
+TEST(ParsedHeadersTest, PrefetchActivationBeacon) {
+  const std::string_view headers =
+      "HTTP/1.1 200 OK\r\n"
+      "on-prefetch-activation: /analytics/beacon\r\n\r\n";
+  const auto parsed_headers = ParseHeaders(headers);
+
+  ASSERT_TRUE(parsed_headers);
+  EXPECT_EQ(parsed_headers->prefetch_activation_beacon_endpoint,
+            GURL("https://a.com/analytics/beacon"));
 }
 
 }  // namespace

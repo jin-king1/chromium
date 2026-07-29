@@ -10,15 +10,18 @@
 #include <memory>
 #include <optional>
 #include <utility>
+#include <variant>
 
 #include "base/check.h"
 #include "base/compiler_specific.h"
 #include "base/feature_list.h"
 #include "base/logging.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/metrics/histogram_macros.h"
+#include "base/metrics/histogram_functions.h"
+#include "base/metrics/metrics_hashes.h"
 #include "base/notreached.h"
 #include "base/observer_list.h"
+#include "base/rand_util.h"
 #include "base/sequence_token.h"
 #include "base/strings/stringprintf.h"
 #include "base/task/common/scoped_defer_task_posting.h"
@@ -35,7 +38,8 @@
 #include "base/task/task_observer.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
-#include "base/trace_event/base_tracing.h"
+#include "base/trace_event/interned_args_helper.h"
+#include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "third_party/abseil-cpp/absl/container/inlined_vector.h"
 
@@ -60,14 +64,13 @@ class CurrentDefaultHandleOverrideForRunOrPostTask {
 
 namespace {
 
+// Targeting tasks that are longer than p99 for session duration.
+constexpr base::TimeDelta kLongDelayedTaskThreshold = base::Minutes(25);
+constexpr double kLongDelayedTaskSubsamplingProbability = 0.001;
+
 // An atomic is used here because the value is queried from other threads when
 // tasks are posted cross-thread, which can race with its initialization.
 std::atomic<base::TimeDelta> g_max_precise_delay{kDefaultMaxPreciseDelay};
-#if BUILDFLAG(IS_WIN)
-// An atomic is used here because the flag is queried from other threads when
-// tasks are posted cross-thread, which can race with its initialization.
-std::atomic_bool g_explicit_high_resolution_timer_win{true};
-#endif  // BUILDFLAG(IS_WIN)
 
 void RunTaskSynchronously(AssociatedThreadId* associated_thread,
                           scoped_refptr<SingleThreadTaskRunner> task_runner,
@@ -136,7 +139,7 @@ bool TaskQueueImpl::GuardedTaskPoster::RunOrPostTask(PostedTask task) {
   // `IsQueueEnabledFromAnyThread()`. That won't prevent the task from running.
   if (sync_work_auth.IsValid() && outer_->IsQueueEnabledFromAnyThread()) {
     RunTaskSynchronously(outer_->associated_thread_.get(),
-                         outer_->sequence_manager_->GetTaskRunner(),
+                         outer_->sequence_manager_->GetDefaultTaskRunner(),
                          std::move(task.callback));
     return true;
   }
@@ -236,11 +239,6 @@ bool TaskQueueImpl::TaskRunner::RunsTasksInCurrentSequence() const {
 // static
 void TaskQueueImpl::InitializeFeatures() {
   g_max_precise_delay = kMaxPreciseDelay.Get();
-#if BUILDFLAG(IS_WIN)
-  g_explicit_high_resolution_timer_win.store(
-      FeatureList::IsEnabled(kExplicitHighResolutionTimerWin),
-      std::memory_order_relaxed);
-#endif  // BUILDFLAG(IS_WIN)
 }
 
 TaskQueueImpl::TaskQueueImpl(SequenceManagerImpl* sequence_manager,
@@ -260,6 +258,7 @@ TaskQueueImpl::TaskQueueImpl(SequenceManagerImpl* sequence_manager,
       should_monitor_quiescence_(spec.should_monitor_quiescence),
       should_notify_observers_(spec.should_notify_observers),
       delayed_fence_allowed_(spec.delayed_fence_allowed),
+      scoped_execution_fence_allowed_(spec.scoped_execution_fence_allowed),
       default_task_runner_(CreateTaskRunner(kTaskTypeNone)) {
   UpdateCrossThreadQueueStateLocked();
   // SequenceManager can't be set later, so we need to prevent task runners
@@ -336,6 +335,8 @@ void TaskQueueImpl::UnregisterTaskQueue() {
     any_thread_.on_task_posted_handlers.swap(on_task_posted_handlers);
   }
 
+  main_thread_only().unregistered = true;
+
   if (main_thread_only().wake_up_queue) {
     main_thread_only().wake_up_queue->UnregisterQueue(this);
   }
@@ -380,16 +381,6 @@ void TaskQueueImpl::PostTask(PostedTask task) {
           ? TaskQueueImpl::CurrentThread::kMainThread
           : TaskQueueImpl::CurrentThread::kNotMainThread;
 
-#if DCHECK_IS_ON()
-  TimeDelta delay = GetTaskDelayAdjustment(current_thread);
-  if (absl::holds_alternative<base::TimeTicks>(
-          task.delay_or_delayed_run_time)) {
-    absl::get<base::TimeTicks>(task.delay_or_delayed_run_time) += delay;
-  } else {
-    absl::get<base::TimeDelta>(task.delay_or_delayed_run_time) += delay;
-  }
-#endif  // DCHECK_IS_ON()
-
   if (!task.is_delayed()) {
     PostImmediateTaskImpl(std::move(task), current_thread);
   } else {
@@ -400,6 +391,12 @@ void TaskQueueImpl::PostTask(PostedTask task) {
 void TaskQueueImpl::RemoveCancelableTask(HeapHandle heap_handle) {
   associated_thread_->AssertInSequenceWithCurrentThread();
   DCHECK(heap_handle.IsValid());
+
+  if (main_thread_only().unregistered) {
+    // During shutdown, UnregisterQueue() swaps the tasks to the stack for safe
+    // destruction. Return early as the member queue is now empty.
+    return;
+  }
 
   main_thread_only().delayed_incoming_queue.remove(heap_handle);
 
@@ -412,26 +409,6 @@ void TaskQueueImpl::RemoveCancelableTask(HeapHandle heap_handle) {
     LazyNow lazy_now(sequence_manager_->main_thread_clock());
     UpdateWakeUp(&lazy_now);
   }
-}
-
-TimeDelta TaskQueueImpl::GetTaskDelayAdjustment(CurrentThread current_thread) {
-#if DCHECK_IS_ON()
-  if (current_thread == TaskQueueImpl::CurrentThread::kNotMainThread) {
-    base::internal::CheckedAutoLock lock(any_thread_lock_);
-    // Add a per-priority delay to cross thread tasks. This can help diagnose
-    // scheduler induced flakiness by making things flake most of the time.
-    return sequence_manager_->settings()
-        .priority_settings
-        .per_priority_cross_thread_task_delay()[any_thread_.queue_set_index];
-  } else {
-    return sequence_manager_->settings()
-        .priority_settings.per_priority_same_thread_task_delay()
-            [main_thread_only().immediate_work_queue->work_queue_set_index()];
-  }
-#else
-  // No delay adjustment.
-  return TimeDelta();
-#endif  // DCHECK_IS_ON()
 }
 
 void TaskQueueImpl::PostImmediateTaskImpl(PostedTask task,
@@ -448,10 +425,8 @@ void TaskQueueImpl::PostImmediateTaskImpl(PostedTask task,
     bool add_queue_time_to_tasks = sequence_manager_->GetAddQueueTimeToTasks();
     TimeTicks queue_time;
     bool config_category_enabled = false;
-#if BUILDFLAG(ENABLE_BASE_TRACING)
     config_category_enabled =
         TRACE_EVENT_CATEGORY_ENABLED("config.scheduler.record_task_post_time");
-#endif
     if (config_category_enabled || add_queue_time_to_tasks ||
         delayed_fence_allowed_) {
       queue_time = sequence_manager_->any_thread_clock()->NowTicks();
@@ -466,11 +441,6 @@ void TaskQueueImpl::PostImmediateTaskImpl(PostedTask task,
         any_thread_.immediate_incoming_queue.empty();
     any_thread_.immediate_incoming_queue.push_back(
         Task(std::move(task), sequence_number, sequence_number, queue_time));
-
-#if DCHECK_IS_ON()
-    any_thread_.immediate_incoming_queue.back().cross_thread_ =
-        (current_thread == TaskQueueImpl::CurrentThread::kNotMainThread);
-#endif
 
     sequence_manager_->WillQueueTask(
         &any_thread_.immediate_incoming_queue.back());
@@ -537,10 +507,6 @@ void TaskQueueImpl::PushOntoDelayedIncomingQueueFromMainThread(
     Task pending_task,
     LazyNow* lazy_now,
     bool notify_task_annotator) {
-#if DCHECK_IS_ON()
-  pending_task.cross_thread_ = false;
-#endif
-
   if (notify_task_annotator) {
     sequence_manager_->WillQueueTask(&pending_task);
     MaybeReportIpcTaskQueuedFromMainThread(pending_task);
@@ -554,10 +520,6 @@ void TaskQueueImpl::PushOntoDelayedIncomingQueueFromMainThread(
 void TaskQueueImpl::PushOntoDelayedIncomingQueue(Task pending_task) {
   sequence_manager_->WillQueueTask(&pending_task);
   MaybeReportIpcTaskQueuedFromAnyThreadUnlocked(pending_task);
-
-#if DCHECK_IS_ON()
-  pending_task.cross_thread_ = true;
-#endif
 
   // TODO(altimin): Add a copy method to Task to capture metadata here.
   auto task_runner = pending_task.task_runner;
@@ -684,20 +646,12 @@ std::optional<WakeUp> TaskQueueImpl::GetNextDesiredWakeUp() {
 
   const auto& top_task = main_thread_only().delayed_incoming_queue.top();
 
-  // High resolution is needed if the queue contains high resolution tasks and
-  // has a priority index <= kNormalPriority (precise execution time is
-  // unnecessary for a low priority queue).
-  WakeUpResolution resolution = has_pending_high_resolution_tasks() &&
-                                        GetQueuePriority() <= DefaultPriority()
-                                    ? WakeUpResolution::kHigh
-                                    : WakeUpResolution::kLow;
   subtle::DelayPolicy delay_policy = top_task.delay_policy;
   if (GetQueuePriority() > DefaultPriority() &&
       delay_policy == subtle::DelayPolicy::kPrecise) {
     delay_policy = subtle::DelayPolicy::kFlexibleNoSooner;
   }
-  return WakeUp{top_task.delayed_run_time, top_task.leeway, resolution,
-                delay_policy};
+  return WakeUp{top_task.delayed_run_time, top_task.leeway, delay_policy};
 }
 
 void TaskQueueImpl::OnWakeUp(LazyNow* lazy_now, EnqueueOrder enqueue_order) {
@@ -762,12 +716,6 @@ void TaskQueueImpl::MoveReadyDelayedTasksToWorkQueue(
     }
 
     // The top task is ready to run. Move it to the delayed work queue.
-#if DCHECK_IS_ON()
-    if (sequence_manager_->settings().log_task_delay_expiry) {
-      VLOG(0) << GetName() << " Delay expired for "
-              << ready_task.posted_from.ToString();
-    }
-#endif  // DCHECK_IS_ON()
     DCHECK(!ready_task.delayed_run_time.is_null());
     DCHECK(!ready_task.enqueue_order_set());
     ready_task.set_enqueue_order(enqueue_order);
@@ -846,9 +794,9 @@ TaskQueue::QueuePriority TaskQueueImpl::GetQueuePriority() const {
   return static_cast<TaskQueue::QueuePriority>(set_index);
 }
 
-Value::Dict TaskQueueImpl::AsValue(TimeTicks now, bool force_verbose) const {
+DictValue TaskQueueImpl::AsValue(TimeTicks now, bool force_verbose) const {
   base::internal::CheckedAutoLock lock(any_thread_lock_);
-  Value::Dict state;
+  DictValue state;
   state.Set("name", GetName());
   if (any_thread_.unregistered) {
     state.Set("unregistered", true);
@@ -879,7 +827,7 @@ Value::Dict TaskQueueImpl::AsValue(TimeTicks now, bool force_verbose) const {
     state.Set("delay_to_next_task_ms", delay_to_next_task.InMillisecondsF());
   }
   if (main_thread_only().current_fence) {
-    Value::Dict fence_state;
+    DictValue fence_state;
     fence_state.Set(
         "enqueue_order",
         static_cast<int>(
@@ -1072,8 +1020,8 @@ bool TaskQueueImpl::WasBlockedOrLowPriority(EnqueueOrder enqueue_order) const {
 }
 
 // static
-Value::List TaskQueueImpl::QueueAsValue(const TaskDeque& queue, TimeTicks now) {
-  Value::List state;
+ListValue TaskQueueImpl::QueueAsValue(const TaskDeque& queue, TimeTicks now) {
+  ListValue state;
   for (const Task& task : queue) {
     state.Append(TaskAsValue(task, now));
   }
@@ -1081,15 +1029,14 @@ Value::List TaskQueueImpl::QueueAsValue(const TaskDeque& queue, TimeTicks now) {
 }
 
 // static
-Value::Dict TaskQueueImpl::TaskAsValue(const Task& task, TimeTicks now) {
-  Value::Dict state;
+DictValue TaskQueueImpl::TaskAsValue(const Task& task, TimeTicks now) {
+  DictValue state;
   state.Set("posted_from", task.posted_from.ToString());
   if (task.enqueue_order_set()) {
     state.Set("enqueue_order", static_cast<int>(task.enqueue_order()));
   }
   state.Set("sequence_num", task.sequence_num);
   state.Set("nestable", task.nestable == Nestable::kNestable);
-  state.Set("is_high_res", task.is_high_res);
   state.Set("is_cancelled", task.task.IsCancelled());
   state.Set("delayed_run_time",
             (task.delayed_run_time - TimeTicks()).InMillisecondsF());
@@ -1105,36 +1052,38 @@ Task TaskQueueImpl::MakeDelayedTask(PostedTask delayed_task,
                                     LazyNow* lazy_now) const {
   EnqueueOrder sequence_number = sequence_manager_->GetNextSequenceNumber();
   base::TimeDelta delay;
-  WakeUpResolution resolution = WakeUpResolution::kLow;
-#if BUILDFLAG(IS_WIN)
-  const bool explicit_high_resolution_timer_win =
-      g_explicit_high_resolution_timer_win.load(std::memory_order_relaxed);
-#endif  // BUILDFLAG(IS_WIN)
-  if (absl::holds_alternative<base::TimeDelta>(
+  if (std::holds_alternative<base::TimeDelta>(
           delayed_task.delay_or_delayed_run_time)) {
-    delay = absl::get<base::TimeDelta>(delayed_task.delay_or_delayed_run_time);
+    delay = std::get<base::TimeDelta>(delayed_task.delay_or_delayed_run_time);
     delayed_task.delay_or_delayed_run_time = lazy_now->Now() + delay;
   } else {
-    delay = absl::get<base::TimeTicks>(delayed_task.delay_or_delayed_run_time) -
+    delay = std::get<base::TimeTicks>(delayed_task.delay_or_delayed_run_time) -
             lazy_now->Now();
   }
-#if BUILDFLAG(IS_WIN)
-  if (!explicit_high_resolution_timer_win &&
-      delay < (2 * base::Milliseconds(Time::kMinLowResolutionThresholdMs))) {
-    // Outside the kExplicitHighResolutionTimerWin experiment, We consider the
-    // task needs a high resolution timer if the delay is more than 0 and less
-    // than 32ms. This caps the relative error to less than 50% : a 33ms wait
-    // can wake at 48ms since the default resolution on Windows is between 10
-    // and 15ms.
-    resolution = WakeUpResolution::kHigh;
-  }
-#endif  // BUILDFLAG(IS_WIN)
   delayed_task.delay_policy = subtle::MaybeOverrideDelayPolicy(
       delayed_task.delay_policy, delay,
       g_max_precise_delay.load(std::memory_order_relaxed));
+
+  if (delay >= kLongDelayedTaskThreshold &&
+      base::ShouldRecordSubsampledMetric(
+          kLongDelayedTaskSubsamplingProbability)) {
+    if (delayed_task.location.has_source_info()) {
+      std::string caller_identifier =
+          base::StringPrintf("%s:%s", delayed_task.location.file_name(),
+                             delayed_task.location.function_name());
+      uint32_t hash = base::HashMetricNameAs32Bits(caller_identifier);
+      base::UmaHistogramSparse(
+          "Scheduling.DelayedTask.LongDelayedTaskPostedLocation",
+          static_cast<int>(hash));
+    } else {
+      base::UmaHistogramSparse(
+          "Scheduling.DelayedTask.LongDelayedTaskPostedLocation", 0);
+    }
+  }
+
   // leeway isn't specified yet since this may be called from any thread.
   return Task(std::move(delayed_task), sequence_number, EnqueueOrder(),
-              lazy_now->Now(), resolution);
+              lazy_now->Now());
 }
 
 bool TaskQueueImpl::IsQueueEnabled() const {
@@ -1575,12 +1524,43 @@ TaskQueueImpl::CreateQueueEnabledVoter() {
 }
 
 void TaskQueueImpl::RemoveCancelledTasks() {
+  // TODO(crbug.com/394266102): Remove these crash keys after the bug is
+  // understood and fixed.
+  //
+  // Note: This method is only called from the renderer main thread, so it's
+  // acceptable not to have synchronization around the calls to set these crash
+  // keys (and since this code only exists temporarily to diagnose a bug, it's
+  // not worthwhile to add such synchronization).
+  static auto* pre_remove_cancelled_tasks_immediate_incoming_queue_size =
+      debug::AllocateCrashKeyString("pre_rct_immediate_incoming_queue_size",
+                                    debug::CrashKeySize::Size32);
+  static auto* pre_remove_cancelled_tasks_immediate_work_queue_size =
+      debug::AllocateCrashKeyString("pre_rct_immediate_work_queue_size",
+                                    debug::CrashKeySize::Size32);
+  static auto* pre_remove_cancelled_tasks_delayed_work_queue_size =
+      debug::AllocateCrashKeyString("pre_rct_delayed_work_queue_size",
+                                    debug::CrashKeySize::Size32);
+  static auto* post_remove_cancelled_tasks_immediate_incoming_queue_size =
+      debug::AllocateCrashKeyString("post_rct_immediate_incoming_queue_size",
+                                    debug::CrashKeySize::Size32);
+  static auto* post_remove_cancelled_tasks_immediate_work_queue_size =
+      debug::AllocateCrashKeyString("post_rct_immediate_work_queue_size",
+                                    debug::CrashKeySize::Size32);
+  static auto* post_remove_cancelled_tasks_delayed_work_queue_size =
+      debug::AllocateCrashKeyString("post_rct_delayed_work_queue_size",
+                                    debug::CrashKeySize::Size32);
+
   // Because callback destructors could have a side-effect of posting new tasks,
   // move cancelled callbacks into a temporary container before deleting them.
   // This prevents lock reentrancy or modifying a container while traversing it.
   absl::InlinedVector<base::OnceClosure, 8> tasks_to_delete;
   {
     base::internal::CheckedAutoLock lock(any_thread_lock_);
+
+    debug::SetCrashKeyString(
+        pre_remove_cancelled_tasks_immediate_incoming_queue_size,
+        NumberToString(any_thread_.immediate_incoming_queue.size()));
+
     for (auto& task : any_thread_.immediate_incoming_queue) {
       if (task.task.IsCancelled()) {
         tasks_to_delete.push_back(std::move(task.task));
@@ -1588,12 +1568,37 @@ void TaskQueueImpl::RemoveCancelledTasks() {
     }
     std::erase_if(any_thread_.immediate_incoming_queue,
                   [](const Task& task) { return task.task.is_null(); });
+
+    debug::SetCrashKeyString(
+        post_remove_cancelled_tasks_immediate_incoming_queue_size,
+        NumberToString(any_thread_.immediate_incoming_queue.size()));
   }
+
+  debug::SetCrashKeyString(
+      pre_remove_cancelled_tasks_immediate_work_queue_size,
+      NumberToString(main_thread_only_.immediate_work_queue->Size()));
 
   main_thread_only_.immediate_work_queue->RemoveCancelledTasks(
       WorkQueue::RemoveCancelledTasksPolicy::kAll);
+
+  debug::SetCrashKeyString(
+      post_remove_cancelled_tasks_immediate_work_queue_size,
+      NumberToString(main_thread_only_.immediate_work_queue->Size()));
+
+  debug::SetCrashKeyString(
+      pre_remove_cancelled_tasks_delayed_work_queue_size,
+      NumberToString(main_thread_only_.delayed_work_queue->Size()));
+
   main_thread_only_.delayed_work_queue->RemoveCancelledTasks(
       WorkQueue::RemoveCancelledTasksPolicy::kAll);
+
+  debug::SetCrashKeyString(
+      post_remove_cancelled_tasks_delayed_work_queue_size,
+      NumberToString(main_thread_only_.delayed_work_queue->Size()));
+}
+
+bool TaskQueueImpl::IsBlockedByScopedExecutionFences() {
+  return scoped_execution_fence_allowed_;
 }
 
 void TaskQueueImpl::AddQueueEnabledVoter(bool voter_is_enabled,
@@ -1660,9 +1665,6 @@ void TaskQueueImpl::DelayedIncomingQueue::push(Task task) {
   // TODO(crbug.com/40789839): Remove this once the cause of corrupted tasks in
   // the queue is understood.
   CHECK(task.task);
-  if (task.is_high_res) {
-    pending_high_res_tasks_++;
-  }
   queue_.insert(std::move(task));
 }
 
@@ -1670,23 +1672,14 @@ void TaskQueueImpl::DelayedIncomingQueue::remove(HeapHandle heap_handle) {
   DCHECK(!empty());
   DCHECK_LT(heap_handle.index(), queue_.size());
   Task task = queue_.take(heap_handle);
-  if (task.is_high_res) {
-    pending_high_res_tasks_--;
-    DCHECK_GE(pending_high_res_tasks_, 0);
-  }
 }
 
 Task TaskQueueImpl::DelayedIncomingQueue::take_top() {
   DCHECK(!empty());
-  if (queue_.top().is_high_res) {
-    pending_high_res_tasks_--;
-    DCHECK_GE(pending_high_res_tasks_, 0);
-  }
   return queue_.take_top();
 }
 
 void TaskQueueImpl::DelayedIncomingQueue::swap(DelayedIncomingQueue* rhs) {
-  std::swap(pending_high_res_tasks_, rhs->pending_high_res_tasks_);
   std::swap(queue_, rhs->queue_);
 }
 
@@ -1694,20 +1687,11 @@ void TaskQueueImpl::DelayedIncomingQueue::SweepCancelledTasks(
     SequenceManagerImpl* sequence_manager) {
   // Note: IntrusiveHeap::EraseIf() is safe against re-entrancy caused by
   // deleted tasks posting new tasks.
-  queue_.EraseIf([this](const Task& task) {
-    if (task.task.IsCancelled()) {
-      if (task.is_high_res) {
-        --pending_high_res_tasks_;
-        DCHECK_GE(pending_high_res_tasks_, 0);
-      }
-      return true;
-    }
-    return false;
-  });
+  queue_.EraseIf([](const Task& task) { return task.task.IsCancelled(); });
 }
 
-Value::List TaskQueueImpl::DelayedIncomingQueue::AsValue(TimeTicks now) const {
-  Value::List state;
+ListValue TaskQueueImpl::DelayedIncomingQueue::AsValue(TimeTicks now) const {
+  ListValue state;
   for (const Task& task : queue_) {
     state.Append(TaskAsValue(task, now));
   }

@@ -38,8 +38,8 @@ export class CrTabsDemoElement extends CrLitElement {
     };
   }
 
-  protected selectedTabIndex_: number = 0;
-  protected tabNames_: string[] = ['Tab 1', 'Tab 2', 'Tab 3'];
+  protected accessor selectedTabIndex_: number = 0;
+  protected accessor tabNames_: string[] = ['Tab 1', 'Tab 2', 'Tab 3'];
 
   protected onAddClick_() {
     this.tabNames_.push('Added');
@@ -55,8 +55,15 @@ export class CrTabsDemoElement extends CrLitElement {
     this.selectedTabIndex_ = 1;
   }
 
-  protected onSelectedTabIndexChanged_(e: CustomEvent<{value: number}>) {
+  protected onSelectedTabIndexSelectedChanged_(
+      e: CustomEvent<{value: number}>) {
     this.selectedTabIndex_ = e.detail.value;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cr-tabs-demo': CrTabsDemoElement;
   }
 }
 

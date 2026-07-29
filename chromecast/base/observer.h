@@ -101,12 +101,12 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <algorithm>
 #include <memory>
 #include <utility>
 #include <vector>
 
 #include "base/check_op.h"
-#include "base/containers/contains.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/location.h"
@@ -274,17 +274,15 @@ class ObservableInternals
     void AddObserver(Observer<T>* observer) {
       DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
       DCHECK(observer);
-      DCHECK(!base::Contains(observers_, observer));
+      DCHECK(!std::ranges::contains(observers_, observer));
       observers_.push_back(observer);
     }
 
     void RemoveObserver(Observer<T>* observer) {
       DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
       DCHECK(observer);
-      DCHECK(base::Contains(observers_, observer));
-      observers_.erase(
-          std::remove(observers_.begin(), observers_.end(), observer),
-          observers_.end());
+      DCHECK(std::ranges::contains(observers_, observer));
+      std::erase(observers_, observer);
     }
 
     bool Empty() const {

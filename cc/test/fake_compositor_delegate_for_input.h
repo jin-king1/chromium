@@ -28,21 +28,60 @@ class FakeCompositorDelegateForInput : public CompositorDelegateForInput {
   void BindToInputHandler(
       std::unique_ptr<InputDelegateForCompositor> delegate) override {}
   ScrollTree& GetScrollTree() const override;
+  void ScrollAnimationAbort(ElementId element_id) const override {}
+  float GetBrowserControlsTopOffset() const override;
+  void ScrollBegin() const override {}
+  void ScrollEnd(
+      const gfx::Vector2dF& compensated_scroll_delta) const override {}
+  void StartScrollSequence(
+      FrameSequenceTrackerType type,
+      FrameInfo::SmoothEffectDrivingThread scrolling_thread) override {}
+  void StopSequence(FrameSequenceTrackerType type) override {}
+  void PinchBegin() const override {}
+  void PinchEnd() const override {}
+  void TickScrollAnimations() const override {}
+  void ScrollbarAnimationMouseLeave(ElementId element_id) const override {}
+  void ScrollbarAnimationMouseMove(
+      ElementId element_id,
+      gfx::PointF device_viewport_point) const override {}
+  bool ScrollbarAnimationMouseDown(ElementId element_id) const override;
+  bool ScrollbarAnimationMouseUp(ElementId element_id) const override;
+  double PredictViewportBoundsDelta(
+      double current_bounds_delta,
+      gfx::Vector2dF scroll_distance) const override;
+  bool ElementHasImplOnlyScrollAnimation(ElementId) const override;
+  std::optional<gfx::PointF> UpdateImplAnimationScrollTargetWithDelta(
+      gfx::Vector2dF adjusted_delta,
+      int scroll_node_id,
+      base::TimeDelta delayed_by,
+      ElementId element_id) const override;
+  std::unique_ptr<EventsMetricsManager::ScopedMonitor>
+  GetScopedEventMetricsMonitor(
+      EventsMetricsManager::ScopedMonitor::DoneCallback done_callback) override;
+  void DidScrollForMetrics() override {}
+  void NotifyInputEvent(bool is_fling) override {}
+  std::unique_ptr<LatencyInfoSwapPromiseMonitor>
+  CreateLatencyInfoSwapPromiseMonitor(ui::LatencyInfo* latency) override;
+  void SetNeedsAnimateInput() override {}
+  bool ScrollAnimationCreate(const ScrollNode& scroll_node,
+                             const gfx::Vector2dF& scroll_amount,
+                             base::TimeDelta delayed_by) override;
   bool HasAnimatedScrollbars() const override;
-  void SetNeedsCommit() override {}
-  void SetNeedsFullViewportRedraw() override {}
+  void SetNeedsCommit(BeginMainFrameReason) override {}
   void SetDeferBeginMainFrame(bool defer_begin_main_frame) const override {}
   void DidUpdateScrollAnimationCurve() override {}
-  void AccumulateScrollDeltaForTracing(const gfx::Vector2dF& delta) override {}
   void DidStartPinchZoom() override {}
   void DidUpdatePinchZoom() override {}
   void DidEndPinchZoom() override {}
   void DidStartScroll() override {}
   void DidEndScroll() override {}
   void DidMouseLeave() override {}
+  void DidMouseEnterNonViewportScroller(ElementId element_id) override {}
   bool IsInHighLatencyMode() const override;
   void WillScrollContent(ElementId element_id) override {}
-  void DidScrollContent(ElementId element_id, bool animated) override {}
+  void DidScrollContent(ElementId element_id,
+                        bool animated,
+                        const gfx::Vector2dF& scroll_delta) override {}
   float DeviceScaleFactor() const override;
   float PageScaleFactor() const override;
   gfx::Size VisualDeviceViewportSize() const override;

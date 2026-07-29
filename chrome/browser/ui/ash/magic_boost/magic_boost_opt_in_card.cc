@@ -6,14 +6,17 @@
 
 #include <string>
 
+#include "base/check_deref.h"
+#include "base/memory/raw_ref.h"
+#include "chrome/browser/ash/magic_boost/magic_boost_controller.h"
 #include "chrome/browser/ui/ash/editor_menu/utils/utils.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_card_controller.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_constants.h"
 #include "chrome/browser/ui/ash/magic_boost/magic_boost_metrics.h"
 #include "chromeos/components/magic_boost/public/cpp/magic_boost_state.h"
-#include "chromeos/crosapi/mojom/magic_boost.mojom.h"
 #include "chromeos/strings/grit/chromeos_strings.h"
 #include "chromeos/ui/vector_icons/vector_icons.h"
+#include "components/application_locale_storage/application_locale_storage.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/base/metadata/metadata_impl_macros.h"
 #include "ui/compositor/layer.h"
@@ -28,6 +31,7 @@
 #include "ui/views/layout/box_layout_view.h"
 #include "ui/views/layout/flex_layout.h"
 #include "ui/views/layout/flex_layout_view.h"
+#include "ui/views/metadata/view_factory.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/unique_widget_ptr.h"
@@ -78,9 +82,12 @@ const gfx::FontList kTitleTextFontList =
 
 // MagicBoostOptInCard --------------------------------------------------------
 
-MagicBoostOptInCard::MagicBoostOptInCard(MagicBoostCardController* controller)
+MagicBoostOptInCard::MagicBoostOptInCard(
+    const ApplicationLocaleStorage* application_locale_storage,
+    MagicBoostCardController* controller)
     : chromeos::editor_menu::PreTargetHandlerView(
           /*card_type=*/editor_menu::CardType::kMagicBoostOptInCard),
+      application_locale_storage_(CHECK_DEREF(application_locale_storage)),
       controller_(controller) {
   SetLayoutManager(std::make_unique<views::FlexLayout>())
       ->SetOrientation(views::LayoutOrientation::kVertical)
@@ -133,8 +140,8 @@ MagicBoostOptInCard::MagicBoostOptInCard(MagicBoostCardController* controller)
           .Build());
 
   // Create text container that holds title and body text.
-  bool include_orca =
-      controller_->GetOptInFeatures() == OptInFeatures::kOrcaAndHmr;
+  bool include_orca = controller_->GetOptInFeatures() ==
+                      ash::magic_boost::OptInFeatures::kOrcaAndHmr;
   image_and_text_container->AddChildView(
       views::Builder<views::FlexLayoutView>()
           .SetOrientation(views::LayoutOrientation::kVertical)
@@ -223,6 +230,7 @@ MagicBoostOptInCard::~MagicBoostOptInCard() = default;
 
 // static
 views::UniqueWidgetPtr MagicBoostOptInCard::CreateWidget(
+    const ApplicationLocaleStorage* application_locale_storage,
     MagicBoostCardController* controller,
     const gfx::Rect& anchor_view_bounds) {
   views::Widget::InitParams params(
@@ -237,8 +245,9 @@ views::UniqueWidgetPtr MagicBoostOptInCard::CreateWidget(
 
   views::UniqueWidgetPtr widget =
       std::make_unique<views::Widget>(std::move(params));
-  MagicBoostOptInCard* magic_boost_opt_in_card = widget->SetContentsView(
-      std::make_unique<MagicBoostOptInCard>(controller));
+  MagicBoostOptInCard* magic_boost_opt_in_card =
+      widget->SetContentsView(std::make_unique<MagicBoostOptInCard>(
+          application_locale_storage, controller));
   magic_boost_opt_in_card->UpdateWidgetBounds(anchor_view_bounds);
 
   return widget;
@@ -252,8 +261,8 @@ const char* MagicBoostOptInCard::GetWidgetName() {
 void MagicBoostOptInCard::UpdateWidgetBounds(
     const gfx::Rect& anchor_view_bounds) {
   // TODO(b/318733414): Move `GetEditorMenuBounds` to a common place to use.
-  GetWidget()->SetBounds(
-      editor_menu::GetEditorMenuBounds(anchor_view_bounds, this));
+  GetWidget()->SetBounds(editor_menu::GetEditorMenuBounds(
+      anchor_view_bounds, this, application_locale_storage_->Get()));
 }
 
 void MagicBoostOptInCard::RequestFocus() {
@@ -274,7 +283,7 @@ void MagicBoostOptInCard::OnPrimaryButtonPressed() {
   controller_->CloseOptInUi();
 
   controller_->ShowDisclaimerUi(/*display_id=*/
-                                display::Screen::GetScreen()
+                                display::Screen::Get()
                                     ->GetDisplayNearestWindow(
                                         GetWidget()->GetNativeWindow())
                                     .id());
@@ -292,7 +301,8 @@ void MagicBoostOptInCard::OnSecondaryButtonPressed() {
   controller_->CloseOptInUi();
 
   auto* magic_boost_state = chromeos::MagicBoostState::Get();
-  if (controller_->GetOptInFeatures() == OptInFeatures::kOrcaAndHmr) {
+  if (controller_->GetOptInFeatures() ==
+      ash::magic_boost::OptInFeatures::kOrcaAndHmr) {
     magic_boost_state->DisableOrcaFeature();
   }
   magic_boost_state->AsyncWriteConsentStatus(

@@ -20,7 +20,8 @@
 #include "gpu/command_buffer/service/shared_memory_region_wrapper.h"
 #include "gpu/config/gpu_finch_features.h"
 #include "ui/gfx/buffer_types.h"
-#include "ui/gfx/gpu_memory_buffer.h"
+#include "ui/gfx/buffer_usage_util.h"
+#include "ui/gfx/gpu_memory_buffer_handle.h"
 #include "ui/gfx/native_pixmap.h"
 #include "ui/gl/buildflags.h"
 #include "ui/gl/gl_bindings.h"
@@ -59,18 +60,18 @@ gfx::BufferUsage GetBufferUsage(SharedImageUsageSet usage) {
 
 constexpr SharedImageUsageSet kSupportedUsage =
     SHARED_IMAGE_USAGE_GLES2_READ | SHARED_IMAGE_USAGE_GLES2_WRITE |
-    SHARED_IMAGE_USAGE_GLES2_FOR_RASTER_ONLY |
     SHARED_IMAGE_USAGE_DISPLAY_WRITE | SHARED_IMAGE_USAGE_DISPLAY_READ |
     SHARED_IMAGE_USAGE_RASTER_READ | SHARED_IMAGE_USAGE_RASTER_WRITE |
-    SHARED_IMAGE_USAGE_RASTER_OVER_GLES2_ONLY |
-    SHARED_IMAGE_USAGE_OOP_RASTERIZATION | SHARED_IMAGE_USAGE_SCANOUT |
-    SHARED_IMAGE_USAGE_WEBGPU_READ | SHARED_IMAGE_USAGE_WEBGPU_WRITE |
-    SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE | SHARED_IMAGE_USAGE_VIDEO_DECODE |
+    SHARED_IMAGE_USAGE_SCANOUT | SHARED_IMAGE_USAGE_WEBGPU_READ |
+    SHARED_IMAGE_USAGE_WEBGPU_WRITE | SHARED_IMAGE_USAGE_CONCURRENT_READ_WRITE |
+    SHARED_IMAGE_USAGE_VIDEO_DECODE |
     SHARED_IMAGE_USAGE_WEBGPU_SWAP_CHAIN_TEXTURE |
     SHARED_IMAGE_USAGE_HIGH_PERFORMANCE_GPU | SHARED_IMAGE_USAGE_CPU_UPLOAD |
     SHARED_IMAGE_USAGE_CPU_WRITE_ONLY |
     SHARED_IMAGE_USAGE_WEBGPU_STORAGE_TEXTURE |
-    SHARED_IMAGE_USAGE_PROTECTED_VIDEO | SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE;
+    SHARED_IMAGE_USAGE_PROTECTED_VIDEO |
+    SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE |
+    SHARED_IMAGE_USAGE_RASTER_COPY_SOURCE | SHARED_IMAGE_USAGE_CPU_READ;
 
 }  // namespace
 
@@ -83,19 +84,46 @@ OzoneImageBackingFactory::OzoneImageBackingFactory(
 
 OzoneImageBackingFactory::~OzoneImageBackingFactory() = default;
 
+// static
+gfx::GpuMemoryBufferHandle
+OzoneImageBackingFactory::CreateGpuMemoryBufferHandle(
+    viz::VulkanContextProvider* vulkan_context_provider,
+    const gfx::Size& size,
+    viz::SharedImageFormat format,
+    gfx::BufferUsage usage) {
+  scoped_refptr<gfx::NativePixmap> pixmap =
+      ui::OzonePlatform::GetInstance()
+          ->GetSurfaceFactoryOzone()
+          ->CreateNativePixmap(gpu::kNullSurfaceHandle,
+                               vulkan_context_provider
+                                   ? vulkan_context_provider->GetDeviceQueue()
+                                   : nullptr,
+                               size, format, usage, size);
+
+  if (!pixmap.get()) {
+    DLOG(ERROR) << "Failed to create pixmap " << size.ToString() << ",  "
+                << format.ToString() << ", usage "
+                << gfx::BufferUsageToString(usage);
+    return gfx::GpuMemoryBufferHandle();
+  }
+
+  gfx::NativePixmapHandle native_pixmap_handle = pixmap->ExportHandle();
+  if (native_pixmap_handle.planes.empty()) {
+    return gfx::GpuMemoryBufferHandle();
+  }
+
+  return gfx::GpuMemoryBufferHandle(std::move(native_pixmap_handle));
+}
+
 std::unique_ptr<OzoneImageBacking>
 OzoneImageBackingFactory::CreateSharedImageInternal(
     const Mailbox& mailbox,
-    viz::SharedImageFormat format,
+    const SharedImageInfo& si_info,
     SurfaceHandle surface_handle,
-    const gfx::Size& size,
-    const gfx::ColorSpace& color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    SharedImageUsageSet usage,
-    std::string debug_label,
     std::optional<gfx::BufferUsage> buffer_usage) {
-  gfx::BufferFormat buffer_format = ToBufferFormat(format);
+  const auto format = si_info.format;
+  const auto size = si_info.size;
+
   VulkanDeviceQueue* device_queue = nullptr;
 #if BUILDFLAG(ENABLE_VULKAN)
   DCHECK(shared_context_state_);
@@ -110,57 +138,39 @@ OzoneImageBackingFactory::CreateSharedImageInternal(
   // Note that when |buffer_usage| is passed as a parameter and is not null, it
   // should be used instead of converting |usage| to it via GetBufferUsage().
   scoped_refptr<gfx::NativePixmap> pixmap = surface_factory->CreateNativePixmap(
-      surface_handle, device_queue, size, buffer_format,
-      buffer_usage.value_or(GetBufferUsage(usage)));
+      surface_handle, device_queue, size, format,
+      buffer_usage.value_or(GetBufferUsage(si_info.usage)));
   // Fallback to GPU_READ if cannot create pixmap with SCANOUT
   if (!pixmap) {
-    pixmap = surface_factory->CreateNativePixmap(surface_handle, device_queue,
-                                                 size, buffer_format,
-                                                 gfx::BufferUsage::GPU_READ);
+    pixmap = surface_factory->CreateNativePixmap(
+        surface_handle, device_queue, size, format, gfx::BufferUsage::GPU_READ);
   }
   if (!pixmap) {
     DLOG(ERROR) << "Failed to create native pixmap";
     return nullptr;
   }
   return std::make_unique<OzoneImageBacking>(
-      mailbox, format, size, color_space, surface_origin, alpha_type, usage,
-      std::move(debug_label), shared_context_state_, std::move(pixmap),
-      workarounds_, std::move(buffer_usage));
+      mailbox, si_info, shared_context_state_, std::move(pixmap), workarounds_,
+      std::move(buffer_usage));
 }
 
 std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
     const Mailbox& mailbox,
-    viz::SharedImageFormat format,
+    const SharedImageInfo& si_info,
     SurfaceHandle surface_handle,
-    const gfx::Size& size,
-    const gfx::ColorSpace& color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    SharedImageUsageSet usage,
-    std::string debug_label,
     bool is_thread_safe) {
   CHECK(!is_thread_safe);
-  return CreateSharedImageInternal(mailbox, format, surface_handle, size,
-                                   color_space, surface_origin, alpha_type,
-                                   usage, std::move(debug_label));
+  return CreateSharedImageInternal(mailbox, si_info, surface_handle);
 }
 
 std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
     const Mailbox& mailbox,
-    viz::SharedImageFormat format,
-    const gfx::Size& size,
-    const gfx::ColorSpace& color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    SharedImageUsageSet usage,
-    std::string debug_label,
+    const SharedImageInfo& si_info,
     bool is_thread_safe,
     base::span<const uint8_t> pixel_data) {
   CHECK(!is_thread_safe);
   SurfaceHandle surface_handle = SurfaceHandle();
-  auto backing = CreateSharedImageInternal(
-      mailbox, format, surface_handle, size, color_space, surface_origin,
-      alpha_type, usage, std::move(debug_label));
+  auto backing = CreateSharedImageInternal(mailbox, si_info, surface_handle);
 
   if (!backing) {
     return nullptr;
@@ -183,15 +193,11 @@ std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
 
 std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
     const Mailbox& mailbox,
-    viz::SharedImageFormat format,
-    const gfx::Size& size,
-    const gfx::ColorSpace& color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    SharedImageUsageSet usage,
-    std::string debug_label,
+    const SharedImageInfo& si_info,
+    bool is_thread_safe,
     gfx::GpuMemoryBufferHandle handle) {
   DCHECK_EQ(handle.type, gfx::NATIVE_PIXMAP);
+  CHECK(!is_thread_safe);
 
   scoped_refptr<gfx::NativePixmap> pixmap;
 
@@ -199,21 +205,19 @@ std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
   // CPU. This is usually used for cases where clients needs MappableSI with a
   // certain format which is not texturable but client wants to map the shared
   // image in CPU for read/writes.
-  if (!usage.Has(SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE)) {
+  if (!si_info.usage.Has(SHARED_IMAGE_USAGE_CPU_ONLY_READ_WRITE)) {
     ui::SurfaceFactoryOzone* surface_factory =
         ui::OzonePlatform::GetInstance()->GetSurfaceFactoryOzone();
     pixmap = surface_factory->CreateNativePixmapFromHandle(
-        kNullSurfaceHandle, size, ToBufferFormat(format),
-        std::move(handle.native_pixmap_handle));
+        kNullSurfaceHandle, si_info.size, si_info.format,
+        std::move(handle).native_pixmap_handle());
     if (!pixmap) {
       return nullptr;
     }
   }
 
   auto backing = std::make_unique<OzoneImageBacking>(
-      mailbox, format, size, color_space, surface_origin, alpha_type, usage,
-      std::move(debug_label), shared_context_state_, std::move(pixmap),
-      workarounds_);
+      mailbox, si_info, shared_context_state_, std::move(pixmap), workarounds_);
   backing->SetCleared();
 
   return backing;
@@ -221,20 +225,13 @@ std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
 
 std::unique_ptr<SharedImageBacking> OzoneImageBackingFactory::CreateSharedImage(
     const Mailbox& mailbox,
-    viz::SharedImageFormat format,
+    const SharedImageInfo& si_info,
     SurfaceHandle surface_handle,
-    const gfx::Size& size,
-    const gfx::ColorSpace& color_space,
-    GrSurfaceOrigin surface_origin,
-    SkAlphaType alpha_type,
-    SharedImageUsageSet usage,
-    std::string debug_label,
     bool is_thread_safe,
     gfx::BufferUsage buffer_usage) {
   DCHECK(!is_thread_safe);
-  return CreateSharedImageInternal(mailbox, format, surface_handle, size,
-                                   color_space, surface_origin, alpha_type,
-                                   usage, std::move(debug_label), buffer_usage);
+  return CreateSharedImageInternal(mailbox, si_info, surface_handle,
+                                   buffer_usage);
 }
 
 bool OzoneImageBackingFactory::IsSupported(
@@ -271,14 +268,12 @@ bool OzoneImageBackingFactory::IsSupported(
     return false;
   }
   auto* factory = ui::OzonePlatform::GetInstance()->GetSurfaceFactoryOzone();
-  if (viz::HasEquivalentBufferFormat(format) &&
-      !factory->CanCreateNativePixmapForFormat(ToBufferFormat(format))) {
+  if (!factory->CanCreateNativePixmapForFormat(format)) {
     return false;
   }
 
   ui::GLOzone* gl_ozone = factory->GetCurrentGLOzone();
-  if (used_by_gl &&
-      (!gl_ozone || !gl_ozone->CanImportNativePixmap(ToBufferFormat(format)))) {
+  if (used_by_gl && (!gl_ozone || !gl_ozone->CanImportNativePixmap(format))) {
     return false;
   }
 
@@ -323,9 +318,9 @@ bool OzoneImageBackingFactory::IsSupported(
   // For now just use OzoneImageBacking for primary plane buffers.
   // TODO(crbug.com/40219694): When Vulkan/GL interop is supported on Fuchsia
   // OzoneImageBacking should be used for all scanout buffers.
-  constexpr uint32_t kPrimaryPlaneUsageFlags =
-      SHARED_IMAGE_USAGE_DISPLAY_READ | SHARED_IMAGE_USAGE_DISPLAY_WRITE |
-      SHARED_IMAGE_USAGE_SCANOUT;
+  constexpr auto kPrimaryPlaneUsageFlags = SHARED_IMAGE_USAGE_DISPLAY_READ |
+                                           SHARED_IMAGE_USAGE_DISPLAY_WRITE |
+                                           SHARED_IMAGE_USAGE_SCANOUT;
   if (usage != kPrimaryPlaneUsageFlags || gmb_type != gfx::EMPTY_BUFFER) {
     return false;
   }
@@ -403,6 +398,25 @@ bool OzoneImageBackingFactory::CanWebGPUSynchronizeGpuFence() {
   // TODO: somehow check if Dawn is using sync files.
   return false;
 #endif
+}
+
+bool OzoneImageBackingFactory::IsSupportedForAccessStream(
+    SharedImageAccessStream stream,
+    viz::SharedImageFormat format,
+    const AccessParams* params) const {
+  // `OzoneImageBackingFactory` is strictly bound to the `SharedContextState`
+  // it was created with. If a request is made from a different thread/context,
+  // we must return false early to protect the subsequent `IsSupported` call
+  // which accesses `shared_context_state_`.
+  // Note that this currently restricts this factory to only be selected and
+  // used on the GPU main thread. If it's refactored in the future to remove its
+  // dependency on `SharedContextState` in `IsSupported`, this restriction can
+  // be relaxed.
+  if (params && params->context_state &&
+      params->context_state != shared_context_state_) {
+    return false;
+  }
+  return true;
 }
 
 SharedImageBackingType OzoneImageBackingFactory::GetBackingType() {

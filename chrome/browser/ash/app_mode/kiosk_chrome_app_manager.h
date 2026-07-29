@@ -12,13 +12,14 @@
 #include <tuple>
 #include <vector>
 
+#include "base/files/scoped_temp_dir.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/time/time.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_manager_base.h"
 #include "chrome/browser/ash/app_mode/kiosk_app_types.h"
 #include "chrome/browser/ash/extensions/external_cache.h"
 #include "chrome/browser/ash/extensions/external_cache_delegate.h"
 #include "chrome/browser/chromeos/app_mode/chrome_kiosk_app_installer.h"
-#include "chromeos/crosapi/mojom/chrome_app_kiosk_service.mojom.h"
 #include "components/account_id/account_id.h"
 #include "components/pref_registry/pref_registry_syncable.h"
 #include "extensions/browser/updater/extension_downloader_delegate.h"
@@ -27,6 +28,7 @@
 
 class GURL;
 class PrefRegistrySimple;
+class PrefService;
 class Profile;
 
 namespace base {
@@ -37,14 +39,17 @@ namespace extensions {
 class Extension;
 }
 
+namespace network {
+class SharedURLLoaderFactory;
+}
+
 namespace ash {
 
 class KioskAppData;
 class KioskExternalUpdater;
+class KioskCryptohomeRemover;
 
-extern const char kKioskPrimaryAppInstallErrorHistogram[];
 extern const char kKioskPrimaryAppUpdateResultHistogram[];
-extern const char kKioskExternalUpdateSuccessHistogram[];
 
 // KioskChromeAppManager manages cached app data.
 class KioskChromeAppManager : public KioskAppManagerBase,
@@ -117,7 +122,12 @@ class KioskChromeAppManager : public KioskAppManagerBase,
   // be applied to Kiosk, because a Kiosk session has a special user profile.
   static void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry);
 
-  KioskChromeAppManager();
+  // `local_state` must be non-null, and must outlive `this`.
+  // `cryptohome_remover` must be non-null, and must outlive `this`.
+  KioskChromeAppManager(
+      PrefService* local_state,
+      scoped_refptr<network::SharedURLLoaderFactory> shared_url_loader_factory,
+      KioskCryptohomeRemover* cryptohome_remover);
   KioskChromeAppManager(const KioskChromeAppManager&) = delete;
   KioskChromeAppManager& operator=(const KioskChromeAppManager&) = delete;
   ~KioskChromeAppManager() override;
@@ -135,7 +145,7 @@ class KioskChromeAppManager : public KioskAppManagerBase,
 
   // Gets app data for the given app id. Returns true if `app_id` is known and
   // `app` is populated. Otherwise, return false.
-  bool GetApp(const std::string& app_id, App* app) const;
+  std::optional<App> GetApp(const std::string& app_id) const;
 
   // Clears locally cached Gdata.
   void ClearAppData(const std::string& app_id);
@@ -158,7 +168,7 @@ class KioskChromeAppManager : public KioskAppManagerBase,
   // if the app is not found in cache.
   std::optional<CachedCrxInfo> GetCachedCrx(std::string_view app_id) const;
 
-  crosapi::mojom::AppInstallParams CreatePrimaryAppInstallData(
+  KioskAppInstallParams CreatePrimaryAppInstallData(
       const std::string& id) const;
 
   void UpdateExternalCache();
@@ -212,7 +222,6 @@ class KioskChromeAppManager : public KioskAppManagerBase,
   friend class GlobalManager;
   friend class ChromeAppKioskAppManagerTest;
   friend class KioskAutoLaunchViewsTest;
-  friend class KioskBaseTest;
 
   // Gets KioskAppData for the given app id.
   const KioskAppData* GetAppData(const std::string& app_id) const;
@@ -251,6 +260,9 @@ class KioskChromeAppManager : public KioskAppManagerBase,
   // App.
   App ConstructApp(const KioskAppData& data) const;
 
+  const scoped_refptr<network::SharedURLLoaderFactory>
+      shared_url_loader_factory_;
+
   std::vector<std::unique_ptr<KioskAppData>> apps_;
   std::string auto_launch_app_id_;
   std::string currently_auto_launched_with_zero_delay_app_;
@@ -258,6 +270,8 @@ class KioskChromeAppManager : public KioskAppManagerBase,
   std::unique_ptr<chromeos::ExternalCache> external_cache_;
 
   std::unique_ptr<KioskExternalUpdater> usb_stick_updater_;
+
+  base::ScopedTempDir crx_unpack_dir_;
 };
 
 }  // namespace ash

@@ -36,10 +36,10 @@ public class LargeIconBridge {
     private @Nullable LruCache<GURL, CachedFavicon> mFaviconCache;
 
     private static class CachedFavicon {
-        public @Nullable Bitmap icon;
-        public int fallbackColor;
-        public boolean isFallbackColorDefault;
-        public @IconType int iconType;
+        public final @Nullable Bitmap icon;
+        public final int fallbackColor;
+        public final boolean isFallbackColorDefault;
+        public final @IconType int iconType;
 
         CachedFavicon(
                 @Nullable Bitmap newIcon,
@@ -64,7 +64,7 @@ public class LargeIconBridge {
          * @param iconType The type of the icon contributing to this event as defined in {@link
          * IconType}.
          */
-        @CalledByNative("LargeIconCallback")
+        @CalledByNative
         void onLargeIconAvailable(
                 @Nullable Bitmap icon,
                 int fallbackColor,
@@ -86,7 +86,7 @@ public class LargeIconBridge {
          * @param status The status of the request. On request success you may need to call {@link
          *     #touchIconFromGoogleServer()} to avoid automatic eviction from cache.
          */
-        @CalledByNative("GoogleFaviconServerCallback")
+        @CalledByNative
         void onRequestComplete(@GoogleFaviconServerRequestStatus int status);
     }
 

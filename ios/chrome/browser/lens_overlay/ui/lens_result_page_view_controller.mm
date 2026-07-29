@@ -8,15 +8,16 @@
 #import "components/strings/grit/components_strings.h"
 #import "ios/chrome/browser/keyboard/ui_bundled/UIKeyCommand+Chrome.h"
 #import "ios/chrome/browser/lens_overlay/public/lens_overlay_constants.h"
-#import "ios/chrome/browser/lens_overlay/ui/lens_overlay_progress_bar.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_result_page_mutator.h"
 #import "ios/chrome/browser/lens_overlay/ui/lens_toolbar_mutator.h"
-#import "ios/chrome/browser/omnibox/ui_bundled/text_field_view_containing.h"
+#import "ios/chrome/browser/omnibox/ui/text_field_view_containing.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/shared/ui/symbols/symbols.h"
+#import "ios/chrome/browser/toolbar/legacy/ui_bundled/toolbar_progress_bar.h"
 #import "ios/chrome/common/ui/colors/semantic_color_names.h"
 #import "ios/chrome/common/ui/util/constraints_ui_util.h"
 #import "ios/chrome/common/ui/util/ui_util.h"
+#import "ios/chrome/grit/ios_strings.h"
 #import "ios/components/ui_util/dynamic_type_util.h"
 #import "ui/base/l10n/l10n_util.h"
 
@@ -51,6 +52,14 @@ const CGFloat kWebContainerTopPadding = 16;
 const CGFloat kProgressBarHeight = 2.0f;
 /// Value of a full progress bar.
 const CGFloat kProgressBarFull = 1.0f;
+/// Value of the grabber corner radius.
+const CGFloat kGrabberCornerRadius = 3.0;
+/// The width of the bottom sheet grabber.
+const CGFloat kGrabberWidth = 36.0;
+/// The height of the bottom sheet grabber.
+const CGFloat kGrabberHeight = 5.0;
+/// The top padding of the bottom sheet grabber.
+const CGFloat kGrabberTopPadding = 5;
 
 }  // namespace
 
@@ -85,13 +94,21 @@ const CGFloat kProgressBarFull = 1.0f;
   /// Button to focus the omnibox.
   UIButton* _omniboxTapTarget;
   /// Loading progress bar.
-  LensOverlayProgressBar* _progressBar;
+  ToolbarProgressBar* _progressBar;
   /// Whether the web view should be hidden.
   BOOL _webViewHidden;
   NSLayoutConstraint* _omniboxLeadingConstraint;
   /// When set, the omnibox tap target continues to "eat" the touches, but they
   /// are ignored, effectively preventing omnibox interaction.
   BOOL _ignoreOmniboxTaps;
+  /// The grabber indicator for the bottom sheet.
+  UIView* _bottomSheetGrabber;
+  /// Whether to show the bottom sheet grabber.
+  BOOL _bottomSheetGrabberVisible;
+  /// Constraint for the web view container top to the stack view bottom.
+  NSLayoutConstraint* _webViewContainerTopToStackViewConstraint;
+  /// Constraint for the web view container top to the safe area top.
+  NSLayoutConstraint* _webViewContainerTopToSafeAreaConstraint;
 }
 
 - (instancetype)init {
@@ -104,7 +121,7 @@ const CGFloat kProgressBarFull = 1.0f;
     // `viewDidLoad`.
     _omniboxContainer = [[UIView alloc] init];
     _omniboxTapTarget = [[UIButton alloc] init];
-    _progressBar = [[LensOverlayProgressBar alloc] init];
+    _progressBar = [[ToolbarProgressBar alloc] init];
     [_omniboxContainer addSubview:_omniboxTapTarget];
   }
   return self;
@@ -115,11 +132,22 @@ const CGFloat kProgressBarFull = 1.0f;
 
   self.view.backgroundColor = [UIColor colorNamed:kPrimaryBackgroundColor];
 
-  CHECK(self.webViewContainer, kLensOverlayNotFatalUntil);
+  CHECK(self.webViewContainer);
   // Webview container.
   self.webViewContainer.translatesAutoresizingMaskIntoConstraints = NO;
   self.webViewContainer.clipsToBounds = YES;
   [self.view addSubview:self.webViewContainer];
+
+  // Bottom sheet grabber.
+  _bottomSheetGrabber = [self createSheetGrabber];
+  [self.view addSubview:_bottomSheetGrabber];
+  [self setBottomSheetGrabberVisible:_bottomSheetGrabberVisible];
+  AddSameCenterXConstraint(_bottomSheetGrabber, self.view);
+  AddSameConstraintsToSidesWithInsets(
+      _bottomSheetGrabber, self.view, LayoutSides::kTop,
+      NSDirectionalEdgeInsetsMake(kGrabberTopPadding, 0, 0, 0));
+  AddSizeConstraints(_bottomSheetGrabber,
+                     CGSizeMake(kGrabberWidth, kGrabberHeight));
 
   // Omnibox popup container.
   _omniboxPopupContainer.translatesAutoresizingMaskIntoConstraints = NO;
@@ -132,8 +160,7 @@ const CGFloat kProgressBarFull = 1.0f;
   [self.view addSubview:_omniboxPopupContainer];
 
   // Back Button.
-  UIImage* image =
-      DefaultSymbolWithPointSize(kChevronBackwardSymbol, kBackButtonSize);
+  UIImage* image = SymbolWithPointSize(SymbolChevronBackward, kBackButtonSize);
   UIButtonConfiguration* backButtonConfiguration =
       [UIButtonConfiguration plainButtonConfiguration];
   backButtonConfiguration.image = image;
@@ -165,6 +192,8 @@ const CGFloat kProgressBarFull = 1.0f;
   [_omniboxTapTarget addTarget:self
                         action:@selector(didTapOmniboxTapTarget:)
               forControlEvents:UIControlEventTouchUpInside];
+  _omniboxTapTarget.accessibilityLabel =
+      l10n_util::GetNSString(IDS_IOS_LENS_OVERLAY_OMNIBOX_FOCUS);
   AddSameConstraints(_omniboxContainer, _omniboxTapTarget);
 
   // Cancel button.
@@ -212,6 +241,13 @@ const CGFloat kProgressBarFull = 1.0f;
                      constant:kOmniboxContainerHorizontalPadding];
   _omniboxLeadingConstraint.priority = UILayoutPriorityDefaultHigh;
 
+  _webViewContainerTopToStackViewConstraint = [_webViewContainer.topAnchor
+      constraintEqualToAnchor:_horizontalStackView.bottomAnchor
+                     constant:kWebContainerTopPadding];
+  _webViewContainerTopToSafeAreaConstraint = [_webViewContainer.topAnchor
+      constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
+                     constant:kViewTopPadding];
+
   [NSLayoutConstraint activateConstraints:@[
     [_horizontalStackView.topAnchor
         constraintEqualToAnchor:self.view.safeAreaLayoutGuide.topAnchor
@@ -224,9 +260,7 @@ const CGFloat kProgressBarFull = 1.0f;
     [self.view.trailingAnchor
         constraintEqualToAnchor:_horizontalStackView.trailingAnchor
                        constant:kOmniboxContainerHorizontalPadding],
-    [_webViewContainer.topAnchor
-        constraintEqualToAnchor:_horizontalStackView.bottomAnchor
-                       constant:kWebContainerTopPadding],
+    _webViewContainerTopToStackViewConstraint,
     [_omniboxPopupContainer.topAnchor
         constraintEqualToAnchor:_horizontalStackView.bottomAnchor],
     [_progressBar.leadingAnchor
@@ -244,10 +278,8 @@ const CGFloat kProgressBarFull = 1.0f;
       _omniboxPopupContainer, self.view,
       LayoutSides::kLeading | LayoutSides::kBottom | LayoutSides::kTrailing);
 
-  if (@available(iOS 17, *)) {
-    [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
-                       withAction:@selector(updateMutatorDarkMode)];
-  }
+  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+                     withAction:@selector(updateMutatorDarkMode)];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -267,20 +299,6 @@ const CGFloat kProgressBarFull = 1.0f;
               object:nil];
 }
 
-#if !defined(__IPHONE_17_0) || __IPHONE_OS_VERSION_MIN_REQUIRED < __IPHONE_17_0
-- (void)traitCollectionDidChange:(UITraitCollection*)previousTraitCollection {
-  [super traitCollectionDidChange:previousTraitCollection];
-  if (@available(iOS 17, *)) {
-    return;
-  }
-
-  if (self.traitCollection.userInterfaceStyle !=
-      previousTraitCollection.userInterfaceStyle) {
-    [self updateMutatorDarkMode];
-  }
-}
-#endif
-
 - (void)setWebViewHidden:(BOOL)hidden {
   if (_webViewHidden == hidden) {
     return;
@@ -291,13 +309,42 @@ const CGFloat kProgressBarFull = 1.0f;
 }
 
 - (void)setEditView:(UIView<TextFieldViewContaining>*)editView {
-  CHECK(!_editView, kLensOverlayNotFatalUntil);
-  CHECK(editView, kLensOverlayNotFatalUntil);
-  CHECK(_omniboxContainer, kLensOverlayNotFatalUntil);
+  CHECK(!_editView);
+  CHECK(editView);
+  CHECK(_omniboxContainer);
   _editView = editView;
   _editView.translatesAutoresizingMaskIntoConstraints = NO;
   [_omniboxContainer insertSubview:_editView belowSubview:_omniboxTapTarget];
   AddSameConstraints(_editView, _omniboxContainer);
+}
+
+- (void)setSearchBarHidden:(BOOL)hidden animated:(BOOL)animated {
+  if (_horizontalStackView.hidden == hidden) {
+    return;
+  }
+
+  // Update visibility and constraints based on hidden state.
+  _horizontalStackView.hidden = hidden;
+  _webViewContainerTopToStackViewConstraint.active = !hidden;
+  _webViewContainerTopToSafeAreaConstraint.active = hidden;
+
+  if (!animated) {
+    return;
+  }
+
+  __weak __typeof(self) weakSelf = self;
+  [UIView animateWithDuration:kLensResultPageButtonAnimationDuration
+                        delay:0
+                      options:UIViewAnimationOptionCurveEaseInOut
+                   animations:^{
+                     [weakSelf.view layoutIfNeeded];
+                   }
+                   completion:nil];
+}
+
+- (void)setBottomSheetGrabberVisible:(BOOL)bottomSheetGrabberVisible {
+  _bottomSheetGrabberVisible = bottomSheetGrabberVisible;
+  _bottomSheetGrabber.hidden = !bottomSheetGrabberVisible;
 }
 
 - (void)setMutator:(id<LensResultPageMutator>)mutator {
@@ -371,7 +418,7 @@ const CGFloat kProgressBarFull = 1.0f;
 
 - (void)setLoadingProgress:(float)progress {
   [self updateProgressBarVisibilityForProgress:progress];
-  [_progressBar setProgress:progress animated:YES completion:nil];
+  [_progressBar setProgress:progress animated:YES];
 }
 
 - (void)updateProgressBarVisibilityForProgress:(float)progress {
@@ -385,6 +432,7 @@ const CGFloat kProgressBarFull = 1.0f;
     [_progressBar setHidden:YES animated:YES completion:nil];
   }
 }
+
 #pragma mark - OmniboxPopupPresenterDelegate
 
 - (UIView*)popupParentViewForPresenter:(OmniboxPopupPresenter*)presenter {
@@ -408,6 +456,9 @@ const CGFloat kProgressBarFull = 1.0f;
 }
 
 - (void)popupDidCloseForPresenter:(OmniboxPopupPresenter*)presenter {
+}
+
+- (void)popupDidInitializePresenter:(OmniboxPopupPresenter*)presenter {
 }
 
 #pragma mark - LensToolbarConsumer
@@ -438,6 +489,26 @@ const CGFloat kProgressBarFull = 1.0f;
 }
 
 #pragma mark - Private
+
+- (UIView*)createSheetGrabber {
+  UIButton* grabber = [[UIButton alloc] init];
+  [grabber addTarget:self
+                action:@selector(didTapBottomSheetGrabber:)
+      forControlEvents:UIControlEventTouchUpInside];
+  grabber.translatesAutoresizingMaskIntoConstraints = NO;
+  grabber.backgroundColor = [UIColor colorNamed:kGrey400Color];
+  grabber.layer.cornerRadius = kGrabberCornerRadius;
+  grabber.accessibilityLabel = l10n_util::GetNSString(
+      IDS_IOS_LENS_OVERLAY_SHEET_GRABBER_ACCESSIBILITY_LABEL);
+  grabber.accessibilityHint = l10n_util::GetNSString(
+      IDS_IOS_LENS_OVERLAY_SHEET_GRABBER_ACCESSIBILITY_HINT);
+
+  return grabber;
+}
+
+- (void)didTapBottomSheetGrabber:(id)sender {
+  [_delegate lensResultPageViewControllerDidTapBottomSheetGrabber:self];
+}
 
 /// Handles omnibox tap target taps.
 - (void)didTapOmniboxTapTarget:(UIView*)view {

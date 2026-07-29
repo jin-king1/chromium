@@ -2,14 +2,12 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/351564777): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
 
 #include "skia/ext/skia_utils_base.h"
 
 #include <stdint.h>
+
+#include <string_view>
 
 #include "base/pickle.h"
 #include "base/strings/stringprintf.h"
@@ -24,14 +22,13 @@
 namespace skia {
 
 bool ReadSkString(base::PickleIterator* iter, SkString* str) {
-  size_t reply_length;
-  const char* reply_text;
-
-  if (!iter->ReadData(&reply_text, &reply_length))
+  std::string_view reply;
+  if (!iter->ReadStringPiece(&reply)) {
     return false;
+  }
 
   if (str)
-    str->set(reply_text, reply_length);
+    str->set(reply);
   return true;
 }
 
@@ -39,18 +36,17 @@ bool ReadSkFontIdentity(base::PickleIterator* iter,
                         SkFontConfigInterface::FontIdentity* identity) {
   uint32_t reply_id;
   uint32_t reply_ttcIndex;
-  size_t reply_length;
-  const char* reply_text;
+  std::string_view reply;
 
-  if (!iter->ReadUInt32(&reply_id) ||
-      !iter->ReadUInt32(&reply_ttcIndex) ||
-      !iter->ReadData(&reply_text, &reply_length))
+  if (!iter->ReadUInt32(&reply_id) || !iter->ReadUInt32(&reply_ttcIndex) ||
+      !iter->ReadStringPiece(&reply)) {
     return false;
+  }
 
   if (identity) {
     identity->fID = reply_id;
     identity->fTTCIndex = reply_ttcIndex;
-    identity->fString.set(reply_text, reply_length);
+    identity->fString.set(reply);
   }
   return true;
 }
@@ -165,6 +161,15 @@ base::span<const uint8_t> as_byte_span(const SkData& sk_data LIFETIME_BOUND) {
   // container.  (`base::as_bytes_span` doesn't work because `data` accessor
   // returns `void*`.)
   return UNSAFE_BUFFERS(base::span(sk_data.bytes(), sk_data.size()));
+}
+
+base::span<uint8_t> as_writable_byte_span(SkData& data LIFETIME_BOUND) {
+  // An empty SkData may be shared.
+  CHECK(data.empty() || data.unique());
+  // SAFETY: `data` is not null. `writable_data` and `size` come from the same
+  // container.
+  return UNSAFE_BUFFERS(
+      base::span(static_cast<uint8_t*>(data.writable_data()), data.size()));
 }
 
 }  // namespace skia

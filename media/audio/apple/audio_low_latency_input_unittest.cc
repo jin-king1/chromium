@@ -8,6 +8,7 @@
 
 #include <memory>
 
+#include "base/compiler_specific.h"
 #include "base/containers/heap_array.h"
 #include "base/environment.h"
 #include "base/functional/bind.h"
@@ -26,6 +27,7 @@
 #include "media/audio/audio_unittest_util.h"
 #include "media/audio/test_audio_thread.h"
 #include "media/base/audio_glitch_info.h"
+#include "media/base/audio_sample_types.h"
 #include "media/base/seekable_buffer.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -37,6 +39,8 @@ using ::testing::Ge;
 using ::testing::NotNull;
 
 namespace media {
+
+using Error = AudioInputStream::AudioInputCallback::Error;
 
 ACTION_P4(CheckCountAndPostQuitTask, count, limit, task_runner, closure) {
   if (++*count >= limit) {
@@ -51,7 +55,7 @@ class MockAudioInputCallback : public AudioInputStream::AudioInputCallback {
                     base::TimeTicks capture_time,
                     double volume,
                     const AudioGlitchInfo& glitch_info));
-  MOCK_METHOD0(OnError, void());
+  MOCK_METHOD1(OnError, void(Error));
 };
 
 // This audio sink implementation should be used for manual tests only since
@@ -78,7 +82,7 @@ class WriteToFileAudioSink : public AudioInputStream::AudioInputCallback {
       }
 
       // Write recorded data chunk to the file and prepare for next chunk.
-      fwrite(chunk.data(), 1, chunk.size(), file_);
+      UNSAFE_TODO(fwrite(chunk.data(), 1, chunk.size(), file_));
       buffer_.Seek(chunk.size());
       bytes_written += chunk.size();
     }
@@ -92,8 +96,7 @@ class WriteToFileAudioSink : public AudioInputStream::AudioInputCallback {
               const AudioGlitchInfo& glitch_info) override {
     const int num_samples = src->frames() * src->channels();
     auto interleaved = base::HeapArray<int16_t>::Uninit(num_samples);
-    src->ToInterleaved<SignedInt16SampleTypeTraits>(src->frames(),
-                                                    interleaved.data());
+    src->ToInterleaved<SignedInt16SampleTypeTraits>(interleaved.as_span());
 
     // Store data in a temporary buffer to avoid making blocking fwrite() calls
     // in the audio callback. The complete buffer will be written to file in the
@@ -103,7 +106,7 @@ class WriteToFileAudioSink : public AudioInputStream::AudioInputCallback {
     }
   }
 
-  void OnError() override {}
+  void OnError(Error error_code) override {}
 
  private:
   media::SeekableBuffer buffer_;
@@ -304,7 +307,7 @@ TEST_F(MacAudioInputTest, DISABLED_AUAudioInputStreamRecordToFile) {
   AudioInputStream* ais = CreateDefaultAudioInputStream();
   EXPECT_EQ(ais->Open(), AudioInputStream::OpenOutcome::kSuccess);
 
-  fprintf(stderr, "               File name  : %s\n", kFileName);
+  UNSAFE_TODO(fprintf(stderr, "               File name  : %s\n", kFileName));
   fprintf(stderr, "               Sample rate: %d\n", fs);
   WriteToFileAudioSink file_sink(kFileName);
   fprintf(stderr, "               >> Speak into the mic while recording...\n");

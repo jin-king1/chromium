@@ -7,7 +7,6 @@
 #import <Foundation/Foundation.h>
 
 #import <optional>
-#import <variant>
 
 #import "base/debug/crash_logging.h"
 #import "base/debug/dump_without_crashing.h"
@@ -15,19 +14,26 @@
 #import "base/functional/bind.h"
 #import "base/logging.h"
 #import "base/metrics/histogram_functions.h"
+#import "base/metrics/histogram_macros.h"
+#import "base/not_fatal_until.h"
+#import "base/notreached.h"
+#import "base/strings/strcat.h"
 #import "base/strings/sys_string_conversions.h"
 #import "base/strings/utf_string_conversions.h"
+#import "base/types/expected.h"
 #import "base/values.h"
+#import "components/autofill/core/common/autofill_data_validation.h"
+#import "components/autofill/core/common/autofill_util.h"
 #import "components/autofill/core/common/field_data_manager.h"
 #import "components/autofill/core/common/form_data.h"
 #import "components/autofill/core/common/unique_ids.h"
 #import "components/autofill/ios/browser/autofill_util.h"
+#import "components/autofill/ios/common/constants.h"
 #import "components/autofill/ios/common/features.h"
 #import "components/autofill/ios/common/field_data_manager_factory_ios.h"
 #import "components/autofill/ios/form_util/child_frame_registrar.h"
 #import "components/autofill/ios/form_util/form_activity_observer.h"
 #import "components/autofill/ios/form_util/form_activity_params.h"
-#import "components/autofill/ios/form_util/form_util_java_script_feature.h"
 #import "ios/web/public/js_messaging/content_world.h"
 #import "ios/web/public/js_messaging/script_message.h"
 #import "ios/web/public/js_messaging/web_frame.h"
@@ -72,12 +78,51 @@ enum class FormSubmissionOutcome {
   // Autofill.iOS.FormSubmission.Outcome.InvalidFormReason to investigate the
   // cause.
   kFormExtractionFailure = 7,
-  kMaxValue = kFormExtractionFailure,
+  // There was an error while handling the form submission event in the
+  // renderer.
+  kRendererError = 8,
+  // There was an error while handling the form submission event in the renderer
+  // but the error couldn't be parsed.
+  kUnparsedRendererError = 9,
+  kMaxValue = kUnparsedRendererError,
 };
 // LINT.ThenChange(//tools/metrics/histograms/metadata/autofill/enums.xml:FormSubmissionOutcomeIOS)
 
-void RecordMetrics(const base::Value::Dict& message_body) {
-  const base::Value::Dict* metadata = message_body.FindDict("metadata");
+// LINT.IfChange(autofill_count_form_submission_in_renderer)
+// Source that triggered the form submission report.
+enum class FormSubmissionReportSource {
+  // Report was sent immediately because quota was available.
+  kInstant = 0,
+  // Report was sent from the scheduled task.
+  kScheduledTask = 1,
+  // Report was sent from unloading the page content.
+  kUnloadPage = 2,
+  kMaxValue = kUnloadPage,
+};
+// LINT.ThenChange(//components/autofill/ios/form_util/resources/form.ts:autofill_count_form_submission_in_renderer)
+
+// Returns the suffix describing the `source`.
+std::string FormSubmissionReportSourceToSuffix(
+    FormSubmissionReportSource source) {
+  switch (source) {
+    case FormSubmissionReportSource::kInstant:
+      return "FromInstant";
+    case FormSubmissionReportSource::kUnloadPage:
+      return "FromUnloadPage";
+    case FormSubmissionReportSource::kScheduledTask:
+      return "FromScheduledTask";
+  }
+}
+
+// Returns the submission detection metric name combined with the `suffix`.
+std::string GetFormSubmissionDetectionMetricName(std::string_view suffix) {
+  return base::StrCat(
+      {"Autofill.iOS.FormActivity.SubmissionDetectedBeforeProcessing.PerType",
+       ".", suffix});
+}
+
+void RecordFormActivityMetrics(const base::DictValue& message_body) {
+  const base::DictValue* metadata = message_body.FindDict("metadata");
 
   if (!metadata) {
     // Don't record metrics if no metadata because all the data for calculating
@@ -108,6 +153,73 @@ void RecordMetrics(const base::Value::Dict& message_body) {
     base::UmaHistogramPercentage("Autofill.iOS.FormActivity.SendRatio",
                                  percentage);
   }
+}
+
+// Record the form submission count metrics provided in the `message_body`.
+void RecordFormSubmissionCountMetrics(const base::DictValue& message_body) {
+  if (!base::FeatureList::IsEnabled(kAutofillCountFormSubmissionInRenderer)) {
+    return;
+  }
+
+  std::optional<double> html_event_count = message_body.FindDouble("htmlEvent");
+  std::optional<double> programmatic_count =
+      message_body.FindDouble("programmatic");
+
+  auto SourceEnumFromNumber =
+      [](std::optional<double> s) -> std::optional<FormSubmissionReportSource> {
+    if (!s) {
+      return std::nullopt;
+    }
+    switch (static_cast<int>(*s)) {
+      case 0:
+        return FormSubmissionReportSource::kInstant;
+      case 1:
+        return FormSubmissionReportSource::kScheduledTask;
+      case 2:
+        return FormSubmissionReportSource::kUnloadPage;
+    }
+    return std::nullopt;
+  };
+  std::optional<FormSubmissionReportSource> source =
+      SourceEnumFromNumber(message_body.FindDouble("source"));
+
+  if (!html_event_count || !programmatic_count || !source) {
+    base::UmaHistogramEnumeration(
+        GetFormSubmissionDetectionMetricName("FromAll"),
+        /*sample=*/CountedSubmissionType::kCantParse);
+  }
+
+  if (!source) {
+    SCOPED_CRASH_KEY_NUMBER("FormSubmissionReport", "invalid-source",
+                            static_cast<int>(*source));
+    NOTREACHED();
+  }
+
+  // Record one histogram for each count and type as we want to see
+  // the total number of occurrences for each type. This is a way of dealing
+  // with the fact that the detected form submissions are reported in batches
+  // (i.e. are aggregated) for performance reasons, so we need to disaggregate
+  // the events before reporting them.
+  auto RecordForEachType = [source = *source](int count,
+                                              CountedSubmissionType type) {
+    for (int i = 0; i < count; ++i) {
+      std::string suffix = FormSubmissionReportSourceToSuffix(source);
+      base::UmaHistogramEnumeration(
+          GetFormSubmissionDetectionMetricName(suffix),
+          /*sample=*/type);
+      base::UmaHistogramEnumeration(
+          GetFormSubmissionDetectionMetricName("FromAll"),
+          /*sample=*/type);
+    }
+  };
+  RecordForEachType(static_cast<int>(*html_event_count),
+                    CountedSubmissionType::kHtmlEvent);
+  RecordForEachType(static_cast<int>(*programmatic_count),
+                    CountedSubmissionType::kProgrammatic);
+
+  base::UmaHistogramCounts100(
+      "Autofill.iOS.FormActivity.SubmissionDetectedBeforeProcessing.BatchSize",
+      static_cast<int>(*html_event_count + *programmatic_count));
 }
 
 // Logs the outcome of form submissions to metrics.
@@ -162,10 +274,6 @@ std::optional<std::pair<WebFrame*, LocalFrameToken>> GetIsolatedFrame(
     const std::string& page_world_frame_id,
     const std::string& remote_frame_token,
     web::WebState* web_state) {
-  if (!base::FeatureList::IsEnabled(kAutofillIsolatedWorldForJavascriptIos)) {
-    return std::nullopt;
-  }
-
   std::optional<LocalFrameToken> local_frame_token =
       LookupLocalFrame(remote_frame_token, web_state);
 
@@ -219,17 +327,38 @@ void FormActivityTabHelper::RemoveObserver(FormActivityObserver* observer) {
   observers_.RemoveObserver(observer);
 }
 
+void HandleSubmissionError(const base::DictValue& message) {
+  const std::string* error_stack = message.FindString("errorStack");
+  const std::string* error_message = message.FindString("errorMessage");
+  std::optional<bool> is_programmatic =
+      message.FindBool("programmaticSubmission");
+
+  if (!error_stack || !error_message || !is_programmatic) {
+    RecordFormSubmissionOutcome(FormSubmissionOutcome::kUnparsedRendererError);
+    return;
+  }
+
+  SCOPED_CRASH_KEY_STRING256("FormSubmissionError", "msg", *error_message);
+  SCOPED_CRASH_KEY_STRING1024("FormSubmissionError", "stack", *error_stack);
+
+  base::debug::DumpWithoutCrashing();
+
+  RecordFormSubmissionOutcome(FormSubmissionOutcome::kRendererError);
+}
+
 void FormActivityTabHelper::OnFormMessageReceived(
     web::WebState* web_state,
     const web::ScriptMessage& message) {
-  if (!message.body() || !message.body()->is_dict()) {
+  if (!message.legacy_body() || !message.legacy_body()->is_dict()) {
     // Ignore invalid message.
     return;
   }
 
-  RecordMetrics(message.body()->GetDict());
+  const auto& message_body = message.legacy_body()->GetDict();
 
-  const std::string* command = message.body()->GetDict().FindString("command");
+  RecordFormActivityMetrics(message_body);
+
+  const std::string* command = message_body.FindString("command");
   if (!command) {
     DLOG(WARNING) << "JS message parameter not found: command";
   } else if (*command == "form.submit") {
@@ -238,6 +367,10 @@ void FormActivityTabHelper::OnFormMessageReceived(
     HandleFormActivity(web_state, message);
   } else if (*command == "form.removal") {
     HandleFormRemoval(web_state, message);
+  } else if (*command == "form.submit.count") {
+    RecordFormSubmissionCountMetrics(message_body);
+  } else if (*command == "form.submit.error") {
+    HandleSubmissionError(message_body);
   }
 }
 
@@ -247,6 +380,9 @@ void FormActivityTabHelper::HandleFormActivity(
   FormActivityParams params;
   if (!FormActivityParams::FromMessage(message, &params)) {
     return;
+  }
+  if (force_submitted_by_user_for_testing_ && params.type == "focus") {
+    params.has_user_gesture = true;
   }
 
   web::WebFramesManager* frames_manager =
@@ -282,13 +418,13 @@ void FormActivityTabHelper::HandleFormRemoval(
 void FormActivityTabHelper::FormSubmissionHandler(
     web::WebState* web_state,
     const web::ScriptMessage& message) {
-  if (!message.body() || !message.body()->is_dict()) {
+  if (!message.legacy_body() || !message.legacy_body()->is_dict()) {
     // Ignore invalid message.
     RecordFormSubmissionOutcome(FormSubmissionOutcome::kInvalidMessageBody);
     return;
   }
 
-  const base::Value::Dict& message_body = message.body()->GetDict();
+  const base::DictValue& message_body = message.legacy_body()->GetDict();
   const std::string* frame_id = message_body.FindString("frameID");
   if (!frame_id) {
     RecordFormSubmissionOutcome(FormSubmissionOutcome::kNoFrameID);
@@ -342,7 +478,8 @@ void FormActivityTabHelper::FormSubmissionHandler(
   // the main page (using logic from the popup blocker), or if the keyboard
   // is visible.
   BOOL submitted_by_user = message.is_user_interacting() ||
-                           web_state->GetWebViewProxy().keyboardVisible;
+                           web_state->GetWebViewProxy().keyboardVisible ||
+                           force_submitted_by_user_for_testing_;
 
   std::string form_name;
   if (maybe_form_name) {
@@ -352,7 +489,7 @@ void FormActivityTabHelper::FormSubmissionHandler(
   FieldDataManager* fieldDataManager =
       FieldDataManagerFactoryIOS::FromWebFrame(sender_frame);
 
-  const base::Value::Dict* form_data = message_body.FindDict("formData");
+  const base::DictValue* form_data = message_body.FindDict("formData");
   if (!form_data) {
     RecordFormSubmissionOutcome(FormSubmissionOutcome::kMissingFormData);
     return;
@@ -363,20 +500,20 @@ void FormActivityTabHelper::FormSubmissionHandler(
   // the id of the frame that contains the forms. For page world forms, we set
   // FormData::host_frame with the corresponding isolated world frame in
   // `local_frame_token`.
-  std::variant<FormData, ExtractFormDataFailure> form_or_failure =
-      autofill::ExtractFormDataOrFailure(
-          *form_data, true, base::UTF8ToUTF16(form_name),
+  base::expected<FormData, ExtractFormDataFailure> form_or_failure =
+      autofill::ExtractFormData(
+          *form_data, /*form_name_filter=*/base::UTF8ToUTF16(form_name),
           web_state->GetLastCommittedURL(), sender_frame->GetSecurityOrigin(),
-          *fieldDataManager, *frame_id, local_frame_token);
+          sender_frame->GetUrl(), *fieldDataManager, *frame_id,
+          local_frame_token);
 
-  if (std::holds_alternative<ExtractFormDataFailure>(form_or_failure)) {
+  if (!form_or_failure.has_value()) {
     RecordFormSubmissionOutcome(FormSubmissionOutcome::kFormExtractionFailure);
-    RecordFormExtractionFailure(
-        std::get<ExtractFormDataFailure>(form_or_failure));
+    RecordFormExtractionFailure(form_or_failure.error());
     return;
   }
 
-  FormData form = std::get<FormData>(form_or_failure);
+  FormData form = std::move(form_or_failure).value();
 
   if (std::optional<bool> programmatic_submission =
           message_body.FindBool("programmaticSubmission")) {
@@ -384,14 +521,16 @@ void FormActivityTabHelper::FormSubmissionHandler(
                               *programmatic_submission);
   }
 
+  // A form is considered "perfectly filled" if none of its fields were edited
+  // by the user, unless that field was autofilled in the first place.
+  const bool perfect_filling = IsFormDataPerfectlyFilled(form);
+
   for (auto& observer : observers_) {
-    observer.DocumentSubmitted(web_state, sender_frame, form,
-                               submitted_by_user);
+    observer.DocumentSubmitted(web_state, sender_frame, form, submitted_by_user,
+                               perfect_filling);
   }
 
   RecordFormSubmissionOutcome(FormSubmissionOutcome::kHandled);
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(FormActivityTabHelper)
 
 }  // namespace autofill

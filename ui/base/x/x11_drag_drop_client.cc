@@ -5,8 +5,8 @@
 #include "ui/base/x/x11_drag_drop_client.h"
 
 #include "base/containers/flat_set.h"
-#include "base/lazy_instance.h"
 #include "base/logging.h"
+#include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "ui/base/clipboard/clipboard_constants.h"
 #include "ui/base/dragdrop/drag_drop_types.h"
@@ -123,8 +123,10 @@ const char kXdndPosition[] = "XdndPosition";
 // action will be taken if the drop is accepted.
 const char kXdndStatus[] = "XdndStatus";
 
-static base::LazyInstance<std::map<x11::Window, XDragDropClient*>>::Leaky
-    g_live_client_map = LAZY_INSTANCE_INITIALIZER;
+std::map<x11::Window, XDragDropClient*>& GetLiveClientMap() {
+  static base::NoDestructor<std::map<x11::Window, XDragDropClient*>> map;
+  return *map;
+}
 
 x11::Atom DragOperationToAtom(DragOperation operation) {
   switch (operation) {
@@ -191,8 +193,8 @@ int XGetMaskAsEventFlags() {
 // static
 XDragDropClient* XDragDropClient::GetForWindow(x11::Window window) {
   std::map<x11::Window, XDragDropClient*>::const_iterator it =
-      g_live_client_map.Get().find(window);
-  if (it == g_live_client_map.Get().end()) {
+      GetLiveClientMap().find(window);
+  if (it == GetLiveClientMap().end()) {
     return nullptr;
   }
   return it->second;
@@ -209,11 +211,11 @@ XDragDropClient::XDragDropClient(XDragDropClient::Delegate* delegate,
                                       x11::Atom::ATOM, xdnd_version);
 
   // Some tests change the XDragDropClient associated with an |xwindow|.
-  g_live_client_map.Get()[xwindow] = this;
+  GetLiveClientMap()[xwindow] = this;
 }
 
 XDragDropClient::~XDragDropClient() {
-  g_live_client_map.Get().erase(xwindow());
+  GetLiveClientMap().erase(xwindow());
 }
 
 std::vector<x11::Atom> XDragDropClient::GetOfferedDragOperations() const {
@@ -232,8 +234,12 @@ std::vector<x11::Atom> XDragDropClient::GetOfferedDragOperations() const {
 
 void XDragDropClient::CompleteXdndPosition(x11::Window source_window,
                                            const gfx::Point& screen_point) {
+  base::WeakPtr<XDragDropClient> alive = weak_factory_.GetWeakPtr();
   DragOperation drag_operation =
       PreferredDragOperation(delegate_->UpdateDrag(screen_point));
+  if (!alive) {
+    return;
+  }
 
   // Sends an XdndStatus message back to the source_window. l[2,3]
   // theoretically represent an area in the window where the current action is
@@ -426,7 +432,11 @@ void XDragDropClient::OnXdndStatus(const x11::ClientMessageEvent& event) {
 
 void XDragDropClient::OnXdndLeave(const x11::ClientMessageEvent& event) {
   DVLOG(1) << "OnXdndLeave";
+  base::WeakPtr<XDragDropClient> alive = weak_factory_.GetWeakPtr();
   delegate_->OnBeforeDragLeave();
+  if (!alive) {
+    return;
+  }
   ResetDragContext();
 }
 
@@ -435,7 +445,11 @@ void XDragDropClient::OnXdndDrop(const x11::ClientMessageEvent& event) {
 
   auto source_window = static_cast<x11::Window>(event.data.data32[0]);
 
+  base::WeakPtr<XDragDropClient> alive = weak_factory_.GetWeakPtr();
   DragOperation drag_operation = delegate_->PerformDrop();
+  if (!alive) {
+    return;
+  }
 
   auto xev = PrepareXdndClientMessage(kXdndFinished, source_window);
   xev.data.data32[1] = (drag_operation != DragOperation::kNone) ? 1 : 0;
@@ -466,7 +480,11 @@ void XDragDropClient::OnSelectionNotify(
     const x11::SelectionNotifyEvent& xselection) {
   DVLOG(1) << "OnSelectionNotify";
   if (target_current_context_) {
+    base::WeakPtr<XDragDropClient> alive = weak_factory_.GetWeakPtr();
     target_current_context_->OnSelectionNotify(xselection);
+    if (!alive) {
+      return;
+    }
   }
 
   // ICCCM requires us to delete the property passed into SelectionNotify.
@@ -493,7 +511,8 @@ void XDragDropClient::InitDrag(int allowed_operations,
   if (!source_provider_->file_contents_name().empty()) {
     actions.push_back(x11::GetAtom(kXdndActionDirectSave));
     x11::Connection::Get()->SetStringProperty(
-        xwindow_, x11::GetAtom(kXdndDirectSave0), x11::GetAtom(kMimeTypeText),
+        xwindow_, x11::GetAtom(kXdndDirectSave0),
+        x11::GetAtom(kMimeTypePlainText),
         source_provider_->file_contents_name().AsUTF8Unsafe());
   }
   x11::Connection::Get()->SetArrayProperty(

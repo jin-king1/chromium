@@ -6,11 +6,12 @@
 
 #include <string.h>
 
+#include <algorithm>
 #include <string>
 #include <string_view>
 
-#include "base/containers/contains.h"
 #include "base/containers/fixed_flat_set.h"
+#include "base/containers/span.h"
 #include "base/strings/string_util.h"
 #include "build/build_config.h"
 #include "partition_alloc/buildflags.h"
@@ -50,8 +51,10 @@ constexpr auto kDumpProviderAllowlist =
         "DOMStorage",
         "DawnSharedContext",
         "DevTools",
+        "DevtoolsDurableMessageCollectorManager",
         "DiscardableSharedMemoryManager",
         "DownloadService",
+        "DawnCache",
         "ExtensionFunctions",
         "FontCaches",
         "FrameEvictionManager",
@@ -74,6 +77,7 @@ constexpr auto kDumpProviderAllowlist =
         "LevelDB",
         "LeveldbValueStore",
         "LocalStorage",
+        "LocalStorageSqlite",
         "MadvFreeDiscardableMemoryAllocator",
         "Malloc",
         "ManualFillingCache",
@@ -84,6 +88,7 @@ constexpr auto kDumpProviderAllowlist =
         "PartitionAlloc",
         "PartitionAlloc.AddressSpace",
         "ProcessMemoryMetrics",
+        "SessionStorageSqlite",
         "SharedContextState",
         "SharedImageManager",
         "SharedMemoryTracker",
@@ -93,6 +98,7 @@ constexpr auto kDumpProviderAllowlist =
         "TextureOwner"
         "URLRequestContext",
         "V8Isolate",
+        "WebGL",
         "WebMediaPlayer_MainThread",
         "WebMediaPlayer_MediaThread",
         // clang-format on
@@ -100,6 +106,8 @@ constexpr auto kDumpProviderAllowlist =
 
 // A list of string names that are allowed for the memory allocator dumps in
 // background mode.
+// NOTE: There is no generic pattern matching support and only names containing
+// "0x?" match "0x" followed by hex digits.
 constexpr auto kAllocatorDumpNameAllowlist =
     base::MakeFixedFlatSet<std::string_view>({
 // clang-format off
@@ -143,8 +151,8 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "cc/tile_memory/provider_0x?",
         "components/download/controller_0x?",
         "devtools/file_watcher_0x?",
+        "devtools/durable_message_collectors",
         "discardable",
-        "discardable/madv_free_allocated",
         "discardable/child_0x?",
         "extensions/functions",
         "extensions/value_store/Extensions.Database.Open.OriginManagedConfiguration/0x?",
@@ -159,21 +167,30 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "font_caches/font_platform_data_cache",
         "font_caches/shape_caches",
         "frame_evictor",
+#if BUILDFLAG(IS_MAC)
+        "gpu/angle/metal",
+#endif
         "gpu/command_buffer_memory/buffer_0x?",
         "gpu/dawn",
+        "gpu/dawn/textures",
+        "gpu/dawn/textures/depth_stencil",
+        "gpu/dawn/textures/msaa",
+        "gpu/dawn/buffers",
         "gpu/discardable_cache/cache_0x?",
         "gpu/discardable_cache/cache_0x?/avg_image_size",
         "gpu/gl/buffers/context_group_0x?",
         "gpu/gl/renderbuffers/context_group_0x?",
         "gpu/gl/textures/context_group_0x?",
-        "gpu/gr_shader_cache/cache_0x?",
         "gpu/mapped_memory/manager_0x?",
+        "gpu/shader_cache/graphite_cache",
+        "gpu/shader_cache/gr_shader_cache/cache_0x?",
         "gpu/shared_images",
-        "gpu/media_texture_owner_?",
+        "gpu/media_texture_owner_0x?",
         "gpu/transfer_buffer_memory/buffer_0x?",
         "gpu/transfer_cache/cache_0x?",
         "gpu/transfer_cache/cache_0x?/avg_image_size",
         "gpu/vulkan/vma_allocator_0x?",
+        "gpu/vulkan/graphite_allocator",
         "history/delta_file_service/leveldb_0x?",
         "history/usage_reports_buffer/leveldb_0x?",
 #if BUILDFLAG(IS_MAC)
@@ -205,9 +222,14 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "malloc/partitions/allocator/thread_cache",
         "malloc/partitions/allocator/thread_cache/main_thread",
         "malloc/partitions/aligned",
+        "malloc/partitions/leaked",
         "malloc/partitions/original",
         "malloc/sys_malloc",
         "malloc/win_heap",
+        "partition_alloc/partitions/buffer/",
+        "partition_alloc/partitions/buffer/scheduler_loop_quarantine",
+        "partition_alloc/partitions/buffer/thread_cache",
+        "partition_alloc/partitions/buffer/thread_cache/main_thread",
 #endif  // PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
         "media/webmediaplayer/audio/player_0x?",
         "media/webmediaplayer/data_source/player_0x?",
@@ -236,6 +258,8 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "web_cache/Code_cache",
         "web_cache/Encoded_size_duplicated_in_data_urls",
         "web_cache/Other_resources",
+        "webgl/context_0x?",
+        "webgl/offscreen_context_0x?",
         "partition_alloc/allocated_objects",
         "partition_alloc/address_space",
         "partition_alloc/partitions",
@@ -248,7 +272,7 @@ constexpr auto kAllocatorDumpNameAllowlist =
 #endif
         "partition_alloc/partitions/layout",
         "skia/gpu_resources/context_0x?",
-        "skia/gpu_resources/graphite_context_0x?",
+        "skia/gpu_resources/graphite_shared_context_0x?",
         "skia/gpu_resources/gpu_main_graphite_image_provider_0x?",
         "skia/gpu_resources/gpu_main_graphite_recorder_0x?",
         "skia/gpu_resources/viz_compositor_graphite_image_provider_0x?",
@@ -280,26 +304,26 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "v8/main/heap/trusted_large_object_space",
         "v8/main/malloc",
         "v8/main/zapped_for_debug",
-        "v8/utility/code_stats",
-        "v8/utility/contexts/detached_context",
-        "v8/utility/contexts/native_context",
-        "v8/utility/global_handles",
-        "v8/utility/heap/code_space",
-        "v8/utility/heap/code_large_object_space",
-        "v8/utility/heap/large_object_space",
-        "v8/utility/heap/map_space",
-        "v8/utility/heap/new_large_object_space",
-        "v8/utility/heap/new_space",
-        "v8/utility/heap/old_space",
-        "v8/utility/heap/read_only_space",
-        "v8/utility/heap/shared_large_object_space",
-        "v8/utility/heap/shared_space",
-        "v8/utility/heap/shared_trusted_large_object_space",
-        "v8/utility/heap/shared_trusted_space",
-        "v8/utility/heap/trusted_space",
-        "v8/utility/heap/trusted_large_object_space",
-        "v8/utility/malloc",
-        "v8/utility/zapped_for_debug",
+        "v8/utility/code_stats/isolate_0x?",
+        "v8/utility/contexts/detached_context/isolate_0x?",
+        "v8/utility/contexts/native_context/isolate_0x?",
+        "v8/utility/global_handles/isolate_0x?",
+        "v8/utility/heap/code_space/isolate_0x?",
+        "v8/utility/heap/code_large_object_space/isolate_0x?",
+        "v8/utility/heap/large_object_space/isolate_0x?",
+        "v8/utility/heap/map_space/isolate_0x?",
+        "v8/utility/heap/new_large_object_space/isolate_0x?",
+        "v8/utility/heap/new_space/isolate_0x?",
+        "v8/utility/heap/old_space/isolate_0x?",
+        "v8/utility/heap/read_only_space/isolate_0x?",
+        "v8/utility/heap/shared_large_object_space/isolate_0x?",
+        "v8/utility/heap/shared_space/isolate_0x?",
+        "v8/utility/heap/shared_trusted_large_object_space/isolate_0x?",
+        "v8/utility/heap/shared_trusted_space/isolate_0x?",
+        "v8/utility/heap/trusted_space/isolate_0x?",
+        "v8/utility/heap/trusted_large_object_space/isolate_0x?",
+        "v8/utility/malloc/isolate_0x?",
+        "v8/utility/zapped_for_debug/isolate_0x?",
         "v8/workers/code_stats/isolate_0x?",
         "v8/workers/contexts/detached_context/isolate_0x?",
         "v8/workers/contexts/native_context/isolate_0x?",
@@ -320,18 +344,25 @@ constexpr auto kAllocatorDumpNameAllowlist =
         "v8/workers/heap/trusted_large_object_space/isolate_0x?",
         "v8/workers/malloc/isolate_0x?",
         "v8/workers/zapped_for_debug/isolate_0x?",
-        "site_storage/index_db/db_0x?",
-        "site_storage/index_db/memenv_0x?",
-        "site_storage/index_db/in_flight_0x?",
+        "site_storage/indexed_db/database_engine_0x?",
+        "site_storage/indexed_db/memenv_0x?",
+        "site_storage/indexed_db/in_flight_0x?",
+        "site_storage/indexed_db/database_engine_0x?/sqlite_db_0x?",
         "site_storage/local_storage/0x?/cache_size",
         "site_storage/localstorage/0x?/cache_size",
         "site_storage/localstorage/0x?/leveldb",
+        "site_storage/localstorage/0x?/sqlite",
         "site_storage/session_storage/0x?",
         "site_storage/session_storage/0x?/cache_size",
+        "site_storage/sessionstorage/0x?/leveldb",
+        "site_storage/sessionstorage/0x?/sqlite",
+        "site_storage/localstorage/sqlite/db_0x?",
+        "site_storage/sessionstorage/sqlite/db_0x?",
         "tab_restore/service_helper_0x?/entries",
         "tab_restore/service_helper_0x?/entries/group_0x?",
         "tab_restore/service_helper_0x?/entries/tab_0x?",
         "tab_restore/service_helper_0x?/entries/window_0x?",
+        "tab_restore/service_helper_0x?/entries/split_0x?",
         "tracing/heap_profiler_blink_gc/AllocationRegister",
         "tracing/heap_profiler_malloc/AllocationRegister",
         "tracing/heap_profiler_partition_alloc/AllocationRegister",
@@ -347,7 +378,8 @@ bool IsMemoryDumpProviderInAllowlist(const char* mdp_name) {
   if (g_dump_provider_allowlist_for_testing.empty()) {
     return kDumpProviderAllowlist.contains(mdp_name);
   } else {
-    return base::Contains(g_dump_provider_allowlist_for_testing, mdp_name);
+    return std::ranges::contains(g_dump_provider_allowlist_for_testing,
+                                 mdp_name);
   }
 }
 
@@ -395,8 +427,8 @@ bool IsMemoryAllocatorDumpNameInAllowlist(const std::string& name) {
   if (g_allocator_dump_name_allowlist_for_testing.empty()) {
     return kAllocatorDumpNameAllowlist.contains(stripped_str);
   } else {
-    return base::Contains(g_allocator_dump_name_allowlist_for_testing,
-                          stripped_str);
+    return std::ranges::contains(g_allocator_dump_name_allowlist_for_testing,
+                                 stripped_str);
   }
 }
 

@@ -8,11 +8,19 @@
 
 #include <memory>
 
+#include "base/test/run_until.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/app_controller_mac.h"
+#include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/bookmarks/bookmark_editor.h"
 #include "chrome/browser/ui/browser_command_controller.h"
+#include "chrome/browser/ui/toolbar/app_menu_model.h"
+#include "chrome/browser/ui/views/bookmarks/bookmark_editor_view.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/bookmarks/browser/bookmark_model.h"
 #include "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 #include "content/public/common/content_switches.h"
 #include "content/public/test/browser_test.h"
@@ -34,16 +42,18 @@ class BrowserWindowMacTest : public InProcessBrowserTest {
 // that is destroyed.
 IN_PROC_BROWSER_TEST_F(BrowserWindowMacTest, MenuCommandsAfterDestroy) {
   // Simulate AppKit (e.g. NSMenu) retaining an NSWindow.
-  NSWindow* window = browser()->window()->GetNativeWindow().GetNativeNSWindow();
+  NSWindow* window =
+      browser()->GetWindow()->GetNativeWindow().GetNativeNSWindow();
   NSMenuItem* bookmark_menu_item =
-      [[[[NSApp mainMenu] itemWithTag:IDC_BOOKMARKS_MENU] submenu]
-          itemWithTag:IDC_BOOKMARK_THIS_TAB];
+      [[[[NSApp mainMenu] itemWithTag:AppMenuModel::kBookmarksMenuPlaceholder]
+          submenu] itemWithTag:IDC_BOOKMARK_THIS_TAB];
 
   EXPECT_TRUE(window);
   EXPECT_TRUE(bookmark_menu_item);
 
+  ui_test_utils::BrowserDestroyedObserver observer(browser());
   chrome::CloseAllBrowsersAndQuit();
-  ui_test_utils::WaitForBrowserToClose();
+  observer.Wait();
 
   EXPECT_EQ([bookmark_menu_item action], @selector(commandDispatch:));
 
@@ -61,7 +71,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowMacTest,
                        DISABLED_MenuCommandsFromChildWindow) {
   NativeWidgetMacNSWindow* window =
       base::apple::ObjCCastStrict<NativeWidgetMacNSWindow>(
-          browser()->window()->GetNativeWindow().GetNativeNSWindow());
+          browser()->GetWindow()->GetNativeWindow().GetNativeNSWindow());
 
   // Create a child window.
   NativeWidgetMacNSWindow* child_window = [[NativeWidgetMacNSWindow alloc]
@@ -73,7 +83,7 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowMacTest,
   [window addChildWindow:child_window ordered:NSWindowAbove];
 
   NSMenuItem* show_bookmark_bar_menu_item =
-      [[[[NSApp mainMenu] itemWithTag:IDC_VIEW_MENU] submenu]
+      [[[[NSApp mainMenu] itemWithTag:kMacViewMenuId] submenu]
           itemWithTag:IDC_SHOW_BOOKMARK_BAR];
 
   // Make sure both windows validate the bookmark bar menu item.
@@ -109,7 +119,8 @@ class BrowserWindowMacA11yTest : public BrowserWindowMacTest {
 };
 
 IN_PROC_BROWSER_TEST_F(BrowserWindowMacA11yTest, A11yTreeIsWellFormed) {
-  NSWindow* window = browser()->window()->GetNativeWindow().GetNativeNSWindow();
+  NSWindow* window =
+      browser()->GetWindow()->GetNativeWindow().GetNativeNSWindow();
   size_t nodes_visited = 0;
   std::optional<ui::NSAXTreeProblemDetails> details =
       ui::ValidateNSAXTree(window, &nodes_visited);
@@ -130,7 +141,8 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowMacA11yTest,
   GURL url_before(R"HTML(data:text/html,before)HTML");
   EXPECT_TRUE(AddTabAtIndex(0, url_before, ui::PAGE_TRANSITION_TYPED));
 
-  NSWindow* window = browser()->window()->GetNativeWindow().GetNativeNSWindow();
+  NSWindow* window =
+      browser()->GetWindow()->GetNativeWindow().GetNativeNSWindow();
   ASSERT_NE(nullptr, window);
   EXPECT_NSEQ([NSString stringWithUTF8String:url_before.spec().c_str()],
               [window accessibilityDocument]);
@@ -139,4 +151,60 @@ IN_PROC_BROWSER_TEST_F(BrowserWindowMacA11yTest,
   EXPECT_TRUE(AddTabAtIndex(1, url_after, ui::PAGE_TRANSITION_TYPED));
   EXPECT_NSEQ([NSString stringWithUTF8String:url_after.spec().c_str()],
               [window accessibilityDocument]);
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserWindowMacTest, DisableCommandsWhenSheetAttached) {
+  NSWindow* window =
+      browser()->GetWindow()->GetNativeWindow().GetNativeNSWindow();
+  ASSERT_FALSE([AppController.sharedController keyWindowIsModal]);
+
+  // Retrieve and initialize the menu items for
+  // IDC_BOOKMARK_ALL_TABS / IDC_PRINT / IDC_SAVE_PAGE.
+  ASSERT_TRUE(
+      AddTabAtIndex(0, GURL("chrome://newtab/"), ui::PAGE_TRANSITION_TYPED));
+  NSMenuItem* bookmark_all_tabs_item =
+      [[[[NSApp mainMenu] itemWithTag:AppMenuModel::kBookmarksMenuPlaceholder]
+          submenu] itemWithTag:IDC_BOOKMARK_ALL_TABS];
+  ASSERT_TRUE(bookmark_all_tabs_item);
+  NSMenuItem* print_item = [[[[NSApp mainMenu] itemWithTag:kMacFileMenuId]
+      submenu] itemWithTag:IDC_PRINT];
+  ASSERT_TRUE(print_item);
+  NSMenuItem* save_item = [[[[NSApp mainMenu] itemWithTag:kMacFileMenuId]
+      submenu] itemWithTag:IDC_SAVE_PAGE];
+  ASSERT_TRUE(save_item);
+
+  // These commands should be enabled when the sheet is not attached.
+  EXPECT_TRUE([window validateUserInterfaceItem:bookmark_all_tabs_item]);
+  EXPECT_TRUE([window validateUserInterfaceItem:print_item]);
+  EXPECT_TRUE([window validateUserInterfaceItem:save_item]);
+
+  // Open bookmark sheet dialog.
+  auto* bookmark_model =
+      BookmarkModelFactory::GetForBrowserContext(browser()->GetProfile());
+  auto editor = std::make_unique<BookmarkEditorView>(
+      browser()->GetProfile(),
+      BookmarkEditor::EditDetails::MoveNodes(
+          bookmark_model,
+          {bookmark_model->AddURL(bookmark_model->other_node(), 0, u"bookmark",
+                                  GURL("http://www.google.com"))}),
+      BookmarkEditor::SHOW_TREE, base::DoNothing());
+  editor->Show(browser()->GetWindow()->GetNativeWindow());
+  auto* editor_raw = editor.release();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return [AppController.sharedController keyWindowIsModal]; }));
+
+  // These commands should be disabled when the sheet is attached.
+  EXPECT_FALSE([window validateUserInterfaceItem:bookmark_all_tabs_item]);
+  EXPECT_FALSE([window validateUserInterfaceItem:print_item]);
+  EXPECT_FALSE([window validateUserInterfaceItem:save_item]);
+
+  // Close the sheet dialog.
+  editor_raw->GetWidget()->CloseNow();
+  ASSERT_TRUE(base::test::RunUntil(
+      [&]() { return ![AppController.sharedController keyWindowIsModal]; }));
+
+  // These commands should be enabled again when the sheet is removed.
+  EXPECT_TRUE([window validateUserInterfaceItem:bookmark_all_tabs_item]);
+  EXPECT_TRUE([window validateUserInterfaceItem:print_item]);
+  EXPECT_TRUE([window validateUserInterfaceItem:save_item]);
 }

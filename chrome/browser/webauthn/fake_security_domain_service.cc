@@ -8,16 +8,24 @@
 
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "base/notreached.h"
 #include "base/sequence_checker.h"
 #include "components/trusted_vault/proto/vault.pb.h"
+#include "components/trusted_vault/trusted_vault_connection.h"
+#include "net/http/http_status_code.h"
 #include "services/network/public/cpp/data_element.h"
 #include "services/network/public/cpp/resource_request.h"
 
 namespace {
 
 constexpr char kSecurityDomainName[] = "users/me/securitydomains/hw_protected";
+
+base::Time ToTime(const trusted_vault_pb::Timestamp& proto) {
+  return base::Time::UnixEpoch() + base::Seconds(proto.seconds()) +
+         base::Nanoseconds(proto.nanos());
+}
 
 // Get the body of a request, assuming that it simply has a bytestring body.
 // This is true of requests from the trusted_vault code.
@@ -64,6 +72,57 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
     pretend_there_are_members_ = true;
   }
 
+  void fail_join_requests_matching(JoinMemberMatcher matcher) override {
+    join_member_fail_matcher_ = std::move(matcher);
+  }
+
+  void ResetSecurityDomain() override { members_.clear(); }
+
+  void MakePinMemberUnusable() override {
+    auto pin_member =
+        std::ranges::find_if(members_, [](const auto& member) -> bool {
+          return member.member_type() ==
+                 trusted_vault_pb::SecurityDomainMember::
+                     MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN;
+        });
+    CHECK(pin_member != members_.end());
+    pin_member->mutable_member_metadata()
+        ->clear_google_password_manager_pin_metadata();
+    pin_member->mutable_member_metadata()->set_usable_for_retrieval(false);
+  }
+
+  void RemovePinMember() override {
+    CHECK(std::erase_if(members_, [](const auto& member) -> bool {
+      return member.member_type() ==
+             trusted_vault_pb::SecurityDomainMember::
+                 MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN;
+    }));
+  }
+
+  void SetPinMemberPublicKey(std::string public_key) override {
+    auto pin_member =
+        std::ranges::find_if(members_, [](const auto& member) -> bool {
+          return member.member_type() ==
+                 trusted_vault_pb::SecurityDomainMember::
+                     MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN;
+        });
+    CHECK(pin_member != members_.end());
+    pin_member->set_public_key(std::move(public_key));
+  }
+
+  void SetPinMemberWrappedPin(std::string wrapped_pin) override {
+    auto pin_member =
+        std::ranges::find_if(members_, [](const auto& member) -> bool {
+          return member.member_type() ==
+                 trusted_vault_pb::SecurityDomainMember::
+                     MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN;
+        });
+    CHECK(pin_member != members_.end());
+    pin_member->mutable_member_metadata()
+        ->mutable_google_password_manager_pin_metadata()
+        ->set_encrypted_pin_hash(std::move(wrapped_pin));
+  }
+
   size_t num_physical_members() const override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
@@ -83,6 +142,37 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
     });
   }
 
+  std::string GetPinMemberPublicKey() const override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+    const auto pin_member =
+        std::ranges::find_if(members_, [](const auto& member) -> bool {
+          return member.member_type() ==
+                 trusted_vault_pb::SecurityDomainMember::
+                     MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN;
+        });
+    CHECK(pin_member != members_.end());
+    return pin_member->public_key();
+  }
+
+  trusted_vault::GpmPinMetadata GetPinMetadata() const override {
+    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+
+    const auto pin_member =
+        std::ranges::find_if(members_, [](const auto& member) -> bool {
+          return member.member_type() ==
+                 trusted_vault_pb::SecurityDomainMember::
+                     MEMBER_TYPE_GOOGLE_PASSWORD_MANAGER_PIN;
+        });
+    CHECK(pin_member != members_.end());
+    const auto& pin_metadata =
+        pin_member->member_metadata().google_password_manager_pin_metadata();
+    return trusted_vault::GpmPinMetadata(
+        GetPinMemberPublicKey(), trusted_vault::UsableRecoveryPinMetadata(
+                                     pin_metadata.encrypted_pin_hash(),
+                                     ToTime(pin_metadata.expiration_time())));
+  }
+
   base::span<const trusted_vault_pb::SecurityDomainMember> members()
       const override {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
@@ -94,7 +184,7 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
     if (!request.url.has_host() || !request.url.has_path() ||
-        request.url.host_piece() != "securitydomain-pa.googleapis.com") {
+        request.url.host() != "securitydomain-pa.googleapis.com") {
       return std::nullopt;
     }
 
@@ -103,7 +193,7 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
                             std::string("fail_all_requests() has been called"));
     }
 
-    const std::string_view path = request.url.path_piece();
+    const std::string_view path = request.url.path();
     if (path.starts_with("/v1/users/me/members")) {
       return ListMembers();
     } else if (path.starts_with("/v1/users/me/securitydomains/")) {
@@ -114,11 +204,18 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
   }
 
   MaybeResponse ListMembers() {
-    // We can't list a pretend member.
-    CHECK(!pretend_there_are_members_);
-
+    std::vector<trusted_vault_pb::SecurityDomainMember> members = members_;
+    if (pretend_there_are_members_) {
+      trusted_vault_pb::SecurityDomainMember member;
+      member.set_name("Pretend member");
+      member.set_public_key("Pretend public key");
+      member.set_member_type(
+          trusted_vault_pb::SecurityDomainMember_MemberType::
+              SecurityDomainMember_MemberType_MEMBER_TYPE_UNSPECIFIED);
+      members.push_back(std::move(member));
+    }
     trusted_vault_pb::ListSecurityDomainMembersResponse response;
-    for (const auto& member : members_) {
+    for (const auto& member : members) {
       auto* proto_member = response.add_security_domain_members();
       proto_member->CopyFrom(member);
     }
@@ -129,6 +226,10 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
   MaybeResponse AddMember(const network::ResourceRequest& request) {
     trusted_vault_pb::JoinSecurityDomainsRequest proto_request;
     CHECK(proto_request.ParseFromString(std::string(GetBody(request))));
+
+    if (join_member_fail_matcher_.Run(proto_request)) {
+      return std::make_pair(net::HTTP_INTERNAL_SERVER_ERROR, "");
+    }
 
     // Only the passkeys security domain is handled by this code.
     CHECK_EQ(proto_request.security_domain().name(), kSecurityDomainName);
@@ -193,6 +294,10 @@ class FakeSecurityDomainServiceImpl : public FakeSecurityDomainService {
   const int epoch_;
   bool fail_all_requests_ = false;
   bool pretend_there_are_members_ = false;
+  JoinMemberMatcher join_member_fail_matcher_ = base::BindRepeating(
+      [](const trusted_vault_pb::JoinSecurityDomainsRequest& _) {
+        return false;
+      });
   std::vector<trusted_vault_pb::SecurityDomainMember> members_;
   SEQUENCE_CHECKER(sequence_checker_);
   base::WeakPtrFactory<FakeSecurityDomainServiceImpl> weak_ptr_factory_{this};

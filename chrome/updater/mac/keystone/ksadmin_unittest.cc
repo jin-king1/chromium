@@ -6,10 +6,15 @@
 
 #include <map>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "base/base_paths.h"
+#include "base/containers/flat_map.h"
 #include "base/files/file_path.h"
+#include "base/functional/callback.h"
+#include "base/logging.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/path_service.h"
 #include "base/process/launch.h"
 #include "base/process/process.h"
@@ -17,7 +22,8 @@
 #include "base/strings/strcat.h"
 #include "base/test/bind.h"
 #include "base/test/task_environment.h"
-#include "chrome/updater/app/server/posix/update_service_stub.h"
+#include "base/version.h"
+#include "chrome/updater/app/server/update_service_stub.h"
 #include "chrome/updater/ipc/ipc_support.h"
 #include "chrome/updater/registration_data.h"
 #include "chrome/updater/test/test_scope.h"
@@ -184,6 +190,14 @@ TEST(KSAdminTest, Register) {
                  base::RepeatingCallback<void(const UpdateState&)> state_update,
                  base::OnceCallback<void(Result)> callback),
                 (override));
+    MOCK_METHOD(void,
+                GetUpdaterState,
+                (base::OnceCallback<void(const UpdaterState&)> callback),
+                (override));
+    MOCK_METHOD(void,
+                GetPoliciesJson,
+                (base::OnceCallback<void(const std::string&)> callback),
+                (override));
 
    protected:
     ~MockUpdateService() override = default;
@@ -204,7 +218,7 @@ TEST(KSAdminTest, Register) {
         EXPECT_EQ(request.ap_path, base::FilePath("tag_path"));
         EXPECT_EQ(request.version_key, "version_key");
         EXPECT_EQ(request.version_path, base::FilePath("version_path"));
-        EXPECT_EQ(request.version, base::Version("1.2.3.4"));
+        EXPECT_EQ(request.version, "1.2.3.4");
         EXPECT_EQ(request.existence_checker_path, base::FilePath("/xc_path"));
         std::move(callback).Run(0);
       });

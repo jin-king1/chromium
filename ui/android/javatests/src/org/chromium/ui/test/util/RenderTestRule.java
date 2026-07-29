@@ -107,11 +107,11 @@ public class RenderTestRule extends TestWatcher {
     /** Prefix on the render test images that describes light/dark mode. */
     private String mNightModePrefix;
 
-    private String mSkiaGoldCorpus;
-    private int mSkiaGoldRevision;
-    private String mSkiaGoldRevisionDescription;
-    private boolean mFailOnUnsupportedConfigs;
-    private String mBugComponent;
+    private final String mSkiaGoldCorpus;
+    private final int mSkiaGoldRevision;
+    private final String mSkiaGoldRevisionDescription;
+    private final boolean mFailOnUnsupportedConfigs;
+    private final String mBugComponent;
 
     @StringDef({
         Corpus.ANDROID_RENDER_TESTS_PUBLIC,
@@ -132,6 +132,7 @@ public class RenderTestRule extends TestWatcher {
         Component.BLINK_CONTACTS,
         Component.BLINK_FORMS_COLOR,
         Component.BLINK_PAYMENTS,
+        Component.ENTERPRISE,
         Component.FREEZE_DRIED_TABS,
         Component.PRIVACY,
         Component.PRIVACY_INCOGNITO,
@@ -140,10 +141,12 @@ public class RenderTestRule extends TestWatcher {
         Component.UI_BROWSER_AUTOFILL,
         Component.UI_BROWSER_BOOKMARKS,
         Component.UI_BROWSER_BUBBLES_PAGE_INFO,
+        Component.UI_BROWSER_CHROME_TABS_CHROME_TAB_GROUPS_SHARED_TAB_GROUPS,
         Component.UI_BROWSER_CONTENT_SUGGESTIONS,
         Component.UI_BROWSER_CONTENT_SUGGESTIONS_FEED,
         Component.UI_BROWSER_CONTENT_SUGGESTIONS_HISTORY,
         Component.UI_BROWSER_FIRST_RUN,
+        Component.UI_BROWSER_GLIC,
         Component.UI_BROWSER_INCOGNITO,
         Component.UI_BROWSER_INFOBARS,
         Component.UI_BROWSER_MEDIA_PICKER,
@@ -160,11 +163,13 @@ public class RenderTestRule extends TestWatcher {
         Component.UI_BROWSER_MOBILE_TAB_GROUPS,
         Component.UI_BROWSER_MOBILE_TAB_SWITCHER,
         Component.UI_BROWSER_MOBILE_TAB_SWITCHER_GRID,
+        Component.UI_BROWSER_MOBILE_TAB_SWITCHER_PINNED_TABS_STRIP,
         Component.UI_BROWSER_NAVIGATION_GESTURENAV,
         Component.UI_BROWSER_NEW_TAB_PAGE,
         Component.UI_BROWSER_OMNIBOX,
         Component.UI_BROWSER_PASSWORDS,
         Component.UI_BROWSER_PRIVACY_SANDBOX,
+        Component.UI_BROWSER_READER_MODE,
         Component.UI_BROWSER_SEARCH_VOICE,
         Component.UI_BROWSER_SHARING,
         Component.UI_BROWSER_SHOPPING,
@@ -172,9 +177,11 @@ public class RenderTestRule extends TestWatcher {
         Component.UI_BROWSER_SHOPPING_MERCHANT_TRUST,
         Component.UI_BROWSER_SHOPPING_PRICE_TRACKING,
         Component.UI_BROWSER_TOOLBAR,
+        Component.UI_BROWSER_TOP_CHROME_SIDE_PANEL,
         Component.UI_BROWSER_THUMBNAIL,
         Component.UI_BROWSER_WEB_APP_INSTALLS,
-        Component.UI_SETTINGS_PRIVACY
+        Component.UI_NOTIFICATIONS,
+        Component.UI_SETTINGS_PRIVACY,
     })
     @Retention(RetentionPolicy.SOURCE)
     public @interface Component {
@@ -182,6 +189,7 @@ public class RenderTestRule extends TestWatcher {
         String BLINK_FORMS_COLOR = "Blink>Forms>Color";
         String BLINK_PAYMENTS = "Blink>Payments";
         String BLINK_VIEW_TRANSITIONS = "Blink>ViewTransitions";
+        String ENTERPRISE = "Enterprise";
         String FREEZE_DRIED_TABS = "Internals>FreezeDriedTabs";
         String PRIVACY = "Privacy";
         String PRIVACY_INCOGNITO = "Privacy>Incognito";
@@ -190,10 +198,13 @@ public class RenderTestRule extends TestWatcher {
         String UI_BROWSER_AUTOFILL = "UI>Browser>Autofill";
         String UI_BROWSER_BOOKMARKS = "UI>Browser>Bookmarks";
         String UI_BROWSER_BUBBLES_PAGE_INFO = "UI>Browser>Bubbles>PageInfo";
+        String UI_BROWSER_CHROME_TABS_CHROME_TAB_GROUPS_SHARED_TAB_GROUPS =
+                "UI>Browser>ChromeTabs>ChromeTabGroups>SharedTabGroups";
         String UI_BROWSER_CONTENT_SUGGESTIONS = "UI>Browser>ContentSuggestions";
         String UI_BROWSER_CONTENT_SUGGESTIONS_FEED = "UI>Browser>ContentSuggestions>Feed";
         String UI_BROWSER_CONTENT_SUGGESTIONS_HISTORY = "UI>Browser>ContentSuggestions>History";
         String UI_BROWSER_FIRST_RUN = "UI>Browser>FirstRun";
+        String UI_BROWSER_GLIC = "UI>Browser>Glic";
         String UI_BROWSER_INCOGNITO = "UI>Browser>Incognito";
         String UI_BROWSER_INFOBARS = "UI>Browser>Infobars";
         String UI_BROWSER_MEDIA_PICKER = "UI>Browser>MediaPicker";
@@ -210,11 +221,14 @@ public class RenderTestRule extends TestWatcher {
         String UI_BROWSER_MOBILE_TAB_GROUPS = "UI>Browser>Mobile>TabGroups";
         String UI_BROWSER_MOBILE_TAB_SWITCHER = "UI>Browser>Mobile>TabSwitcher";
         String UI_BROWSER_MOBILE_TAB_SWITCHER_GRID = "UI>Browser>Mobile>TabSwitcher>Grid";
+        String UI_BROWSER_MOBILE_TAB_SWITCHER_PINNED_TABS_STRIP =
+                "UI>Browser>Mobile>TabSwitcher>PinnedTabsStrip";
         String UI_BROWSER_NAVIGATION_GESTURENAV = "UI>Browser>Navigation>GestureNav";
         String UI_BROWSER_NEW_TAB_PAGE = "UI>Browser>NewTabPage";
         String UI_BROWSER_OMNIBOX = "UI>Browser>Omnibox";
         String UI_BROWSER_PASSWORDS = "UI>Browser>Passwords";
         String UI_BROWSER_PRIVACY_SANDBOX = "UI>Browser>Privacy Sandbox";
+        String UI_BROWSER_READER_MODE = "UI>Browser>ReaderMode";
         String UI_BROWSER_SEARCH_VOICE = "UI>Browser>Search>Voice";
         String UI_BROWSER_SHARING = "UI>Browser>Sharing";
         String UI_BROWSER_SHOPPING = "UI>Browser>Shopping";
@@ -223,7 +237,9 @@ public class RenderTestRule extends TestWatcher {
         String UI_BROWSER_SHOPPING_PRICE_TRACKING = "UI>Browser>Shopping>PriceTracking";
         String UI_BROWSER_THUMBNAIL = "UI>Browser>Thumbnail";
         String UI_BROWSER_TOOLBAR = "UI>Browser>Toolbar";
+        String UI_BROWSER_TOP_CHROME_SIDE_PANEL = "UI>Browser>TopChrome>SidePanel";
         String UI_BROWSER_WEB_APP_INSTALLS = "UI>Browser>WebAppInstalls";
+        String UI_NOTIFICATIONS = "UI>Notifications";
         String UI_SETTINGS_PRIVACY = "UI>Settings>Privacy";
     }
 
@@ -283,7 +299,7 @@ public class RenderTestRule extends TestWatcher {
         TestThreadUtils.flushNonDelayedLooperTasks();
         Bitmap testBitmap =
                 ThreadUtils.runOnUiThreadBlocking(
-                        new Callable<Bitmap>() {
+                        new Callable<>() {
                             @Override
                             public Bitmap call() {
                                 int height = view.getMeasuredHeight();
@@ -504,6 +520,7 @@ public class RenderTestRule extends TestWatcher {
             return self();
         }
 
+        @SuppressWarnings("unchecked") // Self-type cast for builder pattern.
         protected B self() {
             return (B) this;
         }

@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.os.Build;
 import android.os.Process;
 import android.text.DynamicLayout;
@@ -19,6 +20,8 @@ import android.text.TextUtils.TruncateAt;
 import android.view.View;
 
 import org.chromium.base.metrics.RecordUserAction;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.R;
 import org.chromium.chrome.browser.download.FileAccessPermissionHelper;
 import org.chromium.chrome.browser.init.ChromeBrowserInitializer;
@@ -30,6 +33,7 @@ import org.chromium.ui.modelutil.PropertyModel;
 /**
  * QrCodeShareMediator is in charge of calculating and setting values for QrCodeShareViewProperties.
  */
+@NullMarked
 class QrCodeShareMediator {
     // QR code version 40 with M-level error correction can encode binary inputs of up to 2331
     // bytes, and digit-only inputs of up to 5596 bytes.  See
@@ -41,14 +45,14 @@ class QrCodeShareMediator {
 
     private final Context mContext;
     private final PropertyModel mPropertyModel;
-    private WindowAndroid mWindowAndroid;
+    private @Nullable WindowAndroid mWindowAndroid;
 
     // The number of times the user has attempted to download the QR code in this dialog.
     private int mNumDownloads;
 
     private boolean mIsDownloadInProgress;
-    private String mUrl;
-    private Runnable mCloseDialog;
+    private final String mUrl;
+    private final Runnable mCloseDialog;
 
     /**
      * The QrCodeScanMediator constructor.
@@ -63,7 +67,7 @@ class QrCodeShareMediator {
             PropertyModel propertyModel,
             Runnable closeDialog,
             String url,
-            WindowAndroid windowAndroid) {
+            @Nullable WindowAndroid windowAndroid) {
         mContext = context;
         mPropertyModel = propertyModel;
         mCloseDialog = closeDialog;
@@ -76,9 +80,10 @@ class QrCodeShareMediator {
 
     /**
      * Refreshes the QR Code bitmap for given data.
+     *
      * @param data The data to encode.
      */
-    protected void refreshQrCode(String data) {
+    protected void refreshQrCode(@Nullable String data) {
         if (TextUtils.isEmpty(data)) {
             mPropertyModel.set(
                     QrCodeShareViewProperties.ERROR_STRING,
@@ -194,31 +199,30 @@ class QrCodeShareMediator {
         int textBottomPadding =
                 mContext.getResources().getDimensionPixelSize(R.dimen.url_box_bottom_padding);
 
-        TextPaint mTextPaint = new TextPaint();
-        mTextPaint.setAntiAlias(true);
-        mTextPaint.setColor(android.graphics.Color.BLACK);
-        mTextPaint.setTextSize(fontSize);
+        TextPaint textPaint = new TextPaint();
+        textPaint.setAntiAlias(true);
+        textPaint.setColor(Color.BLACK);
+        textPaint.setTextSize(fontSize);
 
         // Text is as wide as the QR code.
-        FixedLineCountLayout mTextLayout =
+        FixedLineCountLayout textLayout =
                 new FixedLineCountLayout(
-                        url, mTextPaint, qrCodeSize, Alignment.ALIGN_CENTER, 1.0f, 0.0f, true, 2);
+                        url, textPaint, qrCodeSize, Alignment.ALIGN_CENTER, 1.0f, 0.0f, true, 2);
 
         // New bitmap should be long enough to fit the url with its margins, the QR code bitmap and
         // equal padding from the bottom.
-        int height =
-                (textTopPadding + mTextLayout.getHeight() + textBottomPadding) * 2 + qrCodeSize;
+        int height = (textTopPadding + textLayout.getHeight() + textBottomPadding) * 2 + qrCodeSize;
         int width = qrCodeSize + 2 * sidePadding;
         Bitmap newBitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
         Canvas canvas = new Canvas(newBitmap);
-        canvas.drawColor(android.graphics.Color.WHITE);
+        canvas.drawColor(Color.WHITE);
         canvas.translate(sidePadding, textTopPadding);
-        mTextLayout.draw(canvas);
+        textLayout.draw(canvas);
         canvas.drawBitmap(
                 Bitmap.createScaledBitmap(bitmap, qrCodeSize, qrCodeSize, false),
                 0,
-                mTextLayout.getHeight() + textBottomPadding,
-                mTextPaint);
+                textLayout.getHeight() + textBottomPadding,
+                textPaint);
         return newBitmap;
     }
 

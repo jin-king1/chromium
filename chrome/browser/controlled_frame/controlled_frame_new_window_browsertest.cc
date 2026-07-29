@@ -21,8 +21,9 @@ class ControlledFrameNewWindowBrowserTest
       public testing::WithParamInterface<bool> {
  public:
   void SetUpOnMainThread() override {
+    embedded_https_test_server().ServeFilesFromSourceDirectory(
+        GetChromeTestDataDir().AppendASCII("web_apps/simple_isolated_app"));
     ControlledFrameTestBase::SetUpOnMainThread();
-    StartContentServer("web_apps/simple_isolated_app");
   }
 };
 
@@ -88,7 +89,7 @@ IN_PROC_BROWSER_TEST_F(ControlledFrameNewWindowBrowserTest, AttachSucceeds) {
       embedded_https_test_server().GetURL("/index.html"));
 
   EXPECT_THAT(
-      content::EvalJs(app_frame, test_script).ExtractList(),
+      content::EvalJs(app_frame, test_script).TakeValue().TakeList(),
       UnorderedElementsAre(
           embedded_https_test_server().GetURL("/controlled_frame.html").spec(),
           embedded_https_test_server().GetURL("/index.html").spec()));

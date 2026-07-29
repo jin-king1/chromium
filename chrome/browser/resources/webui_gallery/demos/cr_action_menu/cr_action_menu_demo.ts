@@ -42,31 +42,30 @@ export class CrActionMenuDemoElement extends CrLitElement {
       alignmentOptions_: {type: Array},
       customAlignmentX_: {type: String},
       customAlignmentY_: {type: String},
-      statusText_: {type: String},
     };
   }
 
-  protected alignmentOptions_: AnchorAlignmentKey[] = [
+  protected accessor alignmentOptions_: AnchorAlignmentKey[] = [
     'BEFORE_START',
     'AFTER_START',
     'CENTER',
     'BEFORE_END',
     'AFTER_END',
   ];
-  protected customAlignmentX_: AnchorAlignmentKey = 'CENTER';
-  protected customAlignmentY_: AnchorAlignmentKey = 'CENTER';
+  protected accessor customAlignmentX_: AnchorAlignmentKey = 'CENTER';
+  protected accessor customAlignmentY_: AnchorAlignmentKey = 'CENTER';
 
   protected onShowAnchoredMenuClick_(event: MouseEvent) {
     this.$.menu.showAt(event.target as HTMLElement);
   }
 
-  protected onContextMenu_(event: MouseEvent) {
+  protected onDemosContextmenu_(event: MouseEvent) {
     event.preventDefault();
     this.$.menu.close();
     this.$.menu.showAtPosition({top: event.clientY, left: event.clientX});
   }
 
-  protected onShowMinMaxMenu_(event: MouseEvent) {
+  protected onShowMinMaxMenuClick_(event: MouseEvent) {
     const minMaxContainerRect = this.$.minMaxContainer.getBoundingClientRect();
     const config = {
       minX: minMaxContainerRect.left,
@@ -89,14 +88,20 @@ export class CrActionMenuDemoElement extends CrLitElement {
     return selectedAlignment === option;
   }
 
-  protected onCustomAlignmentXChanged_(e: Event) {
+  protected onCustomAlignmentXChange_(e: Event) {
     this.customAlignmentX_ =
         (e.target as HTMLSelectElement).value as AnchorAlignmentKey;
   }
 
-  protected onCustomAlignmentYChanged_(e: Event) {
+  protected onCustomAlignmentYChange_(e: Event) {
     this.customAlignmentY_ =
         (e.target as HTMLSelectElement).value as AnchorAlignmentKey;
+  }
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    'cr-action-menu-demo': CrActionMenuDemoElement;
   }
 }
 

@@ -126,8 +126,6 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   ObservePolicy OnStart(content::NavigationHandle* navigation_handle,
                         const GURL& currently_committed_url,
                         bool started_in_foreground) override;
-  ObservePolicy OnPreviewStart(content::NavigationHandle* navigation_handle,
-                               const GURL& currently_committed_url) override;
   ObservePolicy OnNavigationHandleTimingUpdated(
       content::NavigationHandle* navigation_handle) override;
   ObservePolicy OnRedirect(
@@ -153,11 +151,12 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   ObservePolicy ShouldObserveScheme(const GURL& url) const override;
   void OnTimingUpdate(content::RenderFrameHost* subframe_rfh,
                       const mojom::PageLoadTiming& timing) override {}
-  void OnSoftNavigationUpdated(const mojom::SoftNavigationMetrics&) override {}
-  void OnInputTimingUpdate(
+  void OnSoftNavigation() override {}
+  void OnSoftNavigationLargestContentfulPaint(uint64_t num_soft_lcps) override {}
+  void OnEventTimingUpdate(
       content::RenderFrameHost* subframe_rfh,
-      const mojom::InputTiming& input_timing_delta) override {}
-  void OnPageInputTimingUpdate(uint64_t num_interactions) override {}
+      const std::vector<mojom::EventTimingPtr>& event_timings) override {}
+  void OnPageEventTimingUpdate(uint64_t num_interactions) override {}
   void OnPageRenderDataUpdate(const mojom::FrameRenderDataUpdate& render_data,
                               bool is_main_frame) override {}
   void OnSubFrameRenderDataUpdate(
@@ -180,6 +179,10 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnFirstImagePaintInPage(const mojom::PageLoadTiming& timing) override {}
   void OnFirstContentfulPaintInPage(
       const mojom::PageLoadTiming& timing) override {}
+  void OnMonotonicFirstPaintInPage(
+      const mojom::PageLoadTiming& timing) override {}
+  void OnMonotonicFirstContentfulPaintInPage(
+      const mojom::PageLoadTiming& timing) override {}
   void OnFirstPaintAfterBackForwardCacheRestoreInPage(
       const mojom::BackForwardCacheTiming& timing,
       size_t index) override {}
@@ -192,6 +195,12 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnFirstMeaningfulPaintInMainFrameDocument(
       const mojom::PageLoadTiming& timing) override {}
   void OnFirstInputInPage(const mojom::PageLoadTiming& timing) override {}
+  void OnUserTimingMarkFullyLoaded(
+      const mojom::PageLoadTiming& timing) override {}
+  void OnUserTimingMarkFullyVisible(
+      const mojom::PageLoadTiming& timing) override {}
+  void OnUserTimingMarkInteractive(
+      const mojom::PageLoadTiming& timing) override {}
   void OnLoadingBehaviorObserved(content::RenderFrameHost* rfh,
                                  int behavior_flags) override {}
   void OnJavaScriptFrameworksObserved(
@@ -200,22 +209,17 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnFeaturesUsageObserved(
       content::RenderFrameHost* rfh,
       const std::vector<blink::UseCounterFeature>& features) override {}
-  void SetUpSharedMemoryForUkms(
-      const base::ReadOnlySharedMemoryRegion& smoothness_memory,
-      const base::ReadOnlySharedMemoryRegion& dropped_frames_memory) override {}
   void OnResourceDataUseObserved(
       content::RenderFrameHost* rfh,
       const std::vector<mojom::ResourceDataUpdatePtr>& resources) override {}
   void MediaStartedPlaying(
       const content::WebContentsObserver::MediaPlayerInfo& video_type,
       content::RenderFrameHost* render_frame_host) override {}
-  void OnMainFrameIntersectionRectChanged(
-      content::RenderFrameHost* rfh,
-      const gfx::Rect& main_frame_intersection_rect) override {}
+  void OnMainFrameRectChanged(const gfx::Rect& main_frame_rect) override {}
   void OnMainFrameViewportRectChanged(
       const gfx::Rect& main_frame_viewport_rect) override {}
-  void OnMainFrameImageAdRectsChanged(const base::flat_map<int, gfx::Rect>&
-                                          main_frame_image_ad_rects) override {}
+  void OnMainFrameAdRectsChanged(
+      const base::flat_map<int, gfx::Rect>& main_frame_ad_rects) override {}
   ObservePolicy FlushMetricsOnAppEnterBackground(
       const mojom::PageLoadTiming& timing) override;
   void OnComplete(const mojom::PageLoadTiming& timing) override {}
@@ -255,16 +259,10 @@ class PageLoadMetricsObserver : public PageLoadMetricsObserverInterface {
   void OnPrefetchLikely() override {}
   void DidActivatePrerenderedPage(
       content::NavigationHandle* navigation_handle) override {}
-  void DidActivatePreviewedPage(base::TimeTicks activation_time) override {}
-  void OnV8MemoryChanged(
-      const std::vector<MemoryUpdate>& memory_updates) override {}
   void OnSharedStorageWorkletHostCreated() override {}
   void OnSharedStorageSelectURLCalled() override {}
   void OnCustomUserTimingMarkObserved(
       const std::vector<mojom::CustomUserTimingMarkPtr>& timings) override {}
-  void OnAdAuctionComplete(bool is_server_auction,
-                           bool is_on_device_auction,
-                           content::AuctionResult result) override {}
   void OnPrimaryPageRenderProcessGone() override {}
 
  private:

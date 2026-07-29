@@ -49,14 +49,13 @@ class SVGIntegerOptionalInteger final : public SVGPropertyBase {
                             SVGInteger* second_integer);
 
   SVGIntegerOptionalInteger* Clone() const;
-  SVGPropertyBase* CloneForAnimation(const String&) const override;
 
   String ValueAsString() const override;
   SVGParsingError SetValueAsString(const String&);
   void SetInitial(unsigned);
   static constexpr int kInitialValueBits = SVGInteger::kInitialValueBits;
 
-  void Add(const SVGPropertyBase*, const SVGElement*) override;
+  bool Add(const SVGPropertyBase*, const SVGElement*) override;
   void CalculateAnimatedValue(
       const SMILAnimationEffectParameters&,
       float percentage,

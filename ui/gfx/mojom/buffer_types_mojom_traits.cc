@@ -10,14 +10,6 @@
 
 namespace mojo {
 
-// static
-bool StructTraits<gfx::mojom::BufferUsageAndFormatDataView,
-                  gfx::BufferUsageAndFormat>::
-    Read(gfx::mojom::BufferUsageAndFormatDataView data,
-         gfx::BufferUsageAndFormat* out) {
-  return data.ReadUsage(&out->usage) && data.ReadFormat(&out->format);
-}
-
 #if BUILDFLAG(USE_BLINK)
 gfx::GpuMemoryBufferHandle& StructTraits<
     gfx::mojom::GpuMemoryBufferHandleDataView,
@@ -30,9 +22,6 @@ bool StructTraits<gfx::mojom::GpuMemoryBufferHandleDataView,
                   gfx::GpuMemoryBufferHandle>::
     Read(gfx::mojom::GpuMemoryBufferHandleDataView data,
          gfx::GpuMemoryBufferHandle* out) {
-  if (!data.ReadId(&out->id))
-    return false;
-
   out->offset = data.offset();
   out->stride = data.stride();
 

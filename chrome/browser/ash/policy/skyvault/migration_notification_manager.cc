@@ -9,16 +9,20 @@
 #include <string>
 #include <vector>
 
+#include "ash/constants/ash_features.h"
 #include "ash/constants/notifier_catalogs.h"
 #include "ash/public/cpp/new_window_delegate.h"
 #include "ash/public/cpp/notification_utils.h"
 #include "base/callback_list.h"
+#include "base/feature_list.h"
 #include "base/files/file_path.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
+#include "base/functional/callback_helpers.h"
 #include "base/no_destructor.h"
 #include "base/notreached.h"
 #include "base/sequence_checker.h"
+#include "base/strings/string_util.h"
 #include "base/strings/utf_string_conversions.h"
 #include "chrome/browser/ash/file_manager/open_util.h"
 #include "chrome/browser/ash/policy/skyvault/policy_utils.h"
@@ -33,6 +37,7 @@
 #include "content/public/browser/browser_context.h"
 #include "net/base/filename_util.h"
 #include "ui/base/l10n/l10n_util.h"
+#include "ui/base/ui_base_features.h"
 #include "ui/message_center/public/cpp/notification.h"
 
 namespace policy::local_user_files {
@@ -44,7 +49,8 @@ namespace {
 std::unique_ptr<message_center::Notification> CreateNotificationPtr(
     const std::u16string title,
     const std::u16string message,
-    base::RepeatingCallback<void(std::optional<int>)> callback) {
+    base::RepeatingCallback<void(std::optional<int>)> callback =
+        base::DoNothing()) {
   message_center::RichNotificationData optional_fields;
   optional_fields.never_timeout = true;
   return ash::CreateSystemNotificationPtr(
@@ -54,7 +60,8 @@ std::unique_ptr<message_center::Notification> CreateNotificationPtr(
       message_center::NotifierId(), optional_fields,
       base::MakeRefCounted<message_center::HandleNotificationClickDelegate>(
           callback),
-      vector_icons::kBusinessIcon,
+      features::IsRoundedIconsEnabled() ? vector_icons::kDomainIcon
+                                        : vector_icons::kBusinessOldIcon,
       message_center::SystemNotificationWarningLevel::NORMAL);
 }
 
@@ -71,7 +78,7 @@ void HandleCompletedNotificationClick(Profile* profile,
                                       std::optional<int> button) {
   if (button.has_value() && button == 0) {
     file_manager::util::ShowItemInFolder(profile, path, base::DoNothing());
-    ash::NewWindowDelegate::GetPrimary()->OpenUrl(
+    ash::NewWindowDelegate::GetInstance()->OpenUrl(
         net::FilePathToFileURL(path),
         ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
         ash::NewWindowDelegate::Disposition::kNewForegroundTab);
@@ -85,7 +92,7 @@ void HandleErrorNotificationClick(Profile* profile,
                                   const base::FilePath& path,
                                   std::optional<int> button) {
   if (button.has_value() && button == 0) {
-    ash::NewWindowDelegate::GetPrimary()->OpenUrl(
+    ash::NewWindowDelegate::GetInstance()->OpenUrl(
         net::FilePathToFileURL(path),
         ash::NewWindowDelegate::OpenUrlFrom::kUserInteraction,
         ash::NewWindowDelegate::Disposition::kNewForegroundTab);
@@ -93,16 +100,17 @@ void HandleErrorNotificationClick(Profile* profile,
   CloseNotification(profile);
 }
 
-// Returns the translation string corresponding to `provider`.
-std::u16string CloudProviderToString(CloudProvider provider) {
-  switch (provider) {
-    case CloudProvider::kGoogleDrive:
+// Returns the translation string corresponding to `destination`.
+std::u16string CloudProviderToString(MigrationDestination destination) {
+  switch (destination) {
+    case MigrationDestination::kGoogleDrive:
       return l10n_util::GetStringUTF16(
           IDS_POLICY_SKYVAULT_CLOUD_PROVIDER_GOOGLE_DRIVE);
-    case CloudProvider::kOneDrive:
+    case MigrationDestination::kOneDrive:
       return l10n_util::GetStringUTF16(
           IDS_POLICY_SKYVAULT_CLOUD_PROVIDER_ONEDRIVE);
-    case CloudProvider::kNotSpecified:
+    case MigrationDestination::kNotSpecified:
+    case MigrationDestination::kDelete:
       NOTREACHED();
   }
 }
@@ -118,16 +126,24 @@ MigrationNotificationManager::~MigrationNotificationManager() {
 }
 
 void MigrationNotificationManager::ShowMigrationInfoDialog(
-    CloudProvider provider,
+    MigrationDestination destination,
     base::Time migration_start_time,
     base::OnceClosure migration_callback) {
-  LocalFilesMigrationDialog::Show(provider, migration_start_time,
+  if (destination == MigrationDestination::kDelete &&
+      !base::FeatureList::IsEnabled(ash::features::kSkyVaultV3)) {
+    LOG(ERROR) << "Destination set to MigrationDestination::kDelete, but the "
+                  "flag is disabled; ignoring.";
+    return;
+  }
+  LocalFilesMigrationDialog::Show(destination, migration_start_time,
                                   std::move(migration_callback));
 }
 
 void MigrationNotificationManager::ShowMigrationProgressNotification(
-    CloudProvider provider) {
-  std::u16string provider_str = CloudProviderToString(provider);
+    MigrationDestination destination) {
+  DCHECK(IsCloudDestination(destination));
+
+  std::u16string provider_str = CloudProviderToString(destination);
 
   std::u16string title = base::ReplaceStringPlaceholders(
       l10n_util::GetStringUTF16(IDS_POLICY_SKYVAULT_MIGRATION_PROGRESS_TITLE),
@@ -138,8 +154,7 @@ void MigrationNotificationManager::ShowMigrationProgressNotification(
       provider_str,
       /*offset=*/nullptr);
 
-  auto notification = CreateNotificationPtr(title, message,
-                                            /*callback=*/base::DoNothing());
+  auto notification = CreateNotificationPtr(title, message);
 
   NotificationDisplayServiceFactory::GetForProfile(profile())->Display(
       NotificationHandler::Type::TRANSIENT, *notification,
@@ -147,9 +162,11 @@ void MigrationNotificationManager::ShowMigrationProgressNotification(
 }
 
 void MigrationNotificationManager::ShowMigrationCompletedNotification(
-    CloudProvider provider,
+    MigrationDestination destination,
     const base::FilePath& destination_path) {
-  std::u16string provider_str = CloudProviderToString(provider);
+  DCHECK(IsCloudDestination(destination));
+
+  std::u16string provider_str = CloudProviderToString(destination);
   std::u16string folder_name = destination_path.BaseName().AsUTF16Unsafe();
 
   std::u16string title = base::ReplaceStringPlaceholders(
@@ -177,13 +194,26 @@ void MigrationNotificationManager::ShowMigrationCompletedNotification(
       /*metadata=*/nullptr);
 }
 
+void MigrationNotificationManager::ShowDeletionCompletedNotification() {
+  std::u16string title =
+      l10n_util::GetStringUTF16(IDS_POLICY_SKYVAULT_DELETION_COMPLETED_TITLE);
+  std::u16string message =
+      l10n_util::GetStringUTF16(IDS_POLICY_SKYVAULT_DELETION_COMPLETED_MESSAGE);
+  auto notification = CreateNotificationPtr(title, message);
+
+  NotificationDisplayServiceFactory::GetForProfile(profile())->Display(
+      NotificationHandler::Type::TRANSIENT, *notification,
+      /*metadata=*/nullptr);
+}
+
 void MigrationNotificationManager::ShowMigrationErrorNotification(
-    CloudProvider provider,
+    MigrationDestination destination,
     const std::string& folder_name,
     const base::FilePath& error_log_path) {
   DCHECK(!error_log_path.empty());
+  DCHECK(IsCloudDestination(destination));
 
-  std::u16string provider_str = CloudProviderToString(provider);
+  std::u16string provider_str = CloudProviderToString(destination);
 
   std::u16string title = base::ReplaceStringPlaceholders(
       l10n_util::GetStringUTF16(IDS_POLICY_SKYVAULT_MIGRATION_ERROR_TITLE),
@@ -208,8 +238,10 @@ void MigrationNotificationManager::ShowMigrationErrorNotification(
 }
 
 void MigrationNotificationManager::ShowConfigurationErrorNotification(
-    CloudProvider provider) {
-  std::u16string provider_str = CloudProviderToString(provider);
+    MigrationDestination destination) {
+  DCHECK(IsCloudDestination(destination));
+
+  std::u16string provider_str = CloudProviderToString(destination);
 
   std::u16string title = base::ReplaceStringPlaceholders(
       l10n_util::GetStringUTF16(
@@ -273,7 +305,7 @@ void MigrationNotificationManager::OnSignInResponse(base::File::Error error) {
 
   if (error == base::File::Error::FILE_OK) {
     // This is only reached for OneDrive.
-    ShowMigrationProgressNotification(CloudProvider::kOneDrive);
+    ShowMigrationProgressNotification(MigrationDestination::kOneDrive);
   }
   // If there was an error, the notification will be shown when migration fails.
   sign_in_callbacks_.Notify(error);

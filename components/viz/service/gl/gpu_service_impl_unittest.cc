@@ -17,13 +17,13 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/time/time.h"
 #include "components/viz/common/resources/peak_gpu_memory_tracker_util.h"
+#include "components/viz/service/gl/mock_gpu_service_impl.h"
 #include "components/viz/service/input/peak_gpu_memory_tracker_impl.h"
 #include "gpu/config/gpu_info.h"
 #include "gpu/ipc/service/gpu_watchdog_thread.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/remote.h"
 #include "services/viz/public/mojom/gpu.mojom.h"
-#include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/gl/gl_utils.h"
 #include "ui/gl/init/gl_factory.h"
@@ -36,37 +36,6 @@ const uint64_t kPeakMemoryMB = 42u;
 const uint64_t kPeakMemory = kPeakMemoryMB * 1048576u;
 
 }  // namespace
-
-class MockGpuServiceImpl : public GpuServiceImpl {
- public:
-  explicit MockGpuServiceImpl(
-      const gpu::GpuPreferences& gpu_preferences,
-      const gpu::GPUInfo& gpu_info,
-      const gpu::GpuFeatureInfo& gpu_feature_info,
-      const std::optional<gpu::GPUInfo>& gpu_info_for_hardware_gpu,
-      const std::optional<gpu::GpuFeatureInfo>&
-          gpu_feature_info_for_hardware_gpu,
-      const gfx::GpuExtraInfo& gpu_extra_info,
-      InitParams init_params)
-      : GpuServiceImpl(gpu_preferences,
-                       gpu_info,
-                       gpu_feature_info,
-                       gpu_info_for_hardware_gpu,
-                       gpu_feature_info_for_hardware_gpu,
-                       gpu_extra_info,
-                       std::move(init_params)) {}
-  ~MockGpuServiceImpl() override = default;
-
-  MOCK_METHOD(void,
-              StartPeakMemoryMonitor,
-              (uint32_t sequence_num),
-              (override));
-
-  MOCK_METHOD(void,
-              GetPeakMemoryUsageOnMainThread,
-              (uint32_t sequence_num, GetPeakMemoryUsageCallback callback),
-              (override));
-};
 
 class GpuServiceTest : public testing::Test {
  public:
@@ -89,8 +58,7 @@ class GpuServiceTest : public testing::Test {
 
   void BlockIOThread() {
     wait_.Reset();
-    io_runner()->PostTask(FROM_HERE, base::BindOnce(&base::WaitableEvent::Wait,
-                                                    base::Unretained(&wait_)));
+    io_runner()->PostTask(FROM_HERE, wait_.GetWaitCallbackForTesting());
   }
 
   void UnblockIOThread() {
@@ -121,7 +89,7 @@ class GpuServiceTest : public testing::Test {
     io_thread_.Stop();
   }
 
-  std::optional<bool> visible_;
+  std::optional<base::Process::Priority> priority_;
 
  private:
   base::Thread io_thread_;
@@ -167,22 +135,24 @@ TEST_F(GpuServiceTest, VisibilityCallbackCalled) {
       mojom::GpuServiceCreationParams::New());
   gpu_service_remote.FlushForTesting();
 
-  gpu_service()->SetVisibilityChangedCallback(base::BindRepeating(
-      [](GpuServiceTest* test, bool visible) { test->visible_ = visible; },
+  gpu_service()->SetPriorityChangedCallback(base::BindRepeating(
+      [](GpuServiceTest* test, base::Process::Priority priority) {
+        test->priority_ = priority;
+      },
       base::Unretained(this)));
-  EXPECT_FALSE(visible_.has_value());
+  EXPECT_FALSE(priority_.has_value());
 
   gpu_service_remote->OnForegrounded();
   gpu_service_remote.FlushForTesting();
 
-  EXPECT_TRUE(visible_.has_value());
-  EXPECT_TRUE(*visible_);
+  EXPECT_TRUE(priority_.has_value());
+  EXPECT_EQ(*priority_, base::Process::Priority::kUserBlocking);
 
   gpu_service_remote->OnBackgrounded();
   gpu_service_remote.FlushForTesting();
 
-  EXPECT_TRUE(visible_.has_value());
-  EXPECT_FALSE(*visible_);
+  EXPECT_TRUE(priority_.has_value());
+  EXPECT_EQ(*priority_, base::Process::Priority::kBestEffort);
 }
 
 // Tests that when a PeakGpuMemoryTracker is destroyed, GpuService properly
@@ -200,7 +170,7 @@ TEST_F(GpuServiceTest, PeakGpuMemoryCallback) {
   gpu_service_remote.FlushForTesting();
 
   ON_CALL(*mock_gpu_service(), GetPeakMemoryUsageOnMainThread)
-      .WillByDefault(testing::Invoke(
+      .WillByDefault(
           [](uint32_t sequence_num,
              GpuServiceImpl::GetPeakMemoryUsageCallback callback) {
             ASSERT_EQ(GetPeakMemoryUsageRequestLocation(sequence_num),
@@ -210,7 +180,7 @@ TEST_F(GpuServiceTest, PeakGpuMemoryCallback) {
             allocation_per_source[gpu::GpuPeakMemoryAllocationSource::UNKNOWN] =
                 kPeakMemory;
             std::move(callback).Run(kPeakMemory, allocation_per_source);
-          }));
+          });
 
   base::HistogramTester histogram;
   auto tracker = std::make_unique<PeakGpuMemoryTrackerImpl>(

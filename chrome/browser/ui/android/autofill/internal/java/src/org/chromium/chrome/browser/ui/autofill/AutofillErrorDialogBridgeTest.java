@@ -101,19 +101,19 @@ public class AutofillErrorDialogBridgeTest {
         View customView = model.get(ModalDialogProperties.CUSTOM_VIEW);
 
         // Verify that the title set by custom view is correct.
-        TextView title = (TextView) customView.findViewById(R.id.title);
+        TextView title = customView.findViewById(R.id.title);
         assertThat(title.getVisibility()).isEqualTo(View.VISIBLE);
         assertThat(title.getText()).isEqualTo(ERROR_DIALOG_TITLE);
 
         // Verify that the title icon set by custom view is correct.
-        ImageView title_icon = (ImageView) customView.findViewById(R.id.title_icon);
+        ImageView titleIcon = customView.findViewById(R.id.title_icon);
         Drawable expectedDrawable =
                 ResourcesCompat.getDrawable(
                         mResources,
                         R.drawable.google_pay,
                         ApplicationProvider.getApplicationContext().getTheme());
-        assertThat(title_icon.getVisibility()).isEqualTo(View.VISIBLE);
-        assertTrue(getBitmap(expectedDrawable).sameAs(getBitmap(title_icon.getDrawable())));
+        assertThat(titleIcon.getVisibility()).isEqualTo(View.VISIBLE);
+        assertTrue(getBitmap(expectedDrawable).sameAs(getBitmap(titleIcon.getDrawable())));
     }
 
     private void showErrorDialog() {

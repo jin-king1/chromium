@@ -25,11 +25,11 @@
 #include "content/public/common/content_client.h"
 #include "content/public/test/content_test_suite_base.h"
 #include "content/public/test/scoped_web_ui_controller_factory_registration.h"
+#include "content/public/test/test_content_browser_client.h"
+#include "content/public/test/test_content_client.h"
 #include "content/public/test/test_host_resolver.h"
 #include "content/public/utility/content_utility_client.h"
 #include "content/test/test_blink_web_unit_test_support.h"
-#include "content/test/test_content_browser_client.h"
-#include "content/test/test_content_client.h"
 #include "mojo/core/embedder/embedder.h"
 #include "services/network/test/test_network_connection_tracker.h"
 #include "testing/gtest/include/gtest/gtest.h"
@@ -68,6 +68,9 @@ class UnitTestTestSuite::UnitTestEventListener
     SetUtilityClientForTesting(content_clients_->content_utility_client.get());
 
     browser_accessibility_state_ = BrowserAccessibilityStateImpl::Create();
+    // Prevent accessibility from being turned on by the platform so that the
+    // tests can run undisturbed.
+    browser_accessibility_state_->SetActivationFromPlatformEnabled(false);
 
     if (first_test_start_callback_)
       std::move(first_test_start_callback_).Run();

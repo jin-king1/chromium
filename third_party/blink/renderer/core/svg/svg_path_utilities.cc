@@ -23,27 +23,36 @@
 #include "third_party/blink/renderer/core/svg/svg_path_byte_stream_builder.h"
 #include "third_party/blink/renderer/core/svg/svg_path_byte_stream_source.h"
 #include "third_party/blink/renderer/core/svg/svg_path_parser.h"
+#include "third_party/blink/renderer/core/svg/svg_path_segments_builder.h"
+#include "third_party/blink/renderer/core/svg/svg_path_segments_source.h"
 #include "third_party/blink/renderer/core/svg/svg_path_string_builder.h"
 #include "third_party/blink/renderer/core/svg/svg_path_string_source.h"
+#include "third_party/blink/renderer/platform/geometry/path.h"
+#include "third_party/blink/renderer/platform/geometry/path_types.h"
 
 namespace blink {
 
-bool BuildPathFromString(const StringView& path_string, Path& result) {
+Path BuildPathFromString(const StringView& path_string) {
   if (path_string.empty())
-    return true;
+    return Path();
 
-  SVGPathBuilder builder(result);
+  SVGPathBuilder builder;
   SVGPathStringSource source(path_string);
-  return svg_path_parser::ParsePath(source, builder);
+  svg_path_parser::ParsePath(source, builder);
+
+  return builder.Finalize();
 }
 
-bool BuildPathFromByteStream(const SVGPathByteStream& stream, Path& result) {
+Path BuildPathFromByteStream(const SVGPathByteStream& stream,
+                             WindRule wind_rule) {
   if (stream.IsEmpty())
-    return true;
+    return Path();
 
-  SVGPathBuilder builder(result);
+  SVGPathBuilder builder(wind_rule);
   SVGPathByteStreamSource source(stream);
-  return svg_path_parser::ParsePath(source, builder);
+  svg_path_parser::ParsePath(source, builder);
+
+  return builder.Finalize();
 }
 
 String BuildStringFromByteStream(const SVGPathByteStream& stream,
@@ -74,6 +83,32 @@ SVGParsingError BuildByteStreamFromString(const StringView& path_string,
   SVGPathStringSource source(path_string);
   svg_path_parser::ParsePath(source, builder);
   return source.ParseError();
+}
+
+HeapVector<Member<SVGPathSegment>> BuildPathSegmentsFromByteStream(
+    const SVGPathByteStream& stream,
+    bool normalize) {
+  if (stream.IsEmpty()) {
+    return {};
+  }
+
+  SVGPathSegmentsBuilder builder;
+  SVGPathByteStreamSource source(stream);
+  if (normalize) {
+    SVGPathNormalizer normalizer(&builder);
+    svg_path_parser::ParsePath(source, normalizer);
+  } else {
+    svg_path_parser::ParsePath(source, builder);
+  }
+  return builder.Finalize();
+}
+
+SVGPathByteStream BuildByteStreamFromSegments(
+    const HeapVector<Member<SVGPathSegment>>& segments) {
+  SVGPathByteStreamBuilder builder;
+  SVGPathSegmentsSource source(segments);
+  svg_path_parser::ParsePath(source, builder);
+  return builder.CopyByteStream();
 }
 
 }  // namespace blink

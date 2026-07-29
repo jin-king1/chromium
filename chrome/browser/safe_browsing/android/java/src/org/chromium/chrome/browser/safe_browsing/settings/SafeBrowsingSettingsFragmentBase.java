@@ -9,10 +9,12 @@ import android.view.Menu;
 import android.view.MenuInflater;
 import android.view.MenuItem;
 
-import androidx.annotation.NonNull;
-
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
+import org.chromium.base.supplier.MonotonicObservableSupplier;
+import org.chromium.base.supplier.ObservableSuppliers;
+import org.chromium.base.supplier.SettableMonotonicObservableSupplier;
+import org.chromium.build.annotations.Initializer;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.safe_browsing.SafeBrowsingBridge;
 import org.chromium.chrome.browser.settings.ChromeBaseSettingsFragment;
@@ -20,12 +22,14 @@ import org.chromium.components.browser_ui.settings.SettingsUtils;
 import org.chromium.components.browser_ui.util.TraceEventVectorDrawableCompat;
 
 /** The base fragment class for Safe Browsing settings fragments. */
+@NullMarked
 public abstract class SafeBrowsingSettingsFragmentBase extends ChromeBaseSettingsFragment {
     private SafeBrowsingBridge mSafeBrowsingBridge;
-    private final ObservableSupplierImpl<String> mPageTitle = new ObservableSupplierImpl<>();
+    private final SettableMonotonicObservableSupplier<String> mPageTitle =
+            ObservableSuppliers.createMonotonic();
 
     @Override
-    public void onCreatePreferences(Bundle bundle, String s) {
+    public void onCreatePreferences(@Nullable Bundle bundle, @Nullable String s) {
         SettingsUtils.addPreferencesFromResource(this, getPreferenceResource());
         mPageTitle.set(getString(R.string.prefs_section_safe_browsing_title));
 
@@ -35,12 +39,13 @@ public abstract class SafeBrowsingSettingsFragmentBase extends ChromeBaseSetting
     }
 
     @Override
-    public ObservableSupplier<String> getPageTitle() {
+    public MonotonicObservableSupplier<String> getPageTitle() {
         return mPageTitle;
     }
 
+    @Initializer
     @Override
-    public void setProfile(@NonNull Profile profile) {
+    public void setProfile(Profile profile) {
         super.setProfile(profile);
         mSafeBrowsingBridge = new SafeBrowsingBridge(profile);
     }
@@ -57,10 +62,10 @@ public abstract class SafeBrowsingSettingsFragmentBase extends ChromeBaseSetting
     public void onCreateOptionsMenu(Menu menu, MenuInflater inflater) {
         menu.clear();
         MenuItem help =
-                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, R.string.menu_help);
+                menu.add(Menu.NONE, R.id.menu_id_targeted_help, Menu.NONE, getHelpMenuStringRes());
         help.setIcon(
                 TraceEventVectorDrawableCompat.create(
-                        getResources(), R.drawable.ic_help_and_feedback, getActivity().getTheme()));
+                        getResources(), R.drawable.ic_help_24dp, getActivity().getTheme()));
     }
 
     @Override
@@ -78,7 +83,7 @@ public abstract class SafeBrowsingSettingsFragmentBase extends ChromeBaseSetting
      * If the child class needs to handle specific logic during preference creation, it can override
      * this method.
      */
-    protected void onCreatePreferencesInternal(Bundle bundle, String s) {}
+    protected void onCreatePreferencesInternal(@Nullable Bundle bundle, @Nullable String s) {}
 
     /**
      * @return The resource id of the preference.

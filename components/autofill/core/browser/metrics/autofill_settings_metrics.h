@@ -5,6 +5,7 @@
 #ifndef COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_AUTOFILL_SETTINGS_METRICS_H_
 #define COMPONENTS_AUTOFILL_CORE_BROWSER_METRICS_AUTOFILL_SETTINGS_METRICS_H_
 
+#include "components/autofill/core/browser/foundations/autofill_client.h"
 #include "components/autofill/core/browser/metrics/autofill_metrics.h"
 
 namespace autofill::autofill_metrics {
@@ -56,6 +57,25 @@ enum class SyncDisabledReason {
 };
 // LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:AutofillSyncDisabledReason)
 
+// LINT.IfChange(AutofillSettingsReferrer)
+// Enumerates referrers that can trigger a navigation to one of the Autofill
+// settings pages.
+//
+// These values are persisted to logs. Entries should not be renumbered and
+// numeric values should never be reused.
+enum class AutofillSettingsReferrer {
+  // Corresponds to the profile chooser menu.
+  kProfileMenu = 0,
+  // Corresponds to Chrome's main settings menu.
+  kSettingsMenu = 1,
+  // Corresponds to the "Autofill and Passwords" settings page.
+  kAutofillAndPasswordsPage = 2,
+  // Corresponds to the dropdown shown when clicking into a form field.
+  kFillingFlowDropdown = 3,
+  kMaxValue = kFillingFlowDropdown,
+};
+// LINT.ThenChange(/tools/metrics/histograms/metadata/autofill/enums.xml:AutofillSettingsReferrer)
+
 // This should be called each time a page containing forms is loaded.
 void LogIsAutofillEnabledAtPageLoad(
     bool enabled,
@@ -86,8 +106,7 @@ void LogAutofillProfileDisabledReasonAtStartup(const PrefService& pref_service);
 
 // Logs the source that disabled Autofill Profile, on page load for a page
 // containing forms.
-void LogAutofillProfileDisabledReasonAtPageLoad(
-    const PrefService& pref_service);
+void LogAutofillProfileDisabledReasonAtPageLoad(const AutofillClient& client);
 
 // Logs the source that disabled payment method Autofill, on startup. This
 // should be called each time a new chrome profile is launched.
@@ -97,7 +116,7 @@ void LogAutofillPaymentMethodsDisabledReasonAtStartup(
 // Logs the source that disabled payment method Autofill, on page load for a
 // page containing forms.
 void LogAutofillPaymentMethodsDisabledReasonAtPageLoad(
-    const PrefService& pref_service);
+    const AutofillClient& client);
 
 // Logs user action "Autofill_ProfileDisabled" if
 // `prefs::kAutofillProfileEnabled` is disabled and controlled by the user or an

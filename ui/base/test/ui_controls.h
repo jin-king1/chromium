@@ -10,11 +10,9 @@
 #include "base/functional/callback_forward.h"
 #include "build/build_config.h"
 #include "ui/events/keycodes/keyboard_codes.h"
-#include "ui/gfx/native_widget_types.h"
+#include "ui/gfx/native_ui_types.h"
 
 namespace ui_controls {
-
-enum KeyEventType { kKeyPress = 1 << 0, kKeyRelease = 1 << 1 };
 
 // A set of utility functions to generate native events in platform
 // independent way. Note that since the implementations depend on a window being
@@ -43,16 +41,19 @@ enum KeyEventType { kKeyPress = 1 << 0, kKeyRelease = 1 << 1 };
 // tests.
 void EnableUIControls();
 
+#if !BUILDFLAG(IS_ANDROID)
 // Reset the state in ui controls logic that are updated by the test to the
 // initial state.
 void ResetUIControlsIfEnabled();
 
-#if BUILDFLAG(IS_APPLE)
-bool IsUIControlsEnabled();
-#endif
-
 // Generates keyboard accelerator state in bitmap from each key boolean.
 int GenerateAcceleratorState(bool control, bool shift, bool alt, bool command);
+
+#endif  // !BUILDFLAG(IS_ANDROID)
+
+bool IsUIControlsEnabled();
+
+enum KeyEventType { kKeyPress = 1 << 0, kKeyRelease = 1 << 1 };
 
 // Send a key press with/without modifier keys. This will trigger a key release
 // event after the key press.
@@ -101,9 +102,11 @@ bool SendKeyEventsNotifyWhenDone(gfx::NativeWindow window,
                                  int accelerator_state = kNoAccelerator);
 #endif  // !BUILDFLAG(IS_WIN)
 
-// This value specifies that no window hint is given and an appropriate target
-// window should be deduced from the target or current mouse position.
-constexpr gfx::NativeWindow kNoWindowHint = gfx::NativeWindow();
+#if !BUILDFLAG(IS_ANDROID)
+
+// A default value for a window hint specifies that no window hint is given and
+// an appropriate target window should be deduced from the target or current
+// mouse position.
 
 // Simulate a mouse move.
 //
@@ -111,15 +114,22 @@ constexpr gfx::NativeWindow kNoWindowHint = gfx::NativeWindow();
 // appropriate window on platforms where mouse events must be explicitly
 // targeted.
 //
+// NOTE: On Mac, hover events are not delivered reliably to windows. To combat
+// this, if you specify a window hint for a move with no buttons down, the hover
+// events will be sent directly to the window. This may, unfortunately, bypass
+// other observers, so if you are expecting an event observer to pick up the
+// move rather than a window, do not specify a hint.
+//
 // Returns false on Windows if the desired position is not over a window
 // belonging to the current process.
 bool SendMouseMove(int screen_x,
                    int screen_y,
-                   gfx::NativeWindow window_hint = kNoWindowHint);
-bool SendMouseMoveNotifyWhenDone(int screen_x,
-                                 int screen_y,
-                                 base::OnceClosure task,
-                                 gfx::NativeWindow window_hint = kNoWindowHint);
+                   gfx::NativeWindow window_hint = gfx::NativeWindow());
+bool SendMouseMoveNotifyWhenDone(
+    int screen_x,
+    int screen_y,
+    base::OnceClosure task,
+    gfx::NativeWindow window_hint = gfx::NativeWindow());
 
 enum MouseButton {
   LEFT = 0,
@@ -128,10 +138,7 @@ enum MouseButton {
 };
 
 // Used to indicate the state of the button when generating events.
-enum MouseButtonState {
-  UP = 1,
-  DOWN = 2
-};
+enum MouseButtonState { UP = 1 << 0, DOWN = 1 << 1 };
 
 enum TouchType {
   kTouchPress = 1 << 0,
@@ -151,17 +158,17 @@ enum TouchType {
 bool SendMouseEvents(MouseButton type,
                      int button_state,
                      int accelerator_state = kNoAccelerator,
-                     gfx::NativeWindow window_hint = kNoWindowHint);
+                     gfx::NativeWindow window_hint = gfx::NativeWindow());
 bool SendMouseEventsNotifyWhenDone(
     MouseButton type,
     int button_state,
     base::OnceClosure task,
     int accelerator_state = kNoAccelerator,
-    gfx::NativeWindow window_hint = kNoWindowHint);
+    gfx::NativeWindow window_hint = gfx::NativeWindow());
 
 // Same as SendMouseEvents with UP | DOWN.
 bool SendMouseClick(MouseButton type,
-                    gfx::NativeWindow window_hint = kNoWindowHint);
+                    gfx::NativeWindow window_hint = gfx::NativeWindow());
 
 #if BUILDFLAG(IS_WIN)
 // Send WM_POINTER messages to generate touch events. There is no way to detect
@@ -204,6 +211,8 @@ void InstallUIControlsAura(UIControlsAura* instance);
 // traverse more elements for accessibility reasons.
 bool IsFullKeyboardAccessEnabled();
 #endif
+
+#endif  // !BUILDFLAG(IS_ANDROID)
 
 }  // namespace ui_controls
 

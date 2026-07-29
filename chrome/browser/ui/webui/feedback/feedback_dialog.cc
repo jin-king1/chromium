@@ -13,8 +13,8 @@
 #include "chrome/browser/media/webrtc/media_capture_devices_dispatcher.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/profile.h"
-#include "chrome/browser/ui/browser_dialogs.h"
 #include "chrome/browser/ui/chrome_pages.h"
+#include "chrome/browser/ui/dialogs/browser_dialogs.h"
 #include "chrome/browser/ui/webui/feedback/feedback_handler.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/grit/generated_resources.h"
@@ -57,8 +57,7 @@ void FeedbackDialog::CreateOrShow(
     const extensions::api::feedback_private::FeedbackInfo& info) {
   if (current_instance_) {
     DCHECK(current_instance_->widget_);
-    const Profile* current_profile =
-        current_instance_->profile_keep_alive_.profile();
+    Profile* current_profile = current_instance_->profile_keep_alive_.profile();
     if (profile == current_profile) {
       // Focus the window hosting the dialog that has already been created.
       current_instance_->widget_->Show();
@@ -82,7 +81,7 @@ void FeedbackDialog::CreateOrShow(
 
   current_instance_ = new FeedbackDialog(profile, info);
   gfx::NativeWindow window =
-      chrome::ShowWebDialog(nullptr, profile, current_instance_,
+      chrome::ShowWebDialog(gfx::NativeView(), profile, current_instance_,
                             /*show=*/false);
   current_instance_->widget_ = views::Widget::GetWidgetForNativeWindow(window);
   views::View* root = current_instance_->widget_->GetRootView();

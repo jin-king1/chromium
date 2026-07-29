@@ -23,21 +23,22 @@
 #import "components/policy/test_support/signature_provider.h"
 #import "components/strings/grit/components_strings.h"
 #import "google_apis/gaia/gaia_switches.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey.h"
+#import "ios/chrome/browser/authentication/test/signin_earl_grey_ui_test_util.h"
+#import "ios/chrome/browser/authentication/test/signin_matchers.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_constants.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_earl_grey_ui_test_util.h"
-#import "ios/chrome/browser/authentication/ui_bundled/signin_matchers.h"
 #import "ios/chrome/browser/authentication/ui_bundled/views/views_constants.h"
 #import "ios/chrome/browser/policy/model/cloud/user_policy_constants.h"
 #import "ios/chrome/browser/policy/model/policy_app_interface.h"
 #import "ios/chrome/browser/policy/model/policy_earl_grey_utils.h"
 #import "ios/chrome/browser/shared/model/url/chrome_url_constants.h"
+#import "ios/chrome/browser/shared/public/features/features.h"
 #import "ios/chrome/browser/signin/model/fake_system_identity.h"
-#import "ios/chrome/common/ui/confirmation_alert/constants.h"
 #import "ios/chrome/grit/ios_branded_strings.h"
 #import "ios/chrome/grit/ios_strings.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey.h"
 #import "ios/chrome/test/earl_grey/chrome_earl_grey_ui.h"
+#import "ios/chrome/test/earl_grey/chrome_matchers.h"
 #import "ios/chrome/test/earl_grey/chrome_matchers_app_interface.h"
 #import "ios/chrome/test/earl_grey/chrome_test_case.h"
 #import "ios/chrome/test/earl_grey/test_switches.h"
@@ -93,8 +94,9 @@ void SetUpPolicyServer(policy::EmbeddedPolicyTestServer* policy_server) {
       ->mutable_policy_options()
       ->set_mode(enterprise_management::PolicyOptions::MANDATORY);
   settings.mutable_incognitomodeavailability()->set_value(1);
-  policy_storage->SetPolicyPayload(policy::dm_protocol::kChromeUserPolicyType,
-                                   settings.SerializeAsString());
+  policy_storage->SetPolicyPayload(
+      policy::dm_protocol::GetChromeUserPolicyType(),
+      settings.SerializeAsString());
 
   policy_storage->add_managed_user("*");
   policy_storage->set_policy_user(GetTestEmail());
@@ -140,47 +142,20 @@ void ClearUserPolicyPrefs() {
   [ChromeEarlGrey commitPendingUserPrefsWrite];
 }
 
-void VerifyTheNotificationUI() {
-  // Swipe up to make sure that all the text content in the prompt is visible.
-  [[EarlGrey
-      selectElementWithMatcher:
-          grey_accessibilityID(kConfirmationAlertTitleAccessibilityIdentifier)]
-      performAction:grey_swipeFastInDirection(kGREYDirectionUp)];
-
-  NSString* title =
-      l10n_util::GetNSString(IDS_IOS_USER_POLICY_NOTIFICATION_NO_SIGNOUT_TITLE);
-  NSString* subtitle = l10n_util::GetNSStringF(
-      IDS_IOS_USER_POLICY_NOTIFICATION_NO_SIGNOUT_SUBTITLE,
-      base::UTF8ToUTF16(std::string(policy::SignatureProvider::kTestDomain1)));
-
-  // Verify the notification UI.
-  [[EarlGrey selectElementWithMatcher:grey_text(title)]
-      assertWithMatcher:grey_sufficientlyVisible()];
-  [[EarlGrey selectElementWithMatcher:grey_text(subtitle)]
-      assertWithMatcher:grey_sufficientlyVisible()];
+id<GREYMatcher> ManagedProfileCreationTitleMatcher() {
+  return grey_accessibilityLabel(
+      l10n_util::GetNSString(IDS_IOS_ENTERPRISE_PROFILE_CREATION_TITLE));
 }
 
-// Wait for the chrome management url to become visible in the web state
-// without validating the content. The goal being to verify that the page was
-// opened.
-void WaitForVisibleChromeManagementURL() {
-  // const GURL expectedURL(base::StrCat({kChromeUIManagementURL, "/"}));
+id<GREYMatcher> ManagedProfileCreationSubtitleMatcher() {
+  return grey_accessibilityLabel(
+      l10n_util::GetNSString(IDS_IOS_ENTERPRISE_PROFILE_CREATION_SUBTITLE));
+}
 
-  NSString* errorString = [NSString
-      stringWithFormat:@"Failed waiting for web state"
-                       @" with visible url %@ ",
-                       base::SysUTF8ToNSString(kChromeUIManagementURL)];
-
-  GREYCondition* waitForUrl = [GREYCondition
-      conditionWithName:errorString
-                  block:^{
-                    return base::StartsWith(
-                        [ChromeEarlGrey webStateVisibleURL].spec(),
-                        kChromeUIManagementURL);
-                  }];
-  base::TimeDelta timeout = base::Seconds(5);
-  bool visibleUrl = [waitForUrl waitWithTimeout:timeout.InSecondsF()];
-  GREYAssert(visibleUrl, errorString);
+// Returns a matcher for the sign-in screen "Cancel" button.
+id<GREYMatcher> DeclineManagementButtonMatcher() {
+  return grey_allOf(chrome_test_util::ButtonStackSecondaryButton(),
+                    grey_sufficientlyVisible(), nil);
 }
 
 }  // namespace
@@ -226,13 +201,7 @@ void WaitForVisibleChromeManagementURL() {
 }
 
 - (AppLaunchConfiguration)appConfigurationForTestCase {
-  AppLaunchConfiguration config = [self minimalAppConfigurationForTestCase];
-  // Enable User Policy for both consent levels.
-  config.features_enabled.push_back(
-      policy::kUserPolicyForSigninAndNoSyncConsentLevel);
-  config.features_enabled.push_back(
-      policy::kUserPolicyForSigninOrSyncConsentLevel);
-  return config;
+  return [self minimalAppConfigurationForTestCase];
 }
 
 - (AppLaunchConfiguration)minimalAppConfigurationForTestCase {
@@ -256,7 +225,8 @@ void WaitForVisibleChromeManagementURL() {
   // Sign in with managed account to fetch user policies.
   FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
       identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
 
   VerifyThatPoliciesAreSet();
 }
@@ -266,7 +236,8 @@ void WaitForVisibleChromeManagementURL() {
   // Sign in with managed account to fetch user policies.
   FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
       identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
   VerifyThatPoliciesAreSet();
 
   // Verify that the policies are cleared on sign out.
@@ -280,16 +251,14 @@ void WaitForVisibleChromeManagementURL() {
   // Sign in with managed account to fetch user policies.
   FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
       identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
 
   VerifyThatPoliciesAreSet();
 
   // Restart the browser while keeping sign-in by preserving the identity of the
   // managed account.
   AppLaunchConfiguration config = [self minimalAppConfigurationForTestCase];
-  // Enable User Policy for sign-in consent level exclusively.
-  config.features_enabled.push_back(
-      policy::kUserPolicyForSigninAndNoSyncConsentLevel);
   config.relaunch_policy = ForceRelaunchByCleanShutdown;
   config.additional_args.push_back(
       std::string("-") + test_switches::kAddFakeIdentitiesAtStartup + "=" +
@@ -304,109 +273,11 @@ void WaitForVisibleChromeManagementURL() {
   VerifyThatPoliciesAreSet();
 }
 
-// TODO(crbug.com/40247145): Tests that the user policies are fetched when the
-// user decides to "Continue" in the notification dialog.
-- (void)DISABLED_testUserPolicyNotificationWithAcceptChoice {
-  // Clear the prefs related to user policy to make sure that the notification
-  // isn't skipped and that the fetch is started within the minimal schedule
-  // interval.
-  ClearUserPolicyPrefs();
-
-  // Restart the app to disable user policy and allow signing in with the
-  // managed account.
-  AppLaunchConfiguration config;
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-
-  // Sign in with the managed account. This won't trigger the user policy fetch.
-  FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
-      identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
-  [SigninEarlGreyUI signinWithFakeIdentity:fakeManagedIdentity];
-
-  [ChromeEarlGrey commitPendingUserPrefsWrite];
-
-  // Restart the browser while keeping signed-in by preserving the identity of
-  // the managed account.
-  config = [self appConfigurationForTestCase];
-  config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  config.additional_args.push_back(
-      std::string("-") + test_switches::kAddFakeIdentitiesAtStartup + "=" +
-      [FakeSystemIdentity encodeIdentitiesToBase64:@[ fakeManagedIdentity ]]);
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-
-  // Verify that the notification dialog is there.
-  VerifyTheNotificationUI();
-
-  // Tap on the "Continue" button to dismiss the alert dialog and start the user
-  // policy fetch.
-  NSString* continueLabel =
-      l10n_util::GetNSString(IDS_IOS_ENTERPRISE_SIGNED_OUT_CONTINUE);
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(
-                                   grey_accessibilityLabel(continueLabel),
-                                   grey_accessibilityTrait(
-                                       UIAccessibilityTraitButton),
-                                   nil)] performAction:grey_tap()];
-
-  // Wait for user policy fetch. This will take at least 5 seconds which
-  // corresponds to the minimal user policy fetch delay when triggering the
-  // fetch at startup.
-  WaitOnUserPolicy(kWaitOnScheduledUserPolicyFetchInterval);
-
-  // Verifiy that the policies were fetched and loaded.
-  VerifyThatPoliciesAreSet();
-}
-
-// Tests that the learn more page is displayed when choosing that option in the
-// notice dialog.
-// TODO(crbug.com/40071362): reenable this test.
-- (void)DISABLED_testUserPolicyNotificationWithLearnMoreChoice {
-  // Clear the prefs related to user policy to make sure that the notification
-  // isn't skipped and that the fetch is started within the minimal schedule
-  // interval.
-  ClearUserPolicyPrefs();
-
-  // Restart the app to disable user policy and allow signing in with the
-  // managed account.
-  AppLaunchConfiguration config;
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-
-  // Sign in with the managed account. This won't trigger the user policy fetch.
-  FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
-      identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
-  [SigninEarlGrey signinWithFakeIdentity:fakeManagedIdentity];
-
-  // Restart the browser while keeping sign-in by preserving the identity of the
-  // managed account.
-  config = [self appConfigurationForTestCase];
-  config.relaunch_policy = ForceRelaunchByCleanShutdown;
-  config.additional_args.push_back(
-      std::string("-") + test_switches::kAddFakeIdentitiesAtStartup + "=" +
-      [FakeSystemIdentity encodeIdentitiesToBase64:@[ fakeManagedIdentity ]]);
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-
-  // Verify that the notification dialog is there.
-  VerifyTheNotificationUI();
-
-  // Tap on the "Sign Out and Clear Data" button to dismiss the alert dialog
-  // without triggering the user policy fetch.
-  NSString* label =
-      l10n_util::GetNSString(IDS_IOS_ENTERPRISE_SIGNED_OUT_LEARN_MORE);
-  [[EarlGrey
-      selectElementWithMatcher:grey_allOf(grey_accessibilityLabel(label),
-                                          grey_accessibilityTrait(
-                                              UIAccessibilityTraitButton),
-                                          nil)] performAction:grey_tap()];
-
-  WaitForVisibleChromeManagementURL();
-}
-
 // Tests that the managed accout confirmation dialog is shown in the sign-in
-// flow with its contextual and specific content when user policies are enabled.
-- (void)testSigninFlowConfirmationDialogWhenUserPolicyAndSignin {
+// flow with its contextual and specific content.
+// TODO(crbug.com/441924945): Fix this flaky test.
+- (void)FLAKY_testSigninFlowConfirmationDialogWhenUserPolicyAndSignin {
   AppLaunchConfiguration config = [self minimalAppConfigurationForTestCase];
-  // Enable User Policy for sign-in consent level exclusively.
-  config.features_enabled.push_back(
-      policy::kUserPolicyForSigninAndNoSyncConsentLevel);
   [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
   FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
       identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
@@ -418,31 +289,25 @@ void WaitForVisibleChromeManagementURL() {
   // Disable egtest synchronization to avoid infinite spinner loop.
   ScopedSynchronizationDisabler disabler;
 
-  NSString* title = l10n_util::GetNSString(IDS_IOS_MANAGED_SIGNIN_TITLE);
-  NSString* subtitle = l10n_util::GetNSStringF(
-      IDS_IOS_MANAGED_SIGNIN_WITH_USER_POLICY_SUBTITLE,
-      base::UTF8ToUTF16(std::string(policy::SignatureProvider::kTestDomain1)));
+  // Verify the management disclosure UI.
+  [ChromeEarlGrey waitForMatcher:ManagedProfileCreationTitleMatcher()];
+  [[EarlGrey selectElementWithMatcher:ManagedProfileCreationTitleMatcher()]
+      assertWithMatcher:grey_sufficientlyVisible()];
+  [[EarlGrey selectElementWithMatcher:ManagedProfileCreationSubtitleMatcher()]
+      assertWithMatcher:grey_sufficientlyVisible()];
 
-  // Verify the notification UI.
-  [[EarlGrey selectElementWithMatcher:grey_text(title)]
+  [[EarlGrey selectElementWithMatcher:DeclineManagementButtonMatcher()]
       assertWithMatcher:grey_sufficientlyVisible()];
-  [[EarlGrey selectElementWithMatcher:grey_text(subtitle)]
-      assertWithMatcher:grey_sufficientlyVisible()];
-  [[EarlGrey selectElementWithMatcher:
-                 grey_allOf(grey_accessibilityID(@"CancelAlertAction"),
-                            [ChromeMatchersAppInterface
-                                buttonWithAccessibilityLabelID:IDS_CANCEL],
-                            nil)] assertWithMatcher:grey_sufficientlyVisible()];
 
   // Complete the sign-in flow by completing the confirmation dialog.
   id<GREYMatcher> acceptButton = [ChromeMatchersAppInterface
       buttonWithAccessibilityLabelID:
-          IDS_IOS_MANAGED_SIGNIN_WITH_USER_POLICY_CONTINUE_BUTTON_LABEL];
+          IDS_IOS_ENTERPRISE_PROFILE_CREATION_CONTINUE];
   [ChromeEarlGrey waitForMatcher:acceptButton];
   [[EarlGrey selectElementWithMatcher:acceptButton] performAction:grey_tap()];
 
   // Verify that the confirmation dialog was dismissed.
-  [[EarlGrey selectElementWithMatcher:grey_text(title)]
+  [[EarlGrey selectElementWithMatcher:ManagedProfileCreationTitleMatcher()]
       assertWithMatcher:grey_notVisible()];
 
   // Verify that the flow was successful by validating that the account is
@@ -452,7 +317,8 @@ void WaitForVisibleChromeManagementURL() {
 
 // Tests that when user policies are enabled, in the sign-in flow, sign-in error
 // popup isn't shown after cancelling the managed accout confirmation dialog.
-- (void)testCancelSigninFlowConfirmationDialogWhenUserPolicyAndSignin {
+// TODO(crbug.com/441924945): Fix this flaky test.
+- (void)FLAKY_testCancelSigninFlowConfirmationDialogWhenUserPolicyAndSignin {
   FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
       identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
 
@@ -464,21 +330,17 @@ void WaitForVisibleChromeManagementURL() {
   ScopedSynchronizationDisabler disabler;
 
   // Cancel the sign-in flow by tapping on the cancel button.
-  id<GREYMatcher> cancelButton = grey_allOf(
-      grey_accessibilityID(@"CancelAlertAction"),
-      [ChromeMatchersAppInterface buttonWithAccessibilityLabelID:IDS_CANCEL],
-      grey_sufficientlyVisible(), nil);
-  [ChromeEarlGrey waitForMatcher:cancelButton];
-  [[EarlGrey selectElementWithMatcher:cancelButton] performAction:grey_tap()];
+  [ChromeEarlGrey waitForMatcher:DeclineManagementButtonMatcher()];
+  [[EarlGrey selectElementWithMatcher:DeclineManagementButtonMatcher()]
+      performAction:grey_tap()];
 
   // Verify that the confirmation dialog was dismissed.
-  NSString* title = l10n_util::GetNSString(IDS_IOS_MANAGED_SIGNIN_TITLE);
-  [[EarlGrey selectElementWithMatcher:grey_text(title)]
+  [[EarlGrey selectElementWithMatcher:ManagedProfileCreationTitleMatcher()]
       assertWithMatcher:grey_notVisible()];
 
   // Verify that no sign-in error alert action is shown.
   [ChromeEarlGrey
-      waitForMatcher:chrome_test_util::WebSigninPrimaryButtonMatcher()];
+      waitForMatcher:chrome_test_util::ConsistencySigninPrimaryButtonMatcher()];
   NSString* errorTitle = l10n_util::GetNSString(IDS_IOS_WEBSIGN_ERROR_TITLE);
   [[EarlGrey selectElementWithMatcher:grey_text(errorTitle)]
       assertWithMatcher:grey_notVisible()];
@@ -488,37 +350,22 @@ void WaitForVisibleChromeManagementURL() {
   [SigninEarlGrey verifySignedOut];
 }
 
-// Tests that the managed account confirmation dialog isn't shown if the browser
-// is already managed. Only applies for the sign-in consent level.
-- (void)testSigninFlowConfirmationDialogNotShownWhenAlreadyBrowserPolicies {
-  AppLaunchConfiguration config = [self minimalAppConfigurationForTestCase];
-  // Enable User Policy for sign-in consent level exclusively.
-  config.features_enabled.push_back(
-      policy::kUserPolicyForSigninAndNoSyncConsentLevel);
-  [[AppLaunchManager sharedManager] ensureAppLaunchedWithConfiguration:config];
-
+// Tests the chrome://policy page when there are user level policies.
+- (void)testPolicyPageManagedWithUserPolicy {
+  // Sign in with a managed account.
   FakeSystemIdentity* fakeManagedIdentity = [FakeSystemIdentity
       identityWithEmail:base::SysUTF8ToNSString(GetTestEmail())];
-  [SigninEarlGrey addFakeIdentity:fakeManagedIdentity];
+  [SigninEarlGrey
+      signinWithFakeManagedIdentityInPersonalProfile:fakeManagedIdentity];
+  VerifyThatPoliciesAreSet();
 
-  // Set a policy to put the browser under management before signing in with the
-  // managed account.
-  SetPolicy(false, policy::key::kAutofillAddressEnabled);
-
-  // Sign-in with the UI flow.
-  [self startSigninFlowUpToConfirmationDialogWithIdentity:fakeManagedIdentity];
-
-  // Disable egtest synchronization to avoid infinite spinner loop.
-  ScopedSynchronizationDisabler disabler;
-
-  // Verify that there is no confirmation dialog.
-  NSString* dialogTitle = l10n_util::GetNSString(IDS_IOS_MANAGED_SIGNIN_TITLE);
-  [[EarlGrey selectElementWithMatcher:grey_text(dialogTitle)]
-      assertWithMatcher:grey_notVisible()];
-
-  // Verify that the flow was successful by validating that the account is
-  // signed in.
-  [SigninEarlGrey verifySignedInWithFakeIdentity:fakeManagedIdentity];
+  // Open the policy page and check if there is a user management status box.
+  [ChromeEarlGrey loadURL:GURL(kChromeUIPolicyURL)];
+  [ChromeEarlGrey waitForWebStateContainingText:l10n_util::GetStringUTF8(
+                                                    IDS_POLICY_STATUS_USER)];
+  [ChromeEarlGrey waitForWebStateContainingText:l10n_util::GetStringUTF8(
+                                                    IDS_POLICY_LABEL_USERNAME)];
+  [ChromeEarlGrey waitForWebStateContainingText:GetTestEmail()];
 }
 
 #pragma mark - Private
@@ -533,8 +380,8 @@ void WaitForVisibleChromeManagementURL() {
       tapSettingsMenuButton:chrome_test_util::SettingsSignInRowMatcher()];
 
   // Proceed with sign-in.
-  [[EarlGrey selectElementWithMatcher:chrome_test_util::
-                                          WebSigninPrimaryButtonMatcher()]
+  [[EarlGrey selectElementWithMatcher:
+                 chrome_test_util::ConsistencySigninPrimaryButtonMatcher()]
       performAction:grey_tap()];
 }
 

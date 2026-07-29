@@ -23,7 +23,7 @@
 #include "chromeos/ash/components/network/ephemeral_network_configuration_handler.h"
 #include "chromeos/ash/components/network/ephemeral_network_policies_enablement_handler.h"
 #include "chromeos/ash/components/network/fake_network_state_handler.h"
-#include "chromeos/ash/components/network/geolocation_handler.h"
+#include "chromeos/ash/components/network/geolocation_handler_impl.h"
 #include "chromeos/ash/components/network/hidden_network_handler.h"
 #include "chromeos/ash/components/network/hotspot_allowed_flag_handler.h"
 #include "chromeos/ash/components/network/hotspot_capabilities_provider.h"
@@ -47,7 +47,6 @@
 #include "chromeos/ash/components/network/network_configuration_handler.h"
 #include "chromeos/ash/components/network/network_connection_handler_impl.h"
 #include "chromeos/ash/components/network/network_device_handler_impl.h"
-#include "chromeos/ash/components/network/network_login_screen_protocol_handler_observer.h"
 #include "chromeos/ash/components/network/network_metadata_store.h"
 #include "chromeos/ash/components/network/network_profile_handler.h"
 #include "chromeos/ash/components/network/network_profile_observer.h"
@@ -64,6 +63,7 @@
 namespace ash {
 
 static NetworkHandler* g_network_handler = NULL;
+static bool g_has_ever_been_initialized = false;
 
 NetworkHandler::NetworkHandler(std::unique_ptr<NetworkStateHandler> handler)
     : was_enterprise_managed_at_startup_(
@@ -111,17 +111,12 @@ NetworkHandler::NetworkHandler(std::unique_ptr<NetworkStateHandler> handler)
   prohibited_technologies_handler_.reset(new ProhibitedTechnologiesHandler());
   network_sms_handler_.reset(new NetworkSmsHandler());
   text_message_provider_.reset(new TextMessageProvider());
-  geolocation_handler_.reset(new GeolocationHandler());
+  geolocation_handler_.reset(new GeolocationHandlerImpl());
   network_3gpp_handler_.reset(new Network3gppHandler());
 
-  network_login_screen_protocol_handler_observer_.reset(
-      new NetworkLoginScreenProtocolHandlerObserver());
-
   // Only watch ephemeral network policies enablement if ephemeral network
-  // policies should be enabled by the feature or if the device policy to enable
-  // ephemeral network policies should be respected.
-  if (features::AreEphemeralNetworkPoliciesEnabled() ||
-      features::CanEphemeralNetworkPoliciesBeEnabledByPolicy()) {
+  // policies should be enabled by the feature.
+  if (features::AreEphemeralNetworkPoliciesEnabled()) {
     // base::Unretained is safe because
     // `ephemeral_network_policies_enablement_handler_` is a member of
     // NetworkHandler so it will be destroyed before `this`.
@@ -228,9 +223,6 @@ void NetworkHandler::Init() {
                                  managed_network_configuration_handler_.get());
   geolocation_handler_->Init();
   network_3gpp_handler_->Init();
-
-  network_login_screen_protocol_handler_observer_->Init(
-      network_state_handler_.get());
 }
 
 // static
@@ -239,6 +231,7 @@ void NetworkHandler::Initialize() {
   g_network_handler =
       new NetworkHandler(base::WrapUnique(new NetworkStateHandler()));
   g_network_handler->Init();
+  g_has_ever_been_initialized = true;
 }
 
 // static
@@ -247,6 +240,7 @@ void NetworkHandler::InitializeFake() {
   g_network_handler =
       new NetworkHandler(std::make_unique<FakeNetworkStateHandler>());
   g_network_handler->Init();
+  g_has_ever_been_initialized = true;
 }
 
 // static
@@ -266,6 +260,11 @@ NetworkHandler* NetworkHandler::Get() {
 // static
 bool NetworkHandler::IsInitialized() {
   return g_network_handler;
+}
+
+// static
+bool NetworkHandler::HasEverBeenInitialized() {
+  return g_has_ever_been_initialized;
 }
 
 void NetworkHandler::InitializePrefServices(

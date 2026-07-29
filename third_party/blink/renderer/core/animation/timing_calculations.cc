@@ -16,20 +16,6 @@ inline bool EndsOnIterationBoundary(double iteration_count,
   return !fmod(iteration_count + iteration_start, 1);
 }
 
-void RecordBoundaryMisalignment(AnimationTimeDelta misalignment) {
-  // Animations require 1 microsecond precision. For a scroll-based animation,
-  // percentages are internally converted to time. The animation duration in
-  // microseconds is 16 * (range in pixels).
-  // Refer to cc/animations/scroll_timeline.h for details.
-  //
-  // It is not particularly meaningful to report the misalignment as a time
-  // since there is no dependency on having a high resolution timer. Instead,
-  // we convert back to 16ths of a pixel by scaling accordingly.
-  int sample = std::round<int>(misalignment.InMicrosecondsF());
-  UMA_HISTOGRAM_EXACT_LINEAR("Blink.Animation.SDA.BoundaryMisalignment", sample,
-                             64);
-}
-
 }  // namespace
 
 double TimingCalculations::TimingCalculationEpsilon() {
@@ -97,7 +83,9 @@ AnimationTimeDelta TimingCalculations::MultiplyZeroAlwaysGivesZero(
 Timing::Phase TimingCalculations::CalculatePhase(
     const Timing::NormalizedTiming& normalized,
     std::optional<AnimationTimeDelta>& local_time,
-    Timing::AnimationDirection direction) {
+    Timing::AnimationDirection direction,
+    bool paused_for_trigger,
+    bool is_endpoint_inclusive) {
   DCHECK(GreaterThanOrEqualToWithinTimeTolerance(normalized.active_duration,
                                                  AnimationTimeDelta()));
   if (!local_time) {
@@ -113,15 +101,12 @@ Timing::Phase TimingCalculations::CalculatePhase(
   }
 
   if (local_time.value() < before_active_boundary_time) {
-    if (normalized.is_start_boundary_aligned) {
-      RecordBoundaryMisalignment(before_active_boundary_time -
-                                 local_time.value());
-    }
     return Timing::kPhaseBefore;
   }
-  if ((direction == Timing::AnimationDirection::kBackwards &&
+  if (((direction == Timing::AnimationDirection::kBackwards ||
+        paused_for_trigger) &&
        local_time.value() == before_active_boundary_time &&
-       !normalized.is_start_boundary_aligned)) {
+       !normalized.is_start_boundary_aligned && !is_endpoint_inclusive)) {
     return Timing::kPhaseBefore;
   }
 
@@ -134,15 +119,12 @@ Timing::Phase TimingCalculations::CalculatePhase(
     local_time = active_after_boundary_time;
   }
   if (local_time.value() > active_after_boundary_time) {
-    if (normalized.is_end_boundary_aligned) {
-      RecordBoundaryMisalignment(local_time.value() -
-                                 active_after_boundary_time);
-    }
     return Timing::kPhaseAfter;
   }
-  if ((direction == Timing::AnimationDirection::kForwards &&
+  if (((direction == Timing::AnimationDirection::kForwards ||
+        paused_for_trigger) &&
        local_time.value() == active_after_boundary_time &&
-       !normalized.is_end_boundary_aligned)) {
+       !normalized.is_end_boundary_aligned && !is_endpoint_inclusive)) {
     return Timing::kPhaseAfter;
   }
   return Timing::kPhaseActive;

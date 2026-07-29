@@ -18,6 +18,7 @@
 #include "base/test/test_future.h"
 #include "chrome/browser/ash/app_list/search/test/test_ranker_manager.h"
 #include "chrome/browser/ash/drive/drive_integration_service.h"
+#include "chrome/browser/ash/drive/drive_integration_service_factory.h"
 #include "chrome/browser/ash/drive/drivefs_test_support.h"
 #include "chrome/browser/ash/fileapi/recent_model.h"
 #include "chrome/browser/ash/fileapi/recent_model_factory.h"
@@ -26,6 +27,7 @@
 #include "chrome/browser/bookmarks/bookmark_model_factory.h"
 #include "chrome/browser/history/history_service_factory.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
+#include "chrome/browser/ui/ash/quick_insert/quick_insert_file_suggester.h"
 #include "chrome/browser/ui/webui/ash/mako/mako_bubble_coordinator.h"
 #include "chrome/common/extensions/api/file_manager_private.h"
 #include "chrome/test/base/browser_with_test_window_test.h"
@@ -45,6 +47,7 @@
 #include "components/history/core/test/test_history_database.h"
 #include "components/omnibox/browser/autocomplete_provider.h"
 #include "components/user_manager/fake_user_manager.h"
+#include "components/user_manager/test_helper.h"
 #include "content/public/test/test_utils.h"
 #include "google_apis/gaia/gaia_id.h"
 #include "services/network/public/cpp/shared_url_loader_factory.h"
@@ -88,7 +91,7 @@ std::unique_ptr<KeyedService> BuildTestHistoryService(
   Profile* profile = Profile::FromBrowserContext(context);
   auto service = std::make_unique<history::HistoryService>();
   service->Init(history::TestHistoryDatabaseParamsForPath(profile->GetPath()));
-  return std::move(service);
+  return service;
 }
 
 struct Volume {
@@ -123,8 +126,8 @@ std::unique_ptr<KeyedService> BuildTestDriveIntegrationService(
   fake_drivefs_helper =
       std::make_unique<drive::FakeDriveFsHelper>(profile, mount_path);
   auto service = std::make_unique<drive::DriveIntegrationService>(
-      profile, "drivefs", mount_path,
-      fake_drivefs_helper->CreateFakeDriveFsListenerFactory());
+      TestingBrowserProcess::GetGlobal()->local_state(), profile, "drivefs",
+      mount_path, fake_drivefs_helper->CreateFakeDriveFsListenerFactory());
 
   // Wait until the DriveIntegrationService is initialized.
   while (!service->IsMounted() || !service->GetDriveFsInterface()) {
@@ -192,8 +195,7 @@ class QuickInsertClientImplTest : public BrowserWithTestWindowTest {
 
   TestingProfile* CreateProfile(const std::string& profile_name) override {
     return profile_manager()->CreateTestingProfile(
-        profile_name, GetTestingFactories(), /*is_main_profile=*/false,
-        test_shared_url_loader_factory_);
+        profile_name, GetTestingFactories(), test_shared_url_loader_factory_);
   }
 
   TestingProfile::TestingFactories GetTestingFactories() override {
@@ -226,10 +228,7 @@ class QuickInsertClientImplTest : public BrowserWithTestWindowTest {
     const AccountId account_id = AccountId::FromUserEmailGaiaId(email, gaia_id);
     user_manager()->AddGaiaUser(account_id, user_manager::UserType::kRegular);
     user_manager()->UserLoggedIn(
-        account_id,
-        user_manager::FakeUserManager::GetFakeUsernameHash(account_id),
-        /*browser_restart=*/false,
-        /*is_child=*/false);
+        account_id, user_manager::TestHelper::GetFakeUsernameHash(account_id));
   }
 
   void SwitchActiveUser(const std::string& email) override {
@@ -245,14 +244,18 @@ class QuickInsertClientImplTest : public BrowserWithTestWindowTest {
 
 TEST_F(QuickInsertClientImplTest, GetsSharedURLLoaderFactory) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
 
   EXPECT_EQ(client.GetSharedURLLoaderFactory(), GetSharedURLLoaderFactory());
 }
 
 TEST_F(QuickInsertClientImplTest, StartCrosSearch) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   AddSearchToHistory(profile(), GURL("http://foo.com/history"));
   AddBookmarks(profile(), u"Foobaz", GURL("http://foo.com/bookmarks"));
   AddTab(browser(), GURL("http://foo.com/tab"));
@@ -302,7 +305,9 @@ TEST_F(QuickInsertClientImplTest, StartCrosSearch) {
 
 TEST_F(QuickInsertClientImplTest, IgnoresWhatYouTypedResults) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<void> test_done;
 
   base::MockCallback<QuickInsertClientImpl::CrosSearchResultsCallback>
@@ -320,7 +325,9 @@ TEST_F(QuickInsertClientImplTest, IgnoresWhatYouTypedResults) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesWithNoFiles) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
 
   client.GetRecentLocalFileResults(
@@ -331,7 +338,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesWithNoFiles) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesReturnsOnlyLocalFiles) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
   const base::FilePath mount_path = GetFakeDriveFs().mount_path();
   SetRecentFiles(
@@ -366,7 +375,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesReturnsOnlyLocalFiles) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesDoesNotReturnOldFiles) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
   SetRecentFiles(
       profile(),
@@ -391,7 +402,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesDoesNotReturnOldFiles) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesWithNoFiles) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
 
   client.GetRecentDriveFileResults(/*max_files=*/100, future.GetCallback());
@@ -401,7 +414,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesWithNoFiles) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesReturnsOnlyDriveFiles) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
   const base::FilePath mount_path = GetFakeDriveFs().mount_path();
   SetRecentFiles(
@@ -437,7 +452,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesReturnsOnlyDriveFiles) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesDoesNotReturnOldFiles) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
   SetRecentFiles(
       profile(),
@@ -462,7 +479,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesDoesNotReturnOldFiles) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesTruncates) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
   const base::FilePath mount_path = GetFakeDriveFs().mount_path();
   SetRecentFiles(
@@ -488,7 +507,9 @@ TEST_F(QuickInsertClientImplTest, GetRecentLocalFilesTruncates) {
 
 TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesTruncates) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   base::test::TestFuture<std::vector<ash::QuickInsertSearchResult>> future;
   const base::FilePath mount_path = GetFakeDriveFs().mount_path();
   SetRecentFiles(
@@ -512,9 +533,41 @@ TEST_F(QuickInsertClientImplTest, GetRecentDriveFilesTruncates) {
 }
 
 TEST_F(QuickInsertClientImplTest,
+       GetRecentDriveFilesWithoutDriveIntegrationServiceReturnsEmpty) {
+  TestingProfile::Builder builder;
+  builder.SetPath(profile()->GetPath().AppendASCII("no_drive_integration"));
+  std::unique_ptr<TestingProfile> profile_without_drive_integration =
+      builder.Build();
+  SetRecentFiles(
+      profile_without_drive_integration.get(),
+      {
+          Volume{
+              .type = fmp::VolumeType::kDrive,
+              .files =
+                  {
+                      CreateRecentFile(
+                          profile_without_drive_integration->GetPath()
+                              .AppendASCII("drive.png"),
+                          storage::kFileSystemTypeDriveFs),
+                  },
+          },
+      });
+
+  QuickInsertFileSuggester suggester(profile_without_drive_integration.get());
+  base::test::TestFuture<std::vector<QuickInsertFileSuggester::DriveFile>>
+      future;
+
+  suggester.GetRecentDriveFiles(/*max_files=*/100, future.GetCallback());
+
+  EXPECT_THAT(future.Get(), IsEmpty());
+}
+
+TEST_F(QuickInsertClientImplTest,
        SearchAfterSwitchingActiveUserReturnsResultsFromNewUser) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   TestingProfile* secondary_profile =
       CreateMultiUserProfile("secondary@test", GaiaId("fakegaia2"));
   AddSearchToHistory(profile(), GURL("https://foo.com/primary"));
@@ -548,7 +601,9 @@ TEST_F(QuickInsertClientImplTest,
 TEST_F(QuickInsertClientImplTest,
        SearchCategoryAfterSwitchingActiveUserReturnsResultsFromNewUser) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   TestingProfile* secondary_profile =
       CreateMultiUserProfile("secondary@test", GaiaId("fakegaia2"));
   AddSearchToHistory(profile(), GURL("https://foo.com/primary"));
@@ -608,7 +663,9 @@ class QuickInsertClientImplEditorTest : public QuickInsertClientImplTest {
 TEST_F(QuickInsertClientImplEditorTest,
        IsEligibleForEditorReturnsFalseIfEditorDisabled) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kHardBlocked);
 
@@ -619,7 +676,9 @@ TEST_F(QuickInsertClientImplEditorTest,
        IsEligibleForEditorReturnsFalseIfHardBlocked) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kHardBlocked);
 
@@ -630,7 +689,9 @@ TEST_F(QuickInsertClientImplEditorTest,
        IsEligibleForEditorReturnsTrueIfSoftBlocked) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kSoftBlocked);
 
@@ -640,7 +701,9 @@ TEST_F(QuickInsertClientImplEditorTest,
 TEST_F(QuickInsertClientImplEditorTest,
        CacheEditorContextReturnsNullCallbackWhenEditorFlagDisabled) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kHardBlocked);
 
@@ -651,7 +714,9 @@ TEST_F(QuickInsertClientImplEditorTest,
        CacheEditorContextReturnsNullCallbackWhenBlocked) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kSoftBlocked);
 
@@ -662,7 +727,9 @@ TEST_F(QuickInsertClientImplEditorTest,
        CacheEditorContextReturnsCallbackWhenNotBlocked) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kConsentNeeded);
 
@@ -672,7 +739,9 @@ TEST_F(QuickInsertClientImplEditorTest,
 TEST_F(QuickInsertClientImplEditorTest, CacheEditorContextCachesCaretBounds) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kConsentNeeded);
   ui::FakeTextInputClient text_input_client(
@@ -693,7 +762,9 @@ TEST_F(QuickInsertClientImplEditorTest, CacheEditorContextCachesCaretBounds) {
 TEST_F(QuickInsertClientImplEditorTest, GetSuggestedEditorResults) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kRewrite);
   ui::FakeTextInputClient text_input_client(&ime(),
@@ -712,7 +783,9 @@ TEST_F(QuickInsertClientImplEditorTest,
        GetSuggestedEditorResultsReturnsNothingWhenBlocked) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   GetEditorMediator(profile()).OverrideEditorModeForTesting(
       chromeos::editor_menu::EditorMode::kSoftBlocked);
   ui::FakeTextInputClient text_input_client(&ime(),
@@ -728,7 +801,9 @@ TEST_F(QuickInsertClientImplEditorTest,
 TEST_F(QuickInsertClientImplEditorTest, AnnounceSendsLiveRegionChanges) {
   base::test::ScopedFeatureList features(chromeos::features::kOrcaDogfood);
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   views::test::AXEventCounter counter(views::AXUpdateNotifier::Get());
 
   client.Announce(u"hello");
@@ -738,7 +813,9 @@ TEST_F(QuickInsertClientImplEditorTest, AnnounceSendsLiveRegionChanges) {
 
 TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesAll) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   const int types =
       client.LauncherSearchProviderTypes(/*bookmarks=*/true, /*history=*/true,
                                          /*open_tabs=*/true);
@@ -754,7 +831,9 @@ TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesAll) {
 
 TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesBookmarks) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   const int types =
       client.LauncherSearchProviderTypes(/*bookmarks=*/true, /*history=*/false,
                                          /*open_tabs=*/false);
@@ -769,7 +848,9 @@ TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesBookmarks) {
 
 TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesHistory) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   const int types =
       client.LauncherSearchProviderTypes(/*bookmarks=*/false, /*history=*/true,
                                          /*open_tabs=*/false);
@@ -784,7 +865,9 @@ TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesHistory) {
 
 TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesOpenTab) {
   ash::QuickInsertController controller;
-  QuickInsertClientImpl client(&controller, user_manager());
+  QuickInsertClientImpl client(
+      TestingBrowserProcess::GetGlobal()->local_state(), &controller,
+      user_manager());
   const int types =
       client.LauncherSearchProviderTypes(/*bookmarks=*/false, /*history=*/false,
                                          /*open_tabs=*/true);
@@ -796,7 +879,5 @@ TEST_F(QuickInsertClientImplEditorTest, LauncherSearchProviderTypesOpenTab) {
   EXPECT_FALSE(types & AutocompleteProvider::TYPE_DOCUMENT);
   EXPECT_FALSE(types & AutocompleteProvider::TYPE_SEARCH);
 }
-
-// TODO: b/325540366 - Add QuickInsertClientImpl tests.
 
 }  // namespace

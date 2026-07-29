@@ -10,14 +10,13 @@
 #include <memory>
 #include <string>
 
-#include "base/containers/contains.h"
-#include "base/debug/stack_trace.h"
+#include "base/auto_reset.h"
 #include "base/logging.h"
 #include "base/memory/raw_ptr.h"
 #include "base/no_destructor.h"
-#include "base/not_fatal_until.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/scoped_observation.h"
+#include "base/types/pass_key.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_tracker.h"
 #include "ui/views/view.h"
@@ -39,6 +38,13 @@ gfx::Rect TrackedElementViews::GetScreenBounds() const {
   return view()->GetBoundsInScreen();
 }
 
+gfx::NativeView TrackedElementViews::GetNativeView() const {
+  if (!view()->GetWidget()) {
+    return gfx::NativeView();
+  }
+  return view()->GetWidget()->GetNativeView();
+}
+
 std::string TrackedElementViews::ToString() const {
   auto result = TrackedElement::ToString();
   result.append(" with view ");
@@ -46,12 +52,11 @@ std::string TrackedElementViews::ToString() const {
   return result;
 }
 
-DEFINE_FRAMEWORK_SPECIFIC_METADATA(TrackedElementViews)
+DEFINE_SAFE_CAST_TARGET(TrackedElementViews)
 
 // Tracks views associated with a specific ui::ElementIdentifier, whether or not
 // they are visible or attached to a widget.
-class ElementTrackerViews::ElementDataViews : public ViewObserver,
-                                              public WidgetObserver {
+class ElementTrackerViews::ElementDataViews : public ViewObserver {
  public:
   ElementDataViews(ElementTrackerViews* tracker,
                    ui::ElementIdentifier identifier)
@@ -59,7 +64,7 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
   ~ElementDataViews() override = default;
 
   void AddView(View* view) {
-    if (base::Contains(view_data_lookup_, view)) {
+    if (view_data_lookup_.contains(view)) {
       return;
     }
 
@@ -90,13 +95,13 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
 
   TrackedElementViews* GetElementForView(View* view) {
     const auto it = view_data_lookup_.find(view);
-    CHECK(it != view_data_lookup_.end(), base::NotFatalUntil::M130);
+    CHECK(it != view_data_lookup_.end());
     return it->second->element.get();
   }
 
   void NotifyViewActivated(View* view) {
     const auto it = view_data_lookup_.find(view);
-    CHECK(it != view_data_lookup_.end(), base::NotFatalUntil::M130);
+    CHECK(it != view_data_lookup_.end());
     if (it->second->visible()) {
       ui::ElementTracker::GetFrameworkDelegate()->NotifyElementActivated(
           it->second->element.get());
@@ -111,7 +116,7 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
   // When a widget we were previously watching because it had not yet been shown
   // becomes visible, we manually update the visibility of any view on that
   // widget.
-  void UpdateViewVisibilityForWidget(Widget* widget, bool visible) {
+  void UpdateViewVisibilityForWidget(const Widget* widget, bool visible) {
     for (auto& entry : view_data_) {
       if (entry.visible() != visible && entry.view->GetWidget() == widget) {
         UpdateVisible(entry.view);
@@ -119,40 +124,56 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
     }
   }
 
-  View* FindFirstViewInContext(ui::ElementContext context) {
+  View* FindFirstViewInContext(ui::ElementContext context,
+                               bool require_visible) {
     for (const ViewData& data : view_data_) {
-      if (data.context == context) {
+      if (data.context == context && (!require_visible || data.visible())) {
         return data.view;
       }
     }
     return nullptr;
   }
 
-  ViewList FindAllViewsInContext(ui::ElementContext context) {
+  ViewList FindAllViewsInContext(ui::ElementContext context,
+                                 bool require_visible) {
     ViewList result;
     for (const ViewData& data : view_data_) {
-      if (data.context == context) {
+      if (data.context == context && (!require_visible || data.visible())) {
         result.push_back(data.view);
       }
     }
     return result;
   }
 
-  ViewList GetAllViews() {
+  ViewList GetAllViews(bool require_visible) {
     ViewList result;
-    std::ranges::transform(view_data_lookup_, std::back_inserter(result),
-                           &ViewDataMap::value_type::first);
+    for (const ViewData& data : view_data_) {
+      if (!require_visible || data.visible()) {
+        result.push_back(data.view);
+      }
+    }
     return result;
   }
 
  private:
-  enum class UpdateReason { kGeneral, kVisibilityFromRoot, kRemoveFromWidget };
+  // Represents the reason that a target View's visibility is being updated.
+  enum class VisibilityUpdateReason {
+    // The target View or something in its hierarchy is being hidden; the View
+    // will no longer be visible.
+    kHidden,
+    // The target View was removed from its widget.
+    kRemovedFromWidget,
+    // Something happened that could affect the target View's visibility, but
+    // might not.
+    kUnspecified,
+  };
 
   struct ViewData {
     explicit ViewData(View* v, ui::ElementContext initial_context)
         : view(v), context(initial_context) {}
     bool visible() const { return static_cast<bool>(element); }
     const raw_ptr<View> view;
+    bool notifying_hidden = false;
     ui::ElementContext context;
     std::unique_ptr<TrackedElementViews> element;
   };
@@ -162,10 +183,15 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
 
   // ViewObserver:
   void OnViewVisibilityChanged(View* observed_view,
-                               View* starting_view) override {
-    UpdateVisible(observed_view, starting_view->parent()
-                                     ? UpdateReason::kGeneral
-                                     : UpdateReason::kVisibilityFromRoot);
+                               View* starting_view,
+                               bool visible) override {
+    if (!starting_view) {
+      // This is a widget changing visibility. We already handle that through
+      // the `ElementTrackerWidgetState` object, so do not also process it here.
+      return;
+    }
+    UpdateVisible(observed_view, visible ? VisibilityUpdateReason::kUnspecified
+                                         : VisibilityUpdateReason::kHidden);
   }
 
   void OnViewAddedToWidget(View* observed_view) override {
@@ -174,60 +200,63 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
   }
 
   void OnViewRemovedFromWidget(View* observed_view) override {
-    UpdateVisible(observed_view, UpdateReason::kRemoveFromWidget);
+    UpdateVisible(observed_view, VisibilityUpdateReason::kRemovedFromWidget);
   }
 
   void OnViewIsDeleting(View* observed_view) override {
     RemoveView(observed_view);
   }
 
+  void OnViewHierarchyChanged(
+      View* observed_view,
+      const ViewHierarchyChangedDetails& details) override {
+    // Only pay attention to the add portion of a move, since that has the
+    // new state.
+    if (details.is_add && details.move_view) {
+      UpdateVisible(observed_view);
+    }
+  }
+
   // Returns whether the specified view is visible to the user. Takes the view
   // hierarchy and widget into account.
   bool IsViewVisibleToUser(View* view) {
     const Widget* const widget = view->GetWidget();
-    if (!widget || widget->IsClosed() || !tracker_->IsWidgetVisible(widget)) {
-      return false;
-    }
-    for (; view; view = view->parent()) {
-      if (!view->GetVisible()) {
-        return false;
-      }
-    }
-    return true;
+    return widget && !widget->IsClosed() && tracker_->IsWidgetVisible(widget) &&
+           view->IsDrawn();
   }
 
   void UpdateVisible(View* view,
-                     UpdateReason update_reason = UpdateReason::kGeneral) {
+                     VisibilityUpdateReason update_reason =
+                         VisibilityUpdateReason::kUnspecified) {
     const auto it = view_data_lookup_.find(view);
-    CHECK(it != view_data_lookup_.end(), base::NotFatalUntil::M130);
+    CHECK(it != view_data_lookup_.end());
     ViewData& data = *it->second;
     const ui::ElementContext old_context = data.context;
-    data.context = (update_reason == UpdateReason::kRemoveFromWidget)
+    data.context = (update_reason == VisibilityUpdateReason::kRemovedFromWidget)
                        ? ui::ElementContext()
                        : GetContextForView(view);
     const bool was_visible = data.visible();
-    const bool visible = it->second->context && IsViewVisibleToUser(view);
+    const bool visible = (update_reason != VisibilityUpdateReason::kHidden) &&
+                         data.context && IsViewVisibleToUser(view);
     if (visible && !was_visible) {
       data.element =
           std::make_unique<TrackedElementViews>(view, id_, data.context);
       ui::ElementTracker::GetFrameworkDelegate()->NotifyElementShown(
           data.element.get());
     } else if (!visible && was_visible) {
-      ui::ElementTracker::GetFrameworkDelegate()->NotifyElementHidden(
-          data.element.get());
-      data.element.reset();
-    } else if (visible && old_context != data.context) {
-      CHECK(update_reason == UpdateReason::kVisibilityFromRoot)
-          << "We should always get a removed-from-widget notification before "
-             "an added-to-widget notification, the context should never "
-             "change while a view is visible.";
-      // This can happen in some tests where a widget is closed before it
-      // actually becomes visible, or a parent widget is closed underneath us.
-      if (!view->GetWidget()->IsVisible()) {
+      // Stop reentrance with notifying_hidden. A double call on
+      // NotifyElementHidden will crash.
+      if (!data.notifying_hidden) {
+        base::AutoReset<bool> auto_reset(&data.notifying_hidden, true);
         ui::ElementTracker::GetFrameworkDelegate()->NotifyElementHidden(
             data.element.get());
         data.element.reset();
       }
+    } else if (visible) {
+      CHECK_EQ(data.context, old_context)
+          << "We should always get a removed-from-widget notification before "
+             "an added-to-widget notification, the context should never "
+             "change while a view is visible.";
     }
   }
 
@@ -236,69 +265,6 @@ class ElementTrackerViews::ElementDataViews : public ViewObserver,
   ViewDataList view_data_;
   ViewDataMap view_data_lookup_;
   base::ScopedMultiSourceObservation<View, ViewObserver> view_observer_{this};
-};
-
-// Tracks Widgets which are not yet visible, or for which we have received an
-// OnWidgetVisibilityChanged(true) event but IsVisible() does not yet report
-// true for the Widget.
-//
-// Therefore, it should only be created and maintained for a Widget for which
-// IsVisible() does not return true.
-class ElementTrackerViews::WidgetTracker : public WidgetObserver {
- public:
-  WidgetTracker(ElementTrackerViews* tracker, Widget* widget)
-      : tracker_(tracker), widget_(widget) {
-    observation_.Observe(widget);
-
-    // We never want to observe a visible widget; it's unnecessary.
-    DCHECK(!widget->IsVisible());
-  }
-
-  bool visible() const { return visible_; }
-
- private:
-  // WidgetObserver:
-  void OnWidgetDestroying(Widget* widget) override { Remove(); }
-  void OnWidgetVisibilityChanged(Widget* widget, bool visible) override {
-    // Need to save this for later in case |this| gets deleted.
-    auto* const tracker = tracker_.get();
-    bool needs_update = visible;
-
-    if (widget->IsVisible()) {
-      // We're in a state in which Widget::IsVisible() should accurately reflect
-      // the state of the widget, and therefore do not need to track the Widget.
-      Remove();
-    } else if (!visible) {
-      // Widget was hidden before native widget became visible. This is fine;
-      // the cached state returns to false and the tracker continues to observe
-      // the widget.
-      needs_update = visible_;
-      visible_ = false;
-    } else {
-      // We have been told the widget is visible, but the widget is not
-      // reporting as visible; therefore we must note this since additional
-      // views may be added to the tracker before Widget::IsVisible() becomes
-      // true.
-      visible_ = true;
-    }
-
-    // We might be deleted here so don't use any local data!
-    if (needs_update) {
-      for (auto& [id, data] : tracker->element_data_) {
-        data.UpdateViewVisibilityForWidget(widget, visible);
-      }
-    }
-  }
-
-  void Remove() {
-    // Side effect is that `this` is destroyed.
-    tracker_->widget_trackers_.erase(widget_);
-  }
-
-  const raw_ptr<ElementTrackerViews> tracker_;
-  const raw_ptr<Widget> widget_;
-  bool visible_ = false;
-  base::ScopedObservation<Widget, WidgetObserver> observation_{this};
 };
 
 ElementTrackerViews::ElementTrackerViews() = default;
@@ -330,7 +296,7 @@ ui::ElementContext ElementTrackerViews::GetContextForWidget(Widget* widget) {
       return context;
     }
   }
-  return ui::ElementContext(primary);
+  return ui::ElementContext(primary, base::PassKey<ElementTrackerViews>());
 }
 
 TrackedElementViews* ElementTrackerViews::GetElementForView(
@@ -374,36 +340,40 @@ View* ElementTrackerViews::GetUniqueView(ui::ElementIdentifier id,
 }
 
 View* ElementTrackerViews::GetFirstMatchingView(ui::ElementIdentifier id,
-                                                ui::ElementContext context) {
+                                                ui::ElementContext context,
+                                                bool require_visible) {
   const auto it = element_data_.find(id);
   if (it == element_data_.end()) {
     return nullptr;
   }
-  return it->second.FindFirstViewInContext(context);
+  return it->second.FindFirstViewInContext(context, require_visible);
 }
 
 ElementTrackerViews::ViewList ElementTrackerViews::GetAllMatchingViews(
     ui::ElementIdentifier id,
-    ui::ElementContext context) {
+    ui::ElementContext context,
+    bool require_visible) {
   const auto it = element_data_.find(id);
   if (it == element_data_.end()) {
     return ViewList();
   }
-  return it->second.FindAllViewsInContext(context);
+  return it->second.FindAllViewsInContext(context, require_visible);
 }
 
 ElementTrackerViews::ViewList
-ElementTrackerViews::GetAllMatchingViewsInAnyContext(ui::ElementIdentifier id) {
+ElementTrackerViews::GetAllMatchingViewsInAnyContext(ui::ElementIdentifier id,
+                                                     bool require_visible) {
   const auto it = element_data_.find(id);
   if (it == element_data_.end()) {
     return ViewList();
   }
-  return it->second.GetAllViews();
+  return it->second.GetAllViews(require_visible);
 }
 
 Widget* ElementTrackerViews::GetWidgetForContext(ui::ElementContext context) {
   for (auto& [id, data] : element_data_) {
-    auto* const view = data.FindFirstViewInContext(context);
+    auto* const view =
+        data.FindFirstViewInContext(context, /*require_visible=*/false);
     if (view) {
       return view->GetWidget();
     }
@@ -434,7 +404,7 @@ void ElementTrackerViews::UnregisterView(ui::ElementIdentifier element_id,
                                          View* view) {
   DCHECK(view);
   const auto it = element_data_.find(element_id);
-  CHECK(it != element_data_.end(), base::NotFatalUntil::M130);
+  CHECK(it != element_data_.end());
   it->second.RemoveView(view);
 }
 
@@ -442,7 +412,7 @@ void ElementTrackerViews::NotifyViewActivated(ui::ElementIdentifier element_id,
                                               View* view) {
   DCHECK(view);
   const auto it = element_data_.find(element_id);
-  CHECK(it != element_data_.end(), base::NotFatalUntil::M130);
+  CHECK(it != element_data_.end());
   it->second.NotifyViewActivated(view);
 }
 
@@ -454,19 +424,25 @@ ElementTrackerViews::GetContextOverrideCallback() {
 }
 
 void ElementTrackerViews::MaybeTrackWidget(Widget* widget) {
-  if (!widget || widget->IsVisible()) {
-    return;
+  if (widget) {
+    widget_trackers_.try_emplace(widget, *this, *widget);
   }
-  widget_trackers_.try_emplace(widget, this, widget);
 }
 
 bool ElementTrackerViews::IsWidgetVisible(const Widget* widget) const {
-  if (widget->IsVisible()) {
-    return true;
-  }
-
   const auto it = widget_trackers_.find(widget);
   return it != widget_trackers_.end() && it->second.visible();
+}
+
+void ElementTrackerViews::OnWidgetVisibilityChanged(const Widget* widget,
+                                                    bool visible) {
+  for (auto& [id, data] : element_data_) {
+    data.UpdateViewVisibilityForWidget(widget, visible);
+  }
+}
+
+void ElementTrackerViews::OnWidgetDestroying(const Widget* widget) {
+  widget_trackers_.erase(widget);
 }
 
 }  // namespace views

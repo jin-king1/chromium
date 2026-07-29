@@ -7,21 +7,19 @@
 #import "base/memory/raw_ptr.h"
 #import "components/signin/public/identity_manager/identity_manager.h"
 #import "components/signin/public/identity_manager/objc/identity_manager_observer_bridge.h"
+#import "google_apis/gaia/gaia_id.h"
 #import "ios/chrome/browser/authentication/ui_bundled/enterprise/enterprise_utils.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin/consistency_account_chooser/consistency_account_chooser_consumer.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/consistency_promo_signin/consistency_account_chooser/identity_item_configurator.h"
 #import "ios/chrome/browser/authentication/ui_bundled/signin/signin_utils.h"
+#import "ios/chrome/browser/shared/model/application_context/application_context.h"
 #import "ios/chrome/browser/shared/public/features/features.h"
+#import "ios/chrome/browser/signin/model/avatar/avatar_provider.h"
 #import "ios/chrome/browser/signin/model/chrome_account_manager_service.h"
-#import "ios/chrome/browser/signin/model/chrome_account_manager_service_observer_bridge.h"
 #import "ios/chrome/browser/signin/model/system_identity.h"
 
-@interface ConsistencyAccountChooserMediator () <
-    ChromeAccountManagerServiceObserver,
-    IdentityManagerObserverBridgeDelegate> {
+@interface ConsistencyAccountChooserMediator () <IdentityManagerObserving> {
   raw_ptr<ChromeAccountManagerService> _accountManagerService;
-  std::unique_ptr<ChromeAccountManagerServiceObserverBridge>
-      _accountManagerServiceObserver;
   raw_ptr<signin::IdentityManager> _identityManager;
   std::unique_ptr<signin::IdentityManagerObserverBridge>
       _identityManagerObserver;
@@ -41,6 +39,7 @@
                        (ChromeAccountManagerService*)accountManagerService {
   if ((self = [super init])) {
     CHECK(identityManager);
+    CHECK(accountManagerService, base::NotFatalUntil::M153);
     _identityManager = identityManager;
     _identityManagerObserver =
         std::make_unique<signin::IdentityManagerObserverBridge>(
@@ -48,9 +47,6 @@
 
     CHECK(accountManagerService);
     _accountManagerService = accountManagerService;
-    _accountManagerServiceObserver =
-        std::make_unique<ChromeAccountManagerServiceObserverBridge>(
-            self, _accountManagerService);
 
     _selectedIdentity = selectedIdentity;
 
@@ -60,21 +56,20 @@
 }
 
 - (void)dealloc {
-  DCHECK(!_identityManager);
-  DCHECK(!_accountManagerService);
+  CHECK(!_identityManager, base::NotFatalUntil::M145);
+  CHECK(!_accountManagerService, base::NotFatalUntil::M145);
 }
 
 - (void)disconnect {
   _identityManagerObserver.reset();
   _identityManager = nullptr;
-  _accountManagerServiceObserver.reset();
   _accountManagerService = nullptr;
 }
 
 #pragma mark - Properties
 
 - (void)setSelectedIdentity:(id<SystemIdentity>)identity {
-  DCHECK(identity);
+  CHECK(identity, base::NotFatalUntil::M147);
   if ([_selectedIdentity isEqual:identity]) {
     return;
   }
@@ -120,11 +115,13 @@
 // Updates `configurator` based on `identity`.
 - (void)updateIdentityItemConfigurator:(IdentityItemConfigurator*)configurator
                           withIdentity:(id<SystemIdentity>)identity {
-  configurator.gaiaID = identity.gaiaID;
+  CHECK(identity, base::NotFatalUntil::M147);
+  configurator.gaiaID = identity.gaiaId;
   configurator.name = identity.userFullName;
   configurator.email = identity.userEmail;
-  configurator.avatar = _accountManagerService->GetIdentityAvatarWithIdentity(
-      identity, IdentityAvatarSize::TableViewIcon);
+  configurator.avatar =
+      GetApplicationContext()->GetIdentityAvatarProvider()->GetIdentityAvatar(
+          identity, IdentityAvatarSize::TableViewIcon);
   configurator.selected = [identity isEqual:self.selectedIdentity];
 
   if (std::optional<BOOL> isManaged = IsIdentityManaged(identity);
@@ -135,6 +132,7 @@
   configurator.managed = NO;
   __weak __typeof(self) weakSelf = self;
   FetchManagedStatusForIdentity(identity, base::BindOnce(^(bool managed) {
+                                  CHECK(identity, base::NotFatalUntil::M147);
                                   if (managed) {
                                     [weakSelf handleIdentityUpdated:identity];
                                   }
@@ -142,10 +140,11 @@
 }
 
 - (void)handleIdentityUpdated:(id<SystemIdentity>)identity {
+  CHECK(identity, base::NotFatalUntil::M147);
   IdentityItemConfigurator* configurator = nil;
   for (IdentityItemConfigurator* cursor in self
            .sortedIdentityItemConfigurators) {
-    if ([cursor.gaiaID isEqualToString:identity.gaiaID]) {
+    if (cursor.gaiaID == identity.gaiaId) {
       configurator = cursor;
     }
   }
@@ -154,52 +153,17 @@
   [self.consumer reloadIdentityForIdentityItemConfigurator:configurator];
 }
 
-- (void)handleIdentityListChanged {
+#pragma mark -  IdentityManagerObserver
+
+- (void)accountsOnDeviceDidChange {
   [self loadIdentityItemConfigurators];
   [self.consumer reloadAllIdentities];
 }
 
-#pragma mark - ChromeAccountManagerServiceObserver
-
-- (void)identityUpdated:(id<SystemIdentity>)identity {
-  if (IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `onExtendedAccountInfoUpdated` instead.
-    return;
-  }
-  [self handleIdentityUpdated:identity];
-}
-
-- (void)identityListChanged {
-  if (IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `onAccountsOnDeviceChanged` instead.
-    return;
-  }
-  [self handleIdentityListChanged];
-}
-
-- (void)onChromeAccountManagerServiceShutdown:
-    (ChromeAccountManagerService*)accountManagerService {
-  // TODO(crbug.com/40284086): Remove `[self disconnect]`.
-  [self disconnect];
-}
-
-#pragma mark -  IdentityManagerObserver
-
-- (void)onAccountsOnDeviceChanged {
-  if (!IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `identityListChanged` instead.
-    return;
-  }
-  [self handleIdentityListChanged];
-}
-
-- (void)onExtendedAccountInfoUpdated:(const AccountInfo&)info {
-  if (!IsUseAccountListFromIdentityManagerEnabled()) {
-    // Listening to `identityUpdated` instead.
-    return;
-  }
+- (void)extendedAccountInfoDidUpdate:(const AccountInfo&)info {
   id<SystemIdentity> identity =
       _accountManagerService->GetIdentityOnDeviceWithGaiaID(info.gaia);
+  CHECK(identity, base::NotFatalUntil::M147);
   [self handleIdentityUpdated:identity];
 }
 

@@ -4,115 +4,80 @@
 
 package org.chromium.chrome.browser.bookmarks;
 
-import static org.chromium.chrome.browser.hub.HubAnimationConstants.HUB_LAYOUT_FADE_DURATION_MS;
+import static org.chromium.build.NullUtil.assumeNonNull;
 
 import android.app.Activity;
 import android.content.ComponentName;
-import android.view.ViewGroup;
-import android.widget.FrameLayout;
 
-import androidx.annotation.NonNull;
-import androidx.annotation.Nullable;
-
-import org.chromium.base.supplier.ObservableSupplier;
-import org.chromium.base.supplier.ObservableSupplierImpl;
 import org.chromium.base.supplier.OneshotSupplier;
-import org.chromium.chrome.browser.hub.DisplayButtonData;
-import org.chromium.chrome.browser.hub.FadeHubLayoutAnimationFactory;
-import org.chromium.chrome.browser.hub.FullButtonData;
-import org.chromium.chrome.browser.hub.HubColorScheme;
-import org.chromium.chrome.browser.hub.HubContainerView;
-import org.chromium.chrome.browser.hub.HubLayoutAnimationListener;
-import org.chromium.chrome.browser.hub.HubLayoutAnimatorProvider;
+import org.chromium.build.annotations.NullMarked;
+import org.chromium.build.annotations.Nullable;
 import org.chromium.chrome.browser.hub.LoadHint;
 import org.chromium.chrome.browser.hub.Pane;
-import org.chromium.chrome.browser.hub.PaneHubController;
+import org.chromium.chrome.browser.hub.PaneBase;
 import org.chromium.chrome.browser.hub.PaneId;
-import org.chromium.chrome.browser.hub.ResourceButtonData;
 import org.chromium.chrome.browser.preferences.ChromeSharedPreferences;
+import org.chromium.chrome.browser.price_tracking.PriceDropNotificationManagerFactory;
 import org.chromium.chrome.browser.profiles.Profile;
 import org.chromium.chrome.browser.profiles.ProfileProvider;
-import org.chromium.chrome.browser.tab.Tab;
+import org.chromium.chrome.browser.ui.actions.button.ResourceButtonData;
 import org.chromium.chrome.browser.ui.messages.snackbar.SnackbarManager;
-import org.chromium.components.browser_ui.widget.MenuOrKeyboardActionController.MenuOrKeyboardActionHandler;
-import org.chromium.components.embedder_support.util.UrlConstants;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolver;
+import org.chromium.chrome.browser.url_constants.UrlConstantResolverFactory;
+import org.chromium.components.browser_ui.bottomsheet.BottomSheetController;
+import org.chromium.ui.base.ActivityResultTracker;
+import org.chromium.ui.base.WindowAndroid;
 
 import java.util.function.DoubleConsumer;
+import java.util.function.Supplier;
 
 /** A {@link Pane} representing history. */
-public class BookmarkPane implements Pane {
+@NullMarked
+public class BookmarkPane extends PaneBase {
 
     // Below are dependencies of the pane itself.
-    private final DoubleConsumer mOnToolbarAlphaChange;
-    private final ObservableSupplierImpl<DisplayButtonData> mReferenceButtonSupplier =
-            new ObservableSupplierImpl<>();
-    private final ObservableSupplier<FullButtonData> mEmptyActionButtonSupplier =
-            new ObservableSupplierImpl<>();
-    private final ObservableSupplierImpl<Boolean> mHairlineVisibilitySupplier =
-            new ObservableSupplierImpl<>();
-
-    // FrameLayout which has HistoryManager's root view as the only child.
-    private final FrameLayout mRootView;
-    // Below are dependencies to create the HistoryManger.
+    private final WindowAndroid mWindowAndroid;
     private final Activity mActivity;
     private final SnackbarManager mSnackbarManager;
+    private final Supplier<BottomSheetController> mBottomSheetControllerSupplier;
+    private final ActivityResultTracker mActivityResultTracker;
     private final OneshotSupplier<ProfileProvider> mProfileProviderSupplier;
 
-    private BookmarkManagerCoordinator mBookmarkManager;
-    private BookmarkOpener mBookmarkOpener;
-    private BookmarkOpener.Observer mBookmarkOpenerObserver;
-    private PaneHubController mPaneHubController;
+    private @Nullable BookmarkManagerCoordinator mBookmarkManager;
+    private @Nullable BookmarkOpener mBookmarkOpener;
+    private @Nullable BookmarkUiPrefs mBookmarkUiPrefs;
 
     /**
+     * Create a new instance of the bookmarks pane.
+     *
      * @param onToolbarAlphaChange Observer to notify when alpha changes during animations.
+     * @param windowAndroid The current {@link WindowAndroid} showing the bookmark UI.
      * @param activity Used as a dependency to BookmarkManager.
      * @param snackbarManager Used as a dependency to BookmarkManager.
+     * @param bottomSheetControllerSupplier Supplier of the controller used to interact with the
+     *     bottom sheet.
+     * @param activityResultTracker Tracker of activity results.
      * @param profileProviderSupplier Used as a dependency to BookmarkManager.
-     * @param bottomSheetController Used as a dependency to BookmarkManager.
      */
     public BookmarkPane(
-            @NonNull DoubleConsumer onToolbarAlphaChange,
-            @NonNull Activity activity,
-            @NonNull SnackbarManager snackbarManager,
-            @NonNull OneshotSupplier<ProfileProvider> profileProviderSupplier) {
-        mOnToolbarAlphaChange = onToolbarAlphaChange;
-        mReferenceButtonSupplier.set(
+            DoubleConsumer onToolbarAlphaChange,
+            WindowAndroid windowAndroid,
+            Activity activity,
+            SnackbarManager snackbarManager,
+            Supplier<BottomSheetController> bottomSheetControllerSupplier,
+            ActivityResultTracker activityResultTracker,
+            OneshotSupplier<ProfileProvider> profileProviderSupplier) {
+        super(PaneId.BOOKMARKS, activity, onToolbarAlphaChange);
+        mReferenceButtonDataSupplier.set(
                 new ResourceButtonData(
-                        R.string.menu_bookmarks,
-                        R.string.menu_bookmarks,
-                        R.drawable.star_outline_24dp));
+                        R.string.menu_bookmarks, R.string.menu_bookmarks, R.drawable.ic_star_24dp));
 
-        mRootView = new FrameLayout(activity);
+        mWindowAndroid = windowAndroid;
         mActivity = activity;
         mSnackbarManager = snackbarManager;
         mProfileProviderSupplier = profileProviderSupplier;
-    }
-
-    @Override
-    public @PaneId int getPaneId() {
-        return PaneId.BOOKMARKS;
-    }
-
-    @NonNull
-    @Override
-    public ViewGroup getRootView() {
-        return mRootView;
-    }
-
-    @Nullable
-    @Override
-    public MenuOrKeyboardActionHandler getMenuOrKeyboardActionHandler() {
-        return null;
-    }
-
-    @Override
-    public boolean getMenuButtonVisible() {
-        return false;
-    }
-
-    @Override
-    public @HubColorScheme int getColorScheme() {
-        return HubColorScheme.DEFAULT;
+        mBottomSheetControllerSupplier = bottomSheetControllerSupplier;
+        mActivityResultTracker = activityResultTracker;
     }
 
     @Override
@@ -121,90 +86,55 @@ public class BookmarkPane implements Pane {
     }
 
     @Override
-    public void setPaneHubController(@Nullable PaneHubController paneHubController) {
-        mPaneHubController = paneHubController;
-    }
-
-    @Override
     public void notifyLoadHint(@LoadHint int loadHint) {
         if (loadHint == LoadHint.HOT && mBookmarkManager == null) {
-            ComponentName componentName = mActivity.getComponentName();
-            Profile originalProfile = mProfileProviderSupplier.get().getOriginalProfile();
+            ComponentName componentName = ((Activity) mContext).getComponentName();
+            Profile originalProfile =
+                    assumeNonNull(mProfileProviderSupplier.get()).getOriginalProfile();
             mBookmarkOpener =
                     new BookmarkOpenerImpl(
                             () -> BookmarkModel.getForProfile(originalProfile),
-                            mActivity,
+                            mContext,
                             componentName);
-            mBookmarkOpenerObserver = this::onBookmarkOpened;
-            mBookmarkOpener.addObserver(mBookmarkOpenerObserver);
+            mBookmarkUiPrefs = new BookmarkUiPrefs(ChromeSharedPreferences.getInstance());
             mBookmarkManager =
                     new BookmarkManagerCoordinator(
+                            mWindowAndroid,
                             mActivity,
                             /* isDialogUi= */ false,
                             mSnackbarManager,
+                            mBottomSheetControllerSupplier,
+                            mActivityResultTracker,
                             originalProfile,
-                            new BookmarkUiPrefs(ChromeSharedPreferences.getInstance()),
+                            mBookmarkUiPrefs,
                             mBookmarkOpener,
-                            new BookmarkManagerOpenerImpl());
-            mBookmarkManager.updateForUrl(UrlConstants.BOOKMARKS_URL);
+                            new BookmarkManagerOpenerImpl(),
+                            PriceDropNotificationManagerFactory.create(originalProfile),
+                            // TODO(crbug.com/427776544): make bookmark pane support edge to edge.
+                            /* edgeToEdgePadAdjusterGenerator= */ null,
+                            /* backPressManager= */ null);
+            UrlConstantResolver resolver =
+                    UrlConstantResolverFactory.getForProfile(originalProfile);
+            mBookmarkManager.updateForUrl(resolver.getBookmarksPageUrl());
             mRootView.addView(mBookmarkManager.getView());
         } else if (loadHint == LoadHint.COLD) {
             destroyManagerAndRemoveView();
         }
     }
 
-    @NonNull
-    @Override
-    public ObservableSupplier<FullButtonData> getActionButtonDataSupplier() {
-        return mEmptyActionButtonSupplier;
-    }
-
-    @NonNull
-    @Override
-    public ObservableSupplier<DisplayButtonData> getReferenceButtonDataSupplier() {
-        return mReferenceButtonSupplier;
-    }
-
-    @NonNull
-    @Override
-    public ObservableSupplier<Boolean> getHairlineVisibilitySupplier() {
-        return mHairlineVisibilitySupplier;
-    }
-
-    @Nullable
-    @Override
-    public HubLayoutAnimationListener getHubLayoutAnimationListener() {
-        return null;
-    }
-
-    @NonNull
-    @Override
-    public HubLayoutAnimatorProvider createShowHubLayoutAnimatorProvider(
-            @NonNull HubContainerView hubContainerView) {
-        return FadeHubLayoutAnimationFactory.createFadeInAnimatorProvider(
-                hubContainerView, HUB_LAYOUT_FADE_DURATION_MS, mOnToolbarAlphaChange);
-    }
-
-    @NonNull
-    @Override
-    public HubLayoutAnimatorProvider createHideHubLayoutAnimatorProvider(
-            @NonNull HubContainerView hubContainerView) {
-        return FadeHubLayoutAnimationFactory.createFadeOutAnimatorProvider(
-                hubContainerView, HUB_LAYOUT_FADE_DURATION_MS, mOnToolbarAlphaChange);
-    }
-
-    private void onBookmarkOpened() {
-        mPaneHubController.selectTabAndHideHub(Tab.INVALID_TAB_ID);
-    }
-
     private void destroyManagerAndRemoveView() {
         if (mBookmarkManager != null) {
-            mBookmarkOpener.removeObserver(mBookmarkOpenerObserver);
-            mBookmarkOpener.destroy();
-            mBookmarkOpener = null;
-
             mBookmarkManager.onDestroyed();
             mBookmarkManager = null;
+        }
+
+        if (mBookmarkOpener != null) {
+            mBookmarkOpener = null;
+        }
+
+        if (mBookmarkUiPrefs != null) {
+            mBookmarkUiPrefs.destroy();
+            mBookmarkUiPrefs = null;
         }
         mRootView.removeAllViews();
     }

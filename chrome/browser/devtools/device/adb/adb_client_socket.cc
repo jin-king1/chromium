@@ -2,11 +2,6 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40285824): Remove this and convert code to safer constructs.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "chrome/browser/devtools/device/adb/adb_client_socket.h"
 
 #include <stddef.h>
@@ -24,6 +19,7 @@
 #include "base/strings/stringprintf.h"
 #include "net/base/ip_address.h"
 #include "net/base/net_errors.h"
+#include "net/base/network_handle.h"
 #include "net/log/net_log_source.h"
 #include "net/socket/tcp_client_socket.h"
 #include "net/traffic_annotation/network_traffic_annotation.h"
@@ -40,10 +36,8 @@ std::string EncodeMessage(const std::string& message) {
   CHECK_LE(length, 0xffffu);
   std::string result;
   result.reserve(4);
-  base::AppendHexEncodedByte(reinterpret_cast<const uint8_t*>(&length)[1],
-                             result);
-  base::AppendHexEncodedByte(reinterpret_cast<const uint8_t*>(&length)[0],
-                             result);
+  base::AppendHexEncodedByte(static_cast<uint8_t>(length >> 8), result);
+  base::AppendHexEncodedByte(static_cast<uint8_t>(length & 0xff), result);
   return result + message;
 }
 
@@ -137,7 +131,7 @@ class AdbQuerySocket : AdbClientSocket {
 
   void OnResponse(int result, const std::string& response) {
     if (++current_query_ < queries_.size()) {
-      SendNextQuery(net::OK);
+      SendNextQuery(result);
     } else {
       std::move(callback_).Run(result, response);
       delete this;
@@ -194,7 +188,11 @@ void AdbClientSocket::Connect(net::CompletionOnceCallback callback) {
   net::AddressList address_list =
       net::AddressList::CreateFromIPAddress(ip_address, port_);
   socket_ = std::make_unique<net::TCPClientSocket>(
-      address_list, nullptr, nullptr, nullptr, net::NetLogSource());
+      address_list, nullptr, nullptr, nullptr, net::NetLogSource(),
+      // There are currently no use cases for targeting a network when
+      // forwarding via devtools. This will need to be reconsidered if a need
+      // arises.
+      net::handles::kInvalidNetworkHandle);
   connect_callback_ = std::move(callback);
   int result = socket_->Connect(base::BindOnce(
       &AdbClientSocket::RunConnectCallback, base::Unretained(this)));

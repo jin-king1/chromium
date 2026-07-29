@@ -10,6 +10,7 @@
 #include "third_party/blink/renderer/core/execution_context/execution_context_lifecycle_observer.h"
 #include "third_party/blink/renderer/platform/bindings/script_wrappable.h"
 #include "third_party/blink/renderer/platform/heap/collection_support/heap_hash_map.h"
+#include "third_party/blink/renderer/platform/wtf/text/string_hash.h"
 #include "third_party/blink/renderer/platform/wtf/text/wtf_string.h"
 
 namespace blink {
@@ -77,6 +78,10 @@ class CORE_EXPORT TrustedTypePolicyFactory final
   static bool IsEventHandlerAttributeName(const AtomicString& attributeName);
 
  private:
+  friend class CoreInitializer;
+
+  static void EagerlyInitializeOnMainThread();
+
   Member<TrustedHTML> empty_html_;
   Member<TrustedScript> empty_script_;
   HeapHashMap<String, Member<TrustedTypePolicy>> policy_map_;

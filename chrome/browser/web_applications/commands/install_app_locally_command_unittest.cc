@@ -4,16 +4,16 @@
 
 #include "chrome/browser/web_applications/commands/install_app_locally_command.h"
 
-#include <map>
 #include <memory>
 #include <utility>
 
-#include "base/files/file_util.h"
+#include "base/test/scoped_feature_list.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/web_applications/os_integration/os_integration_manager.h"
 #include "chrome/browser/web_applications/proto/web_app_install_state.pb.h"
 #include "chrome/browser/web_applications/proto/web_app_os_integration_state.pb.h"
+#include "chrome/browser/web_applications/test/fake_web_app_origin_association_manager.h"
 #include "chrome/browser/web_applications/test/fake_web_app_provider.h"
 #include "chrome/browser/web_applications/test/os_integration_test_override_impl.h"
 #include "chrome/browser/web_applications/test/web_app_install_test_utils.h"
@@ -27,10 +27,10 @@
 #include "chrome/browser/web_applications/web_app_management_type.h"
 #include "chrome/browser/web_applications/web_app_provider.h"
 #include "chrome/browser/web_applications/web_app_registrar.h"
-#include "chrome/common/chrome_features.h"
 #include "components/sync/base/time.h"
 #include "components/webapps/browser/install_result_code.h"
 #include "testing/gtest/include/gtest/gtest.h"
+#include "third_party/blink/public/common/features.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #include "third_party/skia/include/core/SkColor.h"
 #include "url/gurl.h"
@@ -50,7 +50,6 @@ class InstallAppLocallyCommandTest : public WebAppTest {
       base::ScopedAllowBlockingForTesting allow_blocking;
       test_override_ = OsIntegrationTestOverrideImpl::OverrideForTesting();
     }
-    provider_ = FakeWebAppProvider::Get(profile());
 
     auto file_handler_manager =
         std::make_unique<WebAppFileHandlerManager>(profile());
@@ -59,8 +58,14 @@ class InstallAppLocallyCommandTest : public WebAppTest {
     auto os_integration_manager = std::make_unique<OsIntegrationManager>(
         profile(), std::move(file_handler_manager),
         std::move(protocol_handler_manager));
+    fake_provider().SetOsIntegrationManager(std::move(os_integration_manager));
 
-    provider_->SetOsIntegrationManager(std::move(os_integration_manager));
+    auto origin_association_manager =
+        std::make_unique<FakeWebAppOriginAssociationManager>(*profile());
+    origin_association_manager->set_pass_through(true);
+    fake_provider().SetOriginAssociationManager(
+        std::move(origin_association_manager));
+
     test::AwaitStartWebAppProviderAndSubsystems(profile());
   }
 
@@ -76,23 +81,30 @@ class InstallAppLocallyCommandTest : public WebAppTest {
   }
 
   webapps::AppId InstallNonLocallyInstalledAppWithIcons(
-      std::map<SquareSizePx, SkBitmap> icon_map) {
+      OrderedSizeToBitmap icon_map,
+      proto::InstallState install_state =
+          proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE) {
     std::unique_ptr<WebAppInstallInfo> info =
         WebAppInstallInfo::CreateWithStartUrlForTesting(kWebAppUrl);
     info->title = u"Test App";
     info->user_display_mode = mojom::UserDisplayMode::kStandalone;
     info->icon_bitmaps.any = std::move(icon_map);
+    if (install_state == proto::InstallState::SUGGESTED_FROM_MIGRATION) {
+      info->migration_sources.emplace_back(
+          webapps::ManifestId(GURL("https://migration.example.com/start.html")),
+          MigrationBehavior::kSuggest);
+    }
     base::test::TestFuture<const webapps::AppId&, webapps::InstallResultCode>
         result;
 
     web_app::WebAppInstallParams params;
-    params.install_state = proto::InstallState::SUGGESTED_FROM_ANOTHER_DEVICE;
+    params.install_state = install_state;
     params.add_to_applications_menu = false;
     params.add_to_desktop = false;
     params.add_to_quick_launch_bar = false;
     params.add_to_search = false;
     // InstallFromInfo does not trigger OS integration.
-    provider().scheduler().InstallFromInfoWithParams(
+    fake_provider().scheduler().InstallFromInfoWithParams(
         std::move(info), /*overwrite_existing_manifest_fields=*/true,
         webapps::WebappInstallSource::OMNIBOX_INSTALL_ICON,
         result.GetCallback(), params);
@@ -116,7 +128,6 @@ class InstallAppLocallyCommandTest : public WebAppTest {
   }
 
  protected:
-  WebAppProvider& provider() { return *provider_; }
   SkBitmap CreateSolidColorIcon(int size, SkColor color) {
     SkBitmap bitmap;
     bitmap.allocN32Pixels(size, size);
@@ -161,16 +172,18 @@ class InstallAppLocallyCommandTest : public WebAppTest {
   }
 
  private:
-  raw_ptr<FakeWebAppProvider, DanglingUntriaged> provider_ = nullptr;
   std::unique_ptr<OsIntegrationTestOverrideImpl::BlockingRegistration>
       test_override_;
+
+  base::test::ScopedFeatureList scoped_feature_list_{
+      blink::features::kWebAppMigrationApi};
 };
 
 TEST_F(InstallAppLocallyCommandTest, BasicBehavior) {
   // Create an app that is not locally installed, i.e. has the
   // is_locally_installed bit set to false and there is no OS integration
   // defined for it.
-  std::map<SquareSizePx, SkBitmap> icon_map;
+  OrderedSizeToBitmap icon_map;
   icon_map[icon_size::k16] = CreateSolidColorIcon(icon_size::k16, SK_ColorBLUE);
   icon_map[icon_size::k24] = CreateSolidColorIcon(icon_size::k24, SK_ColorRED);
   icon_map[icon_size::k128] =
@@ -179,9 +192,11 @@ TEST_F(InstallAppLocallyCommandTest, BasicBehavior) {
       InstallNonLocallyInstalledAppWithIcons(std::move(icon_map));
 
   auto state =
-      provider().registrar_unsafe().GetAppCurrentOsIntegrationState(app_id);
+      fake_provider().registrar_unsafe().GetAppCurrentOsIntegrationState(
+          app_id);
   ASSERT_TRUE(state.has_value());
-  const proto::WebAppOsIntegrationState& os_integration_state = state.value();
+  const proto::os_state::WebAppOsIntegration& os_integration_state =
+      state.value();
 
   if (HasShortcutsOsIntegration()) {
     ASSERT_FALSE(os_integration_state.has_shortcut());
@@ -189,35 +204,34 @@ TEST_F(InstallAppLocallyCommandTest, BasicBehavior) {
 
   // Install app locally.
   base::test::TestFuture<void> test_future;
-  provider().scheduler().InstallAppLocally(app_id, test_future.GetCallback());
+  fake_provider().scheduler().InstallAppLocally(app_id,
+                                                test_future.GetCallback());
   EXPECT_TRUE(test_future.Wait());
 
   auto updated_state =
-      provider().registrar_unsafe().GetAppCurrentOsIntegrationState(app_id);
+      fake_provider().registrar_unsafe().GetAppCurrentOsIntegrationState(
+          app_id);
   ASSERT_TRUE(updated_state.has_value());
-  const proto::WebAppOsIntegrationState& updated_os_states =
+  const proto::os_state::WebAppOsIntegration& updated_os_states =
       updated_state.value();
   ASSERT_TRUE(updated_os_states.has_shortcut());
 
-  if (base::FeatureList::IsEnabled(
-          features::kWebAppDontAddExistingAppsToSync)) {
-    EXPECT_TRUE(
-        provider().registrar_unsafe().GetAppById(app_id)->GetSources().Has(
-            WebAppManagement::kUserInstalled));
-  }
+  EXPECT_TRUE(
+      fake_provider().registrar_unsafe().GetAppById(app_id)->GetSources().Has(
+          WebAppManagement::kUserInstalled));
 
   // OS integration should be triggered now.
   if (HasShortcutsOsIntegration()) {
     ASSERT_TRUE(OsIntegrationTestOverrideImpl::Get()->IsShortcutCreated(
         profile(), app_id,
-        provider().registrar_unsafe().GetAppShortName(app_id)));
+        fake_provider().registrar_unsafe().GetAppShortName(app_id)));
 
     // On all desktop platforms, the shortcut icon that is used for the
     // launcher is icon_size::k128, which should be GREEN as per the icon_map
     // being used above.
     ASSERT_THAT(
-        GetShortcutColor(app_id,
-                         provider().registrar_unsafe().GetAppShortName(app_id)),
+        GetShortcutColor(
+            app_id, fake_provider().registrar_unsafe().GetAppShortName(app_id)),
         testing::Eq(SK_ColorGREEN));
   }
 }
@@ -226,9 +240,33 @@ TEST_F(InstallAppLocallyCommandTest, AppNotInRegistrar) {
   const webapps::AppId app_id = "abcde";
 
   base::test::TestFuture<void> test_future;
-  provider().scheduler().InstallAppLocally(app_id, test_future.GetCallback());
+  fake_provider().scheduler().InstallAppLocally(app_id,
+                                                test_future.GetCallback());
   EXPECT_TRUE(test_future.Wait());
-  EXPECT_FALSE(provider().registrar_unsafe().IsInRegistrar(app_id));
+  EXPECT_FALSE(
+      fake_provider().registrar_unsafe().GetInstallState(app_id).has_value());
+}
+
+TEST_F(InstallAppLocallyCommandTest, MigrationPWAsNotAllowed) {
+  OrderedSizeToBitmap icon_map;
+  icon_map[icon_size::k128] =
+      CreateSolidColorIcon(icon_size::k128, SK_ColorGREEN);
+  const webapps::AppId& app_id = InstallNonLocallyInstalledAppWithIcons(
+      std::move(icon_map), proto::InstallState::SUGGESTED_FROM_MIGRATION);
+
+  base::test::TestFuture<void> test_future;
+  fake_provider().scheduler().InstallAppLocally(app_id,
+                                                test_future.GetCallback());
+  EXPECT_TRUE(test_future.Wait());
+
+  // Install state not migrated, no OS integration done.
+  auto state =
+      fake_provider().registrar_unsafe().GetAppCurrentOsIntegrationState(
+          app_id);
+  EXPECT_TRUE(state.has_value());
+  EXPECT_FALSE(state.value().has_shortcut());
+  EXPECT_TRUE(fake_provider().registrar_unsafe().AppMatches(
+      app_id, WebAppFilter::IsAppSuggestedForMigration()));
 }
 
 }  // namespace

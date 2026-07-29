@@ -25,7 +25,6 @@
 #include "ash/test/ash_test_base.h"
 #include "ash/test/test_ash_web_view_factory.h"
 #include "base/test/metrics/histogram_tester.h"
-#include "base/test/scoped_feature_list.h"
 #include "base/time/time.h"
 #include "base/values.h"
 #include "url/gurl.h"
@@ -129,11 +128,7 @@ class FocusModeControllerMultiUserTest : public NoSessionAshTestBase {
  public:
   FocusModeControllerMultiUserTest()
       : NoSessionAshTestBase(
-            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {
-    scoped_feature_.InitWithFeatures(
-        /*enabled_features=*/{features::kFocusMode, features::kFocusModeYTM},
-        /*disabled_features=*/{});
-  }
+            base::test::TaskEnvironment::TimeSource::MOCK_TIME) {}
   ~FocusModeControllerMultiUserTest() override = default;
 
   PrefService* user_1_prefs() { return user_1_prefs_; }
@@ -144,17 +139,13 @@ class FocusModeControllerMultiUserTest : public NoSessionAshTestBase {
     CHECK(test_web_view_factory_.get());
     NoSessionAshTestBase::SetUp();
 
-    TestSessionControllerClient* session_controller =
-        GetSessionControllerClient();
-    session_controller->Reset();
-
-    session_controller->AddUserSession({kUser1Email});
-    session_controller->AddUserSession({kUser2Email});
-
-    user_1_prefs_ = session_controller->GetUserPrefService(GetUser1AccountId());
-    user_2_prefs_ = session_controller->GetUserPrefService(GetUser2AccountId());
-    CHECK(user_1_prefs_);
-    CHECK(user_2_prefs_);
+    ClearLogin();
+    owned_user_1_prefs_ =
+        TestPrefServiceProvider::CreateUserPrefServiceSimple();
+    owned_user_2_prefs_ =
+        TestPrefServiceProvider::CreateUserPrefServiceSimple();
+    user_1_prefs_ = owned_user_1_prefs_.get();
+    user_2_prefs_ = owned_user_2_prefs_.get();
   }
 
   void TearDown() override {
@@ -175,10 +166,14 @@ class FocusModeControllerMultiUserTest : public NoSessionAshTestBase {
     GetSessionControllerClient()->SwitchActiveUser(account_id);
   }
 
-  void SimulateUserLogin(const AccountId& account_id) {
-    SwitchActiveUser(account_id);
-    GetSessionControllerClient()->SetSessionState(
-        session_manager::SessionState::ACTIVE);
+  void SimulateUser1Login() {
+    NoSessionAshTestBase::SimulateUserLogin({}, GetUser1AccountId(),
+                                            std::move(owned_user_1_prefs_));
+  }
+
+  void SimulateUser2Login() {
+    NoSessionAshTestBase::SimulateUserLogin({}, GetUser2AccountId(),
+                                            std::move(owned_user_2_prefs_));
   }
 
   void AdvanceClock(base::TimeDelta time_delta) {
@@ -189,9 +184,10 @@ class FocusModeControllerMultiUserTest : public NoSessionAshTestBase {
   }
 
  private:
-  base::test::ScopedFeatureList scoped_feature_;
   raw_ptr<PrefService> user_1_prefs_ = nullptr;
   raw_ptr<PrefService> user_2_prefs_ = nullptr;
+  std::unique_ptr<PrefService> owned_user_1_prefs_;
+  std::unique_ptr<PrefService> owned_user_2_prefs_;
 
   // Calling the factory constructor is enough to set it up.
   std::unique_ptr<TestAshWebViewFactory> test_web_view_factory_ =
@@ -216,7 +212,7 @@ TEST_F(FocusModeControllerMultiUserTest, LoadUserPrefsAndSwitchUsers) {
   const focus_mode_util::SoundType kUser2SoundType =
       focus_mode_util::SoundType::kYouTubeMusic;
 
-  base::Value::Dict user2_task_dict;
+  base::DictValue user2_task_dict;
   const std::string task_list_id_2 = "task_list_id_2";
   const std::string task_id_2 = "task_id_2";
   user2_task_dict.Set(focus_mode_util::kTaskListIdKey, task_list_id_2);
@@ -228,7 +224,7 @@ TEST_F(FocusModeControllerMultiUserTest, LoadUserPrefsAndSwitchUsers) {
   user_2_prefs()->SetBoolean(prefs::kFocusModeDoNotDisturb, kUser2DNDState);
   user_2_prefs()->SetDict(prefs::kFocusModeSelectedTask,
                           user2_task_dict.Clone());
-  base::Value::Dict sound_section_dict;
+  base::DictValue sound_section_dict;
   sound_section_dict.Set(focus_mode_util::kSoundTypeKey,
                          static_cast<int>(kUser2SoundType));
   user_2_prefs()->SetDict(prefs::kFocusModeSoundSection,
@@ -243,7 +239,7 @@ TEST_F(FocusModeControllerMultiUserTest, LoadUserPrefsAndSwitchUsers) {
 
   // Log in and check to see that the user1 prefs are the default values, since
   // there should have been nothing previously.
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
   EXPECT_EQ(kDefaultSessionDuration,
             user_1_prefs()->GetTimeDelta(prefs::kFocusModeSessionDuration));
   EXPECT_EQ(kDefaultDNDState,
@@ -264,7 +260,7 @@ TEST_F(FocusModeControllerMultiUserTest, LoadUserPrefsAndSwitchUsers) {
   auto& tasks_client2 = CreateFakeTasksClient(GetUser2AccountId());
   AddFakeTaskList(tasks_client2, "task_list_id_2");
   AddFakeTask(tasks_client2, "task_list_id_2", "task_id_2", "User2 Task");
-  SwitchActiveUser(GetUser2AccountId());
+  SimulateUser2Login();
   // Wait for the `UpdateFromUserPrefs()` PostTask to finish.
   task_environment()->RunUntilIdle();
   EXPECT_EQ(kUser2SessionDuration, controller->GetSessionDuration());
@@ -280,7 +276,7 @@ TEST_F(FocusModeControllerMultiUserTest, LoadUserPrefsAndSwitchUsers) {
 TEST_F(FocusModeControllerMultiUserTest, SwitchingUsersClearsTasksCache) {
   // Setup for user1.
   auto& tasks_client1 = CreateFakeTasksClient(GetUser1AccountId());
-  base::Value::Dict user1_task_dict;
+  base::DictValue user1_task_dict;
   const std::string task_list_id_1 = "task_list_id_1";
   const std::string task_id_1 = "task_id_1";
   user1_task_dict.Set(focus_mode_util::kTaskListIdKey, task_list_id_1);
@@ -292,7 +288,7 @@ TEST_F(FocusModeControllerMultiUserTest, SwitchingUsersClearsTasksCache) {
   AddFakeTask(tasks_client1, task_list_id_1, task_id_1, "User1 Task");
 
   // Login as the primary user1.
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
 
   // Wait for `UpdateFromUserPrefs()` to finish before requesting to update the
   // provider cache.
@@ -308,7 +304,7 @@ TEST_F(FocusModeControllerMultiUserTest, SwitchingUsersClearsTasksCache) {
 
   // Setup for user2.
   auto& tasks_client2 = CreateFakeTasksClient(GetUser2AccountId());
-  base::Value::Dict user2_task_dict;
+  base::DictValue user2_task_dict;
   const std::string task_list_id_2 = "task_list_id_2";
   const std::string task_id_2 = "task_id_2";
   user2_task_dict.Set(focus_mode_util::kTaskListIdKey, task_list_id_2);
@@ -320,7 +316,7 @@ TEST_F(FocusModeControllerMultiUserTest, SwitchingUsersClearsTasksCache) {
   AddFakeTask(tasks_client2, task_list_id_2, task_id_2, "User2 Task");
 
   // Switch users and verify that all the tasks caches are cleared.
-  SwitchActiveUser(GetUser2AccountId());
+  SimulateUser2Login();
   EXPECT_TRUE(controller->tasks_model().tasks().empty());
   EXPECT_FALSE(controller->tasks_model().selected_task());
   EXPECT_FALSE(controller->TasksProviderHasCachedTasksForTesting());
@@ -339,7 +335,7 @@ TEST_F(FocusModeControllerMultiUserTest, SwitchingUsersClearsTasksCache) {
 // Tests that when the user selects a different type of playlist, the user pref
 // for the sound section will be updated for this change.
 TEST_F(FocusModeControllerMultiUserTest, TogglePlaylistToChangeUserPref) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
   const focus_mode_util::SoundType kUser1SoundType =
       focus_mode_util::SoundType::kSoundscape;
   const focus_mode_util::SoundType kUser1NewSoundType =
@@ -360,7 +356,7 @@ TEST_F(FocusModeControllerMultiUserTest, TogglePlaylistToChangeUserPref) {
   EXPECT_EQ(kUser1NewSoundType, sounds_controller->sound_type());
 
   // The playlist id should be also updated into the user pref.
-  base::Value::Dict dict =
+  base::DictValue dict =
       user_1_prefs()->GetDict(prefs::kFocusModeSoundSection).Clone();
   EXPECT_EQ(static_cast<int>(kUser1NewSoundType),
             dict.FindInt(focus_mode_util::kSoundTypeKey).value());
@@ -377,7 +373,7 @@ TEST_F(FocusModeControllerMultiUserTest, TogglePlaylistToChangeUserPref) {
 }
 
 TEST_F(FocusModeControllerMultiUserTest, ToggleClosesSystemBubble) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
 
   auto* controller = FocusModeController::Get();
   EXPECT_FALSE(controller->in_focus_session());
@@ -403,7 +399,7 @@ TEST_F(FocusModeControllerMultiUserTest, ToggleClosesSystemBubble) {
 
 // Tests that we can determine if a focus session has started before.
 TEST_F(FocusModeControllerMultiUserTest, FirstTimeUserFlow) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
   auto* controller = FocusModeController::Get();
   EXPECT_FALSE(controller->HasStartedSessionBefore());
 
@@ -413,7 +409,7 @@ TEST_F(FocusModeControllerMultiUserTest, FirstTimeUserFlow) {
 
 // Tests adding and completing tasks, and the changes for the user pref.
 TEST_F(FocusModeControllerMultiUserTest, TasksFlow) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
 
   const std::string task_list_id = "list1";
   const std::string task_id = "task1";
@@ -441,7 +437,7 @@ TEST_F(FocusModeControllerMultiUserTest, TasksFlow) {
 
   // Verify the selected task info is accurate in the user pref once we start a
   // focus session.
-  base::Value::Dict task_dict =
+  base::DictValue task_dict =
       user_1_prefs()->GetDict(prefs::kFocusModeSelectedTask).Clone();
   EXPECT_FALSE(task_dict.empty());
   EXPECT_EQ(task_list_id,
@@ -459,7 +455,7 @@ TEST_F(FocusModeControllerMultiUserTest, TasksFlow) {
 // Tests basic ending moment functionality. Includes verifying that the ending
 // moment is persistent.
 TEST_F(FocusModeControllerMultiUserTest, EndingMoment) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
   base::TimeDelta kSessionDuration = base::Minutes(20);
 
   auto* controller = FocusModeController::Get();
@@ -491,7 +487,7 @@ TEST_F(FocusModeControllerMultiUserTest, EndingMoment) {
 // Tests that we can start a new/separate focus session during an ongoing ending
 // moment.
 TEST_F(FocusModeControllerMultiUserTest, StartNewSessionDuringEndingMoment) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
   base::TimeDelta kSessionDuration = base::Minutes(20);
 
   // Case 1: Normal ending moment timeout.
@@ -517,7 +513,7 @@ TEST_F(FocusModeControllerMultiUserTest, StartNewSessionDuringEndingMoment) {
 // Tests basic ending moment nudge functionality. Includes the nudge appearing
 // and disappearing.
 TEST_F(FocusModeControllerMultiUserTest, EndingMomentNudgeTest) {
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
   CreateFakeTasksClient(GetUser1AccountId());
   base::TimeDelta kSessionDuration = base::Minutes(20);
 
@@ -838,7 +834,7 @@ TEST_F(FocusModeControllerMultiUserTest, CheckPercentCompletedHistogram) {
 TEST_F(FocusModeControllerMultiUserTest, CheckTasksCompletedHistogram) {
   base::HistogramTester histogram_tester;
 
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
 
   auto* controller = FocusModeController::Get();
   EXPECT_FALSE(controller->in_focus_session());
@@ -969,7 +965,7 @@ TEST_F(FocusModeControllerMultiUserTest,
 TEST_F(FocusModeControllerMultiUserTest, CheckStartedWithTaskHistogram) {
   base::HistogramTester histogram_tester;
 
-  SimulateUserLogin(GetUser1AccountId());
+  SimulateUser1Login();
 
   auto* controller = FocusModeController::Get();
 

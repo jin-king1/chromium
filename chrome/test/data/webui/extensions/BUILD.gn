@@ -5,9 +5,14 @@
 import("//extensions/buildflags/buildflags.gni")
 import("../build_webui_tests.gni")
 
-assert(enable_extensions, "enable extensions check failed")
+assert(enable_extensions_core, "enable extensions check failed")
 
 build_webui_tests("build") {
+  cc_test_files = [
+    "extensions_browsertest.cc",
+    "extensions_focus_interactive_uitest.cc",
+  ]
+
   files = [
     "activity_log_history_item_test.ts",
     "activity_log_history_test.ts",
@@ -17,6 +22,7 @@ build_webui_tests("build") {
     "async_map_directive_test.ts",
     "code_section_test.ts",
     "detail_view_test.ts",
+    "drag_and_drop_handler_test.ts",
     "error_console_test.ts",
     "error_page_test.ts",
     "extension_options_dialog_test.ts",
@@ -29,17 +35,16 @@ build_webui_tests("build") {
     "manager_test_with_activity_log_flag.ts",
     "manager_test_with_id_query_param.ts",
     "manager_unit_test.ts",
-    "service_unit_test.ts",
     "manager_unit_test_with_activity_log_flag.ts",
-    "mv2_deprecation_panel_disabled_test.ts",
+    "manager_webui_refresh_2026_test.ts",
     "mv2_deprecation_panel_unsupported_test.ts",
-    "mv2_deprecation_panel_warning_test.ts",
     "navigation_helper_test.ts",
     "options_dialog_test.ts",
     "pack_dialog_test.ts",
     "review_panel_test.ts",
     "runtime_host_permissions_test.ts",
     "runtime_hosts_dialog_test.ts",
+    "service_unit_test.ts",
     "sidebar_test.ts",
     "site_permissions_by_site_test.ts",
     "site_permissions_edit_permissions_dialog_test.ts",
@@ -61,6 +66,7 @@ build_webui_tests("build") {
   ts_deps = [
     "//chrome/browser/resources/extensions:build_ts",
     "//third_party/lit/v3_0:build_ts",
+    "//ui/webui/resources/cr_components/color_change_listener:build_ts",
     "//ui/webui/resources/cr_components/cr_shortcut_input:build_ts",
     "//ui/webui/resources/cr_elements:build_ts",
     "//ui/webui/resources/js:build_ts",

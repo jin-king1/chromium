@@ -5,7 +5,9 @@
 #ifndef CHROME_BROWSER_UI_WEBUI_NEW_TAB_PAGE_NEW_TAB_PAGE_UI_H_
 #define CHROME_BROWSER_UI_WEBUI_NEW_TAB_PAGE_NEW_TAB_PAGE_UI_H_
 
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -18,34 +20,45 @@
 #include "chrome/browser/new_tab_page/modules/v2/calendar/google_calendar.mojom.h"
 #include "chrome/browser/new_tab_page/modules/v2/calendar/outlook_calendar.mojom.h"
 #include "chrome/browser/new_tab_page/modules/v2/most_relevant_tab_resumption/most_relevant_tab_resumption.mojom.h"
-#include "components/user_education/webui/help_bubble_handler.h"
+#include "chrome/browser/new_tab_page/modules/v2/tab_groups/tab_groups.mojom.h"
+#include "chrome/browser/ui/webui/new_tab_page/action_chips/action_chips.mojom.h"
+#include "chrome/browser/ui/webui/new_tab_page/action_chips/action_chips_handler.h"
 #include "ui/webui/resources/cr_components/help_bubble/help_bubble.mojom.h"
 #include "ui/webui/resources/js/browser_command/browser_command.mojom.h"
 #if !defined(OFFICIAL_BUILD)
-#include "chrome/browser/ui/webui/new_tab_page/foo/foo.mojom.h"  // nogncheck crbug.com/1125897
+#include "chrome/browser/ui/webui/new_tab_page/foo/foo.mojom.h"  // nogncheck crbug.com/40147906
 #endif
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
-#include "chrome/browser/search/background/ntp_custom_background_service_observer.h"
 #include "chrome/browser/themes/theme_service.h"
 #include "chrome/browser/themes/theme_service_observer.h"
+#include "chrome/browser/ui/webui/customize_buttons/customize_buttons.mojom.h"
 #include "chrome/browser/ui/webui/new_tab_page/new_tab_page.mojom.h"
 #include "chrome/common/webui_url_constants.h"
+#include "components/omnibox/browser/searchbox.mojom.h"
 #include "components/page_image_service/mojom/page_image_service.mojom.h"
 #include "components/prefs/pref_change_registrar.h"
+#include "components/themes/ntp_custom_background_service_observer.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "content/public/browser/webui_config.h"
 #include "content/public/common/url_constants.h"
 #include "mojo/public/cpp/bindings/pending_receiver.h"
 #include "mojo/public/cpp/bindings/pending_remote.h"
 #include "mojo/public/cpp/bindings/receiver.h"
+#include "ui/base/interaction/element_identifier.h"
 #include "ui/base/resource/resource_scale_factor.h"
 #include "ui/native_theme/native_theme.h"
 #include "ui/native_theme/native_theme_observer.h"
 #include "ui/webui/mojo_web_ui_controller.h"
-#include "ui/webui/resources/cr_components/color_change_listener/color_change_listener.mojom.h"
+#include "ui/webui/resources/cr_components/composebox/composebox.mojom.h"
 #include "ui/webui/resources/cr_components/most_visited/most_visited.mojom.h"
-#include "ui/webui/resources/cr_components/searchbox/searchbox.mojom-forward.h"
+
+#if !BUILDFLAG(IS_ANDROID)
+#include "chrome/browser/ui/webui/new_tab_page/ntp_promo/ntp_promo.mojom.h"  // nogncheck
+#include "chrome/browser/ui/webui/new_tab_page/ntp_promo/ntp_promo_handler.h"  // nogncheck
+#include "components/user_education/common/ntp_promo/ntp_promo_controller.h"
+#include "components/user_education/webui/help_bubble_handler.h"  // nogncheck
+#endif
 
 namespace base {
 class RefCountedMemory;
@@ -56,15 +69,17 @@ class NavigationHandle;
 class WebUI;
 }  // namespace content
 
+namespace contextual_search {
+class ContextualSearchSessionHandle;
+}  // namespace contextual_search
+
 namespace page_image_service {
 class ImageServiceHandler;
 }  // namespace page_image_service
 
-namespace ui {
-class ColorChangeHandler;
-}  // namespace ui
-
 class BrowserCommandHandler;
+class ComposeboxHandler;
+class CustomizeButtonsHandler;
 class DriveSuggestionHandler;
 #if !defined(OFFICIAL_BUILD)
 class FooHandler;
@@ -82,27 +97,24 @@ class PrefRegistrySimple;
 class PrefService;
 class Profile;
 class RealboxHandler;
+class TabGroupsPageHandler;
 class NewTabPageUI;
 
-class NewTabPageUIConfig : public content::DefaultWebUIConfig<NewTabPageUI> {
- public:
-  NewTabPageUIConfig()
-      : DefaultWebUIConfig(content::kChromeUIScheme,
-                           chrome::kChromeUINewTabPageHost) {}
-  // content::WebUIConfig:
-  std::unique_ptr<content::WebUIController> CreateWebUIController(
-      content::WebUI* web_ui,
-      const GURL& url) override;
-  bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
-};
-
-class NewTabPageUI : public ui::MojoWebUIController,
-                     public new_tab_page::mojom::PageHandlerFactory,
-                     public most_visited::mojom::MostVisitedPageHandlerFactory,
-                     public browser_command::mojom::CommandHandlerFactory,
-                     public help_bubble::mojom::HelpBubbleHandlerFactory,
-                     public NtpCustomBackgroundServiceObserver,
-                     content::WebContentsObserver {
+class NewTabPageUI
+    : public ui::MojoWebUIController,
+      public new_tab_page::mojom::PageHandlerFactory,
+      public customize_buttons::mojom::CustomizeButtonsHandlerFactory,
+      public most_visited::mojom::MostVisitedPageHandlerFactory,
+      public composebox::mojom::PageHandlerFactory,
+      public browser_command::mojom::CommandHandlerFactory,
+      public help_bubble::mojom::HelpBubbleHandlerFactory,
+      public action_chips::mojom::ActionChipsHandlerFactory,
+#if !BUILDFLAG(IS_ANDROID)
+      public ntp_promo::mojom::NtpPromoHandlerFactory,
+#endif
+      public NtpCustomBackgroundServiceObserver,
+      public searchbox::mojom::PageHandlerFactory,
+      content::WebContentsObserver {
  public:
   explicit NewTabPageUI(content::WebUI* web_ui);
 
@@ -111,12 +123,13 @@ class NewTabPageUI : public ui::MojoWebUIController,
 
   ~NewTabPageUI() override;
 
-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kCustomizeChromeButtonElementId);
-  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kModulesCustomizeIPHAnchorElement);
+  DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kRealboxContextualEntrypointElementId);
 
   static bool IsNewTabPageOrigin(const GURL& url);
   static void RegisterProfilePrefs(PrefRegistrySimple* registry);
   static void ResetProfilePrefs(PrefService* prefs);
+  static void MigrateDeprecatedUseMostVisitedTilesPref(PrefService* prefs);
+  static void MigrateDeprecatedShortcutsTypePref(PrefService* prefs);
   static bool IsManagedProfile(Profile* profile);
 
   // Instantiates the implementor of the mojom::PageHandlerFactory mojo
@@ -125,16 +138,11 @@ class NewTabPageUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<new_tab_page::mojom::PageHandlerFactory>
           pending_receiver);
 
-  // Instantiates the implementor of the mojom::PageHandler mojo interface
-  // passing the pending receiver that will be internally bound.
+  // Instantiates the implementor of the searchbox::mojom::PageHandlerFactory
+  // mojo interface passing the pending receiver that will be internally bound.
   void BindInterface(
-      mojo::PendingReceiver<color_change_listener::mojom::PageHandler>
+      mojo::PendingReceiver<searchbox::mojom::PageHandlerFactory>
           pending_receiver);
-
-  // Instantiates the implementor of the searchbox::mojom::PageHandler mojo
-  // interface passing the pending receiver that will be internally bound.
-  void BindInterface(mojo::PendingReceiver<searchbox::mojom::PageHandler>
-                         pending_page_handler);
 
   // Instantiates the implementor of the
   // browser_command::mojom::CommandHandlerFactory mojo interface passing
@@ -142,6 +150,13 @@ class NewTabPageUI : public ui::MojoWebUIController,
   void BindInterface(
       mojo::PendingReceiver<browser_command::mojom::CommandHandlerFactory>
           pending_receiver);
+
+  // Instantiates the implementor of the
+  // customize_buttons::mojom::CustomizeButtonsHandlerFactory mojo interface
+  // passing the pending receiver that will be internally bound.
+  void BindInterface(mojo::PendingReceiver<
+                     customize_buttons::mojom::CustomizeButtonsHandlerFactory>
+                         pending_receiver);
 
   // Instantiates the implementor of the
   // most_visited::mojom::MostVisitedPageHandlerFactory mojo interface passing
@@ -185,12 +200,21 @@ class NewTabPageUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<file_suggestion::mojom::MicrosoftFilesPageHandler>
           pending_receiver);
 
+  // Instantiates the implementor of the composebox::mojom::PageHandlerFactory
+  // mojo interface inside the new tab page.
+  void BindInterface(
+      mojo::PendingReceiver<composebox::mojom::PageHandlerFactory>
+          pending_receiver);
+
 #if !defined(OFFICIAL_BUILD)
   // Instantiates the implementor of the foo::mojom::FooHandler mojo interface
   // passing the pending receiver that will be internally bound.
   void BindInterface(
       mojo::PendingReceiver<foo::mojom::FooHandler> pending_receiver);
 #endif
+
+  void BindInterface(mojo::PendingReceiver<ntp::tab_groups::mojom::PageHandler>
+                         pending_page_handler);
 
   void BindInterface(mojo::PendingReceiver<
                      ntp::most_relevant_tab_resumption::mojom::PageHandler>
@@ -204,12 +228,28 @@ class NewTabPageUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandlerFactory>
           pending_receiver);
 
+#if !BUILDFLAG(IS_ANDROID)
+  void BindInterface(
+      mojo::PendingReceiver<ntp_promo::mojom::NtpPromoHandlerFactory>
+          pending_receiver);
+#endif  // !BUILDFLAG(IS_ANDROID)
+  void BindInterface(
+      mojo::PendingReceiver<action_chips::mojom::ActionChipsHandlerFactory>
+          pending_receiver);
+
   void ConnectToParentDocument(
       mojo::PendingRemote<new_tab_page::mojom::MicrosoftAuthUntrustedDocument>
           child_page);
 
   static base::RefCountedMemory* GetFaviconResourceBytes(
       ui::ResourceScaleFactor scale_factor);
+
+  // Lazily creates and returns a reference to the owned contextual search
+  // session handle for `realbox_handler_` and `composebox_handler_`.
+  contextual_search::ContextualSearchSessionHandle*
+  GetOrCreateContextualSessionHandle();
+
+  void ClearContextualSessionHandle();
 
  private:
   // new_tab_page::mojom::PageHandlerFactory:
@@ -223,10 +263,31 @@ class NewTabPageUI : public ui::MojoWebUIController,
       mojo::PendingReceiver<browser_command::mojom::CommandHandler>
           pending_handler) override;
 
+  // customize_buttons::mojom::CustomizeButtonsHandlerFactory:
+  void CreateCustomizeButtonsHandler(
+      mojo::PendingRemote<customize_buttons::mojom::CustomizeButtonsDocument>
+          pending_page,
+      mojo::PendingReceiver<customize_buttons::mojom::CustomizeButtonsHandler>
+          pending_page_handler) override;
+
   // most_visited::mojom::MostVisitedPageHandlerFactory:
   void CreatePageHandler(
       mojo::PendingRemote<most_visited::mojom::MostVisitedPage> pending_page,
       mojo::PendingReceiver<most_visited::mojom::MostVisitedPageHandler>
+          pending_page_handler) override;
+
+  // composebox::mojom::PageHandlerFactory:
+  void CreatePageHandler(
+      mojo::PendingReceiver<composebox::mojom::PageHandler>
+          pending_page_handler,
+      mojo::PendingRemote<searchbox::mojom::Page> pending_searchbox_page,
+      mojo::PendingReceiver<searchbox::mojom::PageHandler>
+          pending_searchbox_handler) override;
+
+  // searchbox::mojom::PageHandlerFactory:
+  void CreatePageHandler(
+      mojo::PendingRemote<searchbox::mojom::Page> pending_page,
+      mojo::PendingReceiver<searchbox::mojom::PageHandler>
           pending_page_handler) override;
 
   // help_bubble::mojom::HelpBubbleHandlerFactory:
@@ -234,6 +295,18 @@ class NewTabPageUI : public ui::MojoWebUIController,
       mojo::PendingRemote<help_bubble::mojom::HelpBubbleClient> client,
       mojo::PendingReceiver<help_bubble::mojom::HelpBubbleHandler> handler)
       override;
+
+#if !BUILDFLAG(IS_ANDROID)
+  // ntp_promo::mojom::NtpPromoHandlerFactory:
+  void CreateNtpPromoHandler(
+      mojo::PendingRemote<ntp_promo::mojom::NtpPromoClient> client,
+      mojo::PendingReceiver<ntp_promo::mojom::NtpPromoHandler> handler)
+      override;
+#endif  // !BUILDFLAG(IS_ANDROID)
+  // action_chips::mojom::ActionChipsHandlerFactory:
+  void CreateActionChipsHandler(
+      mojo::PendingReceiver<action_chips::mojom::ActionChipsHandler> handler,
+      mojo::PendingRemote<action_chips::mojom::Page> page) override;
 
   // NtpCustomBackgroundServiceObserver:
   void OnCustomBackgroundImageUpdated() override;
@@ -243,31 +316,71 @@ class NewTabPageUI : public ui::MojoWebUIController,
       content::NavigationHandle* navigation_handle) override;
   void OnColorProviderChanged() override;
 
-  bool IsCustomLinksEnabled() const;
   bool IsShortcutsVisible() const;
 
-  // Callback for when the value of the pref for showing custom links vs. most
-  // visited sites in the NTP tiles changes.
-  void OnCustomLinksEnabledPrefChanged();
+  // Updates the NTP tile types based on current preferences.
+  void UpdateMostVisitedTileTypes();
+  // Callback for when the value of the prefs for determining the type of NTP
+  // tiles to show changes.
+  void OnTileTypesChanged();
   // Callback for when the value of the pref for showing the NTP tiles changes.
   void OnTilesVisibilityPrefChanged();
+  // Called when the enterprise shortcuts policy may have changed.
+  void OnEnterpriseShortcutsPolicyChanged();
   // Called when the NTP (re)loads. Sets mutable load time data.
   void OnLoad();
+
+  // Called to maybe enable enterprise shortcuts visibility by default.
+  void MaybeEnableEnterpriseShortcutsVisibility();
+
+  // Based on the current profile and NTP promo controller, determine which
+  // type of NTP promos can be shown, if any.
+  std::string_view GetNtpPromoType();
+
+  // The counter for NewTabPage.Count UMA metrics.
+  static int instance_count_;
+
+  // Must outlive `realbox_handler_` and `composebox_handler_`.
+  std::unique_ptr<contextual_search::ContextualSearchSessionHandle>
+      shared_session_handle_;
 
   std::unique_ptr<NewTabPageHandler> page_handler_;
   mojo::Receiver<new_tab_page::mojom::PageHandlerFactory>
       page_factory_receiver_;
-  std::unique_ptr<ui::ColorChangeHandler> color_provider_handler_;
+  std::unique_ptr<CustomizeButtonsHandler> customize_buttons_handler_;
+  mojo::Receiver<customize_buttons::mojom::CustomizeButtonsHandlerFactory>
+      customize_buttons_factory_receiver_;
   std::unique_ptr<MostVisitedHandler> most_visited_page_handler_;
   mojo::Receiver<most_visited::mojom::MostVisitedPageHandlerFactory>
       most_visited_page_factory_receiver_;
+  mojo::Receiver<composebox::mojom::PageHandlerFactory>
+      composebox_page_factory_receiver_;
+  std::unique_ptr<ComposeboxHandler> composebox_handler_;
+#if BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<composebox::mojom::PageHandler>
+      android_stub_composebox_handler_;
+  mojo::PendingRemote<searchbox::mojom::Page> android_stub_searchbox_page_;
+  std::unique_ptr<searchbox::mojom::PageHandler>
+      android_stub_searchbox_handler_;
+  mojo::PendingRemote<searchbox::mojom::Page> android_stub_realbox_page_;
+  std::unique_ptr<searchbox::mojom::PageHandler> android_stub_realbox_handler_;
+#else
+  std::unique_ptr<user_education::HelpBubbleHandler> help_bubble_handler_;
+  std::unique_ptr<NtpPromoHandler> ntp_promo_handler_;
+  mojo::Receiver<ntp_promo::mojom::NtpPromoHandlerFactory>
+      ntp_promo_handler_factory_receiver_;
+#endif  // BUILDFLAG(IS_ANDROID)
+  std::unique_ptr<ActionChipsHandler> action_chips_handler_;
+  mojo::Receiver<action_chips::mojom::ActionChipsHandlerFactory>
+      action_chips_handler_factory_receiver_;
   std::unique_ptr<BrowserCommandHandler> promo_browser_command_handler_;
   mojo::Receiver<browser_command::mojom::CommandHandlerFactory>
       browser_command_factory_receiver_;
   std::unique_ptr<RealboxHandler> realbox_handler_;
-  std::unique_ptr<user_education::HelpBubbleHandler> help_bubble_handler_;
+  mojo::Receiver<searchbox::mojom::PageHandlerFactory>
+      searchbox_page_factory_receiver_;
   mojo::Receiver<help_bubble::mojom::HelpBubbleHandlerFactory>
-      help_bubble_handler_factory_receiver_{this};
+      help_bubble_handler_factory_receiver_;
 #if !defined(OFFICIAL_BUILD)
   std::unique_ptr<FooHandler> foo_handler_;
 #endif
@@ -280,10 +393,12 @@ class NewTabPageUI : public ui::MojoWebUIController,
   raw_ptr<NtpCustomBackgroundService> ntp_custom_background_service_;
   base::ScopedObservation<NtpCustomBackgroundService,
                           NtpCustomBackgroundServiceObserver>
-      ntp_custom_background_service_observation_{this};
+      ntp_custom_background_service_observation_;
   // Time the NTP started loading. Used for logging the WebUI NTP's load
-  // performance.
+  // performance. `navigation_start_time_ticks_` is the matching monotonic-
+  // clock instant, stamped together with `navigation_start_time_`.
   base::Time navigation_start_time_;
+  base::TimeTicks navigation_start_time_ticks_;
   const std::vector<ntp::ModuleIdDetail> module_id_details_;
 
   // Mojo implementations for modules:
@@ -292,11 +407,24 @@ class NewTabPageUI : public ui::MojoWebUIController,
   std::unique_ptr<MicrosoftAuthPageHandler> microsoft_auth_handler_;
   std::unique_ptr<MicrosoftFilesPageHandler> microsoft_files_handler_;
   std::unique_ptr<OutlookCalendarPageHandler> outlook_calendar_handler_;
+  std::unique_ptr<TabGroupsPageHandler> tab_groups_handler_;
   PrefChangeRegistrar pref_change_registrar_;
 
   base::WeakPtrFactory<NewTabPageUI> weak_ptr_factory_{this};
 
   WEB_UI_CONTROLLER_TYPE_DECL();
+};
+
+class NewTabPageUIConfig : public content::DefaultWebUIConfig<NewTabPageUI> {
+ public:
+  NewTabPageUIConfig()
+      : DefaultWebUIConfig(content::kChromeUIScheme,
+                           chrome::kChromeUINewTabPageHost) {}
+  // content::WebUIConfig:
+  std::unique_ptr<content::WebUIController> CreateWebUIController(
+      content::WebUI* web_ui,
+      const GURL& url) override;
+  bool IsWebUIEnabled(content::BrowserContext* browser_context) override;
 };
 
 #endif  // CHROME_BROWSER_UI_WEBUI_NEW_TAB_PAGE_NEW_TAB_PAGE_UI_H_

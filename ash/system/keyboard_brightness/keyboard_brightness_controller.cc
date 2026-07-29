@@ -4,7 +4,6 @@
 
 #include "ash/system/keyboard_brightness/keyboard_brightness_controller.h"
 
-#include "ash/constants/ash_features.h"
 #include "ash/constants/ash_pref_names.h"
 #include "ash/login/login_screen_controller.h"
 #include "ash/session/session_controller_impl.h"
@@ -12,6 +11,7 @@
 #include "ash/system/power/power_status.h"
 #include "base/logging.h"
 #include "base/metrics/histogram_functions.h"
+#include "base/strings/strcat.h"
 #include "chromeos/dbus/power/power_manager_client.h"
 #include "chromeos/dbus/power_manager/backlight.pb.h"
 #include "components/pref_registry/pref_registry_syncable.h"
@@ -235,12 +235,6 @@ void KeyboardBrightnessController::OnActiveUserPrefServiceChanged(
     PrefService* pref_service) {
   pref_service_ = pref_service;
 
-  // Don't restore the ambient light sensor value if the relevant flag is
-  // disabled.
-  if (!features::IsKeyboardBacklightControlInSettingsEnabled()) {
-    return;
-  }
-
   // Only restore the profile-synced ambient light sensor setting if it's a
   // user's first time logging in to a new device.
   if (!session_controller_->IsUserFirstLogin()) {
@@ -343,10 +337,6 @@ void KeyboardBrightnessController::LidEventReceived(
 // LoginDataDispatcher::Observer:
 void KeyboardBrightnessController::OnFocusPod(const AccountId& account_id) {
   active_account_id_ = account_id;
-
-  if (!features::IsKeyboardBacklightControlInSettingsEnabled()) {
-    return;
-  }
 
   session_manager::SessionState session_state =
       Shell::Get()->session_controller()->GetSessionState();
@@ -486,8 +476,7 @@ void KeyboardBrightnessController::RestoreKeyboardBrightnessSettings(
 
 void KeyboardBrightnessController::
     RestoreKeyboardAmbientLightSensorSettingOnFirstLogin() {
-  if (!features::IsKeyboardBacklightControlInSettingsEnabled() ||
-      !pref_service_ ||
+  if (!pref_service_ ||
       has_keyboard_ambient_light_sensor_been_restored_for_new_user_) {
     return;
   }

@@ -11,6 +11,7 @@
 #include "chrome/browser/ash/app_list/arc/arc_app_test.h"
 #include "chrome/test/base/testing_profile.h"
 #include "chromeos/ash/experiences/arc/test/fake_app_instance.h"
+#include "chromeos/ash/experiences/arc/test/fake_intent_helper_instance.h"
 #include "content/public/test/browser_task_environment.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -44,7 +45,6 @@ TEST_F(ArcAppUtilsTest, IsArcItemDoesNotCrashWithInvalidCrxFileIds) {
 
 TEST_F(ArcAppUtilsTest, GetAndroidId) {
   content::BrowserTaskEnvironment task_environment;
-  TestingProfile testing_profile;
 
   // ARC++ is not running.
   bool ok = true;
@@ -54,7 +54,10 @@ TEST_F(ArcAppUtilsTest, GetAndroidId) {
   EXPECT_EQ(0, android_id);
 
   ArcAppTest arc_app_test_;
-  arc_app_test_.SetUp(&testing_profile);
+  arc_app_test_.PreProfileSetUp();
+
+  auto testing_profile = std::make_unique<TestingProfile>();
+  arc_app_test_.PostProfileSetUp(testing_profile.get());
 
   constexpr int64_t kAndroidIdForTest = 1000;
   arc_app_test_.app_instance()->set_android_id(kAndroidIdForTest);
@@ -62,5 +65,32 @@ TEST_F(ArcAppUtilsTest, GetAndroidId) {
   EXPECT_TRUE(ok);
   EXPECT_EQ(kAndroidIdForTest, android_id);
 
-  arc_app_test_.TearDown();
+  arc_app_test_.PreProfileTearDown();
+  testing_profile.reset();
+  arc_app_test_.PostProfileTearDown();
+}
+
+TEST_F(ArcAppUtilsTest, SetTouchMode) {
+  content::BrowserTaskEnvironment task_environment;
+  ArcAppTest arc_app_test_;
+  arc_app_test_.set_initialize_real_intent_helper_bridge(true);
+  arc_app_test_.PreProfileSetUp();
+
+  auto testing_profile = std::make_unique<TestingProfile>();
+  arc_app_test_.PostProfileSetUp(testing_profile.get());
+
+  EXPECT_TRUE(arc::SetTouchMode(true));
+
+  const auto& broadcasts = arc_app_test_.intent_helper_instance()->broadcasts();
+  ASSERT_EQ(1u, broadcasts.size());
+  EXPECT_EQ(broadcasts[0].action,
+            "org.chromium.arc.intent_helper.SET_IN_TOUCH_MODE");
+  EXPECT_EQ(broadcasts[0].package_name, "org.chromium.arc.intent_helper");
+  EXPECT_EQ(broadcasts[0].cls,
+            "org.chromium.arc.intent_helper.SettingsReceiver");
+  EXPECT_EQ(broadcasts[0].extras, "{\"inTouchMode\":true}");
+
+  arc_app_test_.PreProfileTearDown();
+  testing_profile.reset();
+  arc_app_test_.PostProfileTearDown();
 }

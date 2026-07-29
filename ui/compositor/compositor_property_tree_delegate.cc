@@ -9,7 +9,7 @@
 #include "cc/input/scroll_snap_data.h"
 #include "cc/paint/element_id.h"
 #include "cc/trees/layer_tree_host.h"
-#include "cc/trees/mutator_host_client.h"
+#include "cc/trees/mutator_host_delegate.h"
 #include "cc/trees/property_tree_builder.h"
 #include "ui/compositor/compositor.h"
 #include "ui/compositor/compositor_export.h"
@@ -32,11 +32,11 @@ void CompositorPropertyTreeDelegate::UpdatePropertyTreesIfNeeded() {
   DCHECK(compositor_);
   compositor_->CheckPropertyTrees();
 
-  TRACE_EVENT_INSTANT1(TRACE_DISABLED_BY_DEFAULT("cc.debug"),
-                       "CompositorPropertyTreeDelegate::"
-                       "UpdatePropertyTreesIfNeeded_BuiltPropertyTrees",
-                       TRACE_EVENT_SCOPE_THREAD, "property_trees",
-                       host()->property_trees()->AsTracedValue());
+  TRACE_EVENT_INSTANT(TRACE_DISABLED_BY_DEFAULT("cc.debug"),
+                      "CompositorPropertyTreeDelegate::"
+                      "UpdatePropertyTreesIfNeeded_BuiltPropertyTrees",
+                      "property_trees",
+                      host()->property_trees()->AsTracedValue());
   if (observer_) {
     observer_->OnUpdateCalled(host());
   }
@@ -45,12 +45,13 @@ void CompositorPropertyTreeDelegate::UpdatePropertyTreesIfNeeded() {
 void CompositorPropertyTreeDelegate::UpdateScrollOffsetFromImpl(
     const cc::ElementId& id,
     const gfx::Vector2dF& delta,
+    cc::ScrollSourceType type,
     const std::optional<cc::TargetSnapAreaElementIds>& snap_target_ids) {
   // TODO(crbug.com/389771428): Implement this w/ layer lists. For now,
   // just call the base class implementation to ensure that we don't get
   // out of date.
   cc::PropertyTreeLayerTreeDelegate::UpdateScrollOffsetFromImpl(
-      id, delta, snap_target_ids);
+      id, delta, type, snap_target_ids);
 }
 
 void CompositorPropertyTreeDelegate::OnAnimateLayers() {

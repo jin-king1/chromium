@@ -6,16 +6,12 @@
 #define CHROME_BROWSER_ENTERPRISE_CONNECTORS_REPORTING_EXTENSION_INSTALL_EVENT_ROUTER_H_
 
 #include "base/memory/raw_ptr.h"
+#include "base/no_destructor.h"
 #include "chrome/browser/enterprise/connectors/reporting/realtime_reporting_client.h"
 #include "components/enterprise/common/proto/synced/browser_events.pb.h"
 #include "components/keyed_service/content/browser_context_keyed_service_factory.h"
 #include "components/keyed_service/core/keyed_service.h"
 #include "extensions/browser/extension_registry_observer.h"
-
-namespace base {
-template <typename T>
-struct DefaultSingletonTraits;
-}
 
 namespace extensions {
 class ExtensionRegistry;
@@ -58,6 +54,9 @@ class ExtensionInstallEventRouter
       const extensions::Extension* extension,
       const ::chrome::cros::reporting::proto::BrowserExtensionInstallEvent::
           ExtensionAction extension_action);
+  static ::chrome::cros::reporting::proto::BrowserExtensionInstallEvent::
+      ExtensionSource
+      GetExtensionSource(const extensions::Extension* extension);
 };
 
 class ExtensionInstallEventRouterFactory
@@ -73,8 +72,7 @@ class ExtensionInstallEventRouterFactory
  private:
   ExtensionInstallEventRouterFactory();
   ~ExtensionInstallEventRouterFactory() override;
-  friend struct base::DefaultSingletonTraits<
-      ExtensionInstallEventRouterFactory>;
+  friend base::NoDestructor<ExtensionInstallEventRouterFactory>;
 
   // BrowserContextKeyedServiceFactory:
   std::unique_ptr<KeyedService> BuildServiceInstanceForBrowserContext(

@@ -28,6 +28,7 @@
 #include "media/base/video_codecs.h"
 #include "media/media_buildflags.h"
 #include "media/mojo/buildflags.h"
+#include "third_party/abseil-cpp/absl/container/flat_hash_set.h"
 
 #if BUILDFLAG(IS_ANDROID)
 #include "content/browser/media/key_system_support_android.h"
@@ -81,12 +82,11 @@ void ReportHardwareSecureCapabilityStatusUMA(
     const media::CdmCapability* hw_secure_capability) {
   // Use a set to track whether the UMA has been reported for `key_system` to
   // make sure we only report once.
-  static base::NoDestructor<std::set<std::string>> reported_key_systems;
-  if (reported_key_systems->count(key_system)) {
+  static base::NoDestructor<absl::flat_hash_set<std::string>>
+      reported_key_systems;
+  if (!reported_key_systems->insert(key_system).second) {
     return;
   }
-
-  reported_key_systems->insert(key_system);
 
   auto uma_prefix =
       "Media.EME." +
@@ -106,16 +106,6 @@ void ReportHardwareSecureCapabilityStatusUMA(
         base::UmaHistogramBoolean(
             uma_prefix + ".Support." + media::GetCodecNameForUMA(video_codec),
             is_supported);
-
-        // When the codec is supported for hardware security, report whether
-        // clear lead is supported or not.
-        if (is_supported) {
-          bool is_clear_lead_supported =
-              video_codecs.at(video_codec).supports_clear_lead;
-          base::UmaHistogramBoolean(uma_prefix + ".ClearLeadSupport." +
-                                        media::GetCodecNameForUMA(video_codec),
-                                    is_clear_lead_supported);
-        }
       }
     }
   }
@@ -128,12 +118,11 @@ void ReportHardwareSecureCapabilityQueryStatusUMA(
     media::CdmCapabilityQueryStatus capability_query_status) {
   // Use a set to track whether the UMA has been reported for `key_system` to
   // make sure we only report once.
-  static base::NoDestructor<std::set<std::string>> reported_key_systems;
-  if (reported_key_systems->count(key_system)) {
+  static base::NoDestructor<absl::flat_hash_set<std::string>>
+      reported_key_systems;
+  if (!reported_key_systems->insert(key_system).second) {
     return;
   }
-
-  reported_key_systems->insert(key_system);
 
   auto uma_prefix =
       "Media.EME." +
@@ -435,12 +424,8 @@ CdmRegistryImpl::GetCapability(const std::string& key_system,
     }
 
 #if BUILDFLAG(IS_WIN)
-    // Check if the GPU is disabled from gpu/config/gpu_driver_bug_list.json and
-    // if the enable faulty GPU flag is disabled. If both are disabled, HW
-    // security should not be supported.
-    if (IsMediaFoundationHardwareSecurityDisabledByGpuFeature() &&
-        !base::FeatureList::IsEnabled(
-            media::kEnableFaultyGPUForMediaFoundation)) {
+    // Check if the GPU is disabled from gpu/config/gpu_driver_bug_list.json.
+    if (IsMediaFoundationHardwareSecurityDisabledByGpuFeature()) {
       DVLOG(1) << "Hardware security not supported: GPU workarounds";
       return {std::nullopt, Status::kGpuFeatureDisabled};
     }
@@ -501,7 +486,8 @@ void CdmRegistryImpl::FinalizeKeySystemCapabilities() {
   // Get the set of supported key systems in case two CDMs are registered with
   // the same key system and robustness; this also avoids updating `cdms_`
   // while iterating through it.
-  std::set<std::string> supported_key_systems = GetSupportedKeySystems();
+  absl::flat_hash_set<std::string> supported_key_systems =
+      GetSupportedKeySystems();
 
   // Attempt to finalize capabilities for all key systems.
   for (const auto& key_system : supported_key_systems) {
@@ -682,10 +668,11 @@ void CdmRegistryImpl::UpdateAndNotifyKeySystemCapabilities() {
   key_system_capabilities_update_callbacks_.Notify(key_system_capabilities);
 }
 
-std::set<std::string> CdmRegistryImpl::GetSupportedKeySystems() const {
+absl::flat_hash_set<std::string> CdmRegistryImpl::GetSupportedKeySystems()
+    const {
   DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
 
-  std::set<std::string> supported_key_systems;
+  absl::flat_hash_set<std::string> supported_key_systems;
   for (const auto& cdm : cdms_) {
     supported_key_systems.insert(cdm.key_system);
   }
@@ -698,7 +685,8 @@ KeySystemCapabilities CdmRegistryImpl::GetKeySystemCapabilities() {
 
   KeySystemCapabilities key_system_capabilities;
 
-  std::set<std::string> supported_key_systems = GetSupportedKeySystems();
+  absl::flat_hash_set<std::string> supported_key_systems =
+      GetSupportedKeySystems();
   for (const auto& key_system : supported_key_systems) {
     CdmInfo::Status status;
 

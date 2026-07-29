@@ -325,8 +325,8 @@ class BASE_EXPORT ScopedAllowCrossThreadRefCountAccess final {
 //    that has zero ref count. That tends to happen on custom deleter that
 //    delays the deletion.
 //    TODO(tzik): Implement invalid acquisition detection.
-//  - Behavior parity to Blink's WTF::RefCounted, whose count starts from one.
-//    And start-from-one ref count is a step to merge WTF::RefCounted into
+//  - Behavior parity to Blink's blink::RefCounted, whose count starts from one.
+//    And start-from-one ref count is a step to merge blink::RefCounted into
 //    base::RefCounted.
 //
 #define REQUIRE_ADOPTION_FOR_REFCOUNTED_TYPE() \
@@ -413,7 +413,7 @@ class RefCountedThreadSafe : public subtle::RefCountedThreadSafeBase {
  public:
   using RefCountPreferenceTag = subtle::StartRefCountFromZeroTag;
 
-  explicit RefCountedThreadSafe()
+  RefCountedThreadSafe()
       : subtle::RefCountedThreadSafeBase(subtle::GetRefCountPreference<T>()) {}
 
   RefCountedThreadSafe(const RefCountedThreadSafe&) = delete;
@@ -472,11 +472,6 @@ class RefCountedData
 template <typename T>
 bool operator==(const RefCountedData<T>& lhs, const RefCountedData<T>& rhs) {
   return lhs.data == rhs.data;
-}
-
-template <typename T>
-bool operator!=(const RefCountedData<T>& lhs, const RefCountedData<T>& rhs) {
-  return !(lhs == rhs);
 }
 
 }  // namespace base

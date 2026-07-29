@@ -10,9 +10,13 @@
 #import "components/feature_engagement/public/feature_constants.h"
 #import "ios/chrome/browser/bubble/ui_bundled/bubble_view_controller_presenter.h"
 #import "ios/chrome/browser/feature_engagement/model/tracker_factory.h"
+#import "ios/chrome/browser/first_run/guided_tour/coordinator/guided_tour_coordinator.h"
+#import "ios/chrome/browser/shared/coordinator/layout_guide/layout_guide_util.h"
+#import "ios/chrome/browser/shared/coordinator/scene/scene_state.h"
 #import "ios/chrome/browser/shared/model/browser/browser.h"
 #import "ios/chrome/browser/shared/model/profile/profile_ios.h"
 #import "ios/chrome/browser/shared/public/commands/command_dispatcher.h"
+#import "ios/chrome/browser/shared/public/commands/page_action_menu_commands.h"
 #import "ios/chrome/browser/shared/public/commands/tab_grid_toolbar_commands.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/grid/grid_toolbars_mutator.h"
 #import "ios/chrome/browser/tab_switcher/ui_bundled/tab_grid/toolbars/tab_grid_bottom_toolbar.h"
@@ -29,11 +33,13 @@
 @implementation TabGridToolbarsCoordinator {
   // Mediator of all tab grid toolbars.
   TabGridToolbarsMediator* _mediator;
+  // Coordinator for the first step of the guided tour.
+  GuidedTourCoordinator* _guidedTourCoordinator;
 }
 
 - (void)start {
   Browser* browser = self.browser;
-  CHECK(!browser->GetProfile()->IsOffTheRecord());
+  CHECK_EQ(browser->type(), Browser::Type::kRegular);
 
   _mediator =
       [[TabGridToolbarsMediator alloc] initWithModeHolder:self.modeHolder];
@@ -53,6 +59,11 @@
 - (void)stop {
   [_mediator disconnect];
   _mediator = nil;
+
+  [_guidedTourCoordinator stop];
+  _guidedTourCoordinator = nil;
+
+  [self.browser->GetCommandDispatcher() stopDispatchingToTarget:self];
 }
 
 #pragma mark - Property Implementation.
@@ -67,8 +78,7 @@
 
 - (void)showSavedTabGroupIPH {
   feature_engagement::Tracker* tracker =
-      feature_engagement::TrackerFactory::GetForProfile(
-          self.browser->GetProfile());
+      feature_engagement::TrackerFactory::GetForProfile(self.profile);
   if (!tracker->WouldTriggerHelpUI(
           feature_engagement::kIPHiOSSavedTabGroupClosed)) {
     return;
@@ -84,9 +94,8 @@
              arrowDirection:BubbleArrowDirectionUp
                   alignment:BubbleAlignmentCenter
                  bubbleType:BubbleViewTypeDefault
-          dismissalCallback:^(
-              IPHDismissalReasonType reason,
-              feature_engagement::Tracker::SnoozeAction action) {
+            pageControlPage:BubblePageControlPageNone
+          dismissalCallback:^(IPHDismissalReasonType reason) {
             [weakSelf savedTabGroupIPHDismissed];
           }];
 
@@ -102,19 +111,64 @@
     return;
   }
 
-  [self.topToolbar highlightLastPageControl];
+  [self.topToolbar highlightPageControlItem:TabGridPageTabGroups];
   [presenter presentInViewController:self.baseViewController
                          anchorPoint:anchorPoint];
 }
 
+- (void)showGuidedTourIncognitoStepWithDismissalCompletion:
+    (ProceduralBlock)completion {
+  [self.topToolbar highlightPageControlItem:TabGridPageIncognitoTabs];
+  __weak __typeof(self) weakSelf = self;
+  ProceduralBlock completionBlock = ^{
+    [weakSelf guidedTourStepCompletedForCompletion:completion];
+  };
+  _guidedTourCoordinator = [[GuidedTourCoordinator alloc]
+            initWithStep:GuidedTourStep::kTabGridIncognito
+      baseViewController:self.baseViewController
+                 browser:self.browser
+         completionBlock:completionBlock];
+  [_guidedTourCoordinator start];
+}
+
+- (void)showGuidedTourTabGroupStepWithDismissalCompletion:
+    (ProceduralBlock)completion {
+  [self.topToolbar highlightPageControlItem:TabGridPageTabGroups];
+  __weak __typeof(self) weakSelf = self;
+  ProceduralBlock completionBlock = ^{
+    [weakSelf guidedTourStepCompletedForCompletion:completion];
+  };
+  _guidedTourCoordinator = [[GuidedTourCoordinator alloc]
+            initWithStep:GuidedTourStep::kTabGridTabGroup
+      baseViewController:self.baseViewController
+                 browser:self.browser
+         completionBlock:completionBlock];
+  [_guidedTourCoordinator start];
+}
+
+- (void)hideTabGridToolbarGuidedTour {
+  [self.topToolbar resetLastPageControlHighlight];
+  [_guidedTourCoordinator stop];
+  _guidedTourCoordinator = nil;
+}
+
 #pragma mark - Private
+
+// Handles the completion of a guided tour step.
+- (void)guidedTourStepCompletedForCompletion:(ProceduralBlock)completion {
+  [self.topToolbar resetLastPageControlHighlight];
+  [_guidedTourCoordinator stop];
+  _guidedTourCoordinator = nil;
+  if (completion) {
+    completion();
+  }
+}
 
 // Callback for when the saved tab group IPH is dismissed.
 - (void)savedTabGroupIPHDismissed {
   [self.topToolbar resetLastPageControlHighlight];
   feature_engagement::Tracker* tracker =
-      feature_engagement::TrackerFactory::GetForProfile(
-          self.browser->GetProfile());
+      feature_engagement::TrackerFactory::GetForProfile(self.profile);
   tracker->Dismissed(feature_engagement::kIPHiOSSavedTabGroupClosed);
 }
 
@@ -122,8 +176,8 @@
 - (void)setupTopToolbar {
   // In iOS 13+, constraints break if the UIToolbar is initialized with a null
   // or zero rect frame. An arbitrary non-zero frame fixes this issue.
-  TabGridTopToolbar* topToolbar =
-      [[TabGridTopToolbar alloc] initWithFrame:CGRectMake(0, 0, 100, 100)];
+  TabGridTopToolbar* topToolbar = [[TabGridTopToolbar alloc]
+      initWithLayoutGuideCenter:LayoutGuideCenterForScene(self.sceneState)];
   self.topToolbar = topToolbar;
   topToolbar.translatesAutoresizingMaskIntoConstraints = NO;
   [topToolbar setSearchBarDelegate:self.searchDelegate];
@@ -142,6 +196,7 @@
 
 - (void)setupBottomToolbar {
   TabGridBottomToolbar* bottomToolbar = [[TabGridBottomToolbar alloc] init];
+  bottomToolbar.layoutState = self.sceneState.layoutState;
   self.bottomToolbar = bottomToolbar;
   bottomToolbar.translatesAutoresizingMaskIntoConstraints = NO;
 }

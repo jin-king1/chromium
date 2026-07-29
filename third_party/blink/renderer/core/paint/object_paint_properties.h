@@ -9,6 +9,7 @@
 #include <memory>
 #include <utility>
 
+#include "base/containers/span.h"
 #include "base/dcheck_is_on.h"
 #include "base/functional/function_ref.h"
 #include "base/memory/ptr_util.h"
@@ -127,44 +128,49 @@ class CORE_EXPORT ObjectPaintProperties
     kTransform = 7,
     kLastCSSTransform = kTransform,
     // End of Transform nodes for CSS transform operations.
-    kPerspective = 8,
-    kReplacedContentTransform = 9,
-    kScrollTranslation = 10,
-    kLastTransform = kScrollTranslation,
-    kTransformAlias = 11,
+    kContentTranslation = 8,
+    kPerspective = 9,
+    kReplacedContentTransform = 10,
+    kScrollTranslation = 11,
+    kUnboundedWrapperTransform = 12,
+    kUnboundedInnerTransform = 13,
+    kLastTransform = kUnboundedInnerTransform,
+    kTransformAlias = 14,
 
-    kScroll = 12,
+    kScroll = 15,
     kFirstScroll = kScroll,
     kLastScroll = kScroll,
 
     // Effects
-    kFirstEffect = 13,
+    kFirstEffect = 16,
     kElementCaptureEffect = kFirstEffect,
-    kViewTransitionSubframeRootEffect = 14,
-    kViewTransitionEffect = 15,
-    kEffect = 16,
-    kFilter = 17,
-    kMask = 18,
-    kClipPathMask = 19,
-    kVerticalScrollbarEffect = 20,
-    kHorizontalScrollbarEffect = 21,
-    kScrollCornerEffect = 22,
+    kViewTransitionScopeRootEffect = 17,
+    kViewTransitionEffect = 18,
+    kUnboundedWrapperEffect = 19,
+    kEffect = 20,
+    kFilter = 21,
+    kMask = 22,
+    kClipPathMask = 23,
+    kVerticalScrollbarEffect = 24,
+    kHorizontalScrollbarEffect = 25,
+    kScrollCornerEffect = 26,
     kLastEffect = kScrollCornerEffect,
-    kEffectAlias = 23,
+    kEffectAlias = 27,
 
     // Clips
-    kFirstClip = 24,
+    kFirstClip = 28,
     kClipPathClip = kFirstClip,
-    kMaskClip = 25,
-    kCssClip = 26,
-    kOverflowControlsClip = 27,
-    kBackgroundClip = 28,
-    kPixelMovingFilterClipExpander = 29,
-    kInnerBorderRadiusClip = 30,
-    kOverflowClip = 31,
-    kCssClipFixedPosition = 32,
-    kLastClip = kCssClipFixedPosition,
-    kClipAlias = 33,
+    kMaskClip = 29,
+    kCssClip = 30,
+    kOverflowControlsClip = 31,
+    kBackgroundClip = 32,
+    kPixelMovingFilterClipExpander = 33,
+    kInnerBorderRadiusClip = 34,
+    kOverflowClip = 35,
+    kCssClipFixedPosition = 36,
+    kInnerBorderShapeClip = 37,
+    kLastClip = kInnerBorderShapeClip,
+    kClipAlias = 38,
 
     // Should be updated whenever a higher value NodeType is added.
     kNumFields = kClipAlias + 1,
@@ -172,47 +178,6 @@ class CORE_EXPORT ObjectPaintProperties
 
   template <typename NodeType>
   struct NodeIdRange {};
-
-  template <>
-  struct NodeIdRange<PaintPropertyNode> {
-    static constexpr NodeId kFirst = NodeId::kFirstTransform;
-    static constexpr NodeId kLast = NodeId::kClipAlias;
-  };
-  template <>
-  struct NodeIdRange<TransformPaintPropertyNodeOrAlias> {
-    static constexpr NodeId kFirst = NodeId::kFirstTransform;
-    static constexpr NodeId kLast = NodeId::kTransformAlias;
-  };
-  template <>
-  struct NodeIdRange<TransformPaintPropertyNode> {
-    static constexpr NodeId kFirst = NodeId::kFirstTransform;
-    static constexpr NodeId kLast = NodeId::kLastTransform;
-  };
-  template <>
-  struct NodeIdRange<ScrollPaintPropertyNode> {
-    static constexpr NodeId kFirst = NodeId::kFirstScroll;
-    static constexpr NodeId kLast = NodeId::kLastScroll;
-  };
-  template <>
-  struct NodeIdRange<EffectPaintPropertyNodeOrAlias> {
-    static constexpr NodeId kFirst = NodeId::kFirstEffect;
-    static constexpr NodeId kLast = NodeId::kEffectAlias;
-  };
-  template <>
-  struct NodeIdRange<EffectPaintPropertyNode> {
-    static constexpr NodeId kFirst = NodeId::kFirstEffect;
-    static constexpr NodeId kLast = NodeId::kLastEffect;
-  };
-  template <>
-  struct NodeIdRange<ClipPaintPropertyNodeOrAlias> {
-    static constexpr NodeId kFirst = NodeId::kFirstClip;
-    static constexpr NodeId kLast = NodeId::kClipAlias;
-  };
-  template <>
-  struct NodeIdRange<ClipPaintPropertyNode> {
-    static constexpr NodeId kFirst = NodeId::kFirstClip;
-    static constexpr NodeId kLast = NodeId::kLastClip;
-  };
 
  public:
   template <typename NodeType>
@@ -253,36 +218,43 @@ class CORE_EXPORT ObjectPaintProperties
   // |
   // +-[ Transform ]
   //   |   The transform from CSS 'transform' (including the effects of
-  //   |   'transform-origin').
-  //   |
-  //   |   For SVG, this also includes 'translate', 'rotate', 'scale',
-  //   |   'offset-*' (instead of the nodes above) and the effects of
-  //   |   some characteristics of the SVG viewport and the "SVG
-  //   |   additional translation" (for the x and y attributes on
-  //   |   svg:use).
-  //   |
-  //   |   This is the local border box space (see
-  //   |   FragmentData::LocalBorderBoxProperties); the nodes below influence
-  //   |   the transform for the children but not the LayoutObject itself.
-  //   |
-  //   +-[ Perspective ]
-  //     |   The space created by CSS perspective.
-  //     +-[ ReplacedContentTransform ]
-  //         Additional transform for replaced elements to implement object-fit.
-  //         (Replaced elements don't scroll.)
-  //     OR
-  //     +-[ ScrollTranslation ]
-  //         The space created by overflow clip. The translation equals the
-  //         offset between the scrolling contents and the scrollable area of
-  //         the container, both originated from the top-left corner, so it is
-  //         the scroll position (instead of scroll offset) of the
-  //         ScrollableArea.
+  //  /    'transform-origin').
+  // |
+  // |     For SVG, this also includes 'translate', 'rotate', 'scale',
+  // |     'offset-*' (instead of the nodes above) and the effects of
+  // |     some characteristics of the SVG viewport and the "SVG
+  // |     additional translation" (for the x and y attributes on
+  // |     svg:use).
+  // |
+  // |     This is the local border box space (see
+  // |     FragmentData::LocalBorderBoxProperties); the nodes below influence
+  // |     the transform for the children but not the LayoutObject itself.
+  // |
+  // +-[ ContentTranslation ]
+  //   | Translation to account for the scroll origin of containing
+  //  /  non-overlay ::overscroll-area-parent pseudo-element
+  // |   ScrollTranslation nodes in the transform tree.
+  // |
+  // +-[ Perspective ]
+  //   |   The space created by CSS perspective.
+  //  /
+  // |
+  // +-[ ReplacedContentTransform ]
+  //     Additional transform for replaced elements to implement object-fit.
+  //     (Replaced elements don't scroll.)
+  //  OR
+  // +-[ ScrollTranslation ]
+  //     The space created by overflow clip. The translation equals the
+  //     offset between the scrolling contents and the scrollable area of
+  //     the container, both originated from the top-left corner, so it is
+  //     the scroll position (instead of scroll offset) of the
+  //     ScrollableArea.
   //
-  // ... +-[ TransformIsolationNode ]
-  //         This serves as a parent to subtree transforms on an element with
-  //         paint containment. It induces a PaintOffsetTranslation node and
-  //         is the deepest child of any transform tree on the contain: paint
-  //         element.
+  // +-[ TransformIsolationNode ]
+  //     This serves as a parent to subtree transforms on an element with
+  //     paint containment. It induces a PaintOffsetTranslation node and
+  //     is the deepest child of any transform tree on the contain: paint
+  //     element.
   //
   // This hierarchy is related to the order of transform operations in
   // https://drafts.csswg.org/css-transforms-2/#accumulated-3d-transformation-matrix-computation
@@ -290,9 +262,36 @@ class CORE_EXPORT ObjectPaintProperties
     return nodes_.HasFieldInRange(NodeId::kFirstCSSTransform,
                                   NodeId::kLastCSSTransform);
   }
-  std::array<const TransformPaintPropertyNode*, 5>
-  AllCSSTransformPropertiesOutsideToInside() const {
-    return {Translate(), Rotate(), Scale(), Offset(), Transform()};
+
+  // Existing CSS transform property nodes (Translate, Rotate, Scale, Offset,
+  // Transform) in outside-to-inside order, skipping absent nodes.
+  class CSSTransformRange {
+    STACK_ALLOCATED();
+
+   public:
+    CSSTransformRange() = default;
+    explicit CSSTransformRange(
+        const std::array<const TransformPaintPropertyNode*, 5>& nodes) {
+      for (const auto* node : nodes) {
+        if (node) {
+          nodes_[count_++] = node;
+        }
+      }
+    }
+    auto begin() const { return base::span(nodes_).first(count_).begin(); }
+    auto end() const { return base::span(nodes_).first(count_).end(); }
+
+   private:
+    std::array<const TransformPaintPropertyNode*, 5> nodes_ = {nullptr};
+    unsigned count_ = 0;
+  };
+
+  CSSTransformRange CSSTransformPropertiesOutsideToInside() const {
+    if (!HasCSSTransformPropertyNode()) [[likely]] {
+      return CSSTransformRange();
+    }
+    return CSSTransformRange(
+        {Translate(), Rotate(), Scale(), Offset(), Transform()});
   }
 
   ADD_TRANSFORM(PaintOffsetTranslation, NodeId::kPaintOffsetTranslation)
@@ -304,13 +303,19 @@ class CORE_EXPORT ObjectPaintProperties
   ADD_TRANSFORM(Scale, NodeId::kScale)
   ADD_TRANSFORM(Offset, NodeId::kOffset)
   ADD_TRANSFORM(Transform, NodeId::kTransform)
+  ADD_TRANSFORM(ContentTranslation, NodeId::kContentTranslation)
   ADD_TRANSFORM(Perspective, NodeId::kPerspective)
   ADD_TRANSFORM(ReplacedContentTransform, NodeId::kReplacedContentTransform)
   ADD_TRANSFORM(ScrollTranslation, NodeId::kScrollTranslation)
+  ADD_TRANSFORM(UnboundedWrapperTransform, NodeId::kUnboundedWrapperTransform)
+  ADD_TRANSFORM(UnboundedInnerTransform, NodeId::kUnboundedInnerTransform)
   using ScrollPaintPropertyNodeOrAlias = ScrollPaintPropertyNode;
   ADD_ALIAS_NODE(Transform, TransformIsolationNode, NodeId::kTransformAlias)
 
   ADD_NODE(Scroll, Scroll, NodeId::kScroll)
+  ScrollPaintPropertyNode* MutableScroll() {
+    return GetNode<ScrollPaintPropertyNode>(NodeId::kScroll);
+  }
 
   // Effect node method declarations.
   //
@@ -318,10 +323,10 @@ class CORE_EXPORT ObjectPaintProperties
   // follows:
   // [ ElementCaptureEffect ]
   // |     Isolated group to force an element to be painted separately.
-  // +-[ ViewTransitionSubframeRoot ]
-  //   |   Provides the root stacking context for a local subframe with an
-  //   |   active ViewTransition. This is used to implement the view transition
-  //  /    layer stacking context:
+  // +-[ ViewTransitionScopeRoot ]
+  //   |   Provides the root stacking context for an active view transition on
+  //   |   an element or a local subframe document. This is used to implement
+  //  /    the view transition layer stacking context:
   // | https://drafts.csswg.org/css-view-transitions-1/#view-transition-layer
   // +-[ ViewTransitionEffect ]
   //   |   Provides the stacking context to paint all content for a Document,
@@ -357,9 +362,10 @@ class CORE_EXPORT ObjectPaintProperties
   //       containment, It is the deepest child of any effect tree on the
   //       contain: paint element.
   ADD_EFFECT(ElementCaptureEffect, NodeId::kElementCaptureEffect)
-  ADD_EFFECT(ViewTransitionSubframeRootEffect,
-             NodeId::kViewTransitionSubframeRootEffect)
+  ADD_EFFECT(ViewTransitionScopeRootEffect,
+             NodeId::kViewTransitionScopeRootEffect)
   ADD_EFFECT(ViewTransitionEffect, NodeId::kViewTransitionEffect)
+  ADD_EFFECT(UnboundedWrapperEffect, NodeId::kUnboundedWrapperEffect)
   ADD_EFFECT(Effect, NodeId::kEffect)
   ADD_EFFECT(Filter, NodeId::kFilter)
   ADD_EFFECT(Mask, NodeId::kMask)
@@ -408,6 +414,9 @@ class CORE_EXPORT ObjectPaintProperties
   //     +-[ InnerBorderRadiusClip ]
   //       |   Clip created by a rounded border with overflow clip. This clip is
   //       |   not inset by scrollbars.
+  //     +-[ InnerBorderShapeClip ]
+  //       |   Clip created by a border-shape with overflow clip. This clip is
+  //       |   not inset by scrollbars.
   //       +-[ OverflowClip ]
   //             Clip created by overflow clip and is inset by the scrollbar.
   //   [ CssClipFixedPosition ]
@@ -426,6 +435,7 @@ class CORE_EXPORT ObjectPaintProperties
   ADD_CLIP(PixelMovingFilterClipExpander,
            NodeId::kPixelMovingFilterClipExpander)
   ADD_CLIP(InnerBorderRadiusClip, NodeId::kInnerBorderRadiusClip)
+  ADD_CLIP(InnerBorderShapeClip, NodeId::kInnerBorderShapeClip)
   ADD_CLIP(OverflowClip, NodeId::kOverflowClip)
   ADD_CLIP(CssClipFixedPosition, NodeId::kCssClipFixedPosition)
   ADD_ALIAS_NODE(Clip, ClipIsolationNode, NodeId::kClipAlias)
@@ -579,6 +589,48 @@ class CORE_EXPORT ObjectPaintProperties
   mutable bool is_immutable_ = false;
 #endif
 };
+
+template <>
+struct ObjectPaintProperties::NodeIdRange<PaintPropertyNode> {
+  static constexpr NodeId kFirst = NodeId::kFirstTransform;
+  static constexpr NodeId kLast = NodeId::kClipAlias;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<TransformPaintPropertyNodeOrAlias> {
+  static constexpr NodeId kFirst = NodeId::kFirstTransform;
+  static constexpr NodeId kLast = NodeId::kTransformAlias;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<TransformPaintPropertyNode> {
+  static constexpr NodeId kFirst = NodeId::kFirstTransform;
+  static constexpr NodeId kLast = NodeId::kLastTransform;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<ScrollPaintPropertyNode> {
+  static constexpr NodeId kFirst = NodeId::kFirstScroll;
+  static constexpr NodeId kLast = NodeId::kLastScroll;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<EffectPaintPropertyNodeOrAlias> {
+  static constexpr NodeId kFirst = NodeId::kFirstEffect;
+  static constexpr NodeId kLast = NodeId::kEffectAlias;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<EffectPaintPropertyNode> {
+  static constexpr NodeId kFirst = NodeId::kFirstEffect;
+  static constexpr NodeId kLast = NodeId::kLastEffect;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<ClipPaintPropertyNodeOrAlias> {
+  static constexpr NodeId kFirst = NodeId::kFirstClip;
+  static constexpr NodeId kLast = NodeId::kClipAlias;
+};
+template <>
+struct ObjectPaintProperties::NodeIdRange<ClipPaintPropertyNode> {
+  static constexpr NodeId kFirst = NodeId::kFirstClip;
+  static constexpr NodeId kLast = NodeId::kLastClip;
+};
+
 
 }  // namespace blink
 

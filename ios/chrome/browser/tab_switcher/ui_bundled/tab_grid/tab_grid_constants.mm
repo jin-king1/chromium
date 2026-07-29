@@ -11,8 +11,6 @@ const char kUMATabSwitcherIdleIncognitoTabGridPageHistogram[] =
     "IOS.TabSwitcher.Idle.IncognitoTabGridPage";
 const char kUMATabSwitcherIdleRegularTabGridPageHistogram[] =
     "IOS.TabSwitcher.Idle.RegularTabGridPage";
-const char kUMATabSwitcherIdleRecentTabsHistogram[] =
-    "IOS.TabSwitcher.Idle.RecentTabs";
 const char kUMATabSwitcherIdleTabGroupsHistogram[] =
     "IOS.TabSwitcher.Idle.TabGroups";
 
@@ -25,15 +23,14 @@ NSString* const kTabGridRemoteTabsPageButtonIdentifier =
     @"TabGridRemoteTabsPageButtonIdentifier";
 NSString* const kTabGridTabGroupsPageButtonIdentifier =
     @"TabGridTabGroupsPageButtonIdentifier";
-NSString* const kTabGridDoneButtonIdentifier = @"TabGridDoneButtonIdentifier";
+NSString* const kTabGridExitTabGridButtonIdentifier =
+    @"TabGridExitTabGridButtonIdentifier";
+NSString* const kTabGridExitSelectionButtonIdentifier =
+    @"TabGridExitSelectionButtonIdentifier";
 NSString* const kTabGridCancelButtonIdentifier =
     @"TabGridCancelButtonIdentifier";
 NSString* const kTabGridSearchButtonIdentifier =
     @"TabGridSearchButtonIdentifier";
-NSString* const kTabGridCloseAllButtonIdentifier =
-    @"TabGridCloseAllButtonIdentifier";
-NSString* const kTabGridUndoCloseAllButtonIdentifier =
-    @"TabGridUndoCloseAllButtonIdentifier";
 NSString* const kTabGridIncognitoTabsEmptyStateIdentifier =
     @"TabGridIncognitoTabsEmptyStateIdentifier";
 NSString* const kTabGridRegularTabsEmptyStateIdentifier =
@@ -45,7 +42,6 @@ NSString* const kInactiveTabGridIdentifier = @"kInactiveTabGridIdentifier";
 NSString* const kInactiveTabGridCloseAllButtonIdentifier =
     @"kInactiveTabGridCloseAllButtonIdentifier";
 
-NSString* const kTabGridEditButtonIdentifier = @"kTabGridEditButtonIdentifier";
 NSString* const kTabGridEditCloseTabsButtonIdentifier =
     @"kTabGridEditCloseTabsButtonIdentifier";
 NSString* const kTabGridEditSelectAllButtonIdentifier =
@@ -57,13 +53,15 @@ NSString* const kTabGridEditShareButtonIdentifier =
 NSString* const kTabGridSearchBarIdentifier = @"kTabGridSearchBarIdentifier";
 NSString* const kTabGridSearchTextFieldIdentifierPrefix = @"kSearchTextId_";
 NSString* const kTabGridScrimIdentifier = @"kTabGridScrimIdentifier";
+NSString* const kTabGridOverflowMenuButtonIdentifier =
+    @"kTabGridOverflowMenuButtonIdentifier";
 
-// The color of the text buttons in the toolbars.
-const int kTabGridToolbarTextButtonColor = 0xFFFFFF;
+NSString* const kTabCellActivityLabelIdentifier =
+    @"TabCellActivityLabelIdentifier";
 
-// Colors for the empty state and disabled tab view.
-const int kTabGridEmptyStateTitleTextColor = 0xF8F9FA;
-const int kTabGridEmptyStateBodyTextColor = 0xBDC1C6;
+UIColor* TabGridGlassButtonTintColor() {
+  return [UIColor.blackColor colorWithAlphaComponent:0.25];
+}
 
 // The distance the toolbar content is inset from either side.
 const CGFloat kTabGridToolbarHorizontalInset = 16.0f;
@@ -76,8 +74,8 @@ extern const CGFloat kTabGridEmptyStateVerticalInset = 17.0f;
 extern const CGFloat kTabGridEmptyStateHorizontalInset = 80.0f;
 
 // The insets from the edges for the floating button.
-const CGFloat kTabGridFloatingButtonVerticalInset = 28.0f;
-const CGFloat kTabGridFloatingButtonHorizontalInset = 20.0f;
+const CGFloat kTabGridFloatingButtonInset = 10.0f;
+const CGFloat kTabGridFloatingButtonInsetIPad = 20.0f;
 
 // The Search bar original width ratio of the available space from the
 // containing toolbar before any width modifiers.
@@ -86,6 +84,9 @@ const CGFloat kTabGridSearchBarWidthRatio = 0.9f;
 const CGFloat kTabGridSearchBarHeight = 44.0f;
 // The Search bar width ratio modifier for non-compact orientation.
 const CGFloat kTabGridSearchBarNonCompactWidthRatioModifier = 0.5f;
+
+NSString* const kTabGridSearchSuggestedHistoryItemId =
+    @"kTabGridSearchSuggestedHistoryItemId";
 
 // Intrinsic heights of the tab grid toolbars.
 const CGFloat kTabGridTopToolbarHeight = 52.0f;

@@ -55,11 +55,6 @@ class ContentWebState : public WebState,
   explicit ContentWebState(const CreateParams& params);
 
   // Constructor for ContentWebState created for deserialized sessions.
-  ContentWebState(const CreateParams& params,
-                  CRWSessionStorage* session_storage,
-                  NativeSessionFetcher session_fetcher);
-
-  // Constructor for ContentWebState created for deserialized sessions.
   ContentWebState(BrowserState* browser_state,
                   WebStateID unique_identifier,
                   proto::WebStateMetadataStorage metadata,
@@ -79,7 +74,7 @@ class ContentWebState : public WebState,
   void SetDelegate(WebStateDelegate* delegate) override;
   std::unique_ptr<WebState> Clone() const override;
   bool IsRealized() const final;
-  WebState* ForceRealized() final;
+  WebState* ForceRealizedWithPolicy(RealizationPolicy policy) final;
   bool IsWebUsageEnabled() const override;
   void SetWebUsageEnabled(bool enabled) override;
   UIView* GetView() override;
@@ -101,16 +96,16 @@ class ContentWebState : public WebState,
                             NSString* mime_type) override
       API_AVAILABLE(ios(15.0));
   void Stop() override;
+  std::optional<std::string> GetUserAgentOverride() const override;
+  void SetUserAgentOverride(std::optional<std::string> ua_override) override;
   const NavigationManager* GetNavigationManager() const override;
   NavigationManager* GetNavigationManager() override;
   WebFramesManager* GetPageWorldWebFramesManager() override;
   const SessionCertificatePolicyCache* GetSessionCertificatePolicyCache()
       const override;
   SessionCertificatePolicyCache* GetSessionCertificatePolicyCache() override;
-  CRWSessionStorage* BuildSessionStorage() const override;
   void LoadData(NSData* data, NSString* mime_type, const GURL& url) override;
   void ExecuteUserJavaScript(NSString* javaScript) override;
-  NSString* GetStableIdentifier() const override;
   WebStateID GetUniqueIdentifier() const override;
   const std::string& GetContentsMimeType() const override;
   bool ContentIsHTML() const override;
@@ -152,6 +147,8 @@ class ContentWebState : public WebState,
   void SetFindInteractionEnabled(bool enabled) final;
   id<CRWFindInteraction> GetFindInteraction() final API_AVAILABLE(ios(16));
   id GetActivityItem() API_AVAILABLE(ios(16.4)) final;
+  bool IsCustomOpenPanelSupported() const final;
+  void SetCustomOpenPanelSupported(bool supports) final;
   UIColor* GetThemeColor() final;
   UIColor* GetUnderPageBackgroundColor() final;
   void AddPolicyDecider(WebStatePolicyDecider* decider) override;
@@ -186,7 +183,8 @@ class ContentWebState : public WebState,
 
   void DidUpdateFaviconURL(
       content::RenderFrameHost* render_frame_host,
-      const std::vector<blink::mojom::FaviconURLPtr>& candidates) override;
+      const std::vector<blink::mojom::FaviconURLPtr>& candidates,
+      blink::mojom::FaviconUpdateReason reason) override;
 
   void RenderFrameCreated(content::RenderFrameHost* render_frame_host) override;
   void RenderFrameDeleted(content::RenderFrameHost* render_frame_host) override;
@@ -207,6 +205,7 @@ class ContentWebState : public WebState,
       const blink::mojom::WindowFeatures& window_features,
       bool user_gesture,
       bool* was_blocked) override;
+  void CloseContents(content::WebContents* source) override;
   int GetTopControlsHeight() override;
   int GetTopControlsMinHeight() override;
   int GetBottomControlsHeight() override;
@@ -230,6 +229,14 @@ class ContentWebState : public WebState,
       content::WebContents* source) override;
 
  private:
+  // Store serialized state.
+  class SerializedState;
+
+  // Private constructor.
+  ContentWebState(const CreateParams& params,
+                  WebStateID unique_identifier,
+                  std::unique_ptr<SerializedState> serialized_state);
+
   // Helper method to register notification observers.
   void RegisterNotificationObservers();
   void OnKeyboardShow(NSNotification* notification);
@@ -237,12 +244,11 @@ class ContentWebState : public WebState,
 
   raw_ptr<WebStateDelegate> delegate_ = nullptr;
   CRCWebViewportContainerView* web_view_;
-  CRWSessionStorage* session_storage_;
+  std::unique_ptr<SerializedState> serialized_state_;
   std::unique_ptr<content::WebContents> web_contents_;
   std::unique_ptr<content::WebContents> child_web_contents_;
   std::unique_ptr<web::SessionCertificatePolicyCache> certificate_policy_cache_;
   id<CRWWebViewProxy> web_view_proxy_;
-  NSString* UUID_;
   // The unique identifier. Stable across application restarts.
   const WebStateID unique_identifier_;
   base::ObserverList<WebStatePolicyDecider, true> policy_deciders_;

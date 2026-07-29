@@ -2,23 +2,19 @@
 // Use of this source code is governed by a BSD-style license that can be
 // found in the LICENSE file.
 
-#ifdef UNSAFE_BUFFERS_BUILD
-// TODO(crbug.com/40284755): Remove this and spanify to fix the errors.
-#pragma allow_unsafe_buffers
-#endif
-
 #include "base/win/pe_image_reader.h"
 
 #include <windows.h>
 
 #include <stddef.h>
 #include <stdint.h>
+#include <wintrust.h>
 
+#include "base/containers/span.h"
 #include "base/files/file_path.h"
 #include "base/files/memory_mapped_file.h"
 #include "base/memory/raw_ptr.h"
 #include "base/path_service.h"
-#include "base/win/wintrust_shim.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "testing/gtest/include/gtest/gtest.h"
 
@@ -103,10 +99,15 @@ TEST_P(PeImageReaderTest, InitializeFailTruncatedFile) {
   // Compute the size of all headers through the section headers.
   const IMAGE_SECTION_HEADER* last_section_header =
       image_reader_.GetSectionHeaderAt(image_reader_.GetNumberOfSections() - 1);
-  const uint8_t* headers_end =
-      reinterpret_cast<const uint8_t*>(last_section_header) +
-      sizeof(*last_section_header);
-  size_t header_size = headers_end - data_file_.data();
+  const uintptr_t last_section_header_addr =
+      reinterpret_cast<uintptr_t>(last_section_header);
+  const uintptr_t headers_end_addr =
+      last_section_header_addr + sizeof(*last_section_header);
+  const uintptr_t data_start_addr =
+      reinterpret_cast<uintptr_t>(data_file_.data());
+
+  size_t header_size = headers_end_addr - data_start_addr;
+
   PeImageReader short_reader;
 
   // Initialize should succeed when all headers are present.
@@ -197,8 +198,10 @@ class MockCertificateReceiver : public CertificateReceiver {
   MockCertificateReceiver(const MockCertificateReceiver&) = delete;
   MockCertificateReceiver& operator=(const MockCertificateReceiver&) = delete;
 
-  MOCK_METHOD3(OnCertificate,
-               bool(uint16_t, uint16_t, base::span<const uint8_t>));
+  MOCK_METHOD(bool,
+              OnCertificate,
+              (uint16_t, uint16_t, base::span<const uint8_t>),
+              (override));
 };
 
 struct CertificateTestData {

@@ -57,6 +57,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Wait until `matcher` is accessible (not nil) on the device.
 - (void)waitForMatcher:(id<GREYMatcher>)matcher;
 
+// Returns YES if `matcher` is sufficiently_visible;
+- (BOOL)isMatcherSufficientlyVisible:(id<GREYMatcher>)matcher;
+
 #pragma mark - Device Utilities
 
 // Returns YES if running on an iPad.
@@ -84,6 +87,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // vertical and regular horizontal size class.
 - (BOOL)isRegularXRegularSizeClass;
 
+// Returns YES if the application window is in windowed mode (multitasking).
+- (BOOL)isWindowedMode;
+
 // Stops primes performance metrics logging by calling into the
 // internal framework (should only be used by performance tests)
 - (void)primesStopLogging;
@@ -98,8 +104,14 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns whether the current layout is showing the bottom omnibox.
 - (BOOL)isCurrentLayoutBottomOmnibox;
 
-// Returns whether the Enhanced Safe Browsing Infobar Promo feature is enabled.
-- (BOOL)isEnhancedSafeBrowsingInfobarEnabled;
+// Returns whether the ComposeboxIOS feature is enabled.
+- (BOOL)isComposeboxIOSEnabled;
+
+// Returns whether the Proactive Suggestions Framework feature is enabled.
+- (BOOL)isProactiveSuggestionsFrameworkEnabled;
+
+// Returns the interface orientation of the scene.
+- (UIInterfaceOrientation)interfaceOrientation;
 
 #pragma mark - Profile Utilities (EG2)
 
@@ -112,6 +124,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // profile (as opposed to managed profiles), as per
 // `ProfileAttributesStorageIOS::GetPersonalProfileName()`.
 - (NSString*)personalProfileName;
+
+// Waits for the current profile name to match `profileName`.
+- (void)waitForCurrentProfileName:(NSString*)profileName;
 
 #pragma mark - History Utilities (EG2)
 
@@ -144,18 +159,34 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // options.
 - (void)sceneOpenURL:(const GURL&)URL;
 
+// Continues `userActivity` using some connected scene with a specific URL.
+- (void)sceneContinueUserActivityWithType:(NSString*)activityType
+                                      url:(NSString*)urlString;
+
+// Loads `URL` in the current WebState with transition type
+// ui::PAGE_TRANSITION_TYPED, and waits for the loading to complete within a
+// specified `timeout`. This timeout is used for both webView appearance and
+// page load; time taken is approximately `timeout` for page load but total time
+// could take up to double the `timeout`.
+- (void)loadURL:(const GURL&)URL withTimeout:(base::TimeDelta)timeout;
+
+// Loads `URL` in the current WebState with transition type
+// ui::PAGE_TRANSITION_TYPED, and waits for the loading to complete within a
+// specified `timeout`. This timeout is used for both webView appearance and
+// page load; time taken is approximately `timeout` for page load but total time
+// could take up to double the `timeout`. Returns nil on success, or else an
+// NSError indicating why the operation failed.
+- (NSError*)loadURL:(const GURL&)URL
+    timeoutWithError:(base::TimeDelta)timeout [[nodiscard]];
+
 // Loads `URL` in the current WebState with transition type
 // ui::PAGE_TRANSITION_TYPED, and if waitForCompletion is YES
 // waits for the loading to complete within a timeout.
-// Returns nil on success, or else an NSError indicating why the operation
-// failed.
 - (void)loadURL:(const GURL&)URL waitForCompletion:(BOOL)wait;
 
 // Loads `URL` in the current WebState with transition type
 // ui::PAGE_TRANSITION_TYPED, and waits for the loading to complete within a
 // timeout.
-// If the condition is not met within a timeout returns an NSError indicating
-// why the operation failed, otherwise nil.
 - (void)loadURL:(const GURL&)URL;
 
 // Returns YES if the current WebState is loading.
@@ -173,6 +204,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // within a timeout, or a GREYAssert is induced.
 - (void)goBack;
 
+// Starts navigating forward to the next page without waiting for the loading to
+// complete.
+- (void)startGoingForward;
+
 // Navigates forward to the next page and waits for the loading to complete
 // within a timeout, or a GREYAssert is induced.
 - (void)goForward;
@@ -180,6 +215,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Waits for the page to finish loading within a timeout, or a GREYAssert is
 // induced.
 - (void)waitForPageToFinishLoading;
+
+// Waits for the page to finish loading within the given `timeout`. Returns nil
+// on success, or else an NSError indicating why the operation failed.
+- (NSError*)waitForPageToFinishLoadingWithTimeout:(base::TimeDelta)timeout;
 
 // Waits for the matcher to return an element that is sufficiently visible.
 - (void)waitForSufficientlyVisibleElementWithMatcher:(id<GREYMatcher>)matcher;
@@ -225,9 +264,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Waits for there to be `count` number of incognito tabs within a timeout, or a
 // GREYAssert is induced.
 - (void)waitForIncognitoTabCount:(NSUInteger)count;
-
-// Loads `URL` as if it was opened from an external application.
-- (void)openURLFromExternalApp:(const GURL&)URL;
 
 // Programmatically dismisses settings screen.
 - (void)dismissSettings;
@@ -290,6 +326,10 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (void)addHistoryServiceTypedURL:(const GURL&)URL
                    visitTimestamp:(base::Time)visitTimestamp;
 
+// Sets the page `title` for `URL` in the History Service.
+- (void)setHistoryServiceTitle:(const std::string_view&)title
+                       forPage:(const GURL&)URL;
+
 // Deletes typed URL from HistoryService.
 - (void)deleteHistoryServiceTypedURL:(const GURL&)URL;
 
@@ -311,6 +351,45 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Injects device info to sync FakeServer.
 - (void)addFakeSyncServerDeviceInfo:(NSString*)deviceName
                lastUpdatedTimestamp:(base::Time)lastUpdatedTimestamp;
+
+// Injects a send tab to self entry to sync FakeServer.
+- (void)addFakeSyncServerSendTabToSelfEntryWithURL:(NSString*)URL
+                                             title:(NSString*)title
+                                        deviceName:(NSString*)deviceName
+                                  targetDeviceGUID:(NSString*)targetDeviceGUID;
+
+// Adds a fake Send Tab To Self entry to the local model and returns its GUID.
+// `formFieldData` is a dictionary where keys are form control names and
+// values are the values to fill.
+- (NSString*)addFakeSendTabToSelfEntryWithURL:(NSString*)url
+                                        title:(NSString*)title
+                                formFieldData:
+                                    (NSDictionary<NSString*, NSString*>*)
+                                        formFieldData;
+
+// Adds a fake Send Tab To Self entry with the given text fragment to the local
+// model and returns its GUID.
+- (NSString*)addFakeSendTabToSelfEntryWithURL:(NSString*)url
+                                        title:(NSString*)title
+                                 textFragment:(NSString*)textFragment;
+
+// Waits for the local Send Tab To Self model to contain an entry with the
+// given GUID.
+- (void)waitForSendTabToSelfEntryWithGUID:(NSString*)guid;
+
+// Returns the generated text fragment for the given URL, or nil if no entry
+// exists or no fragment is set.
+- (NSString*)textFragmentForSendTabToSelfEntryWithURL:(NSString*)URL;
+
+// Opens a new tab with the given URL and attaches the text fragment to its
+// internal NavigationItem to trigger scroll restoration upon page load.
+- (void)openNewTabWithURL:(NSString*)url textFragment:(NSString*)textFragment;
+
+// Opens a new tab with the given URL, text fragment, and marks it as
+// originating from Send Tab To Self with the given entry GUID.
+- (void)openSendTabToSelfNewTabWithURL:(NSString*)url
+                          textFragment:(NSString*)textFragment
+                             entryGUID:(NSString*)guid;
 
 // Triggers a sync cycle for a `type`.
 - (void)triggerSyncCycleForType:(syncer::DataType)type;
@@ -359,9 +438,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Simulates opening `url` from another application.
 - (void)simulateExternalAppURLOpeningWithURL:(NSURL*)url;
 - (void)simulateExternalAppURLOpeningAndWaitUntilOpenedWithGURL:(GURL)url;
-
-// Simulates opening the add account sign-in flow from the web.
-- (void)simulateAddAccountFromWeb;
 
 // Closes the current tab and waits for the UI to complete.
 - (void)closeCurrentTab;
@@ -419,6 +495,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns the index of active tab in normal (non-incognito) mode.
 - (NSUInteger)indexOfActiveNormalTab;
 
+// Returns YES if the current active WebState is showing a new tab page.
+- (BOOL)isCurrentTabNTP [[nodiscard]];
+
 // Simulates a backgrounding and raises an EarlGrey exception if simulation not
 // succeeded.
 - (void)simulateTabsBackgrounding;
@@ -457,6 +536,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Shows the tab switcher by tapping the switcher button.  Works on both phone
 // and tablet.
 - (void)showTabSwitcher;
+
+// Hides the tab switcher.
+- (void)hideTabSwitcher;
 
 #pragma mark - Window utilities (EG2)
 
@@ -549,6 +631,12 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (void)waitForIncognitoTabCount:(NSUInteger)count
               inWindowWithNumber:(int)windowNumber;
 
+// Opens the settings menu directly (not via the UI) in the window with the
+// given number. EarlGrey + Multiwindow + SwiftUI (the tools menu) do not
+// play well together, so EG often fails to interact with the tools menu in
+// secondary windows.
+- (void)openSettingsInWindowWithNumber:(int)windowNumber;
+
 #pragma mark - SignIn Utilities (EG2)
 
 // Signs the user out, clears the known accounts & browsing data, and wait for
@@ -557,11 +645,6 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (void)signOutAndClearIdentities;
 
 #pragma mark - Sync Utilities (EG2)
-
-// Waits for the sync feature to be enabled/disabled. See SyncService::
-// IsSyncFeatureEnabled() for details. If not succeeded a GREYAssert is induced.
-- (void)waitForSyncFeatureEnabled:(BOOL)isEnabled
-                      syncTimeout:(base::TimeDelta)timeout;
 
 // Waits for sync to become fully active; see
 // SyncService::TransportState::ACTIVE for details. If not succeeded a
@@ -616,6 +699,11 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // is not met within a timeout a GREYAssert is induced.
 - (void)waitForWebStateFrameContainingText:(const std::string&)UTF8Text;
 
+// Waits for the main frame or an iframe to contain `UTF8Text`. If the condition
+// is not met within the given `timeout` a GREYAssert is induced.
+- (void)waitForWebStateFrameContainingText:(const std::string&)UTF8Text
+                                   timeout:(base::TimeDelta)timeout;
+
 // Waits for the current web state to contain `UTF8Text`. If the condition is
 // not met within the given `timeout` a GREYAssert is induced.
 - (void)waitForWebStateContainingText:(const std::string&)UTF8Text
@@ -647,6 +735,9 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 
 // Returns the current web state's last committed URL.
 - (GURL)webStateLastCommittedURL;
+
+// Waits for the current web state's visible URL to be `URL`.
+- (void)waitForWebStateVisibleURL:(const GURL&)URL;
 
 // Purges cached web view pages, so the next time back navigation will not use
 // a cached page. Browsers don't have to use a fresh version for back/forward
@@ -702,6 +793,11 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Fails if the execution causes an error.
 - (void)evaluateJavaScriptForSideEffect:(NSString*)javaScript;
 
+// Same as -evaluateJavaScriptForSideEffect but executes the javascript in the
+// isolated world instead of the page content world. This allows interacting
+// with the gcrweb objects that are injected there.
+- (void)evaluateJavaScriptInIsolatedWorldForSideEffect:(NSString*)javaScript;
+
 // Returns the user agent that should be used for the mobile version.
 - (NSString*)mobileUserAgentString;
 
@@ -730,11 +826,14 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns YES if UKM feature is enabled.
 - (BOOL)isUKMEnabled [[nodiscard]];
 
-// Returns YES if DWA feature is enabled.
-- (BOOL)isDWAEnabled [[nodiscard]];
-
 // Returns YES if kTestFeature is enabled.
 - (BOOL)isTestFeatureEnabled;
+
+// Returns YES if kOverflowMenuHomeCustomizationEntrypoint is enabled.
+- (BOOL)isOverflowMenuHomeCustomizationEntrypointEnabled;
+
+// Returns YES if Fullscreen smooth scrolling is supported.
+- (BOOL)isFullscreenSmoothScrollingSupported;
 
 // Returns YES if DemographicMetricsReporting feature is enabled.
 - (BOOL)isDemographicMetricsReportingEnabled [[nodiscard]];
@@ -754,20 +853,31 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // can, open multiple windows.
 - (BOOL)areMultipleWindowsSupported;
 
-// Returns whether the NewOverflowMenu feature is enabled.
-- (BOOL)isNewOverflowMenuEnabled;
-
 // Returns whether the UseLensToSearchForImage feature is enabled;
 - (BOOL)isUseLensToSearchForImageEnabled;
 
-// Returns whether the Web Channels feature is enabled.
-- (BOOL)isWebChannelsEnabled;
-
-// Returns whether the Tab Group Sync feature is enabled.
-- (BOOL)isTabGroupSyncEnabled;
+// Returns whether the YourSavedInfoSettingsPageIos feature is enabled.
+- (BOOL)isYourSavedInfoSettingsPageIosEnabled;
 
 // Returns whether the unfocused omnibox is at the bottom.
 - (BOOL)isUnfocusedOmniboxAtBottom;
+
+// Returns whether Chrome Next is enabled.
+- (BOOL)isChromeNextEnabled;
+
+// Returns whether overflow menu refactoring on the NTP is enabled.
+- (BOOL)isOverflowMenuNTPRefactorEnabled;
+
+// Returns whether the Chrome Next Share Icon is visible.
+- (BOOL)isChromeNextShareIconVisible;
+
+// Returns YES if the view with `accessibilityID` or any of its ancestors is
+// animating.
+- (BOOL)isViewAnimatingWithAccessibilityID:(NSString*)accessibilityID;
+
+// Waits for the view with `accessibilityID` to stop animating within `timeout`.
+- (void)waitForViewToStopAnimatingWithAccessibilityID:(NSString*)accessibilityID
+                                              timeout:(base::TimeDelta)timeout;
 
 #pragma mark - ContentSettings
 
@@ -817,6 +927,14 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Returns the object for `key` in NSUserDefault.
 - (id)userDefaultsObjectForKey:(NSString*)key;
 
+// Creates a `AppGroupCommand` based on the provided text and writes it the
+// shared NSUserDefaults.
+- (void)setAppGroupCommandToSearchText:(NSString*)text;
+
+// Creates an incognito `AppGroupCommand` based on the provided text and writes
+// it the shared NSUserDefaults.
+- (void)setAppGroupCommandToIncognitoSearchText:(NSString*)text;
+
 #pragma mark - Pref Utilities (EG2)
 
 // Commit synchronously the pending user prefs write. Waits until the disk write
@@ -827,6 +945,7 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (bool)localStateBooleanPref:(const std::string&)prefName;
 - (int)localStateIntegerPref:(const std::string&)prefName;
 - (std::string)localStateStringPref:(const std::string&)prefName;
+- (base::Time)localStateTimePref:(const std::string&)prefName;
 
 // Sets the integer value for the local state pref with `prefName`. `value`
 // can be either a casted enum or any other numerical value. Local State
@@ -855,6 +974,7 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Gets the value of a user pref in the original profile.
 - (bool)userBooleanPref:(const std::string&)prefName;
 - (int)userIntegerPref:(const std::string&)prefName;
+- (double)userDoublePref:(const std::string&)prefName;
 - (std::string)userStringPref:(const std::string&)prefName;
 
 // Sets the value of a user pref in the original profile.
@@ -862,6 +982,8 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
            forUserPref:(const std::string&)UTF8PrefName;
 - (void)setBoolValue:(BOOL)value forUserPref:(const std::string&)UTF8PrefName;
 - (void)setIntegerValue:(int)value forUserPref:(const std::string&)UTF8PrefName;
+- (void)setDoubleValue:(double)value
+           forUserPref:(const std::string&)UTF8PrefName;
 
 // Returns true if the LocaState Preference is currently using its default
 // value, and has not been set by any higher-priority source (even with the same
@@ -896,6 +1018,13 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // Copies `text` into the clipboard from the app's perspective.
 - (void)copyTextToPasteboard:(NSString*)text;
 
+// Copies `link` as NSURL into the clipboard from the app's perspective.
+- (void)copyLinkAsURLToPasteBoard:(NSString*)link;
+
+// Copies `image` as NSData with PNG representation into the clipboard from the
+// app's perspective.
+- (void)copyImageToPasteboard:(UIImage*)image;
+
 #pragma mark - Context Menus Utilities (EG2)
 
 // Taps on the Copy Link context menu action and verifies that the `text` has
@@ -903,16 +1032,16 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 - (void)verifyCopyLinkActionWithText:(NSString*)text;
 
 // Taps on the Open in New Tab context menu action and waits for the `URL` to be
-// present in the omnibox.
-- (void)verifyOpenInNewTabActionWithURL:(const std::string&)URL;
+// present the URL of the current tab.
+- (void)verifyOpenInNewTabActionWithURL:(const GURL&)URL;
 
 // Taps on the Open in New Window context menu action and waits for the
 // `content` to be present in webview.
 - (void)verifyOpenInNewWindowActionWithContent:(const std::string&)content;
 
 // Taps on the Open in Incognito context menu action and waits for the `URL` to
-// be present in the omnibox.
-- (void)verifyOpenInIncognitoActionWithURL:(const std::string&)URL;
+// be present the URL of the current tab.
+- (void)verifyOpenInIncognitoActionWithURL:(const GURL&)URL;
 
 // Taps on the Share context menu action and validates that the ActivityView
 // was brought up with the correct title in its header. The title starts as the
@@ -973,6 +1102,11 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 // is induced on failure.
 - (void)tapButtonInActivitySheetWithID:(NSString*)buttonText;
 
+// Taps the `more` or `view more` button in the activity sheet that allows users
+// to expand the sheet to see all available actions on iOS 26+. Example:
+// https://screenshot.googleplex.com/8QGvXx4q2LNYoVJ
+- (void)tapMoreOptionButtonInActivitySheet;
+
 #pragma mark - First Run Utilities
 
 // Writes the First Run Sentinel file, used to record that First Run has
@@ -993,6 +1127,20 @@ id<GREYAction> grey_longPressWithDuration(base::TimeDelta duration);
 
 // Forces an override of the variations stored permanent country.
 - (void)overrideVariationsServiceStoredPermanentCountry:(NSString*)country;
+
+#pragma mark - Shared Tab Groups Utilities
+
+// Waits for the MessagingBackendService to be initialized.
+- (NSError*)waitForMessagingBackendServiceInitialized;
+
+#pragma mark - Reader mode Utilities
+
+// Shows Reader mode in the current tab and wait for the Reader mode WebState to
+// be ready.
+- (BOOL)showReaderModeAndWaitUntilReaderModeWebStateIsReady;
+
+// Hides Reader mode in the current tab.
+- (void)hideReaderMode;
 
 @end
 

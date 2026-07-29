@@ -10,6 +10,7 @@
 #include "base/functional/callback_helpers.h"
 #include "base/memory/weak_ptr.h"
 #include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/user_education/user_education_types.h"
 #include "components/user_education/common/tutorial/tutorial_identifier.h"
 #include "components/user_education/common/tutorial/tutorial_service.h"
 #include "url/gurl.h"
@@ -55,10 +56,11 @@ class StartTutorialInPage {
     ~Params();
 
     // The page to open. If not specified, the current page will be used.
-    std::optional<GURL> target_url = std::nullopt;
+    std::optional<GURL> target_url;
 
-    // See overwrite_active_tab in show_promo_in_page.h
-    bool overwrite_active_tab = false;
+    // See page_open_mode in show_promo_in_page.h.
+    user_education::PageOpenMode page_open_mode =
+        user_education::PageOpenMode::kNewForegroundTab;
 
     // Callback that notifies when the tutorial was triggered. The
     // callback is passed the TutorialService to use to log or check
@@ -67,8 +69,7 @@ class StartTutorialInPage {
     Callback callback = base::DoNothing();
 
     // The ID of the tutorial to start.
-    std::optional<user_education::TutorialIdentifier> tutorial_id =
-        std::nullopt;
+    std::optional<user_education::TutorialIdentifier> tutorial_id;
   };
 
   StartTutorialInPage(const StartTutorialInPage&) = delete;

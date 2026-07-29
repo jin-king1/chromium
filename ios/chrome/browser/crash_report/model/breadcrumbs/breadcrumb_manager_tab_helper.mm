@@ -4,7 +4,8 @@
 
 #import "ios/chrome/browser/crash_report/model/breadcrumbs/breadcrumb_manager_tab_helper.h"
 
-#import "base/containers/contains.h"
+#import "base/check.h"
+#import "base/functional/callback_helpers.h"
 #import "base/ios/ns_error_util.h"
 #import "base/strings/stringprintf.h"
 #import "components/breadcrumbs/core/breadcrumb_manager_keyed_service.h"
@@ -22,6 +23,8 @@
 #import "ios/web/public/security/ssl_status.h"
 #import "ios/web/public/ui/crw_web_view_proxy.h"
 #import "ios/web/public/ui/crw_web_view_scroll_view_proxy.h"
+#import "ios/web/public/web_state.h"
+#import "ios/web/public/web_state_id.h"
 
 using LoggingBlock = void (^)(const std::string& event);
 
@@ -57,19 +60,29 @@ using LoggingBlock = void (^)(const std::string& event);
 
 BreadcrumbManagerTabHelper::BreadcrumbManagerTabHelper(web::WebState* web_state)
     : breadcrumbs::BreadcrumbManagerTabHelper(
-          InfoBarManagerImpl::FromWebState(web_state)),
+          InfoBarManagerImpl::FromWebState(web_state),
+          web_state->GetUniqueIdentifier().identifier()),
       web_state_(web_state) {
+  // Assert that the WebState unique identifier can be used as unique id.
+  static_assert(
+      std::is_same<decltype(web_state->GetUniqueIdentifier().identifier()),
+                   decltype(this->GetUniqueId())>::value);
+
+  CHECK(web_state_->IsRealized());
   web_state_->AddObserver(this);
-  if (web_state_->IsRealized()) {
-    CreateBreadcrumbScrollingObserver();
-  }
+  base::RepeatingCallback callback =
+      base::BindRepeating(&BreadcrumbManagerTabHelper::OnScrollEvent,
+                          weak_ptr_factory_.GetWeakPtr());
+
+  scroll_observer_ = [[BreadcrumbScrollingObserver alloc]
+      initWithLoggingBlock:base::CallbackToBlock(callback)];
+  [web_state_->GetWebViewProxy().scrollViewProxy addObserver:scroll_observer_];
 }
 
 BreadcrumbManagerTabHelper::~BreadcrumbManagerTabHelper() = default;
 
 void BreadcrumbManagerTabHelper::PlatformLogEvent(const std::string& event) {
-  const bool is_scroll_event =
-      base::Contains(event, breadcrumbs::kBreadcrumbScroll);
+  const bool is_scroll_event = event.contains(breadcrumbs::kBreadcrumbScroll);
   if (!is_scroll_event) {
     // `sequentially_scrolled_` is incremented for each scroll event and reset
     // here when non-scrolling event is logged. The user can scroll multiple
@@ -147,28 +160,10 @@ void BreadcrumbManagerTabHelper::RenderProcessGone(web::WebState* web_state) {
 void BreadcrumbManagerTabHelper::WebStateDestroyed(web::WebState* web_state) {
   web_state->RemoveObserver(this);
 
-  if (scroll_observer_) {
-    [[web_state->GetWebViewProxy() scrollViewProxy]
-        removeObserver:scroll_observer_];
-    scroll_observer_ = nil;
-  }
+  [[web_state->GetWebViewProxy() scrollViewProxy]
+      removeObserver:scroll_observer_];
+  scroll_observer_ = nil;
   web_state_ = nil;
-}
-
-void BreadcrumbManagerTabHelper::WebStateRealized(web::WebState* web_state) {
-  CreateBreadcrumbScrollingObserver();
-}
-
-void BreadcrumbManagerTabHelper::CreateBreadcrumbScrollingObserver() {
-  base::RepeatingCallback callback =
-      base::BindRepeating(&BreadcrumbManagerTabHelper::OnScrollEvent,
-                          weak_ptr_factory_.GetWeakPtr());
-  DCHECK(!scroll_observer_);
-  scroll_observer_ = [[BreadcrumbScrollingObserver alloc]
-      initWithLoggingBlock:^(const std::string& event) {
-        callback.Run(event);
-      }];
-  [web_state_->GetWebViewProxy().scrollViewProxy addObserver:scroll_observer_];
 }
 
 void BreadcrumbManagerTabHelper::OnScrollEvent(const std::string& event) {
@@ -183,5 +178,3 @@ void BreadcrumbManagerTabHelper::OnScrollEvent(const std::string& event) {
     LogEvent(event);
   }
 }
-
-WEB_STATE_USER_DATA_KEY_IMPL(BreadcrumbManagerTabHelper)
